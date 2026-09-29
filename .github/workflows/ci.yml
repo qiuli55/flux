@@ -1,0 +1,83 @@
+# AI Engineering OS —— M0 持续集成（主规格 §19.1：每个 PR 上 CI 通过）
+#
+# backend           ：在 SQLite 上跑完整本地自检（ruff / OpenAPI 契约 / 迁移往返 / pytest），
+#                     并额外校验契约文件与代码同步；
+# postgres-migration：在真实 PostgreSQL（pgvector 官方镜像，与 docker-compose.yml 一致）上
+#                     验证初始迁移可 upgrade / downgrade，避免「只在 SQLite 上能跑」。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端自检（ruff / 契约 / 迁移 / pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # Makefile 与 scripts/export_openapi.py 都按「仓库根 .venv」约定，故这里建在仓库根
+      - name: 创建虚拟环境并安装依赖
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r backend/requirements.txt
+
+      - name: 运行本地自检脚本
+        run: bash scripts/verify.sh
+
+      # 契约文件必须随代码一起提交：重新导出后若有差异即视为漂移
+      - name: 校验 OpenAPI 契约与代码同步
+        run: |
+          .venv/bin/python scripts/export_openapi.py
+          if ! git diff --exit-code docs/openapi.json; then
+            echo "::error::docs/openapi.json 与当前代码不一致，请运行 python scripts/export_openapi.py 后提交"
+            exit 1
+          fi
+
+  postgres-migration:
+    name: PostgreSQL 迁移往返验证
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: aios
+          POSTGRES_PASSWORD: aios
+          POSTGRES_DB: aios
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aios -d aios"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 创建虚拟环境并安装依赖
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r backend/requirements.txt
+
+      - name: 在 PostgreSQL 上执行迁移 upgrade 与 downgrade
+        working-directory: backend
+        run: |
+          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://aios:aios@localhost:5432/aios upgrade head
+          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://aios:aios@localhost:5432/aios downgrade base

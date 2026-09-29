@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- 环境与密钥（禁止入库）---
+.env
+.env.local
+*.pem
+*.key
+
+# --- 数据与制品 ---
+*.sqlite3
+*.db
+data/
+artifacts/
+
+# --- Node ---
+node_modules/
+dist/
+build/
+out/
+
+# --- 编辑器与系统 ---
+.idea/
+.vscode/
+.DS_Store

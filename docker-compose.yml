@@ -1,0 +1,77 @@
+# AI Engineering OS —— 本地一键起服务（主规格 §18.3：Backend API + Database + Cache）
+#
+# 启动：make up（等价于 docker compose up -d --build）；停止：make down。
+#
+# 关于模型密钥：本文件刻意不写 env_file，因为 .env 已被 .gitignore 忽略，
+# 仓库里不存在该文件，首次 `docker compose up` 会因缺少 env_file 直接报错。
+# 需要注入 OpenAI / Anthropic / DeepSeek 等模型密钥时，二选一：
+#   1) 复制 .env.example 为 .env，然后在本文件 backend 服务的 environment 段追加对应键；
+#   2) 复制 .env.example 为 .env 后，为 backend 服务改用 `env_file: [.env]`。
+#
+# 容器内地址说明：backend 通过 Compose 默认网络访问 postgres / redis 的服务名，
+# 因此 AIOS_DATABASE_URL 与 AIOS_REDIS_URL 必须覆盖为容器内地址（见下方 environment）。
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aios}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aios}
+      POSTGRES_DB: ${POSTGRES_DB:-aios}
+    volumes:
+      - aios-pgdata:/var/lib/postgresql/data
+    # 暴露到宿主机，便于用 psql / alembic 等本机工具直连这套开发库
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aios -d aios"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - aios-redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # --- 应用 ---
+      AIOS_ENV: ${AIOS_ENV:-local}
+      AIOS_LOG_LEVEL: ${AIOS_LOG_LEVEL:-INFO}
+      AIOS_API_V1_PREFIX: ${AIOS_API_V1_PREFIX:-/api/v1}
+      # --- 存储：覆盖为容器内地址 ---
+      AIOS_DATABASE_URL: postgresql+asyncpg://aios:aios@postgres:5432/aios
+      AIOS_REDIS_URL: redis://redis:6379/0
+      # --- 模型供应商：默认留空（未配置的供应商不参与路由），按需填入真实密钥 ---
+      AIOS_DEFAULT_PROVIDER: ${AIOS_DEFAULT_PROVIDER:-local}
+      AIOS_OPENAI_API_KEY: ${AIOS_OPENAI_API_KEY:-}
+      AIOS_ANTHROPIC_API_KEY: ${AIOS_ANTHROPIC_API_KEY:-}
+      AIOS_DEEPSEEK_API_KEY: ${AIOS_DEEPSEEK_API_KEY:-}
+      AIOS_LOCAL_MODEL_BASE_URL: ${AIOS_LOCAL_MODEL_BASE_URL:-}
+      AIOS_LOCAL_MODEL_NAME: ${AIOS_LOCAL_MODEL_NAME:-local-echo}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  aios-pgdata:
+  aios-redisdata:
