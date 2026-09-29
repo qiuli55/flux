@@ -2,7 +2,7 @@
 
 数据库 URL 的解析顺序：
 1. 命令行覆盖：alembic -x db_url=sqlite+aiosqlite:///./tmp.db upgrade head
-2. 环境变量 AIOS_DATABASE_URL（经 aios.config 读取，支持 .env）
+2. 环境变量 FLUX_DATABASE_URL（经 flux.config 读取，支持 .env）
 3. alembic.ini 中的 sqlalchemy.url
 
 本地无 PostgreSQL 时可用 sqlite 跑通迁移，便于在开发机上验证迁移脚本本身。
@@ -18,8 +18,8 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from aios.config import get_settings
-from aios.models import Base
+from flux.config import get_settings
+from flux.models import Base
 
 config = context.config
 

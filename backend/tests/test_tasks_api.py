@@ -7,10 +7,10 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from aios.config import Settings
-from aios.db.session import create_engine
-from aios.main import create_app
-from aios.models.project import Project
+from flux.config import Settings
+from flux.db.session import create_engine
+from flux.main import create_app
+from flux.models.project import Project
 
 PREFIX = "/api/v1"
 
@@ -135,6 +135,30 @@ def test_unknown_agent_id_not_found(client: TestClient) -> None:
     )
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+def test_unknown_project_id_not_found(client: TestClient) -> None:
+    """project_id 是合法 UUID 但项目不存在 → 404，与 agent_id 的语义一致。
+
+    不能退化成「靠数据库外键报约束错」的 400：同一类「关联实体不存在」在 API 上
+    必须只有一个错误码，否则调用方无法用统一逻辑处理。
+    """
+    response = client.post(
+        f"{PREFIX}/tasks", json={"description": "x", "project_id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+def test_task_with_seeded_project_is_created(settings: Settings, db_schema: None) -> None:
+    """项目真实存在时建任务成功，且 project_id 原样落库。"""
+    project_id = _seed_project(settings.database_url)
+    with _new_client(settings) as client_:
+        created = client_.post(
+            f"{PREFIX}/tasks", json={"description": "归属某项目", "project_id": project_id}
+        )
+    assert created.status_code == 200
+    assert created.json()["data"]["project_id"] == project_id
 
 
 def test_task_with_existing_agent_persists_agent_id(client: TestClient) -> None:

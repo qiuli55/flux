@@ -10,8 +10,8 @@ from pathlib import Path
 
 from sqlalchemy import inspect
 
-from aios.db.session import create_engine
-from aios.models import Base
+from flux.db.session import create_engine
+from flux.models import Base
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 

@@ -1,4 +1,4 @@
-# AI Engineering OS —— M0 工程化交付：本地开发与「一条命令自检」入口
+# Flux —— M0 工程化交付：本地开发与「一条命令自检」入口
 #
 # 约定（主规格 §17.2 仓库结构 / §18 部署）：
 #   * 虚拟环境固定在仓库根 .venv，与 CI（.github/workflows/ci.yml）保持一致；
@@ -16,14 +16,14 @@ BACKEND := backend
 .PHONY: help setup lint fmt test migrate openapi openapi-check verify run up down clean
 
 help:
-	@echo "AI Engineering OS 本地开发命令"
+	@echo "Flux 本地开发命令"
 	@echo ""
 	@echo "  make help           显示本帮助"
 	@echo "  make setup          创建 $(VENV) 虚拟环境并安装 $(BACKEND)/requirements.txt 的全部依赖"
 	@echo "  make lint           在 $(BACKEND)/ 下运行 ruff 静态检查（不修改文件）"
 	@echo "  make fmt            在 $(BACKEND)/ 下运行 ruff 格式化并写盘"
 	@echo "  make test           在 $(BACKEND)/ 下运行 pytest 全部用例"
-	@echo "  make migrate        在 $(BACKEND)/ 下按 AIOS_DATABASE_URL 执行 alembic upgrade head"
+	@echo "  make migrate        在 $(BACKEND)/ 下按 FLUX_DATABASE_URL 执行 alembic upgrade head"
 	@echo "  make openapi        导出 OpenAPI 契约到 docs/openapi.json"
 	@echo "  make openapi-check  校验 docs/openapi.json 与当前代码是否一致（CI 用，不写盘）"
 	@echo "  make verify         执行 scripts/verify.sh 全量自检（ruff / 契约 / 迁移往返 / pytest）"
@@ -46,11 +46,11 @@ fmt:
 test:
 	cd $(BACKEND) && ../$(PY) -m pytest
 
-# 数据库地址取值优先级：命令行 -x 覆盖 > 环境变量 AIOS_DATABASE_URL（含仓库根 .env）
-# > aios.config 默认值（sqlite+aiosqlite:///./aios.db）。env_file 固定指向仓库根 .env，
-# 与 cwd 无关（见 backend/aios/config.py），故 make migrate 与 make run 读到同一份配置。
+# 数据库地址取值优先级：命令行 -x 覆盖 > 环境变量 FLUX_DATABASE_URL（含仓库根 .env）
+# > flux.config 默认值（sqlite+aiosqlite:///./flux.db）。env_file 固定指向仓库根 .env，
+# 与 cwd 无关（见 backend/flux/config.py），故 make migrate 与 make run 读到同一份配置。
 migrate:
-	cd $(BACKEND) && ../$(PY) -m alembic -x db_url="$(AIOS_DATABASE_URL)" upgrade head
+	cd $(BACKEND) && ../$(PY) -m alembic -x db_url="$(FLUX_DATABASE_URL)" upgrade head
 
 openapi:
 	$(PY) scripts/export_openapi.py
@@ -62,7 +62,7 @@ verify:
 	bash scripts/verify.sh
 
 run:
-	$(PY) -m uvicorn aios.main:app --reload --app-dir $(BACKEND)
+	$(PY) -m uvicorn flux.main:app --reload --app-dir $(BACKEND)
 
 up:
 	docker compose up -d --build

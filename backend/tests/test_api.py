@@ -219,7 +219,7 @@ def test_connector_execute_unregistered(client: TestClient) -> None:
 
 def test_connector_execute_denied_without_capability(client: TestClient) -> None:
     """客户端不能自行声明能力：agent 没有 terminal.execute 时必须 403。"""
-    from aios.connectors.base import ConnectorRegistry
+    from flux.connectors.base import ConnectorRegistry
     from tests.fakes import FakeTerminalConnector
 
     container = client.app.state.container
@@ -245,7 +245,7 @@ def test_connector_execute_denied_without_capability(client: TestClient) -> None
 
 
 def test_connector_execute_succeeds_with_capability(client: TestClient) -> None:
-    from aios.connectors.base import ConnectorRegistry
+    from flux.connectors.base import ConnectorRegistry
     from tests.fakes import FakeTerminalConnector
 
     container = client.app.state.container

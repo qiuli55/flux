@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI Engineering OS —— 本地「一条命令自检」（主规格 §19.1：M0 验收标准「每个 PR 上 CI 通过」）
+# Flux —— 本地「一条命令自检」（主规格 §19.1：M0 验收标准「每个 PR 上 CI 通过」）
 #
 # 检查顺序固定：
 #   虚拟环境 → ruff 静态检查 → ruff 格式检查 → OpenAPI 契约 → 数据库迁移往返 → pytest
@@ -18,8 +18,8 @@ VENV_ALEMBIC="${REPO_ROOT}/.venv/bin/alembic"
 VENV_PYTEST="${REPO_ROOT}/.venv/bin/pytest"
 
 # 迁移往返用的临时 SQLite 库，只在本次自检期间存在
-VERIFY_DB="/tmp/aios_verify.db"
-VERIFY_DB_URL="sqlite+aiosqlite:////tmp/aios_verify.db"
+VERIFY_DB="/tmp/flux_verify.db"
+VERIFY_DB_URL="sqlite+aiosqlite:////tmp/flux_verify.db"
 
 if [[ ! -x "${VENV_PY}" ]]; then
   echo "未找到 ${VENV_PY}，请先运行 make setup" >&2

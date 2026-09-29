@@ -12,17 +12,17 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from aios.core.agent_runtime.context import AgentSpec
-from aios.core.agent_runtime.manager import AgentManager
-from aios.core.event.bus import EventBus, Events
-from aios.core.model_gateway.base import (
+from flux.core.agent_runtime.context import AgentSpec
+from flux.core.agent_runtime.manager import AgentManager
+from flux.core.event.bus import EventBus, Events
+from flux.core.model_gateway.base import (
     ChatMessage,
     ChatResult,
     ModelProviderBase,
     TokenUsage,
 )
-from aios.core.model_gateway.router import ModelRouter
-from aios.enums import AgentRole, AgentState, Capability, ModelProvider
+from flux.core.model_gateway.router import ModelRouter
+from flux.enums import AgentRole, AgentState, Capability, ModelProvider
 
 # 单次调用的人工延迟：够长，使三个并发调用必然重叠
 CALL_DELAY_SECONDS = 0.05

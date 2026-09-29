@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from aios.connectors.base import ConnectorRegistry
-from aios.core.event.bus import EventBus, Events
-from aios.enums import Capability
-from aios.errors import ConnectorNotRegisteredError, PermissionDeniedError
+from flux.connectors.base import ConnectorRegistry
+from flux.core.event.bus import EventBus, Events
+from flux.enums import Capability
+from flux.errors import ConnectorNotRegisteredError, PermissionDeniedError
 from tests.fakes import FakeTerminalConnector
 
 

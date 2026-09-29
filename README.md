@@ -1,10 +1,10 @@
-# AI Engineering OS
+# Flux
 
 多 Agent 软件工程操作系统：把 AI 当作真正的工程角色（Tech Lead / Architect / Developer / Reviewer / Tester / DevOps）来编排，而不是当成聊天机器人。
 
 核心差异化是 **Virtual Workspace**——AI 的每一次改动都以"提案 → 虚拟 diff → 人工审查 → 应用"的流程落地，**永不直接覆盖你的文件**。
 
-规格的唯一权威来源是 [`AI_Engineering_OS_Master_Spec_v0.1.md`](../AI_Engineering_OS_Master_Spec_v0.1.md)（34 份源文档合并去重后的主规格，含 11 条冲突裁决）。代码与规格不一致时以规格为准，并把实施期发现的新问题回写到规格附录 A。
+规格的唯一权威来源是 [`docs/Flux_Master_Spec_v0.1.md`](docs/Flux_Master_Spec_v0.1.md)（34 份源文档合并去重后的主规格，含 22 条冲突裁决）。代码与规格不一致时以规格为准，并把实施期发现的新问题回写到规格附录 A。
 
 ---
 
@@ -40,16 +40,16 @@
 
 | 供应商 | 默认模型 | 覆盖变量 | 鉴权 | 备注 |
 | --- | --- | --- | --- | --- |
-| `local` | `local-echo` | `AIOS_LOCAL_MODEL_NAME` | 无 | 离线回显，零依赖，M0 起可用于跑通链路 |
-| `openai` | `gpt-5.5` | `AIOS_OPENAI_MODEL` | `Authorization: Bearer` | 输出上限字段为 `max_completion_tokens` |
-| `anthropic` | `claude-sonnet-5-5` | `AIOS_ANTHROPIC_MODEL` | `x-api-key` + `anthropic-version: 2023-06-01` | `system` 走顶层字段；`temperature` 钳制到 `[0,1]` |
-| `deepseek` | `deepseek-flash` | `AIOS_DEEPSEEK_MODEL` | `Authorization: Bearer` | 见下方 thinking 模式注意点 |
+| `local` | `local-echo` | `FLUX_LOCAL_MODEL_NAME` | 无 | 离线回显，零依赖，M0 起可用于跑通链路 |
+| `openai` | `gpt-5.5` | `FLUX_OPENAI_MODEL` | `Authorization: Bearer` | 输出上限字段为 `max_completion_tokens` |
+| `anthropic` | `claude-sonnet-5-5` | `FLUX_ANTHROPIC_MODEL` | `x-api-key` + `anthropic-version: 2023-06-01` | `system` 走顶层字段；`temperature` 钳制到 `[0,1]` |
+| `deepseek` | `deepseek-flash` | `FLUX_DEEPSEEK_MODEL` | `Authorization: Bearer` | 见下方 thinking 模式注意点 |
 
 模型 id 取自 2026-09-30 快照（规格附录 A-2）。**可配置性已实测**（2026-09-30，离线，无网络调用）：
 
 - 默认值实测：`{'local': 'local-echo', 'openai': 'gpt-5.5', 'anthropic': 'claude-sonnet-5-5', 'deepseek': 'deepseek-flash'}`
-- 用 `AIOS_OPENAI_MODEL` / `AIOS_ANTHROPIC_MODEL` / `AIOS_DEEPSEEK_MODEL` 覆盖后，装配出的 `model_name` 随之改变，无需改代码
-- 供应商是否可用只取决于密钥：不配密钥时 `router.available()` 为 `['local']`，加上 `AIOS_OPENAI_API_KEY` 后变为 `['local', 'openai']`——`/api/v1/health/ready` 的 `providers` 列的就是这个可用集合
+- 用 `FLUX_OPENAI_MODEL` / `FLUX_ANTHROPIC_MODEL` / `FLUX_DEEPSEEK_MODEL` 覆盖后，装配出的 `model_name` 随之改变，无需改代码
+- 供应商是否可用只取决于密钥：不配密钥时 `router.available()` 为 `['local']`，加上 `FLUX_OPENAI_API_KEY` 后变为 `['local', 'openai']`——`/api/v1/health/ready` 的 `providers` 列的就是这个可用集合
 
 **双 Provider 验证边界**（如实说明）：
 
@@ -104,9 +104,9 @@ make down
 ## 仓库结构
 
 ```
-ai-engineering-os/
+flux/
 ├── backend/                      # 后端：单一可部署单元（见规格附录 A12）
-│   ├── aios/
+│   ├── flux/
 │   │   ├── api/                  # HTTP 层：统一响应体、异常处理器、依赖注入
 │   │   │   └── v1/               # 规格 §12 的 13 条路由
 │   │   ├── core/                 # 领域层（不依赖 FastAPI）
@@ -122,7 +122,7 @@ ai-engineering-os/
 │   │   ├── connectors/           # Connector 契约与注册表
 │   │   ├── services/             # cost_service 等横切服务
 │   │   ├── db/                   # 异步引擎与会话
-│   │   ├── config.py             # pydantic-settings，前缀 AIOS_
+│   │   ├── config.py             # pydantic-settings，前缀 FLUX_
 │   │   ├── errors.py             # 领域异常 → HTTP 状态码映射
 │   │   ├── logging.py            # 结构化日志
 │   │   ├── container.py          # 组合根：装配全部单例
@@ -134,7 +134,7 @@ ai-engineering-os/
 ├── apps/                         # 客户端（M3 起）：desktop / vscode-extension / web-dashboard / mobile-controller
 ├── connectors/                   # 具体连接器实现（M4 起）
 ├── skills/                       # Skill 包（M5 起）：backend / frontend / security / devops
-├── nodes/                        # AIOS Node（M8 起）：android_node / desktop_node
+├── nodes/                        # Flux Node（M8 起）：android_node / desktop_node
 ├── docs/
 │   ├── openapi.json              # 接口契约，随代码一起提交
 │   └── ui-designs/               # 界面设计稿（M3 的输入素材）
@@ -144,7 +144,7 @@ ai-engineering-os/
 └── Makefile
 ```
 
-**命名约定**（规格附录 A12）：会被 Python 导入的目录一律用下划线（`backend/aios/agent_runtime`、`nodes/android_node`）；npm / 前端包目录沿用连字符（`apps/vscode-extension`）。
+**命名约定**（规格附录 A12）：会被 Python 导入的目录一律用下划线（`backend/flux/agent_runtime`、`nodes/android_node`）；npm / 前端包目录沿用连字符（`apps/vscode-extension`）。
 
 ---
 

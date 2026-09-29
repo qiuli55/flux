@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from aios.connectors.base import Connector, ConnectorManifest
-from aios.enums import Capability
-from aios.errors import PermissionDeniedError
+from flux.connectors.base import Connector, ConnectorManifest
+from flux.enums import Capability
+from flux.errors import PermissionDeniedError
 
 
 class FakeTerminalConnector(Connector):

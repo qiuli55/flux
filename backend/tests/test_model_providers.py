@@ -12,16 +12,16 @@ from typing import Any
 import httpx
 import pytest
 
-from aios.config import Settings
-from aios.core.model_gateway.base import ChatMessage
-from aios.core.model_gateway.http import map_status_to_error, post_json
-from aios.core.model_gateway.providers.anthropic import AnthropicProvider
-from aios.core.model_gateway.providers.deepseek import DeepSeekProvider
-from aios.core.model_gateway.providers.openai import OpenAIProvider
-from aios.core.model_gateway.providers.registry import build_providers
-from aios.core.model_gateway.router import ModelRouter
-from aios.enums import ModelProvider
-from aios.errors import AIOSError, ProviderNotConfiguredError
+from flux.config import Settings
+from flux.core.model_gateway.base import ChatMessage
+from flux.core.model_gateway.http import map_status_to_error, post_json
+from flux.core.model_gateway.providers.anthropic import AnthropicProvider
+from flux.core.model_gateway.providers.deepseek import DeepSeekProvider
+from flux.core.model_gateway.providers.openai import OpenAIProvider
+from flux.core.model_gateway.providers.registry import build_providers
+from flux.core.model_gateway.router import ModelRouter
+from flux.enums import ModelProvider
+from flux.errors import AIOSError, ProviderNotConfiguredError
 
 OPENAI_KEY = "test-openai-key"
 

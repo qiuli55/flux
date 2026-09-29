@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from aios.core.virtual_workspace.service import VirtualWorkspaceService, build_unified_diff
-from aios.enums import VirtualChangeStatus
-from aios.errors import InvalidTransitionError, NotFoundError
+from flux.core.virtual_workspace.service import VirtualWorkspaceService, build_unified_diff
+from flux.enums import VirtualChangeStatus
+from flux.errors import InvalidTransitionError, NotFoundError
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"

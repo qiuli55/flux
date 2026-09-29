@@ -6,23 +6,23 @@ import asyncio
 
 import pytest
 
-from aios.core.agent_runtime.lifecycle import assert_transition, can_transition
-from aios.core.event.bus import EventBus, Events
-from aios.core.model_gateway.base import ModelPricing, TokenUsage
-from aios.core.permission_engine.policy import PermissionPolicy
-from aios.core.task_engine.scheduler import TaskScheduler
-from aios.core.workflow_engine.orchestrator import (
+from flux.core.agent_runtime.lifecycle import assert_transition, can_transition
+from flux.core.event.bus import EventBus, Events
+from flux.core.model_gateway.base import ModelPricing, TokenUsage
+from flux.core.permission_engine.policy import PermissionPolicy
+from flux.core.task_engine.scheduler import TaskScheduler
+from flux.core.workflow_engine.orchestrator import (
     BugFixWorkflow,
     FeatureDevelopmentWorkflow,
     plan_workflow,
 )
-from aios.enums import AgentRole, AgentState, Capability, Role
-from aios.errors import (
+from flux.enums import AgentRole, AgentState, Capability, Role
+from flux.errors import (
     InvalidTransitionError,
     NotFoundError,
     PermissionDeniedError,
 )
-from aios.services.cost_service.calculator import compute_cost
+from flux.services.cost_service.calculator import compute_cost
 
 # --- 状态机（主规格 §5.1）---
 
@@ -124,7 +124,7 @@ def test_cost_is_none_without_configured_pricing() -> None:
     """没有单价就不给数字，绝不用猜测值填充。"""
     assert compute_cost(1000, 1000, ModelPricing(0, 0)) == 0.0
 
-    from aios.core.model_gateway.providers.echo import EchoProvider
+    from flux.core.model_gateway.providers.echo import EchoProvider
 
     provider = EchoProvider()
     assert provider.calculate_cost(TokenUsage(input_tokens=100, output_tokens=50)) is None

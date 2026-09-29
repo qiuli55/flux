@@ -6,11 +6,11 @@ import asyncio
 
 import pytest
 
-from aios.container import Container
-from aios.core.agent_runtime.context import AgentSpec
-from aios.core.event.bus import Events
-from aios.enums import AgentRole, AgentState, Capability, ModelProvider
-from aios.errors import NotFoundError, ProviderNotConfiguredError
+from flux.container import Container
+from flux.core.agent_runtime.context import AgentSpec
+from flux.core.event.bus import Events
+from flux.enums import AgentRole, AgentState, Capability, ModelProvider
+from flux.errors import NotFoundError, ProviderNotConfiguredError
 
 
 def _spec(**overrides: object) -> AgentSpec:

@@ -20,7 +20,7 @@ OUTPUT_PATH = REPO_ROOT / "docs" / "openapi.json"
 
 sys.path.insert(0, str(BACKEND_DIR))
 
-from aios.main import VERSION, create_app  # noqa: E402
+from flux.main import VERSION, create_app  # noqa: E402
 
 
 def build_schema() -> dict:
@@ -31,7 +31,7 @@ def build_schema() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="导出 AI Engineering OS 的 OpenAPI 契约")
+    parser = argparse.ArgumentParser(description="导出 Flux 的 OpenAPI 契约")
     parser.add_argument(
         "--check",
         action="store_true",

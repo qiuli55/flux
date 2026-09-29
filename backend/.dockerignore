@@ -1,4 +1,4 @@
-# Docker 构建上下文排除项（主规格 §18.3）：镜像里只需要 aios/、migrations/ 与 alembic.ini
+# Docker 构建上下文排除项（主规格 §18.3）：镜像里只需要 flux/、migrations/ 与 alembic.ini
 
 # Python 缓存与字节码
 __pycache__/

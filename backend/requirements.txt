@@ -1,4 +1,4 @@
-# AI Engineering OS 后端依赖（固定快照）
+# Flux 后端依赖（固定快照）
 #
 # 快照日期：2026-09-30
 # 说明：以下版本号为本机由 pip 于上述日期从 PyPI 解析并通过实测（pytest 全绿 + uvicorn 启动探活 + alembic upgrade head）

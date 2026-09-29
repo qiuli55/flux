@@ -1,4 +1,4 @@
-# AI Engineering OS —— M0 持续集成（主规格 §19.1：每个 PR 上 CI 通过）
+# Flux —— M0 持续集成（主规格 §19.1：每个 PR 上 CI 通过）
 #
 # backend           ：在 SQLite 上跑完整本地自检（ruff / OpenAPI 契约 / 迁移往返 / pytest），
 #                     并额外校验契约文件与代码同步；
@@ -50,13 +50,13 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg17
         env:
-          POSTGRES_USER: aios
-          POSTGRES_PASSWORD: aios
-          POSTGRES_DB: aios
+          POSTGRES_USER: flux
+          POSTGRES_PASSWORD: flux
+          POSTGRES_DB: flux
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aios -d aios"
+          --health-cmd "pg_isready -U flux -d flux"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -79,5 +79,5 @@ jobs:
       - name: 在 PostgreSQL 上执行迁移 upgrade 与 downgrade
         working-directory: backend
         run: |
-          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://aios:aios@localhost:5432/aios upgrade head
-          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://aios:aios@localhost:5432/aios downgrade base
+          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://flux:flux@localhost:5432/flux upgrade head
+          ../.venv/bin/alembic -x db_url=postgresql+asyncpg://flux:flux@localhost:5432/flux downgrade base

@@ -1,7 +1,7 @@
 [project]
-name = "aios"
+name = "flux"
 version = "0.1.0"
-description = "AI Engineering OS 后端（Agent Runtime / Task Engine / Model Gateway / Connector）"
+description = "Flux 后端（Agent Runtime / Task Engine / Model Gateway / Connector）"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.142",
@@ -29,7 +29,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["aios*"]
+include = ["flux*"]
 
 [tool.ruff]
 line-length = 100
