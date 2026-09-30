@@ -63,6 +63,24 @@ def safe_relative_path(file_path: str) -> Path:
     return Path(*pure.parts)
 
 
+def resolve_workspace_root(candidate: str | Path | None) -> Path:
+    """解析"被改项目根目录"。未配置或不是目录一律拒绝，绝不猜一个默认目录。
+
+    Apply Engine 与 Tester Agent 都必须在同一个根下工作，所以这段判断放在一处。
+    """
+    if candidate is None:
+        raise ValidationError(
+            "未配置工作区根目录（FLUX_WORKSPACE_ROOT）",
+            details={"hint": "设置 FLUX_WORKSPACE_ROOT 指向被改项目的根目录"},
+        )
+    root = Path(candidate).expanduser().resolve()
+    if not root.is_dir():
+        raise ValidationError(
+            f"工作区根目录不存在或不是目录：{root}", details={"workspace_root": str(root)}
+        )
+    return root
+
+
 class ApplyEngine:
     def __init__(
         self,
@@ -135,18 +153,7 @@ class ApplyEngine:
     # --- 各步骤 ---
 
     def _resolve_root(self, override: str | Path | None) -> Path:
-        candidate = override if override is not None else self._configured_root
-        if candidate is None:
-            raise ValidationError(
-                "未配置工作区根目录（FLUX_WORKSPACE_ROOT），拒绝执行 Apply",
-                details={"hint": "设置 FLUX_WORKSPACE_ROOT 指向被改项目的根目录"},
-            )
-        root = Path(candidate).expanduser().resolve()
-        if not root.is_dir():
-            raise ValidationError(
-                f"工作区根目录不存在或不是目录：{root}", details={"workspace_root": str(root)}
-            )
-        return root
+        return resolve_workspace_root(override if override is not None else self._configured_root)
 
     @staticmethod
     def _assert_unchanged(change: VirtualChange, target: Path) -> None:

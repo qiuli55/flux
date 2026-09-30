@@ -18,6 +18,9 @@ logger = get_logger(__name__)
 
 MAX_OUTPUT_CHARS = 20000
 
+# 截断标记：中间省略了多少字符
+_TRUNCATION_MARKER = "\n…（输出已截断，中间省略 {omitted} 字符）\n"
+
 
 @dataclass(frozen=True)
 class TestOutcome:
@@ -87,6 +90,17 @@ class TestRunner:
 
     @staticmethod
     def _truncate(text: str) -> str:
+        """超长输出保留「头 + 尾」，中间省略。
+
+        测试汇总行（如 `12 passed, 2 failed in 0.53s`）永远在输出末尾，只截掉尾部
+        会让 Tester 拿不到用例统计（⑧ 要求回报 Tests: N passed），所以尾部必须保留。
+        """
         if len(text) <= MAX_OUTPUT_CHARS:
             return text
-        return text[:MAX_OUTPUT_CHARS] + f"\n…（输出已截断，共 {len(text)} 字符）"
+        # 先按最坏情况估算标记长度，保证最终长度不超上限
+        marker_len = len(_TRUNCATION_MARKER.format(omitted=len(text)))
+        keep = max(MAX_OUTPUT_CHARS - marker_len, 0)
+        head = keep // 2
+        tail = keep - head
+        marker = _TRUNCATION_MARKER.format(omitted=len(text) - keep)
+        return text[:head] + marker + (text[-tail:] if tail else "")

@@ -279,7 +279,7 @@ Capability 示例：`file.read`、`file.write`、`terminal.execute`、`deploy`�
 
 **声明与实例分离**：Manifest（声明）→ `AgentSpec`（运行时规格）→ `AgentHandle`（实例）。入口为 `AgentManager.create_from_manifest()` 与 `AgentManager.create_builtin_agents()`。
 
-**内置第一批 Agent（§19.7：只做 4 个）**：Tech Lead、Developer、Reviewer、Tester，均为 `deepseek` / `deepseek-flash`。权限按最小化配置：Tech Lead 与 Reviewer 只有 `file.read`；Developer 额外持有 `file.write` + `terminal.execute`；Tester 持有 `file.read` + `terminal.execute`。Architect、DevOps 待核心闭环稳定后再加。
+**内置第一批 Agent（§19.7：只做 4 个）**：Tech Lead、Developer、Reviewer、Tester，均为 `deepseek` / `deepseek-flash`。权限按最小化配置：Tech Lead 与 Reviewer 只有 `file.read`；Developer 额外持有 `file.write` + `terminal.execute`；Tester 持有 `file.read` + `terminal.execute`。Architect、DevOps 待核心闭环稳定后再加。其中 Developer 与 Tester 已写成可执行的 Agent（`developer.py` / `tester.py`，契约见 §6.7 / §6.8），Tech Lead 与 Reviewer 目前只有 Manifest 声明。
 
 ### 6.3 提示版本管理
 
@@ -336,6 +336,31 @@ Agent 之间通过结构化消息通信，须遵守：解释决策、产出制�
 **落地位置**：`flux.core.agent_runtime.developer`（`DeveloperAgent` / `CodeChangeSet` / `FileChange` / `parse_code_change_set` / `build_developer_prompt`）；Developer 角色提示词写在 `manifests/developer.yaml` 的 `system_prompt`（§6.3 纳入版本管理）。
 
 **边界**：本步只产出提案草稿（`CodeChangeSet`）——不落库、不算 hash、不生成 diff；那是 ④ Proposal 与 ⑤ Diff Engine 的职责。
+
+### 6.8 Tester Agent 验证契约
+
+**【实施计划 ⑧ 落地，2026-09-30】** Tester Agent 的职责是**在改动落盘后验证它真的可用**，并在失败时定位原因。与 Developer Agent 的分工：Developer 只出提案，Tester 只做验证（不改任何文件）。
+
+**三条硬约束**：
+
+1. **测试命令只能来自配置**（`FLUX_TEST_COMMAND` 或调用方显式传入），模型无权指定或改写命令——否则等于把任意命令执行权交给 AI。Tester 的 `terminal.execute` 权限指的是"执行项目配置的命令"，不是"执行 AI 想到的命令"。
+2. 测试跑在与 Apply Engine 相同的工作区根目录下（§7.6），未配置根目录时直接报 `validation_error`，不猜目录。
+3. 测试失败时由模型**分析原因**，分析结果只作为文本回报；不写文件、不输出补丁。
+
+**输出（`TestReport`）**：`command`、`exit_code`、`passed`、`timed_out`、`duration_ms`、`output`（上限 20000 字符）、`counts`（`passed` / `failed` / `errors` / `skipped`）、`summary`。`verify()` 额外返回失败时的 `analysis`。
+
+| 语义 | 规则 |
+| --- | --- |
+| 判定通过 | **只认退出码**：`timed_out == False 且 exit_code == 0`。解析不到用例统计不影响判定 |
+| `summary` 示例 | `14 passed`、`2 passed, 1 failed`、`测试超时（sleep 5）`、`测试通过（exit=0，未能解析用例统计）` |
+| 统计解析 | 用正则抓 `(\d+) (passed\|failed\|error\|errors\|skipped)`（大小写不敏感）；汇总行在输出末尾，同一关键词取**最后一次**出现的值；抓不到就是全 0 |
+| 超长输出截断 | 保留**头 + 尾**、中间省略（不是只截尾）：汇总行在输出末尾，只截尾会让大项目的 `Tests: N passed` 永远报不出来 |
+| 失败分析 | 只在测试失败或超时时调用模型（通过则不花钱）；输入为「任务背景 + 命令 + 退出码 + 统计 + 输出（上限 8000 字符）」，要求分三段回答：直接原因 / 根因 / 下一步 |
+| 未配置测试命令 | 报 `validation_error`，不做静默跳过 |
+
+**落地位置**：`flux.core.agent_runtime.tester`（`TesterAgent` / `TestReport` / `TestCounts` / `VerifyResult` / `parse_test_counts` / `build_analysis_prompt`）；命令执行复用 ⑦ 的 `flux.core.virtual_workspace.test_runner.TestRunner`；工作区根解析复用 `flux.core.virtual_workspace.apply_engine.resolve_workspace_root`。角色提示词写在 `manifests/tester.yaml` 的 `system_prompt`。
+
+**边界（本步不做）**：自动生成测试用例、覆盖率统计、「制定测试计划」的模型化产出——第一版只做"执行已配置的命令 + 结构化回报 + 失败分析"。
 
 ---
 
@@ -1115,7 +1140,7 @@ backend/
 ⑤ Diff Engine（unified diff）   ← 已完成，提交 f2b2786
 ⑥ Review / Approve / Reject   ← 已完成，提交 ee6ebaf（accept / apply / reject 三动作 + 状态机，见 §7.5、§12.5）
 ⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）   ← 已完成，提交 ee6ebaf（唯一落盘入口，备份 + 回滚 + 测试执行，见 §7.6）
-⑧ Tester Agent
+⑧ Tester Agent   ← 已完成（真实执行项目配置的测试命令 + 结构化回报 + 失败原因分析，见 §6.8）
 ⑨ Git Integration（status/diff/branch/checkout/commit）
 ⑩ Project Scanner（项目画像，不引入向量库）
 ⑪ Project Brain v1（结构化，非 RAG）

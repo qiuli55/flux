@@ -6,12 +6,14 @@ M0 是单进程装配。后续拆分微服务（§17.2 后端服务拆分）时�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.manager import AgentManager
+from flux.core.agent_runtime.tester import TesterAgent
 from flux.core.event.bus import EventBus
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
@@ -58,6 +60,21 @@ class Container:
             test_timeout_seconds=self.settings.test_timeout_seconds,
         )
         self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus, self.apply_engine)
+
+    @cached_property
+    def tester(self) -> TesterAgent:
+        """Tester Agent（⑧）：按需创建。
+
+        与 Apply Engine 共用同一个工作区根与测试命令；不在启动时就创建，
+        避免内置 Agent 混进 AgentManager 的实例列表（§12.3 的 /agents 只应列出
+        用户真正创建过的 Agent）。
+        """
+        return TesterAgent(
+            self.agents,
+            test_command=self.settings.test_command,
+            workspace_root=self.settings.workspace_root,
+            timeout_seconds=self.settings.test_timeout_seconds,
+        )
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:
