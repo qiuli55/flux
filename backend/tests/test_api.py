@@ -346,6 +346,151 @@ def test_git_reports_directory_that_is_not_a_repository(
     assert response.json()["code"] == "not_a_git_repository"
 
 
+# --- Project / Project Brain（§12.12；实施计划 ⑩⑪）---
+
+
+def _create_project(client: TestClient, *, name: str = "Flux 演示项目") -> str:
+    response = client.post(f"{PREFIX}/projects", json={"name": name, "repository": "qiuli55/flux"})
+    assert response.status_code == 200
+    return response.json()["data"]["id"]
+
+
+def test_project_create_list_get(client: TestClient) -> None:
+    project_id = _create_project(client, name="知识库项目")
+    _create_project(client, name="第二个项目")
+
+    listed = client.get(f"{PREFIX}/projects").json()
+    assert listed["metadata"]["count"] == 2
+
+    fetched = client.get(f"{PREFIX}/projects/{project_id}").json()["data"]
+    assert fetched["name"] == "知识库项目"
+    assert fetched["repository"] == "qiuli55/flux"
+    # 时间戳由数据库写入后读回，必须是真实值而不是 None
+    assert fetched["created_at"] is not None
+
+
+def test_project_scaffolding_errors(client: TestClient) -> None:
+    assert client.post(f"{PREFIX}/projects", json={"name": ""}).status_code == 422
+
+    missing = client.get(f"{PREFIX}/projects/0f5b6f4c-0000-0000-0000-000000000000")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "not_found"
+
+    not_uuid = client.get(f"{PREFIX}/projects/不是UUID")
+    assert not_uuid.status_code == 422
+    assert not_uuid.json()["code"] == "validation_error"
+
+
+def test_memory_write_and_read_via_api(client: TestClient) -> None:
+    project_id = _create_project(client)
+
+    empty = client.get(f"{PREFIX}/projects/{project_id}/memory").json()
+    assert set(empty["data"]) == {
+        "overview",
+        "tech_stack",
+        "architecture",
+        "coding_rules",
+        "decisions",
+        "agent_notes",
+    }
+    assert empty["metadata"]["count"] == 0
+
+    written = client.post(
+        f"{PREFIX}/projects/{project_id}/memory",
+        json={"section": "decisions", "content": "先做结构化记忆，不上向量库"},
+    )
+    assert written.status_code == 200
+    assert written.json()["data"]["section"] == "decisions"
+
+    client.post(
+        f"{PREFIX}/projects/{project_id}/memory",
+        json={"section": "coding_rules", "content": "禁止裸 except"},
+    )
+    client.post(
+        f"{PREFIX}/projects/{project_id}/memory",
+        json={"section": "coding_rules", "content": "所有公开接口必须有错误码"},
+    )
+
+    sections = client.get(f"{PREFIX}/projects/{project_id}/memory").json()
+    # 累积型分区保留两条；现状型分区只留最新一条
+    assert len(sections["data"]["decisions"]) == 1
+    assert len(sections["data"]["coding_rules"]) == 1
+    assert sections["data"]["coding_rules"][0]["content"] == "所有公开接口必须有错误码"
+    assert sections["metadata"]["count"] == 2
+
+
+def test_memory_rejects_unknown_section(client: TestClient) -> None:
+    project_id = _create_project(client)
+
+    response = client.post(
+        f"{PREFIX}/projects/{project_id}/memory",
+        json={"section": "不存在的分区", "content": "x"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+def test_memory_context_via_api(client: TestClient) -> None:
+    project_id = _create_project(client)
+    client.post(
+        f"{PREFIX}/projects/{project_id}/memory",
+        json={"section": "architecture", "content": "三层：api / core / models"},
+    )
+
+    response = client.get(f"{PREFIX}/projects/{project_id}/memory/context")
+
+    assert response.status_code == 200
+    text = response.json()["data"]["text"]
+    assert text.startswith("# 项目：Flux 演示项目")
+    assert "## Architecture\n三层：api / core / models" in text
+
+
+def test_project_scan_records_profile(apply_client: TestClient, workspace_root: Path) -> None:
+    """扫描工作区（⑩）→ 写入 Brain（⑪），全程真实文件系统。"""
+    (workspace_root / "requirements.txt").write_text("fastapi\npytest\n", encoding="utf-8")
+    (workspace_root / "main.py").write_text("app = None\n", encoding="utf-8")
+    project_id = _create_project(apply_client)
+
+    response = apply_client.post(f"{PREFIX}/projects/{project_id}/scan", json={"record": True})
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["profile"]["primary_language"] == "Python"
+    assert body["profile"]["frameworks"] == ["FastAPI"]
+    assert [entry["section"] for entry in body["recorded"]] == ["overview", "tech_stack"]
+
+    sections = apply_client.get(f"{PREFIX}/projects/{project_id}/memory").json()["data"]
+    assert "语言：Python" in sections["tech_stack"][0]["content"]
+
+
+def test_project_scan_without_recording(client: TestClient, tmp_path: Path) -> None:
+    project_id = _create_project(client)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "package.json").write_text('{"name": "web", "dependencies": {"vue": "^3.5.0"}}')
+    (target / "index.js").write_text("console.log('hi')\n", encoding="utf-8")
+
+    response = client.post(
+        f"{PREFIX}/projects/{project_id}/scan",
+        json={"workspace_root": str(target), "record": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["profile"]["package_manager"] == "npm"
+    assert response.json()["data"]["recorded"] == []
+    assert client.get(f"{PREFIX}/projects/{project_id}/memory").json()["metadata"]["count"] == 0
+
+
+def test_project_scan_without_workspace_root_fails(client: TestClient) -> None:
+    project_id = _create_project(client)
+
+    response = client.post(f"{PREFIX}/projects/{project_id}/scan", json={})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
 # --- Model Gateway（§12.6）---
 
 

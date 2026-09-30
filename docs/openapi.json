@@ -104,6 +104,19 @@
         "title": "AgentRole",
         "type": "string"
       },
+      "BrainSection": {
+        "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n前四个是\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n后两个是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
+        "enum": [
+          "overview",
+          "tech_stack",
+          "architecture",
+          "coding_rules",
+          "decisions",
+          "agent_notes"
+        ],
+        "title": "BrainSection",
+        "type": "string"
+      },
       "Capability": {
         "description": "Capability 权限项（主规格 §5.5 / §8.4）。",
         "enum": [
@@ -333,6 +346,30 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "MemoryWriteRequest": {
+        "description": "写一条项目记忆。分区语义见 flux.enums.BrainSection。",
+        "properties": {
+          "content": {
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "section": {
+            "$ref": "#/components/schemas/BrainSection"
+          }
+        },
+        "required": [
+          "section",
+          "content"
+        ],
+        "title": "MemoryWriteRequest",
+        "type": "object"
+      },
       "ModelProvider": {
         "description": "模型供应商（主规格 §5.3 裁决 A4）。",
         "enum": [
@@ -343,6 +380,39 @@
         ],
         "title": "ModelProvider",
         "type": "string"
+      },
+      "ProjectCreateRequest": {
+        "description": "登记一个项目（⑪ Project Brain 的宿主实体）。",
+        "properties": {
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "repository": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProjectCreateRequest",
+        "type": "object"
       },
       "RejectRequest": {
         "properties": {
@@ -370,6 +440,29 @@
           "change_ids"
         ],
         "title": "RejectRequest",
+        "type": "object"
+      },
+      "ScanRequest": {
+        "description": "扫描被登记项目的工作区目录（⑩）。\n\nworkspace_root 留空表示用服务端配置的 FLUX_WORKSPACE_ROOT；record=false\n时只返回画像，不把结果写进 Project Brain。",
+        "properties": {
+          "record": {
+            "default": true,
+            "title": "Record",
+            "type": "boolean"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
+          }
+        },
+        "title": "ScanRequest",
         "type": "object"
       },
       "TaskCreateRequest": {
@@ -926,6 +1019,317 @@
         "summary": "Chat",
         "tags": [
           "models"
+        ]
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "operationId": "list_projects_api_v1_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Projects Api V1 Projects Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Projects",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "operationId": "create_project_api_v1_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project Api V1 Projects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}": {
+      "get": {
+        "operationId": "get_project_api_v1_projects__project_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Project Api V1 Projects  Project Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/memory": {
+      "get": {
+        "description": "六个分区全部列出（缺给空列表），便于前端直接渲染。",
+        "operationId": "get_memory_api_v1_projects__project_id__memory_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Memory Api V1 Projects  Project Id  Memory Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Memory",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "description": "写记忆：现状型分区覆盖当前内容，累积型分区新增一条。",
+        "operationId": "write_memory_api_v1_projects__project_id__memory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Write Memory Api V1 Projects  Project Id  Memory Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Memory",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/memory/context": {
+      "get": {
+        "description": "拼出 Agent 执行前注入的项目上下文（Project Brain 的消费入口）。",
+        "operationId": "get_context_api_v1_projects__project_id__memory_context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Context Api V1 Projects  Project Id  Memory Context Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Context",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/scan": {
+      "post": {
+        "description": "扫描工作区（⑩）并默认写入 Brain（⑪）；record=false 只拿画像、不落记忆。",
+        "operationId": "scan_project_api_v1_projects__project_id__scan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scan Project Api V1 Projects  Project Id  Scan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan Project",
+        "tags": [
+          "projects"
         ]
       }
     },

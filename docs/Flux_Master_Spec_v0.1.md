@@ -229,9 +229,55 @@ Capability 示例：`file.read`、`file.write`、`terminal.execute`、`deploy`�
 存储：PostgreSQL 元数据 + 向量数据库（pgvector）语义检索。
 能力：项目索引、架构记忆、决策记录、语义搜索。
 
+**【实施计划 ⑪ 落地，2026-09-30】** 第一版是**结构化记忆，不是 RAG**：不引入 embedding、不建向量索引，`project_memory` 表的 `embedding` 列留空——按实施计划 ⑪ 的边界，"以后再加 Semantic Search"，现在强行引入只会把闭环验证拖长（切换点是 M5，届时只补一个检索层，不改表）。
+
+六个分区（`flux.enums.BrainSection`，写入语义分两类）：
+
+| 分区 | 内容 | 写入语义 |
+| --- | --- | --- |
+| `overview` | Project Overview：项目是什么 | **覆盖**（只保留最新一份） |
+| `tech_stack` | Tech Stack：语言、框架、包管理器、入口与命令 | **覆盖** |
+| `architecture` | Architecture：主要模块与分层 | **覆盖** |
+| `coding_rules` | Coding Rules：项目编码规范 | **覆盖** |
+| `decisions` | Decisions：重要技术决策 | **追加**（历史不可覆盖） |
+| `agent_notes` | Agent Notes：Agent 产生的有价值信息 | **追加** |
+
+现状型分区用覆盖而不是追加，是为了让 `context()` 拿到的一定是当前事实，读取时不必猜"哪条最新"；历史决策由 `decisions` 承载。
+
+**消费入口**：`ProjectBrain.context()` 按上表顺序把有内容的分区拼成一段 Markdown（累积型只带最新 20 条，见 `CONTEXT_MAX_ENTRIES`），供 Agent 执行前注入——这是"AI 跨会话理解项目"的实际落地方式。空分区不出现在上下文里，不给 Agent 塞空标题。
+
+**与 ⑩ 的关系**：Project Scanner 扫出的画像写进 `overview` + `tech_stack`（`metadata.source = "scanner"`），后续人工或 Agent 可以覆盖这两区把"是什么"补成人话。
+
 ### 5.7 Cost Service
 
 按 provider / model / task 维度记录输入输出 token 与费用，供 Cost Dashboard 展示（见 §15）。
+
+### 5.8 Project Scanner（⑩）
+
+**【实施计划 ⑩ 落地，2026-09-30】** 把一棵目录树读成可机器消费的 `ProjectProfile`，作为 Project Brain 的第一手事实来源。
+
+**扫描对象**：文件结构（顶层条目、语言分布）、Git 信息（是否仓库 + 当前分支）、依赖清单（`pyproject.toml` / `requirements*.txt` / `setup.py` / `Pipfile` / `package.json` / `go.mod` / `Cargo.toml` 与各类锁文件）、常见配置（`Dockerfile`、`docker-compose.yml`、`Makefile`、`tsconfig.json`、`ruff.toml`、`pytest.ini` 等）、README、入口文件。
+
+**产出画像**（实施计划 ⑩ 的 Project Profile 字段）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `languages` / `primary_language` | 按文件后缀统计（`.md`/`.json`/`.yaml`/`.html`/`.css` 等 markup 与配置不计入），按文件数降序 |
+| `frameworks` | 清单里出现过的依赖名映射（FastAPI / Django / React / Vite …），只报"能证明的" |
+| `package_manager` | 由锁文件与清单判定：uv / poetry / pipenv / pip、pnpm / yarn / bun / npm |
+| `manifests` | 命中的清单与常见配置文件（相对路径，按字典序） |
+| `entry_points` | 常见入口文件名（`main.py` / `manage.py` / `index.ts` …）+ `package.json` 的 `main` 字段 |
+| `test_commands` / `build_commands` | 由生态规则与 Makefile 目标推导的**具体命令**（如 `pytest`、`pnpm run test`、`make build`、`docker build -t <项目名> .`） |
+| `git_repository` / `git_branch` | 复用 ⑨ 的 `GitClient`（`not_a_git_repository` → `false`），不自己解析 `.git/HEAD` |
+| `structure` / `files_scanned` / `truncated` | 顶层条目（目录带 `/`）、实际扫描文件数、是否触到上限被裁剪 |
+
+**三条边界**：
+
+1. **只读无副作用**：不调用模型、不落库、不写被扫描的项目（落库由 ⑪ 负责）。
+2. **有界遍历**：文件数与目录深度都有上限（`FLUX_PROJECT_SCAN_MAX_FILES` / `FLUX_PROJECT_SCAN_MAX_DEPTH`），触顶时画像照常产出但 `truncated=true`，绝不为了"扫全"打满时间与内存。噪声目录（`.git`、`.venv`、`node_modules`、`__pycache__`、`.flux`、`dist`、`build` 等）一律跳过。
+3. **不猜语义**：只报告能证明的事实（文件后缀、依赖名、锁文件、Makefile 目标）；项目"是做什么的"由人来写，Scanner 不编故事。
+
+Python 与 Node 生态的框架/命令探测为主（覆盖 Flux 自身的栈与实施计划列出的清单），Go / Rust / Makefile / Dockerfile 作为补充；对 Python 清单只做"是否出现某个依赖名"的判定，不解析到 TOML 语法层。
 
 ---
 
@@ -770,6 +816,28 @@ POST /api/v1/git/commit             请求 {"message": "...", "change_ids": [...
 
 错误码：未配置工作区根目录 / 路径非法 `validation_error`；工作区根不是 Git 仓库 `not_a_git_repository`（409）；git 非零退出或超时 `git_failed`（500，详情带 `args` / `exit_code` / `stderr`）；按 `change_ids` 提交但提案未 `applied` `invalid_state_transition`（409）。
 
+### 12.12 Project / Project Brain API
+
+**【实施计划 ⑩⑪ 落地，2026-09-30】** 项目登记 + 扫描 + 结构化记忆，规则见 §5.6、§5.8。实际暴露的接口（`docs/openapi.json` 为准）：
+
+```
+GET  /api/v1/projects                          项目列表
+POST /api/v1/projects                          请求 {"name": "...", "repository": "...", "metadata": {}}
+GET  /api/v1/projects/{project_id}             项目详情（时间戳为数据库读回的真实值）
+GET  /api/v1/projects/{project_id}/memory      六个分区全部列出（缺给空列表 {section: [entry...]}）
+POST /api/v1/projects/{project_id}/memory      请求 {"section": "decisions", "content": "...", "metadata": {}}
+GET  /api/v1/projects/{project_id}/memory/context  拼出 Agent 执行前注入的项目上下文
+POST /api/v1/projects/{project_id}/scan        请求 {"workspace_root": null, "record": true}
+```
+
+**语义约定**：
+
+- `POST /memory` 按分区语义落库：`overview`/`tech_stack`/`architecture`/`coding_rules` **覆盖**（只留最新一份），`decisions`/`agent_notes` **追加**（历史保留）。响应返回落库后的条目（含 `created_at` / `updated_at`）。
+- `POST /scan` 走 §5.8 的只读扫描，`record=true`（默认）时把画像写进 `overview` + `tech_stack`；`workspace_root` 留空表示用 `FLUX_WORKSPACE_ROOT`。响应为 `{"profile": {...}, "recorded": [entry...]}`，`metadata.truncated` 表示画像是否被上限裁剪。
+- `GET /memory/context` 返回 `{"text": "<Markdown>"}`，是 Project Brain 被 Agent 消费的入口（§5.6）；空分区不出现在文本里。
+
+错误码：项目不存在 / 标识串不是合法 UUID `not_found`（404）；名称为空、记忆内容为空、未配置工作区根目录、`section` 取值非法 `validation_error`（422）。
+
 ---
 
 ## 13. 前端与 UI
@@ -954,7 +1022,10 @@ flux/
 │       │   ├── workflow_engine/   # 工作流执行
 │       │   ├── permission_engine/ # 安全层
 │       │   ├── event/             # 事件总线
-│       │   └── virtual_workspace/ # 虚拟文件层与 diff
+│       │   ├── virtual_workspace/ # 虚拟文件层与 diff
+│       │   ├── git_integration/   # Git 集成（⑨）
+│       │   ├── project_scanner/   # 项目画像（⑩）
+│       │   └── project_brain/     # 结构化项目记忆（⑪）
 │       ├── models/         # SQLAlchemy 模型（§11）
 │       ├── schemas/        # Pydantic 请求/响应
 │       ├── connectors/     # Connector 契约与注册表
@@ -985,6 +1056,9 @@ core/
 ├── model_gateway/  base.py · router.py · providers/
 ├── event/          bus.py
 ├── permission_engine/ policy.py
+├── git_integration/ client.py · service.py
+├── project_scanner/ scanner.py
+├── project_brain/  repository.py · service.py
 └── virtual_workspace/ service.py
 ```
 
@@ -1087,6 +1161,8 @@ backend/
 **【实施计划 ⑦ 补充，2026-09-30】** Apply 相关配置（前缀统一为 `FLUX_`，模板见 `.env.example`）：`FLUX_WORKSPACE_ROOT` = 被改项目的根目录，留空时 `/workspace/apply` 直接报 `validation_error`；`FLUX_TEST_COMMAND` = 落盘后要跑的测试命令（如 `pytest -q`，在项目根下执行），留空表示跳过；`FLUX_TEST_TIMEOUT_SECONDS` = 测试超时秒数，默认 `300`。三项与数据库连接、模型密钥同在 `backend/flux/config.py` 的 `Settings`，由 `Container` 装配进 `ApplyEngine`。
 
 **【实施计划 ⑨ 补充，2026-09-30】** Git 集成配置：`FLUX_GIT_TIMEOUT_SECONDS` = git 命令超时秒数，默认 `30`。Git 与 Apply / Tester 共用 `FLUX_WORKSPACE_ROOT`——同一个根目录，不存在"Apply 写 A 目录、Git 提交 B 目录"的可能。
+
+**【实施计划 ⑩⑪ 补充，2026-09-30】** Project Scanner / Project Brain 配置：`FLUX_PROJECT_SCAN_MAX_FILES` = 单次扫描最多收集的文件数，默认 `2000`；`FLUX_PROJECT_SCAN_MAX_DEPTH` = 目录下探深度上限，默认 `6`。两者触顶时画像照常产出并标 `truncated=true`。Project Brain 无需额外配置——用 `projects` / `project_memory` 两张既有表，`project_memory.embedding` 在本阶段留空（不上向量库，见 §5.6）。
 
 ### 18.5 API Key 管理
 

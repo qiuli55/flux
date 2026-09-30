@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from flux.enums import AgentRole, Capability, ModelProvider
+from flux.enums import AgentRole, BrainSection, Capability, ModelProvider
 
 
 class AgentCreateRequest(BaseModel):
@@ -84,3 +84,30 @@ class GitCommitRequest(BaseModel):
     change_ids: list[str] = Field(default_factory=list)
     # 也可直接指定路径；与 change_ids 都为空时提交暂存区已有内容
     paths: list[str] = Field(default_factory=list)
+
+
+class ProjectCreateRequest(BaseModel):
+    """登记一个项目（⑪ Project Brain 的宿主实体）。"""
+
+    name: str = Field(min_length=1, max_length=128)
+    repository: str | None = Field(default=None, max_length=255)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryWriteRequest(BaseModel):
+    """写一条项目记忆。分区语义见 flux.enums.BrainSection。"""
+
+    section: BrainSection
+    content: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScanRequest(BaseModel):
+    """扫描被登记项目的工作区目录（⑩）。
+
+    workspace_root 留空表示用服务端配置的 FLUX_WORKSPACE_ROOT；record=false
+    时只返回画像，不把结果写进 Project Brain。
+    """
+
+    workspace_root: str | None = None
+    record: bool = True

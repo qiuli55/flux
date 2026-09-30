@@ -30,6 +30,8 @@ class Events:
     CONNECTOR_EXECUTED = "connector.executed"
     WORKSPACE_CHANGED = "workspace.changed"
     GIT_COMMITTED = "git.committed"
+    PROJECT_SCANNED = "project.scanned"
+    BRAIN_UPDATED = "project.brain_updated"
     USAGE_RECORDED = "usage.recorded"
 
 

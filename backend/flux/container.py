@@ -20,6 +20,9 @@ from flux.core.git_integration.service import GitService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
+from flux.core.project_brain.repository import ProjectBrainRepository
+from flux.core.project_brain.service import ProjectBrain
+from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
@@ -43,6 +46,9 @@ class Container:
     apply_engine: ApplyEngine = field(init=False)
     git_client: GitClient = field(init=False)
     git: GitService = field(init=False)
+    scanner: ProjectScanner = field(init=False)
+    brain_repo: ProjectBrainRepository = field(init=False)
+    brain: ProjectBrain = field(init=False)
     task_repo: TaskRepository = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
 
@@ -71,6 +77,20 @@ class Container:
             timeout_seconds=self.settings.git_timeout_seconds,
         )
         self.git = GitService(self.git_client, self.workspace, self.bus)
+        # Project Scanner（⑩）复用 ⑨ 的 GitClient 判断"是不是仓库、在哪个分支"；
+        # Project Brain（⑪）把扫描结果与人工/Agent 写的记忆一起存进 projects 表
+        self.scanner = ProjectScanner(
+            git=self.git_client,
+            max_files=self.settings.project_scan_max_files,
+            max_depth=self.settings.project_scan_max_depth,
+        )
+        self.brain_repo = ProjectBrainRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.brain = ProjectBrain(
+            self.brain_repo,
+            scanner=self.scanner,
+            bus=self.bus,
+            workspace_root=self.settings.workspace_root,
+        )
 
     @cached_property
     def tester(self) -> TesterAgent:

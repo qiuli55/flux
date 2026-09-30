@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     # git 命令超时；Git 操作同样只在 workspace_root 下执行
     git_timeout_seconds: float = 30.0
 
+    # --- Project Scanner（主规格 §5.8；实施计划 ⑩）---
+    # 扫描上限：文件数与目录深度都必须有界，避免在巨型仓库上把时间/内存打满。
+    # 触顶时画像照常产出，但 truncated=True，让调用方知道结果被裁剪过。
+    project_scan_max_files: int = 2000
+    project_scan_max_depth: int = 6
+
     # HTTP 调用策略（§5.1 错误处理：模型失败 / 超时 → 重试）
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2

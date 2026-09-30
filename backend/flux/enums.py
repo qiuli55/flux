@@ -50,6 +50,32 @@ class VirtualChangeStatus(StrEnum):
     FAILED = "failed"
 
 
+class BrainSection(StrEnum):
+    """Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。
+
+    前四个是"项目现状"型分区，每区只保留一份最新内容（重新写入即覆盖）；
+    后两个是"累积"型分区，每次写入都新增一条，历史不可被覆盖。
+    """
+
+    OVERVIEW = "overview"
+    TECH_STACK = "tech_stack"
+    ARCHITECTURE = "architecture"
+    CODING_RULES = "coding_rules"
+    DECISIONS = "decisions"
+    AGENT_NOTES = "agent_notes"
+
+
+#: 单例分区（写入即覆盖当前内容）
+SINGLETON_BRAIN_SECTIONS = frozenset(
+    {
+        BrainSection.OVERVIEW,
+        BrainSection.TECH_STACK,
+        BrainSection.ARCHITECTURE,
+        BrainSection.CODING_RULES,
+    }
+)
+
+
 class MessageType(StrEnum):
     """Agent 通信协议消息类型（主规格 §12.8）。"""
 

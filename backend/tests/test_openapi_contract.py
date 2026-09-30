@@ -22,6 +22,11 @@ SPEC_ENDPOINTS: dict[str, set[str]] = {
     "/api/v1/git/branches": {"get"},
     "/api/v1/git/checkout": {"post"},
     "/api/v1/git/commit": {"post"},
+    "/api/v1/projects": {"get", "post"},
+    "/api/v1/projects/{project_id}": {"get"},
+    "/api/v1/projects/{project_id}/memory": {"get", "post"},
+    "/api/v1/projects/{project_id}/memory/context": {"get"},
+    "/api/v1/projects/{project_id}/scan": {"post"},
     "/api/v1/models/chat": {"post"},
     "/api/v1/connectors/execute": {"post"},
 }
