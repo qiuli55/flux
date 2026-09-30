@@ -17,6 +17,11 @@ SPEC_ENDPOINTS: dict[str, set[str]] = {
     "/api/v1/workspace/accept": {"post"},
     "/api/v1/workspace/apply": {"post"},
     "/api/v1/workspace/reject": {"post"},
+    "/api/v1/git/status": {"get"},
+    "/api/v1/git/diff": {"post"},
+    "/api/v1/git/branches": {"get"},
+    "/api/v1/git/checkout": {"post"},
+    "/api/v1/git/commit": {"post"},
     "/api/v1/models/chat": {"post"},
     "/api/v1/connectors/execute": {"post"},
 }

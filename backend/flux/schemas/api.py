@@ -61,3 +61,26 @@ class ConnectorExecuteRequest(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     # 权限由服务端按 agent_id 解析（见 api/v1/connectors.py），客户端无法自行声明能力
     agent_id: str | None = None
+
+
+class GitDiffRequest(BaseModel):
+    """查看差异。paths 为空表示整个工作区。"""
+
+    paths: list[str] = Field(default_factory=list)
+    staged: bool = False
+
+
+class GitCheckoutRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=255)
+    # True = 新建并切换（git checkout -b），False = 切换到已有分支
+    create: bool = False
+
+
+class GitCommitRequest(BaseModel):
+    """提交改动。message 由调用方给出（用户可改），Agent 无权直接决定提交信息。"""
+
+    message: str = Field(min_length=1, max_length=2000)
+    # 只允许提交 applied 状态的提案（已批准 + 已落盘 + 测试通过，§7.6）
+    change_ids: list[str] = Field(default_factory=list)
+    # 也可直接指定路径；与 change_ids 都为空时提交暂存区已有内容
+    paths: list[str] = Field(default_factory=list)

@@ -251,6 +251,75 @@
         "title": "ConnectorExecuteRequest",
         "type": "object"
       },
+      "GitCheckoutRequest": {
+        "properties": {
+          "create": {
+            "default": false,
+            "title": "Create",
+            "type": "boolean"
+          },
+          "target": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "title": "GitCheckoutRequest",
+        "type": "object"
+      },
+      "GitCommitRequest": {
+        "description": "提交改动。message 由调用方给出（用户可改），Agent 无权直接决定提交信息。",
+        "properties": {
+          "change_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Change Ids",
+            "type": "array"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "GitCommitRequest",
+        "type": "object"
+      },
+      "GitDiffRequest": {
+        "description": "查看差异。paths 为空表示整个工作区。",
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "staged": {
+            "default": false,
+            "title": "Staged",
+            "type": "boolean"
+          }
+        },
+        "title": "GitDiffRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -595,6 +664,181 @@
         "summary": "Execute Connector",
         "tags": [
           "connectors"
+        ]
+      }
+    },
+    "/api/v1/git/branches": {
+      "get": {
+        "operationId": "git_branches_api_v1_git_branches_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Branches Api V1 Git Branches Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Git Branches",
+        "tags": [
+          "git"
+        ]
+      }
+    },
+    "/api/v1/git/checkout": {
+      "post": {
+        "operationId": "git_checkout_api_v1_git_checkout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Checkout Api V1 Git Checkout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Git Checkout",
+        "tags": [
+          "git"
+        ]
+      }
+    },
+    "/api/v1/git/commit": {
+      "post": {
+        "operationId": "git_commit_api_v1_git_commit_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Commit Api V1 Git Commit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Git Commit",
+        "tags": [
+          "git"
+        ]
+      }
+    },
+    "/api/v1/git/diff": {
+      "post": {
+        "operationId": "git_diff_api_v1_git_diff_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitDiffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Diff Api V1 Git Diff Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Git Diff",
+        "tags": [
+          "git"
+        ]
+      }
+    },
+    "/api/v1/git/status": {
+      "get": {
+        "operationId": "git_status_api_v1_git_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Status Api V1 Git Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Git Status",
+        "tags": [
+          "git"
         ]
       }
     },

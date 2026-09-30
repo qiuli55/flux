@@ -116,3 +116,21 @@ class ApplyFailedError(AIOSError):
 
     code = "apply_failed"
     http_status = 500
+
+
+class GitError(AIOSError):
+    """git 命令执行失败（实施计划 ⑨）。
+
+    git 的非零退出与超时都归到这里，错误详情带 `args` / `exit_code` / `stderr`，
+    便于调用方直接把 git 的原话呈现给用户。
+    """
+
+    code = "git_failed"
+    http_status = 500
+
+
+class NotAGitRepositoryError(GitError):
+    """工作区根不是 Git 仓库。这是环境问题而非命令写错，单独给一个错误码。"""
+
+    code = "not_a_git_repository"
+    http_status = 409

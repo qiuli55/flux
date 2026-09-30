@@ -29,6 +29,7 @@ class Events:
     TASK_FAILED = "task.failed"
     CONNECTOR_EXECUTED = "connector.executed"
     WORKSPACE_CHANGED = "workspace.changed"
+    GIT_COMMITTED = "git.committed"
     USAGE_RECORDED = "usage.recorded"
 
 

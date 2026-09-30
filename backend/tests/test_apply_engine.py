@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -280,3 +282,45 @@ def test_backup_service_restore_overwrites_target(workspace_root: Path) -> None:
     backups.restore(backup_path=backup_path, relative_target=Path("a.py"))
 
     assert target.read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_backup_directory_is_excluded_from_git_status(workspace_root: Path) -> None:
+    """Apply 的备份不该出现在用户的 git status 里，也不该改用户受版本控制的 .gitignore。"""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Flux Test",
+        "GIT_AUTHOR_EMAIL": "flux-test@example.com",
+        "GIT_COMMITTER_NAME": "Flux Test",
+        "GIT_COMMITTER_EMAIL": "flux-test@example.com",
+    }
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=workspace_root, check=True, capture_output=True, text=True, env=env
+        ).stdout
+
+    git("init", "-b", "main")
+    _write(workspace_root, "a.py", ORIGINAL)
+    git("add", "a.py")
+    git("commit", "-m", "chore: 初始化")
+
+    backup_path = BackupService(workspace_root=workspace_root).backup(
+        change_id="c1", file_path="a.py", relative_target=Path("a.py")
+    )
+
+    assert backup_path is not None and backup_path.is_file()
+    exclude = (workspace_root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert ".flux/" in exclude
+    assert git("status", "--porcelain").strip() == ""
+    assert not (workspace_root / ".gitignore").exists()
+
+
+def test_backup_ignores_non_repository_workspace(workspace_root: Path) -> None:
+    """工作区不是 Git 仓库时安静跳过，备份照样成功。"""
+    _write(workspace_root, "a.py", ORIGINAL)
+
+    backup_path = BackupService(workspace_root=workspace_root).backup(
+        change_id="c1", file_path="a.py", relative_target=Path("a.py")
+    )
+
+    assert backup_path is not None and backup_path.is_file()

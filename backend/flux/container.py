@@ -15,6 +15,8 @@ from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.tester import TesterAgent
 from flux.core.event.bus import EventBus
+from flux.core.git_integration.client import GitClient
+from flux.core.git_integration.service import GitService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
@@ -39,6 +41,8 @@ class Container:
     connectors: ConnectorRegistry = field(init=False)
     workspace: VirtualWorkspaceService = field(init=False)
     apply_engine: ApplyEngine = field(init=False)
+    git_client: GitClient = field(init=False)
+    git: GitService = field(init=False)
     task_repo: TaskRepository = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
 
@@ -60,6 +64,13 @@ class Container:
             test_timeout_seconds=self.settings.test_timeout_seconds,
         )
         self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus, self.apply_engine)
+        # Git 集成（⑨）：与 Apply / Tester 共用同一个工作区根；按 change_ids 提交时
+        # 由 GitService 复验提案是否已 applied，未落盘/未过测试的改动进不了 Git 历史
+        self.git_client = GitClient(
+            workspace_root=self.settings.workspace_root,
+            timeout_seconds=self.settings.git_timeout_seconds,
+        )
+        self.git = GitService(self.git_client, self.workspace, self.bus)
 
     @cached_property
     def tester(self) -> TesterAgent:

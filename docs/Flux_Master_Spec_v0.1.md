@@ -442,7 +442,7 @@ file_path、original_content、proposed_content、diff、agent_source、timestam
 | 1. 解析工作区根 | `FLUX_WORKSPACE_ROOT`（或显式传入）；未配置 / 不是目录 → `validation_error` | 未落盘，状态留在 `accepted` |
 | 2. 规整路径 | `safe_relative_path()`：拒绝绝对路径与含 `..` 的路径；`./a\b.py` 归一化为 `a/b.py` | 同上 |
 | 3. 复验 `original_hash` | 用库里的 `original_hash` 与磁盘现状比；**文件已被用户改过 → `conflict`，禁止落盘** | 同上，用户改动原样保留 |
-| 4. 备份原文件 | `BackupService` 复制到 `<工作区根>/.flux/backups/<change_id>/<相对路径>`（新建文件无备份） | — |
+| 4. 备份原文件 | `BackupService` 复制到 `<工作区根>/.flux/backups/<change_id>/<相对路径>`（新建文件无备份）；项目是 Git 仓库时把 `.flux/` 写进 `.git/info/exclude`（本地忽略，不改用户的 `.gitignore`） | — |
 | 5. 写入 | 写 `proposed_content` 的**完整内容**（不是对磁盘应用 diff 文本） | 触发回滚 |
 | 6. 校验 | 重新读盘算 hash，与 `proposed_content` 不一致 → `apply_failed` | 触发回滚 |
 | 7. 运行测试 | 命令取自 `FLUX_TEST_COMMAND`（**Agent 无权指定命令**，避免把提权入口开在 AI 侧），在项目根下执行；非零退出码或超时（`FLUX_TEST_TIMEOUT_SECONDS`，默认 300s）→ `apply_failed` | 触发回滚 |
@@ -453,15 +453,44 @@ file_path、original_content、proposed_content、diff、agent_source、timestam
 
 **新增配置项**（`.env.example` 同步维护）：`FLUX_WORKSPACE_ROOT`（落盘根目录，留空即拒绝 Apply）、`FLUX_TEST_COMMAND`（落盘后要跑的测试命令，留空跳过）、`FLUX_TEST_TIMEOUT_SECONDS`（默认 `300`）。
 
-**暂未实现**：流程末端的「创建 Git 操作」属于 ⑨ Git Integration；Apply 只负责把文件写对，提交由人工或 ⑨ 完成。
+**暂未实现**：流程末端的「创建 Git 操作」见 §7.7 Git 集成（⑨）；Apply 只负责把文件写对，提交由人工或 ⑨ 完成。
 
 **已知边界（CPython 字节码缓存）**：测试命令是新起的子进程，若它读取到与本次写入「同秒 mtime + 同字节长度」的旧 `.pyc`，可能加载到改动前的代码，从而让本该失败的测试通过。实测复现过：把 `return a + b` 改成 `return a * b`（字节长度完全相同）并立刻跑 pytest，会误判为通过。真实改动的字节长度几乎总会变化，窗口极窄；介意的项目可在测试命令里加 `-p no:cacheprovider` 或先清 `__pycache__`。
 
-### 7.7 与 IDE 集成
+### 7.7 Git 集成（⑨）
+
+**【实施计划 ⑨ 落地，2026-09-30】** Apply 之后要把改动变成一次可追溯的提交，这是整个闭环的最后一步。
+
+第一版只做五个本地、可回退的操作：
+
+```
+GET  /api/v1/git/status            工作区状态（分支 + 逐文件 XY 状态）
+POST /api/v1/git/diff              差异文本（可限定 paths，可看暂存区）
+GET  /api/v1/git/branches          本地分支一览 + 当前分支
+POST /api/v1/git/checkout          切换分支；create=true 时新建并切换
+POST /api/v1/git/commit            创建提交
+```
+
+**四条硬约束**：
+
+1. **不用 shell**：一律 `subprocess.run(["git", ...])` 传参数列表，文件路径再经 `safe_relative_path`（§7.6 同一个函数）校验，路径穿越与命令注入都被挡在入口。
+2. **只在工作区根下执行**：复用 `resolve_workspace_root`，与 Apply Engine / Tester 同一个根；未配置根目录报 `validation_error`，不是 Git 仓库报 `not_a_git_repository`。
+3. **只做本地、可回退的操作**：没有 push、没有 force、没有 reset —— 提交权与合并权始终在用户手里。分支冲突时 git 自己会拒绝，Flux 不自动 stash。
+4. **fail-closed**：git 非零退出 / 超时一律抛 `git_failed`，错误详情照搬 git 的 `stderr` 与 `exit_code`，不猜结果、不静默成功（如暂存区为空时不报"提交成功"）。
+
+**提交的把关**：闭环顺序是 `Task → Virtual Changes → Approved → Tests Passed → Git Commit`。在 Flux 里 `applied` 恰好等价于「已人工批准 + 已落盘 + Apply 后测试通过」（§7.6），所以 `POST /git/commit` 传 `change_ids` 时逐条复验状态，非 `applied` 直接报 `invalid_state_transition`。也可直接传 `paths`（用户显式指定），两个都不传则提交用户自己 `git add` 过的暂存区内容。
+
+**提交信息**：由调用方给出（`message` 必填、非空），即"用户可改"；本步不新增 Agent 来建议提交信息（内置 Agent 第一批固定 4 个，见 §6.2）。
+
+**落地位置**：`flux.core.git_integration.client`（`GitClient` / `GitStatus` / `GitFileStatus` / `GitBranches` / `GitDiff` / `GitCommit` / `parse_status` / `parse_branches`）、`flux.core.git_integration.service`（`GitService`，只放"什么能提交"的策略）；配置项见 §18.4，事件 `git.committed`。
+
+**边界（本步不做）**：push / PR / 远端分支 / rebase / stash、多仓库管理、commit 信息由模型建议、按 hunk 拆分提交。
+
+### 7.8 与 IDE 集成
 
 面板：变更文件列表、diff 查看器、Agent 说明、审批控件。
 
-### 7.8 安全价值
+### 7.9 安全价值
 
 防止误操作造成的破坏性改动，并形成完整审计历史。
 
@@ -726,6 +755,20 @@ action 示例：github.create_pr、terminal.execute、browser.open
 **【裁决】** 采用**完整版**（含 `code` + `message`），与错误码要求配套；`error` 信息并入 `code`/`message`。
 
 **命名约定**：`GET /api/v1/projects`、`POST /api/v1/tasks`、`GET /api/v1/agents/{id}`。
+
+### 12.11 Git API
+
+**【实施计划 ⑨ 落地，2026-09-30】** 规则与约束见 §7.7，实际暴露的接口（`docs/openapi.json` 为准）：
+
+```
+GET  /api/v1/git/status             工作区状态：分支、是否 detached、逐文件 XY 状态
+POST /api/v1/git/diff               请求 {"paths": [...], "staged": false}，返回 unified diff
+GET  /api/v1/git/branches           本地分支一览 + 当前分支
+POST /api/v1/git/checkout           请求 {"target": "feature/x", "create": false}
+POST /api/v1/git/commit             请求 {"message": "...", "change_ids": [...], "paths": [...]}
+```
+
+错误码：未配置工作区根目录 / 路径非法 `validation_error`；工作区根不是 Git 仓库 `not_a_git_repository`（409）；git 非零退出或超时 `git_failed`（500，详情带 `args` / `exit_code` / `stderr`）；按 `change_ids` 提交但提案未 `applied` `invalid_state_transition`（409）。
 
 ---
 
@@ -1043,6 +1086,8 @@ backend/
 
 **【实施计划 ⑦ 补充，2026-09-30】** Apply 相关配置（前缀统一为 `FLUX_`，模板见 `.env.example`）：`FLUX_WORKSPACE_ROOT` = 被改项目的根目录，留空时 `/workspace/apply` 直接报 `validation_error`；`FLUX_TEST_COMMAND` = 落盘后要跑的测试命令（如 `pytest -q`，在项目根下执行），留空表示跳过；`FLUX_TEST_TIMEOUT_SECONDS` = 测试超时秒数，默认 `300`。三项与数据库连接、模型密钥同在 `backend/flux/config.py` 的 `Settings`，由 `Container` 装配进 `ApplyEngine`。
 
+**【实施计划 ⑨ 补充，2026-09-30】** Git 集成配置：`FLUX_GIT_TIMEOUT_SECONDS` = git 命令超时秒数，默认 `30`。Git 与 Apply / Tester 共用 `FLUX_WORKSPACE_ROOT`——同一个根目录，不存在"Apply 写 A 目录、Git 提交 B 目录"的可能。
+
 ### 18.5 API Key 管理
 
 用户配置 OpenAI / Anthropic / DeepSeek key；密钥安全存储，**永不暴露给 Agent**。
@@ -1141,7 +1186,7 @@ backend/
 ⑥ Review / Approve / Reject   ← 已完成，提交 ee6ebaf（accept / apply / reject 三动作 + 状态机，见 §7.5、§12.5）
 ⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）   ← 已完成，提交 ee6ebaf（唯一落盘入口，备份 + 回滚 + 测试执行，见 §7.6）
 ⑧ Tester Agent   ← 已完成，提交 8c94e81（真实执行项目配置的测试命令 + 结构化回报 + 失败原因分析，见 §6.8）
-⑨ Git Integration（status/diff/branch/checkout/commit）
+⑨ Git Integration（status/diff/branch/checkout/commit）   ← 已完成（本地可回退的 5 个操作 + 只有 applied 的改动才能提交，见 §7.7）
 ⑩ Project Scanner（项目画像，不引入向量库）
 ⑪ Project Brain v1（结构化，非 RAG）
 ⑫ 最小 IDE（Virtual Workspace 为界面中心）

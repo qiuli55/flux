@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -244,6 +247,103 @@ def test_workspace_apply_unknown_change(client: TestClient) -> None:
     response = client.post(f"{PREFIX}/workspace/apply", json={"change_ids": ["不存在"]})
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+# --- Git 集成（§17.6；实施计划 ⑨）---
+
+
+def _init_git_repo(repo: Path, *files: str) -> None:
+    """在 workspace_root 里建真实仓库并提交一次（git 身份只在子进程里给）。"""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Flux Test",
+        "GIT_AUTHOR_EMAIL": "flux-test@example.com",
+        "GIT_COMMITTER_NAME": "Flux Test",
+        "GIT_COMMITTER_EMAIL": "flux-test@example.com",
+    }
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)
+
+    run("init", "-b", "main")
+    tracked = ["README.md", *files]
+    for name in tracked:
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text("v1\n", encoding="utf-8")
+    run("add", *tracked)
+    run("commit", "-m", "chore: 初始化")
+
+
+def test_git_status_and_diff_via_api(apply_client: TestClient, workspace_root: Path) -> None:
+    _init_git_repo(workspace_root, "a.py")
+    (workspace_root / "a.py").write_text("v2\n", encoding="utf-8")
+
+    status = apply_client.get(f"{PREFIX}/git/status").json()["data"]
+    assert status["branch"] == "main"
+    assert status["clean"] is False
+    assert status["files"][0]["path"] == "a.py"
+
+    diff = apply_client.post(f"{PREFIX}/git/diff", json={"paths": ["a.py"]}).json()["data"]
+    assert diff["empty"] is False
+    assert "a.py" in diff["text"] and "-v1" in diff["text"] and "+v2" in diff["text"]
+
+
+def test_git_checkout_and_branches_via_api(apply_client: TestClient, workspace_root: Path) -> None:
+    _init_git_repo(workspace_root)
+
+    created = apply_client.post(
+        f"{PREFIX}/git/checkout", json={"target": "feature/closed-loop", "create": True}
+    ).json()["data"]
+    assert created["current"] == "feature/closed-loop"
+
+    listed = apply_client.get(f"{PREFIX}/git/branches").json()["data"]
+    assert listed["current"] == "feature/closed-loop"
+    assert listed["locals"] == ["feature/closed-loop", "main"]
+
+
+def test_git_commit_only_accepts_applied_changes(
+    apply_client: TestClient, workspace_root: Path
+) -> None:
+    """闭环顺序 Approved → Tests Passed → Git Commit：pending 的提案一个提交都不许进。"""
+    _init_git_repo(workspace_root)
+    (workspace_root / "auth").mkdir(exist_ok=True)
+    (workspace_root / "auth" / "login.py").write_text("return False\n", encoding="utf-8")
+    change_id = _seed_proposal(apply_client, file_path="auth/login.py")
+
+    too_early = apply_client.post(
+        f"{PREFIX}/git/commit", json={"message": "feat: 还没批准", "change_ids": [change_id]}
+    )
+    assert too_early.status_code == 409
+    assert too_early.json()["code"] == "invalid_state_transition"
+
+    applied = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+    assert applied.json()["data"][0]["status"] == "applied"
+
+    committed = apply_client.post(
+        f"{PREFIX}/git/commit", json={"message": "feat: 登录校验", "change_ids": [change_id]}
+    )
+    assert committed.status_code == 200
+    body = committed.json()["data"]
+    assert len(body["sha"]) == 40
+    assert body["message"] == "feat: 登录校验"
+    assert body["files"] == ["auth/login.py"]
+
+
+def test_git_reports_missing_workspace_configuration(client: TestClient) -> None:
+    """未配置 FLUX_WORKSPACE_ROOT 时 Git 操作明确报错，不返回空结果。"""
+    response = client.get(f"{PREFIX}/git/status")
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+def test_git_reports_directory_that_is_not_a_repository(
+    apply_client: TestClient, workspace_root: Path
+) -> None:
+    response = apply_client.get(f"{PREFIX}/git/status")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "not_a_git_repository"
 
 
 # --- Model Gateway（§12.6）---

@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Apply 之后要跑的测试命令（如 "pytest -q"）；留空表示不跑测试
     test_command: str | None = None
     test_timeout_seconds: float = 300.0
+
+    # --- Git 集成（主规格 §17.6；实施计划 ⑨）---
+    # git 命令超时；Git 操作同样只在 workspace_root 下执行
+    git_timeout_seconds: float = 30.0
+
     # HTTP 调用策略（§5.1 错误处理：模型失败 / 超时 → 重试）
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
