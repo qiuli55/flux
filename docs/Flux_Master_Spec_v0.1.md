@@ -304,6 +304,39 @@ Agent 之间通过结构化消息通信，须遵守：解释决策、产出制�
 
 **架构变更**：Architect 出方案 → Tech Lead 评估影响 → Developer 实施迁移 → Tester 跑回归。
 
+### 6.7 Developer Agent 提案输出契约
+
+**【实施计划 §3.1 ③ 落地，2026-09-30】** Developer Agent 的职责是把需求变成**一份可审阅的代码改动提案**；它永远不写用户真实文件（§19.7 M2 产品原则），落盘一律由 Apply Engine 完成。
+
+**输入**：需求文本 + 相关文件的当前内容 `{相对路径: 内容}`，由调用方提供（后续由 Virtual Workspace / Project Scanner 供给）。输入由代码拼装成三段：`## 需求`、`## 相关文件现状（改动前）`、`## 输出契约`。
+
+**输出**：模型只返回一个 JSON 对象。
+
+```json
+{
+  "summary": "用一两句话说明这次改动做了什么",
+  "changes": [
+    {"path": "相对项目根的 POSIX 路径", "content": "改动后该文件的完整内容", "reason": "为什么这样改"}
+  ]
+}
+```
+
+**解析规则（fail-closed，不做静默兜底）**：
+
+| 情形 | 处理 |
+| --- | --- |
+| 纯 JSON / ```json 围栏 / 夹带说明文字 | 依次尝试提取，均可解析 |
+| 顶层不是对象（如数组） | 报 `validation_error` |
+| `changes` 缺失、为空、不是数组 | 报错 |
+| `path` / `content` / `reason` / `summary` 类型不对 | 报错 |
+| `path` 是绝对路径或含 `..` | 报错（禁止写到项目根之外） |
+| 同一次提案内路径重复（归一化后） | 报错 |
+| 完全提取不出 JSON | 报错，并在 details 里附原文前 300 字符预览 |
+
+**落地位置**：`flux.core.agent_runtime.developer`（`DeveloperAgent` / `CodeChangeSet` / `FileChange` / `parse_code_change_set` / `build_developer_prompt`）；Developer 角色提示词写在 `manifests/developer.yaml` 的 `system_prompt`（§6.3 纳入版本管理）。
+
+**边界**：本步只产出提案草稿（`CodeChangeSet`）——不落库、不算 hash、不生成 diff；那是 ④ Proposal 与 ⑤ Diff Engine 的职责。
+
 ---
 
 ## 7. Virtual Workspace（核心差异化）
