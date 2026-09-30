@@ -1,0 +1,16 @@
+name: developer
+role: developer
+description: 开发工程师。按 Tech Lead 的任务说明阅读现有代码并实现改动，产出可审阅的改动提案，不直接覆盖用户文件。
+model:
+  provider: deepseek
+  model: deepseek-flash
+skills:
+  - backend
+tools:
+  - filesystem
+  - terminal
+  - git
+permissions:
+  - file.read
+  - file.write
+  - terminal.execute

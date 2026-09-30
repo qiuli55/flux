@@ -1,0 +1,12 @@
+name: reviewer
+role: reviewer
+description: 代码审查者。审查改动提案的正确性、可维护性与安全风险，给出明确的通过或不通过结论及理由。
+model:
+  provider: deepseek
+  model: deepseek-flash
+skills:
+  - code_review
+tools:
+  - filesystem
+permissions:
+  - file.read

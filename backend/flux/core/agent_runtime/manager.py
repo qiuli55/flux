@@ -12,6 +12,7 @@ import uuid
 from flux.core.agent_runtime.context import AgentContext, AgentHandle, AgentSpec
 from flux.core.agent_runtime.executor import AgentExecutor, AgentRunResult
 from flux.core.agent_runtime.lifecycle import assert_transition
+from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.core.event.bus import EventBus, Events
 from flux.core.model_gateway.router import ModelRouter
 from flux.enums import AgentState
@@ -36,6 +37,14 @@ class AgentManager:
         self._transition(handle, AgentState.READY)
         logger.info("agent.create id=%s name=%s role=%s", handle.id_str, spec.name, spec.role)
         return handle
+
+    def create_from_manifest(self, manifest: AgentManifest) -> AgentHandle:
+        """按 Manifest 声明创建 Agent（§6.2）。"""
+        return self.create(manifest.to_spec())
+
+    def create_builtin_agents(self) -> dict[str, AgentHandle]:
+        """创建第一批内置 Agent（Tech Lead / Developer / Reviewer / Tester）。"""
+        return {name: self.create_from_manifest(m) for name, m in builtin_manifests().items()}
 
     # --- 接口：get_status ---
 

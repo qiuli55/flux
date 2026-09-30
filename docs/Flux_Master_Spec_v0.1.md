@@ -256,6 +256,31 @@ Capability 示例：`file.read`、`file.write`、`terminal.execute`、`deploy`�
 
 示例（Developer Agent）：Skills = Backend；Tools = GitHub、Terminal；Permissions = Write Code。
 
+**落地实现（2026-09-30）**：Manifest 以 YAML 声明，存放在 `backend/flux/core/agent_runtime/manifests/`，由 `flux.core.agent_runtime.manifest` 负责加载与校验。字段定义：
+
+| 字段 | 必填 | 取值 / 说明 |
+| --- | --- | --- |
+| `name` | 是 | Agent 唯一名称，同名即加载失败 |
+| `role` | 是 | `tech_lead` / `architect` / `developer` / `reviewer` / `tester` / `devops` |
+| `model.provider` | 是 | `openai` / `anthropic` / `deepseek` / `local` |
+| `model.model` | 是 | 模型 id，必须写具体值（如 `deepseek-flash`），不留占位符 |
+| `description` | 否 | 角色的职责与目标（§6.1） |
+| `system_prompt` | 否 | 角色提示词，纳入版本管理（§6.3） |
+| `skills` | 否 | 技能标签，如 `backend`、`testing` |
+| `tools` | 否 | 工具名，如 `filesystem`、`terminal`、`git` |
+| `permissions` | 否 | 权限项，取值同 §5.5 Capability（`file.read` / `file.write` / `terminal.execute` 等） |
+
+**硬规则（fail-closed，不做静默忽略）**：
+
+1. Manifest **不得包含 API Key**：任何键名含 `key` / `secret` / `token` / `password` / `credential`（含嵌套层）都直接拒绝加载。密钥只由被调用的 Provider 自己从环境读取，不下发给 Agent（§14.3）。
+2. 未知字段、未知 `role` / `provider` / 权限项一律加载失败，并回报具体字段与允许取值。
+3. `role` / `provider` / 权限项大小写不敏感：`role: Developer` 等价于 `developer`。
+4. `permissions` 缺省为空集，即该 Agent 只能拿到上下文，不能碰文件与终端（最小权限）。
+
+**声明与实例分离**：Manifest（声明）→ `AgentSpec`（运行时规格）→ `AgentHandle`（实例）。入口为 `AgentManager.create_from_manifest()` 与 `AgentManager.create_builtin_agents()`。
+
+**内置第一批 Agent（§19.7：只做 4 个）**：Tech Lead、Developer、Reviewer、Tester，均为 `deepseek` / `deepseek-flash`。权限按最小化配置：Tech Lead 与 Reviewer 只有 `file.read`；Developer 额外持有 `file.write` + `terminal.execute`；Tester 持有 `file.read` + `terminal.execute`。Architect、DevOps 待核心闭环稳定后再加。
+
 ### 6.3 提示版本管理
 
 Prompt 纳入版本控制，每次含：角色定义、规则、约束、示例、评测标准。
