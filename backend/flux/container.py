@@ -18,6 +18,7 @@ from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
+from flux.core.virtual_workspace.apply_engine import ApplyEngine
 from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.core.virtual_workspace.service import VirtualWorkspaceService
 from flux.db.session import create_engine, create_session_factory
@@ -35,6 +36,7 @@ class Container:
     scheduler: TaskScheduler = field(init=False)
     connectors: ConnectorRegistry = field(init=False)
     workspace: VirtualWorkspaceService = field(init=False)
+    apply_engine: ApplyEngine = field(init=False)
     task_repo: TaskRepository = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
 
@@ -49,7 +51,13 @@ class Container:
         self.agents = AgentManager(self.router, self.bus)
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
-        self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus)
+        # Apply Engine 是唯一会写用户真实文件的组件（§7.6），根目录与测试命令来自配置
+        self.apply_engine = ApplyEngine(
+            workspace_root=self.settings.workspace_root,
+            test_command=self.settings.test_command,
+            test_timeout_seconds=self.settings.test_timeout_seconds,
+        )
+        self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus, self.apply_engine)
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:

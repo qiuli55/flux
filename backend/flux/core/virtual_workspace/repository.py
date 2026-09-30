@@ -120,6 +120,32 @@ class ProposalRepository:
             await self._commit(session)
             return change
 
+    async def set_apply_result(
+        self,
+        change_id: str | uuid.UUID,
+        *,
+        status: VirtualChangeStatus,
+        backup_path: str | None = None,
+        apply_error: str | None = None,
+    ) -> VirtualChange:
+        """记录一次 Apply 的结果（成功写 backup_path，失败写 apply_error）。
+
+        与 set_status 分开是为了让审计字段与状态在同一个事务里落库：状态是 applied
+        却没有备份路径，或状态是 failed 却没有原因，都属于不可审计的中间态。
+        """
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            change.status = status.value
+            change.backup_path = backup_path
+            change.apply_error = apply_error
+            await self._commit(session)
+            return change
+
     async def _commit(self, session: AsyncSession) -> None:
         try:
             await session.commit()

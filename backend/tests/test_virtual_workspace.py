@@ -117,19 +117,36 @@ def test_propose_changes_rejects_empty_effective_change_set(container: Container
     assert "没有任何有效改动" in excinfo.value.message
 
 
-def test_accept_then_apply(container: Container) -> None:
-    proposal = _propose(container)
-    accepted = asyncio.run(container.workspace.accept(str(proposal.id)))
+def test_accept_then_apply(apply_container: Container, workspace_root) -> None:
+    """⑦ 起 apply 会真正落盘：先把被改文件按原文写到工作区里。"""
+    (workspace_root / "auth").mkdir()
+    (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
+
+    proposal = _propose(apply_container)
+    accepted = asyncio.run(apply_container.workspace.accept(str(proposal.id)))
     assert accepted.status == VirtualChangeStatus.ACCEPTED.value
-    applied = asyncio.run(container.workspace.apply(str(proposal.id)))
+    applied = asyncio.run(apply_container.workspace.apply(str(proposal.id)))
     assert applied.status == VirtualChangeStatus.APPLIED.value
 
 
-def test_apply_pending_goes_through_accepted(container: Container) -> None:
+def test_apply_pending_goes_through_accepted(apply_container: Container, workspace_root) -> None:
     """pending → accepted → applied（§7.2 / §7.5 调用方即人工批准）。"""
-    proposal = _propose(container)
-    applied = asyncio.run(container.workspace.apply(str(proposal.id)))
+    (workspace_root / "auth").mkdir()
+    (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
+
+    proposal = _propose(apply_container)
+    applied = asyncio.run(apply_container.workspace.apply(str(proposal.id)))
     assert applied.status == VirtualChangeStatus.APPLIED.value
+
+
+def test_apply_without_workspace_root_is_rejected(container: Container) -> None:
+    """未配置 FLUX_WORKSPACE_ROOT 时拒绝落盘：绝不默认写进某个"看起来还行"的目录。"""
+    proposal = _propose(container)
+    with pytest.raises(ValidationError) as excinfo:
+        asyncio.run(container.workspace.apply(str(proposal.id)))
+    assert "未配置工作区根目录" in excinfo.value.message
+    # 状态留在 accepted（已批准但未落盘），不是 failed——这不是改动本身的问题
+    assert asyncio.run(container.workspace.get(str(proposal.id))).status == "accepted"
 
 
 def test_rejected_proposal_cannot_be_applied(container: Container) -> None:
@@ -139,11 +156,14 @@ def test_rejected_proposal_cannot_be_applied(container: Container) -> None:
         asyncio.run(container.workspace.apply(str(proposal.id)))
 
 
-def test_applied_proposal_is_terminal(container: Container) -> None:
-    proposal = _propose(container)
-    asyncio.run(container.workspace.apply(str(proposal.id)))
+def test_applied_proposal_is_terminal(apply_container: Container, workspace_root) -> None:
+    (workspace_root / "auth").mkdir()
+    (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
+
+    proposal = _propose(apply_container)
+    asyncio.run(apply_container.workspace.apply(str(proposal.id)))
     with pytest.raises(InvalidTransitionError):
-        asyncio.run(container.workspace.reject(str(proposal.id)))
+        asyncio.run(apply_container.workspace.reject(str(proposal.id)))
 
 
 def test_failed_is_terminal_and_reachable_from_accepted(container: Container) -> None:

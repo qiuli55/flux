@@ -816,6 +816,50 @@
         ]
       }
     },
+    "/api/v1/workspace/accept": {
+      "post": {
+        "description": "批准提案但不落盘：pending → accepted，等人工再决定何时 apply。",
+        "operationId": "accept_changes_api_v1_workspace_accept_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Accept Changes Api V1 Workspace Accept Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Changes",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/workspace/apply": {
       "post": {
         "operationId": "apply_changes_api_v1_workspace_apply_post",

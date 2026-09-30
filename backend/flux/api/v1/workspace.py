@@ -1,8 +1,10 @@
 """Virtual Workspace API（主规格 §12.5）。
 
 注意：提案的产生不经过本组接口——Agent 执行产出提案（M2），
-这里只暴露"列出 / 应用 / 拒绝"三个人工审查动作，与 §12.5 完全一致。
-调用 /workspace/apply 即视为人工批准（§7.5 审查操作）。
+这里只暴露人工审查动作：列出 / 通过 / 应用 / 拒绝，与 §12.5 一致。
+`accept` 与 `apply` 是两步：accept 只是批准（pending → accepted），会把改动写进用户
+真实文件的是 apply（经 Apply Engine，§7.6）。直接调 apply 时若提案仍是 pending，
+服务层会先自动转 accepted —— 调用 apply 本身即视为人工批准（§7.5）。
 """
 
 from __future__ import annotations
@@ -36,6 +38,18 @@ async def get_change(
     return ok(change.to_dict())
 
 
+@router.post("/accept")
+async def accept_changes(
+    payload: ChangeIdsRequest, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """批准提案但不落盘：pending → accepted，等人工再决定何时 apply。"""
+    accepted = []
+    for change_id in payload.change_ids:
+        proposal = await container.workspace.accept(change_id)
+        accepted.append(proposal.to_dict())
+    return ok(accepted, metadata={"count": len(accepted)})
+
+
 @router.post("/apply")
 async def apply_changes(
     payload: ChangeIdsRequest, container: Container = Depends(get_container)
@@ -53,6 +67,6 @@ async def reject_changes(
 ) -> dict[str, object]:
     rejected = []
     for change_id in payload.change_ids:
-        proposal = await container.workspace.reject(change_id)
+        proposal = await container.workspace.reject(change_id, reason=payload.reason)
         rejected.append(proposal.to_dict())
     return ok(rejected, metadata={"count": len(rejected), "reason": payload.reason})

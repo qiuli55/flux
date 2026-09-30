@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,6 +36,20 @@ def settings(tmp_path) -> Settings:
 
 
 @pytest.fixture()
+def workspace_root(tmp_path: Path) -> Path:
+    """一个真实存在的"被改项目"根目录（Apply 的落盘目标）。"""
+    root = tmp_path / "project"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture()
+def apply_settings(settings: Settings, workspace_root: Path) -> Settings:
+    """带工作区配置的 Settings：Apply 只有配了 workspace_root 才允许落盘（§7.6）。"""
+    return settings.model_copy(update={"workspace_root": str(workspace_root)})
+
+
+@pytest.fixture()
 def db_schema(settings: Settings) -> Iterator[None]:
     """为测试用 SQLite 库建表。
 
@@ -60,7 +75,21 @@ def container(settings: Settings, db_schema: None) -> Container:
 
 
 @pytest.fixture()
+def apply_container(apply_settings: Settings, db_schema: None) -> Container:
+    """配好工作区根目录的容器，供真正会落盘的 Apply 用例使用。"""
+    return Container(apply_settings)
+
+
+@pytest.fixture()
 def client(settings: Settings, db_schema: None) -> Iterator[TestClient]:
     app = create_app(settings)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def apply_client(apply_settings: Settings, db_schema: None) -> Iterator[TestClient]:
+    """配好工作区根目录的 app，供经 API 落盘的用例使用。"""
+    app = create_app(apply_settings)
     with TestClient(app) as test_client:
         yield test_client

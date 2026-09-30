@@ -160,31 +160,78 @@ def _seed_proposal(client: TestClient, *, file_path: str = "auth/login.py") -> s
         asyncio.run(engine.dispose())
 
 
-def test_workspace_list_apply_reject(client: TestClient) -> None:
-    apply_id = _seed_proposal(client, file_path="a.py")
-    reject_id = _seed_proposal(client, file_path="b.py")
+def test_workspace_list_apply_reject(apply_client: TestClient, workspace_root) -> None:
+    """经 API 走完整审查链路：apply 会真正落盘（§7.6），所以先把被改文件写进工作区。"""
+    (workspace_root / "a.py").write_text("return False\n", encoding="utf-8")
+    apply_id = _seed_proposal(apply_client, file_path="a.py")
+    reject_id = _seed_proposal(apply_client, file_path="b.py")
 
-    listed = client.get(f"{PREFIX}/workspace/changes").json()
+    listed = apply_client.get(f"{PREFIX}/workspace/changes").json()
     assert listed["metadata"]["count"] == 2
     assert listed["data"][0]["diff"].startswith("---")
     assert listed["data"][0]["added_lines"] == 1
 
-    detail = client.get(f"{PREFIX}/workspace/changes/{apply_id}").json()["data"]
+    detail = apply_client.get(f"{PREFIX}/workspace/changes/{apply_id}").json()["data"]
     assert detail["status"] == "pending"
     assert detail["original_hash"]
 
-    applied = client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [apply_id]})
+    applied = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [apply_id]})
     assert applied.status_code == 200
-    assert applied.json()["data"][0]["status"] == "applied"
+    body = applied.json()["data"][0]
+    assert body["status"] == "applied"
+    assert body["backup_path"]
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "return check_password(user)\n"
 
-    rejected = client.post(
+    rejected = apply_client.post(
         f"{PREFIX}/workspace/reject",
         json={"change_ids": [reject_id], "reason": "改动范围过大"},
     )
     assert rejected.json()["data"][0]["status"] == "rejected"
     assert rejected.json()["metadata"]["reason"] == "改动范围过大"
 
-    assert len(client.get(f"{PREFIX}/workspace/changes?status=applied").json()["data"]) == 1
+    assert len(apply_client.get(f"{PREFIX}/workspace/changes?status=applied").json()["data"]) == 1
+
+
+def test_workspace_accept_then_apply(apply_client: TestClient, workspace_root) -> None:
+    """accept 只批准不落盘，apply 才写文件：两步之间文件内容必须保持原样。"""
+    (workspace_root / "a.py").write_text("return False\n", encoding="utf-8")
+    change_id = _seed_proposal(apply_client, file_path="a.py")
+
+    accepted = apply_client.post(f"{PREFIX}/workspace/accept", json={"change_ids": [change_id]})
+    assert accepted.status_code == 200
+    assert accepted.json()["data"][0]["status"] == "accepted"
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "return False\n"
+
+    applied = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+    assert applied.json()["data"][0]["status"] == "applied"
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "return check_password(user)\n"
+
+
+def test_workspace_apply_without_workspace_root_fails(client: TestClient) -> None:
+    """未配置 FLUX_WORKSPACE_ROOT 时 apply 明确报错（422），状态停在 accepted 等人工处理。"""
+    change_id = _seed_proposal(client, file_path="a.py")
+
+    response = client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+    detail = client.get(f"{PREFIX}/workspace/changes/{change_id}").json()["data"]
+    assert detail["status"] == "accepted"
+    assert detail["apply_error"] is None
+
+
+def test_workspace_apply_conflict_when_file_changed(
+    apply_client: TestClient, workspace_root
+) -> None:
+    """人工在提案生成后改了文件 → 409，用户改动不能被覆盖。"""
+    change_id = _seed_proposal(apply_client, file_path="a.py")
+    (workspace_root / "a.py").write_text("user 自己改的\n", encoding="utf-8")
+
+    response = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conflict"
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "user 自己改的\n"
 
 
 def test_workspace_get_unknown_change(client: TestClient) -> None:

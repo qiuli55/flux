@@ -47,6 +47,10 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     agent_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # 取值见 flux.enums.VirtualChangeStatus
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+    # Apply 时原文件的备份路径（新建文件无备份，留空）
+    backup_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Apply 失败的完整错误；成功时为空
+    apply_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,4 +69,6 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "summary": self.summary,
             "agent_source": self.agent_source,
             "status": self.status,
+            "backup_path": self.backup_path,
+            "apply_error": self.apply_error,
         }

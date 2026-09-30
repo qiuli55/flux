@@ -106,3 +106,13 @@ class ProviderTimeoutError(ProviderError):
 class ConnectorNotRegisteredError(AIOSError):
     code = "connector_not_registered"
     http_status = 404
+
+
+class ApplyFailedError(AIOSError):
+    """Apply 在落盘阶段失败（校验不通过 / 跑测试失败）。
+
+    调用方报错时提案已被置为 `failed` 并尽可能回滚原文件，错误详情落在提案的 apply_error。
+    """
+
+    code = "apply_failed"
+    http_status = 500

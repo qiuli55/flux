@@ -19,6 +19,8 @@ venv/
 *.db
 data/
 artifacts/
+# Apply Engine 的备份目录（落在被改项目根目录下，见 §7.6）
+.flux/
 
 # --- Node ---
 node_modules/

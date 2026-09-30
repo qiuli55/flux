@@ -1,24 +1,27 @@
-"""Virtual Workspace 服务（主规格 §7；实施计划 ④）。
+"""Virtual Workspace 服务（主规格 §7；实施计划 ④⑥⑦）。
 
 权威存储是 virtual_changes 表，服务层负责：
 - 把 Developer Agent 的 `CodeChangeSet` 落成一条条 Proposal（含 original_hash 与 unified diff）；
-- 人工审查动作（accept / reject）与 apply 的状态跃迁。
+- 人工审查动作（accept / reject）与状态跃迁；
+- Apply：把落盘交给 Apply Engine（⑦），自己只负责状态与审计字段。
 
-**本步不落盘**：真正写用户文件（hash 复验 → 备份 → 打补丁 → 校验 → 跑测试 → Git 提交）
-由 ⑦ Apply Engine 负责，届时在 `apply()` 里插入那段流程。
+**落盘的唯一入口是 ApplyEngine**，API / Agent / UI 都不允许自己写用户文件。
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 
 from flux.core.agent_runtime.developer import CodeChangeSet
 from flux.core.event.bus import EventBus, Events
+from flux.core.virtual_workspace.apply_engine import ApplyEngine
 from flux.core.virtual_workspace.diff_engine import compute_file_diff, content_hash
 from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.enums import VirtualChangeStatus
-from flux.errors import InvalidTransitionError, ValidationError
+from flux.errors import ConflictError, InvalidTransitionError, ValidationError
 from flux.logging import get_logger
 from flux.models.workspace import VirtualChange
 
@@ -43,9 +46,16 @@ ALLOWED: dict[VirtualChangeStatus, frozenset[VirtualChangeStatus]] = {
 
 
 class VirtualWorkspaceService:
-    def __init__(self, repository: ProposalRepository, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        repository: ProposalRepository,
+        bus: EventBus | None = None,
+        apply_engine: ApplyEngine | None = None,
+    ) -> None:
         self._repo = repository
         self._bus = bus
+        # 未注入引擎时用默认配置（workspace_root 为空即"未配置"，Apply 会明确拒绝）
+        self._engine = apply_engine or ApplyEngine()
 
     # --- 提案 ---
 
@@ -142,26 +152,76 @@ class VirtualWorkspaceService:
     async def accept(self, change_id: str | uuid.UUID) -> VirtualChange:
         return await self._transition(change_id, VirtualChangeStatus.ACCEPTED)
 
-    async def reject(self, change_id: str | uuid.UUID) -> VirtualChange:
-        return await self._transition(change_id, VirtualChangeStatus.REJECTED)
+    async def reject(self, change_id: str | uuid.UUID, reason: str | None = None) -> VirtualChange:
+        """拒绝一条提案。reason 由人工填写，进事件供审计，不改提案内容。"""
+        return await self._transition(
+            change_id, VirtualChangeStatus.REJECTED, extra={"reason": reason} if reason else None
+        )
 
-    async def apply(self, change_id: str | uuid.UUID) -> VirtualChange:
-        """应用改动：pending 自动先转 accepted。
+    async def apply(
+        self,
+        change_id: str | uuid.UUID,
+        *,
+        workspace_root: str | Path | None = None,
+        run_tests: bool = True,
+    ) -> VirtualChange:
+        """应用改动：pending 自动先转 accepted，再交给 Apply Engine 真正落盘（§7.6）。
 
-        ④⑤ 只做状态跃迁（调用本接口即视为人工批准，§7.5）；⑦ 会在 applied 之前插入
-        「校验补丁 → 备份原文件 → 写入 → 校验文件 → 跑配置的测试 → Git 提交」（§7.6）。
+        调用本接口即视为人工批准（§7.5）。落盘是同步 IO + 子进程，放进线程执行，
+        避免阻塞事件循环。失败时状态落 failed 并保留原因，异常继续上抛——
+        不静默兜底（fail-closed）。
         """
         change = await self._repo.get(change_id)
-        if change.status == VirtualChangeStatus.PENDING.value:
+        if change.status != VirtualChangeStatus.ACCEPTED.value:
+            # pending → accepted；已是终态则在这里按非法跃迁拒绝
             change = await self._transition(change.id, VirtualChangeStatus.ACCEPTED)
-        return await self._transition(change.id, VirtualChangeStatus.APPLIED)
+
+        try:
+            outcome = await asyncio.to_thread(
+                self._engine.apply,
+                change,
+                workspace_root=workspace_root,
+                run_tests=run_tests,
+            )
+        except (ConflictError, ValidationError):
+            # 预检未通过（文件被用户改过 / 路径非法 / 未配置工作区根目录）：
+            # 改动本身没错，是当前环境或提案已过期，状态留在 accepted 等人工重新决策
+            raise
+        except Exception as exc:
+            failed = await self._repo.set_apply_result(
+                change.id,
+                status=VirtualChangeStatus.FAILED,
+                apply_error=str(exc),
+            )
+            await self._publish(
+                failed,
+                previous=VirtualChangeStatus.ACCEPTED,
+                extra={"error": str(exc)},
+            )
+            raise
+
+        applied = await self._repo.set_apply_result(
+            change.id,
+            status=VirtualChangeStatus.APPLIED,
+            backup_path=outcome.backup_path,
+        )
+        await self._publish(applied, previous=VirtualChangeStatus.ACCEPTED)
+        return applied
 
     async def mark_failed(self, change_id: str | uuid.UUID) -> VirtualChange:
-        """留一条失败终态（供 ⑦ Apply Engine 在落盘失败时调用），失败原因由日志与事件承载。"""
+        """把一条已批准的提案手动置为 failed（保留给人工/运维的显式出口）。
+
+        正常路径下 failed 由 apply 在落盘或测试失败时写入（§7.6），这个方法让"已批准但
+        决定放弃"的提案也能走到终态，而不是永久停留在 accepted。
+        """
         return await self._transition(change_id, VirtualChangeStatus.FAILED)
 
     async def _transition(
-        self, change_id: str | uuid.UUID, target: VirtualChangeStatus
+        self,
+        change_id: str | uuid.UUID,
+        target: VirtualChangeStatus,
+        *,
+        extra: Mapping[str, object] | None = None,
     ) -> VirtualChange:
         change = await self._repo.get(change_id)
         current = VirtualChangeStatus(change.status)
@@ -171,23 +231,27 @@ class VirtualWorkspaceService:
                 details={"from": str(current), "to": str(target), "change_id": str(change_id)},
             )
         updated = await self._repo.set_status(change.id, target)
-        await self._publish(updated, previous=current)
+        await self._publish(updated, previous=current, extra=extra)
         return updated
 
     async def _publish(
-        self, change: VirtualChange, *, previous: VirtualChangeStatus | None
+        self,
+        change: VirtualChange,
+        *,
+        previous: VirtualChangeStatus | None,
+        extra: Mapping[str, object] | None = None,
     ) -> None:
         if self._bus is None:
             return
-        await self._bus.publish(
-            Events.WORKSPACE_CHANGED,
-            {
-                "change_id": str(change.id),
-                "file_path": change.file_path,
-                "from": str(previous) if previous is not None else None,
-                "to": change.status,
-            },
-        )
+        payload: dict[str, object] = {
+            "change_id": str(change.id),
+            "file_path": change.file_path,
+            "from": str(previous) if previous is not None else None,
+            "to": change.status,
+        }
+        if extra:
+            payload.update(extra)
+        await self._bus.publish(Events.WORKSPACE_CHANGED, payload)
 
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:

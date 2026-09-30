@@ -376,6 +376,8 @@ file_path、original_content、proposed_content、diff、agent_source、timestam
 | `reason` / `summary` | 为什么这样改（来自 Developer Agent 的 reason / summary） |
 | `agent_source` | 产出提案的 Agent 标识 |
 | `status` | `pending` / `accepted` / `rejected` / `applied` / `failed` |
+| `backup_path` | **⑥⑦ 新增**：Apply 成功时原文件的备份路径（新建文件无备份，留空） |
+| `apply_error` | **⑥⑦ 新增**：Apply 落盘或测试失败的完整错误；成功时为空 |
 | `created_at` / `updated_at` | 审计时间戳 |
 
 **状态跃迁（服务层强制）**：`pending → accepted | rejected`；`accepted → applied | rejected | failed`；`rejected` / `applied` / `failed` 均为终态。`apply()` 对 `pending` 会先自动转 `accepted`（调用即视为人工批准，§7.5）。
@@ -392,11 +394,43 @@ file_path、original_content、proposed_content、diff、agent_source、timestam
 
 接受、拒绝、人工修改、要求 AI 重做、部分接受。
 
+**【实施计划 ⑥ 落地，2026-09-30】** 已实现「接受 / 应用 / 拒绝」三个审查动作，接口见 §12.5：
+
+| 动作 | 接口 | 语义 |
+| --- | --- | --- |
+| 接受（accept） | `POST /workspace/accept` | 只批准：`pending → accepted`，**不碰磁盘** |
+| 应用（apply） | `POST /workspace/apply` | 批准并落盘：`pending → accepted → applied`，调用即视为人工批准 |
+| 拒绝（reject） | `POST /workspace/reject` | `pending/accepted → rejected`，可带 `reason`，原因进事件与响应元数据 |
+
+「人工修改 / 要求 AI 重做 / 部分接受」暂未实现：人工修改等于直接编辑文件（Apply 会被 hash 复验拦下，见 7.6），要求 AI 重做等于重新产出提案，部分接受需要按 hunk 拆分提案——三者都依赖最小 IDE（⑫）的界面，留到那时做。
+
 ### 7.6 Apply 流程
 
 ```
 校验补丁 → 备份原文件 → 写入改动 → 运行测试 → 创建 Git 操作
 ```
+
+**【实施计划 ⑦ 落地，2026-09-30】** 落盘由 `flux.core.virtual_workspace.apply_engine.ApplyEngine` 独占，**它是 Flux 里唯一会写用户真实文件的组件**；API、Agent、UI 都不允许自己落盘。执行顺序固定，不可调换：
+
+| 步骤 | 实现 | 失败后果 |
+| --- | --- | --- |
+| 1. 解析工作区根 | `FLUX_WORKSPACE_ROOT`（或显式传入）；未配置 / 不是目录 → `validation_error` | 未落盘，状态留在 `accepted` |
+| 2. 规整路径 | `safe_relative_path()`：拒绝绝对路径与含 `..` 的路径；`./a\b.py` 归一化为 `a/b.py` | 同上 |
+| 3. 复验 `original_hash` | 用库里的 `original_hash` 与磁盘现状比；**文件已被用户改过 → `conflict`，禁止落盘** | 同上，用户改动原样保留 |
+| 4. 备份原文件 | `BackupService` 复制到 `<工作区根>/.flux/backups/<change_id>/<相对路径>`（新建文件无备份） | — |
+| 5. 写入 | 写 `proposed_content` 的**完整内容**（不是对磁盘应用 diff 文本） | 触发回滚 |
+| 6. 校验 | 重新读盘算 hash，与 `proposed_content` 不一致 → `apply_failed` | 触发回滚 |
+| 7. 运行测试 | 命令取自 `FLUX_TEST_COMMAND`（**Agent 无权指定命令**，避免把提权入口开在 AI 侧），在项目根下执行；非零退出码或超时（`FLUX_TEST_TIMEOUT_SECONDS`，默认 300s）→ `apply_failed` | 触发回滚 |
+
+**回滚规则**：第 5–7 步任一失败，有备份则用备份覆盖回原文件，新建文件（无备份）则删除刚写下的文件。**失败必留痕**：提案状态置 `failed` 并把完整错误写入 `apply_error` 字段；成功则把备份路径写入 `backup_path`。
+
+**状态与时序**：预检失败（步骤 1–3）视为「改动本身没错、是环境或提案已过期」，状态**留在 `accepted`**，异常原样上抛（`validation_error` / `conflict`），等人工重新决策；落盘与测试失败（步骤 5–7）才是 `failed`。
+
+**新增配置项**（`.env.example` 同步维护）：`FLUX_WORKSPACE_ROOT`（落盘根目录，留空即拒绝 Apply）、`FLUX_TEST_COMMAND`（落盘后要跑的测试命令，留空跳过）、`FLUX_TEST_TIMEOUT_SECONDS`（默认 `300`）。
+
+**暂未实现**：流程末端的「创建 Git 操作」属于 ⑨ Git Integration；Apply 只负责把文件写对，提交由人工或 ⑨ 完成。
+
+**已知边界（CPython 字节码缓存）**：测试命令是新起的子进程，若它读取到与本次写入「同秒 mtime + 同字节长度」的旧 `.pyc`，可能加载到改动前的代码，从而让本该失败的测试通过。实测复现过：把 `return a + b` 改成 `return a * b`（字节长度完全相同）并立刻跑 pytest，会误判为通过。真实改动的字节长度几乎总会变化，窗口极窄；介意的项目可在测试命令里加 `-p no:cacheprovider` 或先清 `__pycache__`。
 
 ### 7.7 与 IDE 集成
 
@@ -619,6 +653,18 @@ GET  /api/v1/workspace/changes      列出 AI 提案改动
 POST /api/v1/workspace/apply        应用已批准的改动
 POST /api/v1/workspace/reject       拒绝改动
 ```
+
+**【实施计划 ④⑤⑥⑦ 落地，2026-09-30】** 实际暴露的接口（`docs/openapi.json` 为准）：
+
+```
+GET  /api/v1/workspace/changes                 列出提案，支持 project_id / task_id / status 过滤
+GET  /api/v1/workspace/changes/{change_id}     取单条提案（含 diff、hash、apply 审计字段）
+POST /api/v1/workspace/accept                  批准但不落盘：pending → accepted
+POST /api/v1/workspace/apply                   批准并落盘（经 Apply Engine，§7.6）
+POST /api/v1/workspace/reject                  拒绝，可带 reason
+```
+
+错误码：未知提案 `not_found`；未配置工作区根目录 / 路径非法 `validation_error`；文件已被用户改过 `conflict`；落盘或测试失败 `apply_failed`；对终态提案重复操作 `invalid_state_transition`。请求体分别为 `{"change_ids": [...]}` 与 `{"change_ids": [...], "reason": "..."}`。
 
 ### 12.6 Model Gateway API
 
@@ -970,6 +1016,8 @@ backend/
 
 数据库连接、API keys、模型供应商、权限设置。
 
+**【实施计划 ⑦ 补充，2026-09-30】** Apply 相关配置（前缀统一为 `FLUX_`，模板见 `.env.example`）：`FLUX_WORKSPACE_ROOT` = 被改项目的根目录，留空时 `/workspace/apply` 直接报 `validation_error`；`FLUX_TEST_COMMAND` = 落盘后要跑的测试命令（如 `pytest -q`，在项目根下执行），留空表示跳过；`FLUX_TEST_TIMEOUT_SECONDS` = 测试超时秒数，默认 `300`。三项与数据库连接、模型密钥同在 `backend/flux/config.py` 的 `Settings`，由 `Container` 装配进 `ApplyEngine`。
+
 ### 18.5 API Key 管理
 
 用户配置 OpenAI / Anthropic / DeepSeek key；密钥安全存储，**永不暴露给 Agent**。
@@ -1065,8 +1113,8 @@ backend/
 ③ Developer Agent   ← 已完成，提交 22e9ab7
 ④ Virtual File / Proposal   ← 已完成，提交 f2b2786
 ⑤ Diff Engine（unified diff）   ← 已完成，提交 f2b2786
-⑥ Review / Approve / Reject
-⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）
+⑥ Review / Approve / Reject   ← 已完成（accept / apply / reject 三动作 + 状态机，见 §7.5、§12.5）
+⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）   ← 已完成（唯一落盘入口，备份 + 回滚 + 测试执行，见 §7.6）
 ⑧ Tester Agent
 ⑨ Git Integration（status/diff/branch/checkout/commit）
 ⑩ Project Scanner（项目画像，不引入向量库）

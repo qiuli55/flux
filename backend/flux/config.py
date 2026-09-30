@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     local_model_base_url: str | None = None
     local_model_name: str = "local-echo"
     default_provider: str = "local"
+
+    # --- Virtual Workspace Apply（主规格 §7.6）---
+    # Agent 改动的落盘根目录。留空则 apply 直接报错——绝不默认写到某个"看起来还行"的目录。
+    workspace_root: str | None = None
+    # Apply 之后要跑的测试命令（如 "pytest -q"）；留空表示不跑测试
+    test_command: str | None = None
+    test_timeout_seconds: float = 300.0
     # HTTP 调用策略（§5.1 错误处理：模型失败 / 超时 → 重试）
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
