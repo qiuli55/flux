@@ -76,16 +76,16 @@
 1. **symlink 逃逸（§12）**：`safe_relative_path` 只做字符串级校验（apply_engine.py:47-63）。`_assert_unchanged` / `_write` / `_verify`（apply_engine.py:159-205）与 `BackupService.backup` / `restore`（backup.py:32-49）都走 `Path` 接口：若 `workspace/config.py` 是指向外部文件的 symlink，读写与备份都会跟随它，逃出 workspace。需补：realpath 包含性校验 + `lstat` 逐段校验（与 Project File Explorer 同级保护）。
 2. **批量原子性（§13）**：`service.apply` 以单条 `VirtualChange` 为粒度（service.py:165+），无 Proposal / ChangeSet 级事务——多文件提案会出现「A 成功、B 失败、A 留在盘上」。需补 Batch Apply Transaction（全成功或全回滚）。
 
-## 6. 待裁决（2 项）与确认后的执行顺序
+## 6. 裁决结论与执行进度
 
-**待裁决**
+**已裁决（2026-10-01）**
 
-1. **L3 口径**：此前你说「完整上下文保留 + 条级指纹」。按对齐文档，适用范围收窄为——Flux 存档 **L0–L2 工程事实与 MCP 操作轨迹**（满保真、带指纹、可懒加载查看），agent 私有对话不进 Flux 共享层、切换不搬迁，只走 Handoff。是否接受？
-2. **codex_cli 的处置**：A) 从 ModelGateway 撤下，Codex 走外部 agent 通道（推荐）；B) 保留为「平台内部模型通道」但禁止作为任何 agent 的接入方式。选哪个？
+1. **L3 口径**：按对齐文档收窄——Flux 存档 = **L0–L2 工程事实 + MCP 操作轨迹 + Handoff**（满保真、带指纹、可懒加载查看）；agent 私有对话不进 Flux 共享层、切换不搬迁，只走 Handoff。已落到 [CONTEXT_DESIGN.md](CONTEXT_DESIGN.md) §3/§10/§13 与 [DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md) §26.2。
+2. **codex_cli 的处置**：选 **A（撤下）**——Phase 1 已连同 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `flow.py` 一并删除（commit `45db1b9`）；Codex 改列 Phase 4 外部 agent，经同一 MCP 面验证。
 
-**确认后按序执行**（对齐文档 §21）
+**执行进度**（对齐文档 §21）
 
-1. 按 §4 修正三份文档（先对齐文字，再动代码）。
+1. ~~按 §4 修正文档（先对齐文字，再动代码）~~ → 已完成；Phase 1 代码修正已推送（commit `45db1b9`，286 用例全绿）。
 2. Phase 2：Flux MCP Server（先出工具清单 × Permission 映射 × 鉴权方式，再实现）。
 3. Phase 3：DSH → Flux MCP 打通（含事件映射补齐、审批回流）。
 4. Phase 4：Codex / Claude Code / OpenCode 经同一 MCP 面验证。

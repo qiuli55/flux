@@ -6,6 +6,8 @@
 >
 > 本文档的架构决策（§1–§9、§11–§15、§19–§23）保持不变；§10、§16、§17、§18 已按「官方 Python SDK 接入」重写，理由见 §10.2。
 >
+> **2026-10-01 架构覆盖（以 [FLUX_TARGET_ARCHITECTURE.md](FLUX_TARGET_ARCHITECTURE.md) 为准）**：Flux 本身不跑 agent loop，内置 DSH agent 与外部 agent 对等、统一经 **Flux MCP 面**消费能力。因此本文中「Flux 侧承载 agent 运行时」的旧链路已作废——§3 的 `AgentManager → FluxAgentRuntime → DSHClient → DSH Agent`、§11 的 `DSH → Flux Model Gateway` 两步均不再采用；Flux 的 ModelGateway 只服务自身基础设施（T2 压缩、扫描摘要）。
+>
 > 2026-10-01 回写：新增 §24–§27（术语边界、能力通道、上下文与溯源设计、待确认清单）。其中 §24 的术语口径、§26.2 的「存档满保真 / 投喂按预算（动态预算、用户界面显示完整上下文）」口径、§26.4 的溯源指纹（条级 + 统一 agent 注册表）已经用户确认。
 
 ## 1. 核心决策
@@ -62,10 +64,10 @@ AgentManager → AgentExecutor → ModelRouter.chat()
 演进为：
 
 ```
-AgentManager → FluxAgentRuntime → DSHClient → DSH Agent
+DSH Agent（自带 loop） ⇄ Flux MCP 面（context / skill / proposal / handoff …）
 ```
 
-现有 Manager、类型和生命周期接口可以保留；一次模型调用型 Executor 逐步迁移到 DSH。
+现有 Manager、类型和生命周期接口保留为**档案注册表**；`AgentExecutor` 型的一次模型调用路径已删除——loop 归 agent，Flux 不代跑（2026-10-01 修正，见 [FLUX_TARGET_ARCHITECTURE.md](FLUX_TARGET_ARCHITECTURE.md) §1）。
 
 ## 4. DSH 能力直接复用
 
@@ -296,21 +298,17 @@ with DeepSeekHarness(
 
 ## 11. Model Gateway
 
-Flux 当前的 Model Gateway 不删除，但职责逐步调整为模型选择与策略层：
+Flux 当前的 Model Gateway 不删除，但**只服务 Flux 侧基础设施**（T2 压缩、扫描摘要等），不是任何 agent 的模型通道：
 
 ```
-Flux Model Router
+Flux Model Router（平台内部：T2 压缩 / 扫描 / 摘要）
     ↓
 Provider / Model / Budget / Fallback
-    ↓
-DSH LLM Adapter
-    ↓
-DSH Agent
 ```
 
-第一阶段不要同时重构 Model Gateway。先让 DSH 使用成熟的 LLM Runtime，Flux 记录 Agent Run / Model / Usage。稳定后再实现 DSH → Flux Model Gateway。
+**DSH / Codex 都不进 ModelGateway**（目标架构 §1 硬约束）：agent 用什么模型是 agent 自己的事，绝不允许出现 `providers/dsh.py` 这类「把 agent 当模型供应商」的形态。Flux 只记录 Agent Run / Model / Usage（由 agent 侧上报）。
 
-**Phase 1 取值（2026-09-30）**：DSH 侧的 provider 用 `deepseek-official`，model 用 `deepseek-v4-flash`；凭据用 Flux 现有的 `/opt/ops/.env` 读进来后，以 `DeepSeekHarness(api_key=...)` 注入子进程，不落任何文件。Flux 现有的 `agent_runtime` 仍保留 `ModelRouter`（当前默认走 MiniMax 的 Anthropic 兼容端点），两条路径在 Phase 1 并存：**内置工程 Agent 走 ModelRouter，DSH Agent 走 DSH LLM Runtime**。
+**Phase 1 取值（2026-09-30）**：DSH 侧的 provider 用 `deepseek-official`，model 用 `deepseek-v4-flash`；凭据用 Flux 现有的 `/opt/ops/.env` 读进来后，以 `DeepSeekHarness(api_key=...)` 注入子进程，不落任何文件。Flux 现有的 `agent_runtime` 保留档案注册表与 DSH 客户端；`ModelRouter` 只留平台内部用途（2026-10-01 修正：原先「内置工程 Agent 走 ModelRouter」的路径已删除，agent 一律自带 LLM Runtime——DSH agent 走 DSH LLM Runtime，外部 agent 走各自载体）。
 
 ## 12. Session 与 Context 分层
 
@@ -697,10 +695,10 @@ Flux Built-in Agent
 
 职责分两层，互不干扰：
 
-- **存档层（满保真，不丢）**：Flux 保存完整上下文——所有 agent 的每条产出、每次工具调用、每轮对话原文全部留档，可搜索、可回溯、可重放，UI 可查看（ide 页完整时间线）。压缩**只发生在投喂环节**，不影响存档。
+- **存档层（满保真，不丢）**：存档范围 = **Flux 侧 L0–L2 工程事实 + MCP 操作轨迹 + Handoff**——每条产出、每次工具调用、每次提案与审查结果全部留档，可搜索、可回溯、可重放，UI 可查看（ide 页完整时间线）。压缩**只发生在投喂环节**，不影响存档。**agent 对话不进 Flux 存档**（L3 归 agent 自己，Flux 只留 `session_id` 引用与 Run 摘要）。
 - **投喂层（按预算）**：下发前按 token 预算打包，三档自动降级：
   1. **全量**（默认档）：预算内原样投喂；
-  2. **压缩**：超预算时结构化提取优先、自由文本摘要其次。**永不压缩**：当前任务与验收标准、约束、未决问题、最近若干轮、涉及文件最新版本、未验证断言清单；**可压缩**：较早对话、已完成步骤的经过、已解决的讨论、长工具输出原文（保留 hash + 摘要 + `ref`）；
+  2. **压缩**：超预算时结构化提取优先、自由文本摘要其次。**永不压缩**：当前任务与验收标准、约束、未决问题、最近若干条操作轨迹、涉及文件最新版本、未验证断言清单；**可压缩**：较早的 Run 记录与操作轨迹、已完成步骤的经过、已解决的讨论、长工具输出原文（保留 hash + 摘要 + `ref`）；
   3. **引用**：被压掉的内容留 `ref`，agent 可用 `context.fetch(ref)` 取回原文——这是「完整保留」对 agent 的可达性。
 
 **预算口径：动态计算（2026-10-01 已确认）**
@@ -715,7 +713,7 @@ Flux Built-in Agent
 
 **用户可见性（2026-10-01 已确认）**
 
-- 用户界面显示**完整上下文**（存档层满保真视图），不拿压缩提示替代历史；
+- 用户界面显示**完整上下文**（**Flux 侧存档**的满保真视图：L0–L2 + 操作轨迹 + Handoff），不拿压缩提示替代历史；**当前 agent 的对话由 agent 侧自己流式呈现**（显示 ≠ 接管，不进 Flux 存档）；
 - 另提供「**投喂视图**」对照：查看这次实际发给 agent 的打包结果，逐条标注形态（原文 / 摘要 / 仅引用），可手工增删后再下发；
 - 完整上下文一律**懒加载**：虚拟滚动 + 分页拉取，`ref` 原文按需展开；存档可能上万条，不整包渲染、不一次性拉全量。
 
@@ -734,7 +732,7 @@ Flux Built-in Agent
   - **T3 被调 agent 二次裁剪**（可选）：仅在 T1+T2 之后仍超预算、且内容能装进其窗口时启用；产物经 `context.compact` 回写存档层并带指纹。**物理限制：真正超窗时该路径不可用**——它根本读不到全量，必须先由 Flux 压到窗口内。
   - **不依赖 agent 自摘要作主路径**：跨 agent 一致性无法保证，其他 agent 默认消费 Flux 的 T1/T2 结果；
   - 待核实：DSH 原生自带 compaction 类插件（内置 agent 本身会做上下文压缩），需看其触发条件与产物形态，决定接管还是复用。
-- 对没有独立 system 通道的 agent（如 `codex exec`），打包结果即其 prompt 前缀；DSH 侧可注入 session 首条消息或 `agent-instructions`（64KB 上限）。
+- **投喂主路径是 MCP pull**：agent 经 `context.get` 主动取打包结果，按需用 `context.fetch(ref)` 取回原文；**前缀注入降为兜底**——仅当 agent 完全没有取上下文能力时，才把打包结果作为 prompt 前缀（如 `codex exec`）或注入 session 首条消息（DSH，或走 `agent-instructions` 64KB 上限）。
 
 ### 26.3 Handoff（交接信封）
 

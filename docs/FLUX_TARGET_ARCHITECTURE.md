@@ -239,6 +239,8 @@ agent → tools/call（Require Approval 类）
 | **保留 + 改造** | `dsh_client` / `dsh_events` → 内置 agent 的启动器与事件桥（不进 ModelGateway） |
 | **新建** | `backend/flux/mcp/`（MCP Server + 鉴权 + 打包器）、`flux/skill_runtime/`、`handoffs` / `operations` / `agent_tokens` / `context_snapshots` 持久化 |
 
+**执行状态（2026-10-01）**：表中「退役」与「重构」两行的代码修正已完成并推送（commit `45db1b9`，删 6 个模块 / 4 个专属测试文件，286 个用例全绿、`verify.sh` 五步全过）；「保留 + 补强 / 保留 + 改造 / 新建」属后续 Phase。
+
 ## 9. 实施顺序与验收
 
 | Phase | 内容 | 验收标准 |

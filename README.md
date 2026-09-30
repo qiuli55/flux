@@ -1,10 +1,14 @@
 # Flux
 
-多 Agent 软件工程操作系统：把 AI 当作真正的工程角色（Tech Lead / Architect / Developer / Reviewer / Tester / DevOps）来编排，而不是当成聊天机器人。
+集合 agent 的 AI 软件工程操作系统：统一上下文、统一工具（MCP 面）、统一 Skill，各只有一份真源，所有 agent 共享。
+
+Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话（目标架构 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) §1）。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 MCP 面**对等消费能力。
 
 核心差异化是 **Virtual Workspace**——AI 的每一次改动都以"提案 → 虚拟 diff → 人工审查 → 应用"的流程落地，**永不直接覆盖你的文件**。
 
 规格的唯一权威来源是 [`docs/Flux_Master_Spec_v0.1.md`](docs/Flux_Master_Spec_v0.1.md)（34 份源文档合并去重后的主规格，含 22 条冲突裁决）。代码与规格不一致时以规格为准，并把实施期发现的新问题回写到规格附录 A。
+
+**架构方向以 [`docs/FLUX_TARGET_ARCHITECTURE.md`](docs/FLUX_TARGET_ARCHITECTURE.md)（2026-10-01）为最高优先级**：它定义了「Flux 不做 agent、只做集合 agent 的平台」这一硬约束与退役清单；与本文档 §1 的定位描述冲突时以它为准。
 
 ---
 
@@ -16,7 +20,7 @@
 | --- | --- | --- |
 | 数据层：14 张表 + Alembic 迁移 | 完成 | `alembic upgrade head` / `downgrade base` 双向通过，autogenerate 无漂移 |
 | API 契约：13 条路径（规格 §12 全覆盖） | 完成 | `docs/openapi.json`，`scripts/export_openapi.py --check` 通过 |
-| Agent Runtime 状态机（含 STOPPED） | 完成 | 59 个 pytest 用例全绿（全仓现为 84 个） |
+| Agent Runtime 状态机（含 STOPPED） | 完成 | 59 个 pytest 用例全绿（全仓现为 286 个） |
 | Model Gateway（本地 echo 供应商可离线跑通） | 完成 | 真实供应商适配器属 M1（#013–#015） |
 | Virtual Workspace 状态机 + unified diff | 完成 | M0 只做状态跃迁与审计，真实写盘属 M2 |
 | 权限策略（RBAC + Capability，fail-closed） | 完成 | — |
@@ -32,9 +36,9 @@
 
 | 能力 | 状态 | 证据 |
 | --- | --- | --- |
-| 真实供应商适配器（Issues #013–#015） | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家全部注册，23 个离线用例全绿 |
+| 真实供应商适配器（Issues #013–#015） | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家全部注册，28 个离线用例全绿 |
 | 供应商容错：超时、退避重试、错误映射 | 完成 | `429`/`5xx`/超时按 `0.5s × 2^n` 退避重试 2 次，耗尽后映射为领域错误码 |
-| 多 Agent 并行运行 | 完成 | `tests/test_multi_agent_parallel.py`：3 个 Agent 并发在途 |
+| 架构对齐 Phase 1：退役 agent loop | 完成 | 删除 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `codex_cli` provider / `virtual_workspace/flow.py`；`AgentManager` 重构为纯档案注册表（commit `45db1b9`） |
 
 **Adapter 用统一的薄 HTTP 层调用上游 API**，不引入各家官方 SDK——依赖面更小，`httpx.MockTransport` 可完全离线断言。默认模型 id 与覆盖方式：
 
@@ -110,13 +114,13 @@ flux/
 │   │   ├── api/                  # HTTP 层：统一响应体、异常处理器、依赖注入
 │   │   │   └── v1/               # 规格 §12 的 13 条路由
 │   │   ├── core/                 # 领域层（不依赖 FastAPI）
-│   │   │   ├── agent_runtime/    # 生命周期状态机、上下文、执行器、管理器
+│   │   │   ├── agent_runtime/    # 档案注册表、生命周期状态机、DSH 客户端
 │   │   │   ├── task_engine/      # 优先级调度器
-│   │   │   ├── model_gateway/    # 供应商抽象、路由、providers/
-│   │   │   ├── workflow_engine/  # 多 Agent 工作流编排
+│   │   │   ├── model_gateway/    # 供应商抽象、路由、providers/（只服务平台内部）
+│   │   │   ├── workflow_engine/  # 工程状态机（不做 reasoning、不代调工具）
 │   │   │   ├── permission_engine/# RBAC + Capability 策略
 │   │   │   ├── event/            # 进程内事件总线
-│   │   │   └── virtual_workspace/# 变更提案状态机 + unified diff
+│   │   │   └── virtual_workspace/# 提案状态机 + unified diff + 入参校验器
 │   │   ├── models/               # SQLAlchemy 2.0 声明式模型（14 张表）
 │   │   ├── schemas/              # Pydantic 请求/响应模型
 │   │   ├── connectors/           # Connector 契约与注册表

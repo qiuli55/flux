@@ -4,7 +4,7 @@
 
 ## 1. 一句话定位
 
-Flux 是 **AI 软件工程操作系统（平台层）**：把 AI 当作真正的工程角色（Tech Lead / Architect / Developer / Reviewer / Tester / DevOps）来编排，而不是当聊天机器人；每一次 AI 改动都以「提案 → 虚拟 diff → 人工审查 → 应用」落地，**永不直接覆盖真实文件**。
+Flux 是 **AI 软件工程操作系统（平台层）**，是**集合 agent 的平台**：统一上下文、统一工具、统一 Skill，各只有一份真源，所有 agent 共享；Flux **本身不做 agent**（没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话）。它内置一个**以 DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 MCP 面**对等消费能力。每一次 AI 改动都以「提案 → 虚拟 diff → 人工审查 → 应用」落地，**永不直接覆盖真实文件**。目标架构见 [FLUX_TARGET_ARCHITECTURE.md](FLUX_TARGET_ARCHITECTURE.md)。
 
 ## 2. 项目理解（是什么 / 不是什么）
 
@@ -45,25 +45,28 @@ agent 侧    内置 agent（DeepSeek Harness + Cordis，--profile flux）
 
 ## 4. 工程核心的模块职责
 
+按目标架构 §8 的处置口径（详表见 [ARCHITECTURE_ALIGNMENT_ANALYSIS.md](ARCHITECTURE_ALIGNMENT_ANALYSIS.md) §2）：
+
 | 模块 | 职责 |
 | --- | --- |
-| `agent_runtime/` | Agent 生命周期状态机、执行器、管理器；DSH 客户端（`dsh_client.py`）与事件映射（`dsh_events.py`） |
+| `agent_runtime/` | **档案注册表**（AgentSpec / AgentHandle，角色 / 权限组 / 可见范围）+ 生命周期状态机 + DSH 客户端（`dsh_client.py`）与事件映射（`dsh_events.py`）；**不含任何模型执行入口**（2026-10-01 修正：`executor` / `developer` / `tester` / `context` 已删除） |
 | `task_engine/` | 优先级调度（当前仍是进程内实现，落库是 M1 收尾项） |
-| `workflow_engine/` | 多 Agent 工作流编排 |
-| `model_gateway/` | 供应商抽象、路由、providers/；模型选择与策略层（不删除，逐步退化职责） |
-| `permission_engine/` | RBAC + Capability 策略，**fail-closed** |
-| `virtual_workspace/` | 变更提案状态机 + unified diff；真实落盘由 ApplyEngine 控制（M2） |
+| `workflow_engine/` | 工程状态机（Task 状态、阶段、handoff、等待、重试、审批）；不做 reasoning、不代 agent 调工具 |
+| `model_gateway/` | 供应商抽象与路由，**只服务 Flux 侧基础设施**（T2 压缩、扫描、摘要）；不是任何 agent 的模型通道 |
+| `permission_engine/` | RBAC + Capability 策略，**fail-closed**；将升级为 MCP 工具调用的策略执行点 |
+| `virtual_workspace/` | 变更提案状态机 + unified diff + 提案入参校验器（`proposal_parser.py`）；真实落盘由 ApplyEngine 控制（M2） |
 | `project_brain/` `project_files/` `project_scanner/` | 项目知识、文件索引与扫描 |
 | `git_integration/` | Git 状态 / diff / 提交集成 |
-| `event/` | 进程内事件总线，事件命名 `resource.action`（`agent.started`、`workspace.changed`） |
+| `event/` | 进程内事件总线，事件命名 `resource.action`（`agent.state_changed`、`workspace.changed`） |
 
 ## 5. 当前实现状态（2026-10-01）
 
 **已完成**
 
 - **M0 全部**：14 张表 + Alembic 双向迁移、13 条 API 路径（`docs/openapi.json` 契约随代码提交）、Agent 状态机、Virtual Workspace 状态机 + unified diff、权限策略、事件总线 / 调度器 / 工作流编排、Connector 契约与注册表、Makefile + verify.sh + CI。
-- **M1 大部分**：真实供应商适配器（`local` / `openai` / `anthropic` / `deepseek`，统一薄 HTTP 层，不引入各家 SDK）、超时退避重试与错误映射、**多 Agent 并行运行**。
-- **近期新增**：`codex_cli` 供应商（`codex exec` → MiniMax，子进程型，可配 `max_tokens`）、DSH 客户端骨架（起 Run / 流式事件 / 中断 / 查状态）、`flux` profile 在 A 机实测跑通（`/opt/flux/dsh-home`、`/opt/flux/dsh-ws`）。
+- **M1 大部分**：真实供应商适配器（`local` / `openai` / `anthropic` / `deepseek`，统一薄 HTTP 层，不引入各家 SDK）、超时退避重试与错误映射。
+- **近期新增**：DSH 客户端骨架（起 Run / 流式事件 / 中断 / 查状态）、`flux` profile 在 A 机实测跑通（`/opt/flux/dsh-home`、`/opt/flux/dsh-ws`）。
+- **2026-10-01 架构修正（Phase 1，commit `45db1b9`）**：删除 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `codex_cli` provider / `virtual_workspace/flow.py`；`AgentManager` 重构为纯档案注册表；manifest 与 4 份内置档案去掉 model / system_prompt；`/api/v1/agents/{id}/execute` 与 `/api/v1/workspace/generate` 撤下（提案改由 agent 经 MCP `proposal.create` 提交）。
 
 **进行中 / 未完成**
 
@@ -111,6 +114,8 @@ agent 侧    内置 agent（DeepSeek Harness + Cordis，--profile flux）
 | 文档 | 用途 |
 | --- | --- |
 | [Flux_Master_Spec_v0.1.md](Flux_Master_Spec_v0.1.md) | 权威规格（34 份源文档合并，22 条冲突裁决）；代码与规格不一致以规格为准 |
+| [FLUX_TARGET_ARCHITECTURE.md](FLUX_TARGET_ARCHITECTURE.md) | **目标架构（2026-10-01，最高优先级）**：MCP 能力面、内置 DSH agent、上下文流转、退役清单 |
+| [ARCHITECTURE_ALIGNMENT_ANALYSIS.md](ARCHITECTURE_ALIGNMENT_ANALYSIS.md) | 架构对齐分析：模块级处置表、跑偏清单、安全缺口 |
 | [DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md) | DSH 集成方案（§24–§27 为本轮新定口径） |
 | [CONTEXT_DESIGN.md](CONTEXT_DESIGN.md) | 上下文完整设计（存档/投喂、压缩分层、溯源指纹、UI） |
 | [TEST_PLAN.md](TEST_PLAN.md) | 测试计划 |
