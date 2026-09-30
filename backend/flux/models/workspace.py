@@ -40,7 +40,7 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     added_lines: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     removed_lines: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     hunks: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    # 为什么这样改（来自 Developer Agent 的 reason / summary，主规格 §6 的"修改原因"）
+    # 为什么这样改（来自 agent 经 MCP 提交的提案 reason / summary，主规格 §6 的"修改原因"）
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 产出该提案的 Agent 标识

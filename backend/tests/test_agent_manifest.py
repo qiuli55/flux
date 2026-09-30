@@ -1,7 +1,12 @@
-"""Agent Manifest 测试（主规格 §6.2；实施计划 §3.1）。"""
+"""Agent Manifest 测试（主规格 §6.2；实施计划 §3.1）。
+
+Manifest 是档案声明：角色 / 权限组 / 可见范围，不含模型、不含 system prompt
+（目标架构 §1：Agent 用什么模型是 Agent 自己的事）。
+"""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -11,18 +16,14 @@ from flux.core.agent_runtime.manifest import (
     MANIFEST_DIR,
     AgentManifest,
     builtin_manifests,
-    builtin_specs,
     load_manifests,
 )
-from flux.enums import AgentRole, AgentState, Capability, ModelProvider
+from flux.enums import AgentRole, AgentState, Capability
 from flux.errors import NotFoundError, ValidationError
 
 _BASE_YAML = """
 name: developer
 role: developer
-model:
-  provider: deepseek
-  model: deepseek-flash
 skills:
   - backend
 tools:
@@ -56,15 +57,12 @@ def test_manifests_directory_has_no_extra_files() -> None:
     ]
 
 
-def test_builtin_specs_map_to_agent_spec() -> None:
-    specs = {spec.name: spec for spec in builtin_specs()}
-    developer = specs["developer"]
-    assert developer.role is AgentRole.DEVELOPER
-    assert developer.model_provider is ModelProvider.DEEPSEEK
-    assert developer.model_name == "deepseek-flash"
-    assert developer.skills == ("backend",)
-    assert Capability.FILE_WRITE in developer.permissions
-    assert Capability.TERMINAL_EXECUTE in developer.permissions
+def test_manifests_declare_no_model_or_prompt() -> None:
+    """档案只声明身份与权限边界：模型与 system prompt 归 Agent 自己（目标架构 §1）。"""
+    payload = builtin_manifests()["developer"].to_dict()
+    assert "model" not in payload
+    assert "model_provider" not in payload
+    assert "system_prompt" not in payload
 
 
 def test_read_only_agents_do_not_hold_write_permission() -> None:
@@ -80,7 +78,6 @@ def test_manifest_to_dict_round_trip() -> None:
     assert manifest.to_dict() == {
         "name": "developer",
         "role": "developer",
-        "model": {"provider": "deepseek", "model": "deepseek-flash"},
         "description": "",
         "skills": ["backend"],
         "tools": ["filesystem"],
@@ -90,18 +87,15 @@ def test_manifest_to_dict_round_trip() -> None:
     assert "key" not in str(manifest.to_dict()).lower()
 
 
-def test_role_and_provider_are_case_insensitive() -> None:
-    """Manifest 里写 Developer / DEEPSEEK 也应被接受（人类手写 YAML 的常见写法）。"""
-    manifest = AgentManifest.from_yaml(
-        "name: d\nrole: Developer\nmodel:\n  provider: DEEPSEEK\n  model: deepseek-flash\n"
-    )
+def test_role_is_case_insensitive() -> None:
+    """Manifest 里写 Developer 也应被接受（人类手写 YAML 的常见写法）。"""
+    manifest = AgentManifest.from_yaml("name: d\nrole: Developer\n")
     assert manifest.role is AgentRole.DEVELOPER
-    assert manifest.provider is ModelProvider.DEEPSEEK
     assert manifest.permissions == frozenset()
 
 
 def test_manifest_rejects_api_key() -> None:
-    """Manifest 不得携带 API Key（§14.3），顶层的 key 与嵌套在 model 下的都要拦。"""
+    """Manifest 不得携带 API Key（§14.3）：顶层字段与嵌套结构里的都要拦。"""
     with pytest.raises(ValidationError) as top:
         AgentManifest.from_yaml(_BASE_YAML + "\napi_key: sk-abcdef\n")
     assert "密钥字段" in top.value.message
@@ -110,13 +104,12 @@ def test_manifest_rejects_api_key() -> None:
     nested = """
 name: d
 role: developer
-model:
-  provider: deepseek
-  model: deepseek-flash
-  api_token: sk-abcdef
+permissions:
+  - api_token: sk-abcdef
 """
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as inner:
         AgentManifest.from_yaml(nested)
+    assert "密钥字段" in inner.value.message
 
 
 def test_manifest_rejects_unknown_field() -> None:
@@ -129,23 +122,13 @@ def test_manifest_rejects_unknown_field() -> None:
 @pytest.mark.parametrize(
     ("yaml_text", "expected"),
     [
-        ("name: d\nrole: wizard\nmodel:\n  provider: deepseek\n  model: m\n", "未知角色"),
-        ("name: d\nrole: developer\nmodel:\n  provider: gemini\n  model: m\n", "未知模型供应商"),
-        (
-            "name: d\nrole: developer\nmodel:\n  provider: deepseek\n  model: m\n"
-            "permissions:\n  - file.destroy\n",
-            "未知权限项",
-        ),
-        ("role: developer\nmodel:\n  provider: deepseek\n  model: m\n", "name"),
-        ("name: d\nmodel:\n  provider: deepseek\n  model: m\n", "role"),
-        ("name: d\nrole: developer\n", "model"),
-        ("name: d\nrole: developer\nmodel:\n  provider: deepseek\n", "model.model"),
-        ("name: ''\nrole: developer\nmodel:\n  provider: deepseek\n  model: m\n", "name"),
-        ("name: d\nrole: developer\nmodel: deepseek-flash\n", "model"),
-        (
-            "name: d\nrole: developer\nmodel:\n  provider: deepseek\n  model: m\nskills: backend\n",
-            "skills",
-        ),
+        ("name: d\nrole: wizard\n", "未知角色"),
+        ("name: d\nrole: developer\npermissions:\n  - file.destroy\n", "未知权限项"),
+        ("role: developer\n", "name"),
+        ("name: d\n", "role"),
+        ("name: ''\nrole: developer\n", "name"),
+        ("name: d\nrole: developer\nskills: backend\n", "skills"),
+        ("name: d\nrole: developer\npermissions: file.read\n", "permissions"),
         ("[]", "顶层必须是映射"),
         ("", "内容为空"),
     ],
@@ -177,9 +160,12 @@ def test_load_manifests_rejects_duplicate_names(tmp_path: Path) -> None:
 
 
 def test_manager_creates_builtin_agents(container: Container) -> None:
-    handles = container.agents.create_builtin_agents()
+    handles = asyncio.run(container.agents.create_builtin_agents())
     assert sorted(handles) == ["developer", "reviewer", "tech-lead", "tester"]
     assert all(handle.state is AgentState.READY for handle in handles.values())
     developer = handles["developer"]
-    assert developer.spec.model_name == "deepseek-flash"
+    assert developer.spec.role is AgentRole.DEVELOPER
+    assert developer.spec.skills == ("backend",)
+    assert Capability.FILE_WRITE in developer.spec.permissions
+    assert developer.spec.name == "developer"
     assert container.agents.get(developer.id_str) is developer

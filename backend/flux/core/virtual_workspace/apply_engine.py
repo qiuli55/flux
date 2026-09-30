@@ -66,7 +66,8 @@ def safe_relative_path(file_path: str) -> Path:
 def resolve_workspace_root(candidate: str | Path | None) -> Path:
     """解析"被改项目根目录"。未配置或不是目录一律拒绝，绝不猜一个默认目录。
 
-    Apply Engine 与 Tester Agent 都必须在同一个根下工作，所以这段判断放在一处。
+    Apply Engine、测试执行、Git 集成、文件浏览与扫描都必须在同一个根下工作，
+    所以这段判断放在一处。
     """
     if candidate is None:
         raise ValidationError(

@@ -1,9 +1,6 @@
 name: tech-lead
 role: tech_lead
-description: 技术负责人。分析用户需求，判断要改哪些文件、改动范围与风险，产出可执行的开发任务说明并分派给 Developer。
-model:
-  provider: deepseek
-  model: deepseek-flash
+description: 技术负责人档案：面向需求拆解与方案设计，只读项目文件。
 skills:
   - planning
   - architecture

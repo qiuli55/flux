@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # --- 模型供应商（主规格 §5.3）---
+    # 仅供 Flux 侧基础设施调用（T2 压缩、扫描摘要等），不是 Agent 的模型通道；
     # 密钥仅由对应 Provider 读取，绝不下发给 Agent（§14.3）
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
@@ -46,18 +47,10 @@ class Settings(BaseSettings):
     local_model_base_url: str | None = None
     local_model_name: str = "local-echo"
     # Anthropic 的 max_tokens 是必填字段（做不到 OpenAI / DeepSeek 那样"不传=不限"），
-    # 调用方未指定时下发这个值。必须给足余量：Agent 要一次产出**完整文件内容**，
-    # 兜底值偏小会把输出截断、让提案 JSON 解析失败。换成输出上限更小的模型时请同步调小。
+    # 调用方未指定时下发这个值。给足余量：平台内部的长文任务（T2 压缩、摘要）
+    # 兜底值偏小会把输出截断；换成输出上限更小的模型时请同步调小。
     anthropic_max_tokens: int = 32000
     default_provider: str = "local"
-
-    # --- Codex CLI（subprocess 形态的供应商：本机 codex-minimax → MiniMax 官方 API）---
-    # 可执行文件名或绝对路径；默认取 /usr/local/bin/codex-minimax
-    codex_cli_binary: str = "codex-minimax"
-    # 传给 `codex exec -m` 的模型 id；留空则用 CODEX_HOME 里 config.toml 的默认模型
-    codex_cli_model: str = "MiniMax-M3"
-    # 单次调用超时（秒）。比直连 HTTP 慢：codex 侧带 high 思考档，完整提案要给足时间
-    codex_cli_timeout_seconds: float = 900.0
 
     # --- Virtual Workspace Apply（主规格 §7.6）---
     # Agent 改动的落盘根目录。留空则 apply 直接报错——绝不默认写到某个"看起来还行"的目录。
@@ -79,9 +72,7 @@ class Settings(BaseSettings):
     # HTTP 调用策略（§5.1 错误处理：模型失败 / 超时 → 重试）
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
-    # Agent 单次输出的 token 上限；None 表示不设上限，由模型自身的默认输出上限决定。
-    # 默认不设上限：Agent 一次要产出**完整文件内容**（多文件实现动辄数千 token），
-    # 任何写死的上限都会把输出截断、让提案 JSON 解析失败。
+    # 平台内部模型调用的单次输出上限；None 表示不设上限，由模型自身的默认输出上限决定。
     model_max_output_tokens: int | None = None
 
     # --- DSH Agent Runtime（集成方案 §17 配置表；Phase 1 用官方 Python SDK）---

@@ -10,20 +10,17 @@ from flux.enums import AgentRole, BrainSection, Capability, ModelProvider
 
 
 class AgentCreateRequest(BaseModel):
+    """登记一个 Agent 档案（身份 + 权限边界）。
+
+    模型与 system prompt 不在登记范围内——那是 Agent 自己的事（目标架构 §1）。
+    """
+
     name: str = Field(min_length=1, max_length=128)
     role: AgentRole
-    model_provider: ModelProvider = ModelProvider.LOCAL
-    model_name: str = "local-echo"
     description: str = ""
-    system_prompt: str | None = None
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     permissions: list[Capability] = Field(default_factory=list)
-
-
-class AgentExecuteRequest(BaseModel):
-    instruction: str = Field(min_length=1)
-    task_id: str | None = None
 
 
 class TaskCreateRequest(BaseModel):
@@ -40,19 +37,6 @@ class ChangeIdsRequest(BaseModel):
 
 class RejectRequest(ChangeIdsRequest):
     reason: str | None = None
-
-
-class GenerateProposalsRequest(BaseModel):
-    """让 Developer Agent 依据一句需求产出提案（⑫ 最小 IDE 的"让 AI 改"）。
-
-    paths 是需求相关的文件（相对工作区根）；服务端只读这些文件的现状当作上下文，
-    产出的是待审阅提案，不会写任何用户文件。paths 为空表示不携带上下文。
-    """
-
-    instruction: str = Field(min_length=1, max_length=4000)
-    paths: list[str] = Field(default_factory=list)
-    task_id: str | None = None
-    project_id: str | None = None
 
 
 class ChatMessageIn(BaseModel):

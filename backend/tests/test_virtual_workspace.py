@@ -13,9 +13,9 @@ import sys
 import pytest
 
 from flux.container import Container
-from flux.core.agent_runtime.developer import CodeChangeSet, FileChange
 from flux.core.event.bus import Events
 from flux.core.virtual_workspace.diff_engine import content_hash
+from flux.core.virtual_workspace.proposal_parser import CodeChangeSet, FileChange
 from flux.enums import VirtualChangeStatus
 from flux.errors import ApplyFailedError, InvalidTransitionError, NotFoundError, ValidationError
 

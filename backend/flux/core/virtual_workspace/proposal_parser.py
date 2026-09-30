@@ -1,7 +1,8 @@
-"""Developer Agent：把用户需求转成可审阅的代码改动提案（实施计划 §3.1 ③）。
+"""提案入参校验器：把 MCP `proposal.create` 的入参解析成 `CodeChangeSet`。
 
-Agent **只产出提案，绝不碰用户真实文件**（主规格 §19.7 M2 产品原则）；
-真正的落盘由后续的 Apply Engine 完成，中间必须经过人工审阅。
+提案一律由 agent 经 MCP 提交——Flux 不组装 prompt、不解析模型对话（目标架构 §1），
+本模块只做平台侧把关：结构合法、路径不越界、无重复路径、内容必须是完整文件。
+任何不合契约的输入都明确报错，不静默兜底。
 """
 
 from __future__ import annotations
@@ -13,14 +14,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from flux.core.agent_runtime.manager import AgentManager
-from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.errors import ValidationError
-from flux.logging import get_logger
-
-logger = get_logger(__name__)
-
-DEV_AGENT_NAME = "developer"
 
 _FENCED_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _PREVIEW_CHARS = 300
@@ -56,33 +50,8 @@ class CodeChangeSet:
         }
 
 
-def build_developer_prompt(instruction: str, files: Mapping[str, str]) -> str:
-    """拼出 Developer Agent 的输入：需求 + 相关文件现状 + 机器可解析的输出契约。"""
-    sections = ["## 需求", instruction.strip()]
-    if files:
-        sections += ["", "## 相关文件现状（改动前）"]
-        for path, content in files.items():
-            sections += [f"### {path}", "```", content.rstrip("\n"), "```"]
-    sections += ["", "## 输出契约", _OUTPUT_CONTRACT]
-    return "\n".join(sections)
-
-
-_OUTPUT_CONTRACT = (
-    "只输出一个 JSON 对象，不要输出任何解释文字：\n"
-    "{\n"
-    '  "summary": "用一两句话说明这次改动做了什么",\n'
-    '  "changes": [\n'
-    '    {"path": "相对项目根的 POSIX 路径", "content": "改动后该文件的完整内容",'
-    ' "reason": "为什么这样改"}\n'
-    "  ]\n"
-    "}\n"
-    "要求：content 必须是完整文件内容而不是 diff；新增文件同样要列出；"
-    '路径禁止绝对路径与 ".."。'
-)
-
-
-def parse_code_change_set(raw: str, *, source: str = "developer") -> CodeChangeSet:
-    """把模型返回的文本解析成 CodeChangeSet，任何不合契约的输出都视为失败。"""
+def parse_code_change_set(raw: str, *, source: str = "proposal") -> CodeChangeSet:
+    """把提案文本解析成 CodeChangeSet；source 是提案来源标注，进错误详情供审计。"""
     payload = _decode_payload(raw, source=source)
     if not isinstance(payload, Mapping):
         raise _invalid(source, "提案顶层必须是 JSON 对象", raw)
@@ -115,47 +84,11 @@ def parse_code_change_set(raw: str, *, source: str = "developer") -> CodeChangeS
     return CodeChangeSet(summary=summary.strip(), changes=tuple(changes))
 
 
-class DeveloperAgent:
-    """Developer Agent 的入口：声明来自 Manifest，执行走 AgentManager 的真实运行时。"""
-
-    def __init__(self, manager: AgentManager, manifest: AgentManifest | None = None) -> None:
-        self._manager = manager
-        self._manifest = manifest or builtin_manifests()[DEV_AGENT_NAME]
-        self._handle = manager.create_from_manifest(self._manifest)
-
-    @property
-    def agent_id(self) -> str:
-        return self._handle.id_str
-
-    @property
-    def manifest(self) -> AgentManifest:
-        return self._manifest
-
-    async def propose(
-        self,
-        instruction: str,
-        *,
-        files: Mapping[str, str] | None = None,
-        task_id: str | None = None,
-    ) -> CodeChangeSet:
-        """根据需求与文件现状产出一份代码改动提案（不写任何文件）。"""
-        prompt = build_developer_prompt(instruction, files or {})
-        result = await self._manager.execute(self._handle.id_str, prompt, task_id=task_id)
-        change_set = parse_code_change_set(result.content)
-        logger.info(
-            "developer.propose agent=%s task=%s files=%d",
-            self.agent_id,
-            task_id,
-            len(change_set.changes),
-        )
-        return change_set
-
-
 # --- 内部：容错解析 ---
 
 
 def _decode_payload(raw: str, *, source: str) -> Any:
-    """模型输出可能是纯 JSON、```json 围栏、或夹带说明文字，这里逐种尝试。"""
+    """入参可能是纯 JSON、```json 围栏、或夹带说明文字，这里逐种尝试。"""
     text = raw.strip()
     candidates: list[str] = []
     if text.startswith(("{", "[")):
@@ -176,7 +109,7 @@ def _decode_payload(raw: str, *, source: str) -> Any:
         except json.JSONDecodeError:
             continue
     raise ValidationError(
-        "Developer Agent 未返回合法的 JSON 提案",
+        "提案不是合法的 JSON",
         details={"source": source, "raw_preview": _preview(raw)},
     )
 
@@ -198,7 +131,7 @@ def _require_path(raw: Any, index: int, source: str, full: str) -> str:
 
 def _invalid(source: str, message: str, full: str) -> ValidationError:
     return ValidationError(
-        f"Developer Agent 提案非法（{source}）：{message}",
+        f"提案非法（{source}）：{message}",
         details={"raw_preview": _preview(full)},
     )
 

@@ -23,7 +23,6 @@ def _agent_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": "测试 Agent",
         "role": "developer",
-        "model_provider": "local",
         "permissions": ["file.read", "file.write"],
     }
     payload.update(overrides)
@@ -68,31 +67,13 @@ def test_agent_crud_flow(client: TestClient) -> None:
     assert fetched["data"]["id"] == agent["id"]
 
 
-def test_execute_agent_returns_model_result(client: TestClient) -> None:
+def test_agent_registry_has_no_execution_endpoint(client: TestClient) -> None:
+    """Flux 不替 agent 执行任务：注册表只有增删查，没有模型执行入口。"""
     agent_id = client.post(f"{PREFIX}/agents", json=_agent_payload()).json()["data"]["id"]
 
-    response = client.post(
-        f"{PREFIX}/agents/{agent_id}/execute",
-        json={"instruction": "实现一个健康检查接口", "task_id": "task-1"},
-    )
+    response = client.post(f"{PREFIX}/agents/{agent_id}/execute", json={"instruction": "x"})
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert "实现一个健康检查接口" in data["content"]
-    assert data["provider"] == "local"
-    assert data["usage"]["total_tokens"] > 0
-    assert data["task_id"] == "task-1"
-
-
-def test_execute_unknown_agent_returns_error_envelope(client: TestClient) -> None:
-    response = client.post(
-        f"{PREFIX}/agents/0f5b6f4c-0000-0000-0000-000000000000/execute",
-        json={"instruction": "x"},
-    )
     assert response.status_code == 404
-    body = response.json()
-    assert body["success"] is False
-    assert body["code"] == "not_found"
 
 
 def test_invalid_payload_returns_validation_error(client: TestClient) -> None:

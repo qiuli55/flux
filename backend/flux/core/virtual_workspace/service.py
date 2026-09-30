@@ -1,7 +1,8 @@
 """Virtual Workspace 服务（主规格 §7；实施计划 ④⑥⑦）。
 
 权威存储是 virtual_changes 表，服务层负责：
-- 把 Developer Agent 的 `CodeChangeSet` 落成一条条 Proposal（含 original_hash 与 unified diff）；
+- 把 agent 经 MCP `proposal.create` 提交的 `CodeChangeSet` 落成一条条 Proposal
+  （含 original_hash 与 unified diff）；
 - 人工审查动作（accept / reject）与状态跃迁；
 - Apply：把落盘交给 Apply Engine（⑦），自己只负责状态与审计字段。
 
@@ -15,10 +16,10 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-from flux.core.agent_runtime.developer import CodeChangeSet
 from flux.core.event.bus import EventBus, Events
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
 from flux.core.virtual_workspace.diff_engine import compute_file_diff, content_hash
+from flux.core.virtual_workspace.proposal_parser import CodeChangeSet
 from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.enums import VirtualChangeStatus
 from flux.errors import ConflictError, InvalidTransitionError, ValidationError

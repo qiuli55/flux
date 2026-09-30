@@ -1,7 +1,7 @@
 """Agent 持久化模型（主规格 §11.2）。
 
-注意：这里的 ORM 实体与运行时的领域对象（flux.core.agent_runtime.AgentSpec / AgentContext）
-是两回事——ORM 负责持久化，运行时对象负责执行。
+注意：这里的 ORM 实体与运行时的领域对象（flux.core.agent_runtime.manager.AgentSpec /
+AgentHandle）是两回事——ORM 负责持久化，运行时对象只承载档案与权限边界。
 """
 
 from __future__ import annotations

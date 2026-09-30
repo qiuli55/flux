@@ -2,20 +2,12 @@
   "components": {
     "schemas": {
       "AgentCreateRequest": {
+        "description": "登记一个 Agent 档案（身份 + 权限边界）。\n\n模型与 system prompt 不在登记范围内——那是 Agent 自己的事（目标架构 §1）。",
         "properties": {
           "description": {
             "default": "",
             "title": "Description",
             "type": "string"
-          },
-          "model_name": {
-            "default": "local-echo",
-            "title": "Model Name",
-            "type": "string"
-          },
-          "model_provider": {
-            "$ref": "#/components/schemas/ModelProvider",
-            "default": "local"
           },
           "name": {
             "maxLength": 128,
@@ -40,17 +32,6 @@
             "title": "Skills",
             "type": "array"
           },
-          "system_prompt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "System Prompt"
-          },
           "tools": {
             "items": {
               "type": "string"
@@ -64,31 +45,6 @@
           "role"
         ],
         "title": "AgentCreateRequest",
-        "type": "object"
-      },
-      "AgentExecuteRequest": {
-        "properties": {
-          "instruction": {
-            "minLength": 1,
-            "title": "Instruction",
-            "type": "string"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          }
-        },
-        "required": [
-          "instruction"
-        ],
-        "title": "AgentExecuteRequest",
         "type": "object"
       },
       "AgentRole": {
@@ -290,51 +246,6 @@
         "title": "DshRunCreateRequest",
         "type": "object"
       },
-      "GenerateProposalsRequest": {
-        "description": "让 Developer Agent 依据一句需求产出提案（⑫ 最小 IDE 的\"让 AI 改\"）。\n\npaths 是需求相关的文件（相对工作区根）；服务端只读这些文件的现状当作上下文，\n产出的是待审阅提案，不会写任何用户文件。paths 为空表示不携带上下文。",
-        "properties": {
-          "instruction": {
-            "maxLength": 4000,
-            "minLength": 1,
-            "title": "Instruction",
-            "type": "string"
-          },
-          "paths": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Paths",
-            "type": "array"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          }
-        },
-        "required": [
-          "instruction"
-        ],
-        "title": "GenerateProposalsRequest",
-        "type": "object"
-      },
       "GitCheckoutRequest": {
         "properties": {
           "create": {
@@ -442,7 +353,7 @@
         "type": "object"
       },
       "ModelProvider": {
-        "description": "模型供应商（主规格 §5.3 裁决 A4）。",
+        "description": "模型供应商（主规格 §5.3 裁决 A4）。\n\n只服务于 Flux 侧基础设施的模型调用（T2 压缩、扫描摘要等）——\nAgent 用什么模型是 Agent 自己的事，不经本枚举（目标架构 §1）。",
         "enum": [
           "openai",
           "anthropic",
@@ -729,60 +640,6 @@
           }
         },
         "summary": "Get Agent",
-        "tags": [
-          "agents"
-        ]
-      }
-    },
-    "/api/v1/agents/{agent_id}/execute": {
-      "post": {
-        "operationId": "execute_agent_api_v1_agents__agent_id__execute_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "title": "Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AgentExecuteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Execute Agent Api V1 Agents  Agent Id  Execute Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Execute Agent",
         "tags": [
           "agents"
         ]
@@ -2090,50 +1947,6 @@
           }
         },
         "summary": "Get Change",
-        "tags": [
-          "workspace"
-        ]
-      }
-    },
-    "/api/v1/workspace/generate": {
-      "post": {
-        "description": "让 Developer Agent 依据一句需求产出提案，落成 pending 提案（⑫）。",
-        "operationId": "generate_proposals_api_v1_workspace_generate_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GenerateProposalsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Generate Proposals Api V1 Workspace Generate Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Generate Proposals",
         "tags": [
           "workspace"
         ]

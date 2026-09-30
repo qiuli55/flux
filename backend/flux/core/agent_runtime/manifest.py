@@ -1,7 +1,8 @@
-"""Agent Manifest：内置 Agent 的统一配置与校验（主规格 §6.2；实施计划 §3.1）。
+"""Agent Manifest：Agent 档案的声明与校验（主规格 §6.2；实施计划 §3.1）。
 
-Manifest 只描述 Agent 的静态身份、模型与权限边界，**绝不含 API Key**——
-密钥始终由被调用的 Provider 自己从环境读取，不下发给 Agent（主规格 §14.3）。
+Manifest 只描述档案的静态身份与权限边界（角色 / 权限组 / 可见范围），
+不含模型、不含 system prompt——它们归 Agent 自己（目标架构 §1）；
+也**绝不含 API Key**（主规格 §14.3）。
 """
 
 from __future__ import annotations
@@ -13,8 +14,7 @@ from typing import Any
 
 import yaml
 
-from flux.core.agent_runtime.context import AgentSpec
-from flux.enums import AgentRole, Capability, ModelProvider
+from flux.enums import AgentRole, Capability
 from flux.errors import NotFoundError, ValidationError
 
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
@@ -27,24 +27,18 @@ BUILTIN_MANIFEST_FILES: tuple[str, ...] = (
     "tester.yaml",
 )
 
-_ALLOWED_KEYS = frozenset(
-    {"name", "role", "model", "description", "system_prompt", "skills", "tools", "permissions"}
-)
-_MODEL_KEYS = frozenset({"provider", "model"})
+_ALLOWED_KEYS = frozenset({"name", "role", "description", "skills", "tools", "permissions"})
 #: 明文出现在 Manifest 里即视为违规的键名片段（§14.3 密钥不外泄）
 _FORBIDDEN_KEY_MARKERS = ("key", "secret", "token", "password", "credential")
 
 
 @dataclass(frozen=True)
 class AgentManifest:
-    """一个 Agent 的声明式配置（§6.2：name / role / model / skills / tools / permissions）。"""
+    """一个 Agent 档案的声明式配置（§6.2：name / role / skills / tools / permissions）。"""
 
     name: str
     role: AgentRole
-    provider: ModelProvider
-    model: str
     description: str = ""
-    system_prompt: str | None = None
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
     permissions: frozenset[Capability] = field(default_factory=frozenset)
@@ -53,26 +47,11 @@ class AgentManifest:
         return {
             "name": self.name,
             "role": str(self.role),
-            "model": {"provider": str(self.provider), "model": self.model},
             "description": self.description,
             "skills": list(self.skills),
             "tools": list(self.tools),
             "permissions": sorted(str(p) for p in self.permissions),
         }
-
-    def to_spec(self) -> AgentSpec:
-        """转成运行时可用的 AgentSpec（Manifest 是声明，Spec 是实例）。"""
-        return AgentSpec(
-            name=self.name,
-            role=self.role,
-            model_provider=self.provider,
-            model_name=self.model,
-            description=self.description,
-            system_prompt=self.system_prompt,
-            skills=self.skills,
-            tools=self.tools,
-            permissions=self.permissions,
-        )
 
     # --- 解析与校验 ---
 
@@ -88,14 +67,10 @@ class AgentManifest:
                 f"存在未知字段：{', '.join(unknown)}",
                 {"allowed": sorted(_ALLOWED_KEYS)},
             )
-        provider, model = _parse_model(data.get("model"), source)
         return cls(
             name=_require_str(data, "name", source),
             role=_parse_role(data.get("role"), source),
-            provider=provider,
-            model=model,
             description=_optional_str(data, "description", source),
-            system_prompt=_optional_str(data, "system_prompt", source),
             skills=_str_tuple(data, "skills", source),
             tools=_str_tuple(data, "tools", source),
             permissions=_parse_permissions(data.get("permissions"), source),
@@ -134,16 +109,12 @@ def load_manifests(directory: str | Path = MANIFEST_DIR) -> dict[str, AgentManif
 
 
 def builtin_manifests() -> dict[str, AgentManifest]:
-    """仓库内置的 4 个 Agent（Tech Lead / Developer / Reviewer / Tester）。"""
+    """仓库内置的 4 份档案（Tech Lead / Developer / Reviewer / Tester）。"""
     present = {path.name for path in MANIFEST_DIR.glob("*.yaml")}
     missing = [name for name in BUILTIN_MANIFEST_FILES if name not in present]
     if missing:
         raise NotFoundError(f"内置 Agent Manifest 缺失：{', '.join(missing)}")
     return load_manifests(MANIFEST_DIR)
-
-
-def builtin_specs() -> list[AgentSpec]:
-    return [manifest.to_spec() for manifest in builtin_manifests().values()]
 
 
 # --- 内部校验工具 ---
@@ -206,24 +177,6 @@ def _parse_role(raw: Any, source: str) -> AgentRole:
         raise _invalid(
             source, f"未知角色：{text}", {"allowed": [str(role) for role in AgentRole]}
         ) from exc
-
-
-def _parse_model(raw: Any, source: str) -> tuple[ModelProvider, str]:
-    if not isinstance(raw, Mapping):
-        raise _invalid(source, "model 必须是 {provider, model} 映射")
-    unknown = sorted(set(raw) - _MODEL_KEYS)
-    if unknown:
-        raise _invalid(source, f"model 存在未知字段：{', '.join(unknown)}")
-    provider_text = _require_str_value(raw.get("provider"), "model.provider", source)
-    try:
-        provider = ModelProvider(provider_text.lower())
-    except ValueError as exc:
-        raise _invalid(
-            source,
-            f"未知模型供应商：{provider_text}",
-            {"allowed": [str(p) for p in ModelProvider]},
-        ) from exc
-    return provider, _require_str_value(raw.get("model"), "model.model", source)
 
 
 def _parse_permissions(raw: Any, source: str) -> frozenset[Capability]:

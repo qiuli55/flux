@@ -121,15 +121,13 @@ class Role(StrEnum):
 class ModelProvider(StrEnum):
     """模型供应商（主规格 §5.3 裁决 A4）。
 
-    CODEX_CLI 与其他四家的形态不同：它不是直连 HTTP 的模型 API，而是本机上的
-    Codex CLI 子进程（codex-minimax 包装到 MiniMax 官方 API）。对上层仍然是一个
-    Provider——同样实现 chat()，同样返回 ChatResult。
+    只服务于 Flux 侧基础设施的模型调用（T2 压缩、扫描摘要等）——
+    Agent 用什么模型是 Agent 自己的事，不经本枚举（目标架构 §1）。
     """
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     DEEPSEEK = "deepseek"
-    CODEX_CLI = "codex_cli"
     LOCAL = "local"
 
 

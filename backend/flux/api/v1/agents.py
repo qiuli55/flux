@@ -1,4 +1,8 @@
-"""Agent API（主规格 §12.3）。"""
+"""Agent API（主规格 §12.3）：Agent 档案的注册与查询。
+
+Flux 不执行 Agent（目标架构 §1）——这里只登记 agent 的身份与权限边界；
+执行由各 agent 自己的运行时完成，能力（上下文 / 工具 / Skill）经 Flux MCP 面获得。
+"""
 
 from __future__ import annotations
 
@@ -7,8 +11,8 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.agent_runtime.context import AgentContext, AgentHandle, AgentSpec
-from flux.schemas.api import AgentCreateRequest, AgentExecuteRequest
+from flux.core.agent_runtime.manager import AgentHandle, AgentSpec
+from flux.schemas.api import AgentCreateRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -20,15 +24,12 @@ async def create_agent(
     spec = AgentSpec(
         name=payload.name,
         role=payload.role,
-        model_provider=payload.model_provider,
-        model_name=payload.model_name,
         description=payload.description,
-        system_prompt=payload.system_prompt,
         skills=tuple(payload.skills),
         tools=tuple(payload.tools),
         permissions=frozenset(payload.permissions),
     )
-    handle: AgentHandle = container.agents.create(spec)
+    handle: AgentHandle = await container.agents.create(spec)
     return ok(handle.to_dict())
 
 
@@ -45,14 +46,4 @@ async def get_agent(
     return ok(container.agents.get(agent_id).to_dict())
 
 
-@router.post("/{agent_id}/execute")
-async def execute_agent(
-    agent_id: str,
-    payload: AgentExecuteRequest,
-    container: Container = Depends(get_container),
-) -> dict[str, object]:
-    result = await container.agents.execute(agent_id, payload.instruction, task_id=payload.task_id)
-    return ok(result.to_dict())
-
-
-__all__ = ["AgentContext", "router"]
+__all__ = ["router"]
