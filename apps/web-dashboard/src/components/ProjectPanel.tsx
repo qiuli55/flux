@@ -2,10 +2,8 @@
 import { useState, type FormEvent, type JSX } from "react";
 
 import type { Project, ScanOutcome } from "../api/types";
+import { MAX_CONTEXT_FILES } from "../data/context";
 import { Button, EmptyState, ErrorBanner, MetaField, Panel, PanelHeader, Tag } from "./ui";
-
-/** 后端 DeveloperProposalFlow 的上限：一次最多携带 5 个上下文文件 */
-const MAX_CONTEXT_FILES = 5;
 
 function ListValue({ items, empty = "未发现" }: { items: string[]; empty?: string }): JSX.Element {
   if (items.length === 0) return <span className="text-faint">{empty}</span>;

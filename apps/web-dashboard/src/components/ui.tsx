@@ -96,13 +96,22 @@ export function Spinner({ className = "" }: { className?: string }): JSX.Element
   );
 }
 
+/** 变更状态 → 中文标签（下拉框等纯文本场景也复用同一套文案） */
+export const CHANGE_STATUS_LABELS: Record<ChangeStatus, string> = {
+  pending: "待审阅",
+  accepted: "已批准",
+  rejected: "已拒绝",
+  applied: "已落盘",
+  failed: "落盘失败",
+};
+
 /** 变更状态徽章（主规格 §7.2 状态机） */
 const CHANGE_STATUS_META: Record<ChangeStatus, { label: string; className: string }> = {
-  pending: { label: "待审阅", className: "text-warn border-warn/40 bg-warn/10" },
-  accepted: { label: "已批准", className: "text-info border-info/40 bg-info/10" },
-  rejected: { label: "已拒绝", className: "text-faint border-line bg-surface-2" },
-  applied: { label: "已落盘", className: "text-add border-add/40 bg-add/10" },
-  failed: { label: "落盘失败", className: "text-danger border-danger/40 bg-danger/10" },
+  pending: { label: CHANGE_STATUS_LABELS.pending, className: "text-warn border-warn/40 bg-warn/10" },
+  accepted: { label: CHANGE_STATUS_LABELS.accepted, className: "text-info border-info/40 bg-info/10" },
+  rejected: { label: CHANGE_STATUS_LABELS.rejected, className: "text-faint border-line bg-surface-2" },
+  applied: { label: CHANGE_STATUS_LABELS.applied, className: "text-add border-add/40 bg-add/10" },
+  failed: { label: CHANGE_STATUS_LABELS.failed, className: "text-danger border-danger/40 bg-danger/10" },
 };
 
 export function ChangeStatusBadge({ status }: { status: ChangeStatus }): JSX.Element {

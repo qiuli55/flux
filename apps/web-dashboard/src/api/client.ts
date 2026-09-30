@@ -10,6 +10,8 @@ import type {
   AgentHandle,
   Change,
   Envelope,
+  FileContent,
+  FileTree,
   GitCommit,
   GitStatus,
   HealthData,
@@ -116,6 +118,19 @@ export const api = {
   /** 扫描项目工作区（workspace_root 留空用服务端配置） */
   scanProject: (projectId: string) =>
     getData<ScanOutcome>("POST", `/projects/${projectId}/scan`, { record: true }),
+
+  /**
+   * 列出工作区文件树（只读）。project_id 仅做存在性校验，工作区根由后端配置决定，
+   * 因此缺省 path 是「工作区根」而不是「该项目的仓库」。
+   */
+  listFiles: (projectId: string, options?: { path?: string; depth?: number }) =>
+    getData<FileTree>(
+      "GET",
+      `/projects/${projectId}/files${query({ path: options?.path, depth: options?.depth?.toString() })}`,
+    ),
+  /** 读单个文件（只读）；越界/二进制/非 UTF-8 由后端 422 拒绝，错误原文直接展示 */
+  readFile: (projectId: string, path: string) =>
+    getData<FileContent>("GET", `/projects/${projectId}/files/content${query({ path })}`),
 
   /** 变更列表（可按状态过滤） */
   listChanges: (status?: string) => getData<Change[]>("GET", `/workspace/changes${query({ status })}`),

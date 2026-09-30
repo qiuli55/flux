@@ -1,8 +1,9 @@
 /**
  * Flux · 最小 IDE 的前端编排层。
  *
- * 三栏 + 顶部 + 底部：左=项目与文件，中=变更审阅与 Git，右=AI 团队与最近活动，
- * 底部=任务时间线与统计。所有数据都来自后端真实接口，不做任何 mock。
+ * 三栏 + 顶部 + 底部：左=工作区文件/项目（tab 切换），中=需求条 + 打开的文件标签 +
+ * 代码编辑器 + 底部 dock（任务流/变更/Git），右=AI 团队与最近活动。
+ * 所有数据都来自后端真实接口，不做任何 mock。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,12 +20,17 @@ import type {
 } from "./api/types";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { AgentPanel, TeamPulse } from "./components/AgentPanel";
-import { ChangeReview } from "./components/ChangeReview";
+import { ChangeList } from "./components/ChangeList";
+import { CodeEditor } from "./components/CodeEditor";
+import { FileExplorer } from "./components/FileExplorer";
+import { FileTabs } from "./components/FileTabs";
 import { GitPanel } from "./components/GitPanel";
 import { ProjectPanel } from "./components/ProjectPanel";
+import { RequirementBar } from "./components/RequirementBar";
 import { TaskTimeline, type RunStats } from "./components/TaskTimeline";
 import { TopBar } from "./components/TopBar";
-import { Panel } from "./components/ui";
+import { ErrorBanner, Panel } from "./components/ui";
+import { MAX_CONTEXT_FILES, MAX_OPEN_FILES } from "./data/context";
 import { BUILTIN_ROLES, toCreateRequest } from "./data/team";
 import { createEvent, type EventLevel, type LogEvent } from "./data/events";
 
@@ -92,7 +98,16 @@ export default function App() {
   const [assembleBusy, setAssembleBusy] = useState(false);
 
   const [events, setEvents] = useState<LogEvent[]>([]);
-  const [dockTab, setDockTab] = useState<"timeline" | "git">("timeline");
+  const [dockTab, setDockTab] = useState<"timeline" | "changes" | "git">("timeline");
+
+  // 中央区域：打开的文件标签与当前文件；左栏 tab 决定显示文件浏览器还是项目面板
+  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
+  const [openFiles, setOpenFiles] = useState<string[]>([]);
+  const [leftTab, setLeftTab] = useState<"files" | "project">("files");
+  const [openLimitNotice, setOpenLimitNotice] = useState<string | null>(null);
+  // 用户显式锁定的提案：只有真的点了变更清单 / 刚生成完才设置。
+  // 编辑器不能用「列表当前选中项」当默认值——列表会自动选中首条，会顶掉 pending 优先。
+  const [pinnedChangeId, setPinnedChangeId] = useState<string | null>(null);
 
   /** 追加一条事件日志（同时喂给最近活动与任务时间线） */
   const log = useCallback((actor: string, action: string, result: string, level: EventLevel = "info") => {
@@ -188,6 +203,44 @@ export default function App() {
     setDetailBusy(false);
   }, []);
 
+  /**
+   * 打开文件：加入打开标签（上限 6，超出只提示不打开）并切换当前文件。
+   *
+   * force=true 用于「从变更清单/生成结果跳转」这类必须能看到该文件的入口：
+   * 此时腾出最早的一个标签，避免出现「编辑器显示某个文件但标签栏里没有它」的错位。
+   */
+  const openFile = useCallback(
+    (path: string, options?: { force?: boolean }) => {
+      if (!openFiles.includes(path) && openFiles.length >= MAX_OPEN_FILES) {
+        if (!options?.force) {
+          setOpenLimitNotice(`最多同时打开 ${MAX_OPEN_FILES} 个文件，请先关闭一个标签。`);
+          return;
+        }
+        setOpenLimitNotice(null);
+        setOpenFiles([...openFiles.slice(1), path]);
+        setCurrentFilePath(path);
+        return;
+      }
+      setOpenLimitNotice(null);
+      setOpenFiles((prev) => (prev.includes(path) ? prev : [...prev, path]));
+      setCurrentFilePath(path);
+    },
+    [openFiles],
+  );
+
+  /** 关闭标签：关掉的若是当前文件，切到相邻的一个，没有则回空态 */
+  const closeFile = useCallback(
+    (path: string) => {
+      const index = openFiles.indexOf(path);
+      const next = openFiles.filter((item) => item !== path);
+      setOpenFiles(next);
+      if (currentFilePath === path) {
+        setCurrentFilePath(next[index] ?? next[index - 1] ?? null);
+      }
+    },
+    [openFiles, currentFilePath],
+  );
+
   // 首次加载：健康、项目、Agent、Git
   useEffect(() => {
     void loadHealth();
@@ -206,6 +259,14 @@ export default function App() {
   useEffect(() => {
     void loadChanges(filter);
   }, [filter, loadChanges]);
+
+  // 切换项目：工作区根由后端配置不会变，但当前打开的文件属于上一个项目上下文，必须清空
+  useEffect(() => {
+    setCurrentFilePath(null);
+    setOpenFiles([]);
+    setOpenLimitNotice(null);
+    setPinnedChangeId(null);
+  }, [projectId]);
 
   // 默认提交信息跟随已落盘变更（用户改过就不覆盖）
   useEffect(() => {
@@ -285,22 +346,33 @@ export default function App() {
       selectedIdRef.current = first;
       setSelectedId(first);
       setSelected(list.find((change) => change.id === first) ?? outcome.proposals[0] ?? null);
+      // 生成成功后把编辑器与底部 dock 一起切到第一条提案，保证结果立刻可见
+      const firstChange = list.find((change) => change.id === first) ?? outcome.proposals[0] ?? null;
+      if (firstChange) {
+        setPinnedChangeId(firstChange.id);
+        openFile(firstChange.file_path, { force: true });
+        setDockTab("changes");
+      }
     } catch (error) {
       setGenerateError(errorMessage(error));
       log("Developer", "产出提案失败", errorMessage(error), "error");
       void loadChanges(filter);
     }
     setGenerateBusy(false);
-  }, [instruction, contextPaths, projectId, filter, loadChanges, log]);
+  }, [instruction, contextPaths, projectId, filter, loadChanges, log, openFile]);
 
   const handleSelectChange = useCallback(
     (changeId: string) => {
       selectedIdRef.current = changeId;
       setSelectedId(changeId);
-      setSelected(changes.find((change) => change.id === changeId) ?? null);
+      const target = changes.find((change) => change.id === changeId) ?? null;
+      setSelected(target);
+      setPinnedChangeId(changeId);
+      // 列表选中顺带把编辑器切到同一个文件，方便直接对照
+      if (target) openFile(target.file_path, { force: true });
       void refreshSelected(changeId);
     },
-    [changes, refreshSelected],
+    [changes, refreshSelected, openFile],
   );
 
   const runAction = useCallback(
@@ -391,6 +463,13 @@ export default function App() {
   const projectName = projects.find((project) => project.id === projectId)?.name ?? "未选择项目";
   const latestEvent = events.length > 0 ? (events[events.length - 1]?.action ?? null) : null;
 
+  const addContextPath = useCallback((path: string) => {
+    setContextPaths((prev) => (prev.includes(path) || prev.length >= MAX_CONTEXT_FILES ? prev : [...prev, path]));
+  }, []);
+  const removeContextPath = useCallback((path: string) => {
+    setContextPaths((prev) => prev.filter((item) => item !== path));
+  }, []);
+
   return (
     <div className="flex h-screen flex-col bg-canvas text-text">
       <TopBar
@@ -403,37 +482,66 @@ export default function App() {
       />
 
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:overflow-hidden">
-        {/* 左栏 · 项目与文件 */}
+        {/* 左栏 · 工作区文件 / 项目（tab 切换）+ 团队脉冲 */}
         <div className="flex min-h-[30rem] flex-col gap-2 xl:min-h-0">
-          <ProjectPanel
-            projects={projects}
-            selectedId={projectId}
-            onSelect={(id) => {
-              setProjectId(id);
-              setScan(null);
-              setContextPaths([]);
-            }}
-            onCreate={handleCreateProject}
-            createBusy={createBusy}
-            scan={scan}
-            scanBusy={scanBusy}
-            onScan={() => void handleScan()}
-            contextPaths={contextPaths}
-            onAddPath={(path) =>
-              setContextPaths((prev) => (prev.includes(path) || prev.length >= 5 ? prev : [...prev, path]))
-            }
-            onRemovePath={(path) => setContextPaths((prev) => prev.filter((item) => item !== path))}
-            createError={createError}
-            scanError={scanError}
-            onDismissCreateError={() => setCreateError(null)}
-            onDismissScanError={() => setScanError(null)}
-          />
+          <div className="flex shrink-0 items-center gap-1 rounded-lg border border-line bg-surface-1 p-1">
+            {(
+              [
+                ["files", "文件"],
+                ["project", "项目"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setLeftTab(value)}
+                className={`flex-1 rounded px-2 py-1 text-xs transition-colors ${
+                  leftTab === value ? "bg-surface-3 text-text" : "text-faint hover:text-muted"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {leftTab === "files" ? (
+            <FileExplorer
+              projectId={projectId}
+              changes={changes}
+              currentFilePath={currentFilePath}
+              onOpenFile={openFile}
+              contextPaths={contextPaths}
+              onAddPath={addContextPath}
+              onRemovePath={removeContextPath}
+            />
+          ) : (
+            <ProjectPanel
+              projects={projects}
+              selectedId={projectId}
+              onSelect={(id) => {
+                setProjectId(id);
+                setScan(null);
+                setContextPaths([]);
+              }}
+              onCreate={handleCreateProject}
+              createBusy={createBusy}
+              scan={scan}
+              scanBusy={scanBusy}
+              onScan={() => void handleScan()}
+              contextPaths={contextPaths}
+              onAddPath={addContextPath}
+              onRemovePath={removeContextPath}
+              createError={createError}
+              scanError={scanError}
+              onDismissCreateError={() => setCreateError(null)}
+              onDismissScanError={() => setScanError(null)}
+            />
+          )}
           <TeamPulse agents={agents} latest={latestEvent} />
         </div>
 
-        {/* 中栏 · 变更审阅 + 底部任务流/Git */}
+        {/* 中栏 · 需求条 + 打开的文件标签 + 代码编辑器 + 底部 dock */}
         <div className="flex min-h-[42rem] flex-col gap-2 xl:min-h-0">
-          <ChangeReview
+          <RequirementBar
             projectName={projectName}
             contextCount={contextPaths.length}
             instruction={instruction}
@@ -443,23 +551,43 @@ export default function App() {
             generateError={generateError}
             onDismissGenerateError={() => setGenerateError(null)}
             generateSummary={generateSummary}
+          />
+
+          <FileTabs
+            openFiles={openFiles}
+            currentFilePath={currentFilePath}
             changes={changes}
-            filter={filter}
-            onFilterChange={setFilter}
-            listBusy={listBusy}
-            listError={listError}
-            onDismissListError={() => setListError(null)}
-            onReload={() => void loadChanges(filter)}
+            onSelect={setCurrentFilePath}
+            onClose={closeFile}
+          />
+
+          {openLimitNotice ? (
+            <div className="shrink-0">
+              <ErrorBanner message={openLimitNotice} onDismiss={() => setOpenLimitNotice(null)} />
+            </div>
+          ) : null}
+
+          <CodeEditor
+            projectId={projectId}
+            filePath={currentFilePath}
+            changes={changes}
+            pinnedChangeId={pinnedChangeId}
             selected={selected}
-            selectedId={selectedId}
-            onSelect={handleSelectChange}
             detailBusy={detailBusy}
+            onSelectChange={handleSelectChange}
+            contextPaths={contextPaths}
+            onAddPath={addContextPath}
+            onRemovePath={removeContextPath}
             actionBusyId={actionBusyId}
             onAccept={(id) => void runAction(id, "accept")}
             onApply={(id) => void runAction(id, "apply")}
             onReject={(id, reason) => void runAction(id, "reject", reason)}
             actionError={actionError}
             onDismissActionError={() => setActionError(null)}
+            onViewDiff={(id) => {
+              setDockTab("changes");
+              handleSelectChange(id);
+            }}
           />
 
           <Panel className="h-[17rem] shrink-0">
@@ -467,6 +595,7 @@ export default function App() {
               {(
                 [
                   ["timeline", `AI 任务流 ${events.length}`],
+                  ["changes", `变更 ${changes.length}`],
                   ["git", `Git 变更 ${gitStatus?.files.length ?? 0}`],
                 ] as const
               ).map(([value, label]) => (
@@ -482,12 +611,16 @@ export default function App() {
                 </button>
               ))}
               <span className="ml-auto truncate text-[11px] text-faint">
-                {dockTab === "timeline" ? "本轮每一步操作与结果" : "只提交 applied 状态的变更"}
+                {dockTab === "timeline"
+                  ? "本轮每一步操作与结果"
+                  : dockTab === "changes"
+                    ? "选中一条变更，编辑器会同步到该文件"
+                    : "只提交 applied 状态的变更"}
               </span>
             </div>
             {dockTab === "timeline" ? (
               <TaskTimeline events={events} stats={stats} />
-            ) : (
+            ) : dockTab === "git" ? (
               <GitPanel
                 status={gitStatus}
                 loading={gitBusy}
@@ -505,6 +638,18 @@ export default function App() {
                 onDismissCommitError={() => setCommitError(null)}
                 lastCommit={lastCommit}
                 appliedCount={appliedChanges.length}
+              />
+            ) : (
+              <ChangeList
+                changes={changes}
+                filter={filter}
+                onFilterChange={setFilter}
+                listBusy={listBusy}
+                listError={listError}
+                onDismissListError={() => setListError(null)}
+                onReload={() => void loadChanges(filter)}
+                selectedId={selectedId}
+                onSelect={handleSelectChange}
               />
             )}
           </Panel>

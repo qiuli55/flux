@@ -73,6 +73,37 @@ export interface ScanOutcome {
   recorded: MemoryEntry[];
 }
 
+/**
+ * 工作区文件树的一个条目（GET /api/v1/projects/{id}/files）。
+ *
+ * `path` 是相对工作区根的 POSIX 路径；目录的 size 恒为 null。
+ * 该工作区根由后端 FLUX_WORKSPACE_ROOT 决定，与 project_id 无关
+ * （project_id 只做存在性校验）。
+ */
+export interface FileEntry {
+  path: string;
+  name: string;
+  kind: "dir" | "file";
+  size: number | null;
+  modified_at: string;
+}
+
+/** GET /api/v1/projects/{id}/files 的 data（metadata.count 为条目数） */
+export interface FileTree {
+  root: string;
+  path: string;
+  entries: FileEntry[];
+  truncated: boolean;
+}
+
+/** GET /api/v1/projects/{id}/files/content 的 data：size 是文件真实字节数 */
+export interface FileContent {
+  path: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+
 /** 提案状态机（主规格 §7.2） */
 export type ChangeStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
 
