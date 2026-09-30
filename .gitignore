@@ -19,6 +19,8 @@ venv/
 *.db
 data/
 artifacts/
+# 例外：前端源码目录 src/data/ 是代码而不是运行期数据，必须入库
+!apps/web-dashboard/src/data/
 # Apply Engine 的备份目录（落在被改项目根目录下，见 §7.6）
 .flux/
 
