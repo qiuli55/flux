@@ -67,7 +67,11 @@ class Container:
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
         default_provider = self._resolve_default_provider()
         self.router = ModelRouter(build_providers(self.settings), default_provider=default_provider)
-        self.agents = AgentManager(self.router, self.bus)
+        self.agents = AgentManager(
+            self.router,
+            self.bus,
+            max_output_tokens=self.settings.model_max_output_tokens,
+        )
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
         # Apply Engine 是唯一会写用户真实文件的组件（§7.6），根目录与测试命令来自配置

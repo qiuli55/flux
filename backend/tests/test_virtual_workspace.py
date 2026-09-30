@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
+import sys
 
 import pytest
 
@@ -15,7 +17,7 @@ from flux.core.agent_runtime.developer import CodeChangeSet, FileChange
 from flux.core.event.bus import Events
 from flux.core.virtual_workspace.diff_engine import content_hash
 from flux.enums import VirtualChangeStatus
-from flux.errors import InvalidTransitionError, NotFoundError, ValidationError
+from flux.errors import ApplyFailedError, InvalidTransitionError, NotFoundError, ValidationError
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
@@ -137,6 +139,35 @@ def test_apply_pending_goes_through_accepted(apply_container: Container, workspa
     proposal = _propose(apply_container)
     applied = asyncio.run(apply_container.workspace.apply(str(proposal.id)))
     assert applied.status == VirtualChangeStatus.APPLIED.value
+
+
+def test_apply_failure_records_test_output(
+    apply_settings, db_schema: None, workspace_root
+) -> None:
+    """落盘后测试不过 → failed，且 apply_error 必须带测试输出（§7.6 失败必留痕）。
+
+    只留一句"测试未通过"的话，人看不出是哪个用例挂了、下一轮该改哪里。
+    """
+    (workspace_root / "auth").mkdir()
+    (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
+    failing = workspace_root / "failing_check.py"
+    failing.write_text(
+        "import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8"
+    )
+    settings = apply_settings.model_copy(
+        update={"test_command": f"{shlex.quote(sys.executable)} {shlex.quote(str(failing))}"}
+    )
+    container = Container(settings)
+    proposal = _propose(container)
+
+    with pytest.raises(ApplyFailedError):
+        asyncio.run(container.workspace.apply(str(proposal.id)))
+
+    stored = asyncio.run(container.workspace.get(str(proposal.id)))
+    assert stored.status == VirtualChangeStatus.FAILED.value
+    assert stored.apply_error is not None
+    assert "测试未通过" in stored.apply_error
+    assert "assert 1 == 2" in stored.apply_error
 
 
 def test_apply_without_workspace_root_is_rejected(container: Container) -> None:

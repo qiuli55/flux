@@ -23,9 +23,15 @@ logger = get_logger(__name__)
 
 
 class AgentManager:
-    def __init__(self, router: ModelRouter, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        router: ModelRouter,
+        bus: EventBus | None = None,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> None:
         self._bus = bus
-        self._executor = AgentExecutor(router, bus)
+        self._executor = AgentExecutor(router, bus, max_output_tokens=max_output_tokens)
         self._agents: dict[uuid.UUID, AgentHandle] = {}
 
     # --- 接口：create ---

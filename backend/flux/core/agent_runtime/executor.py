@@ -43,9 +43,17 @@ class AgentRunResult:
 
 
 class AgentExecutor:
-    def __init__(self, router: ModelRouter, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        router: ModelRouter,
+        bus: EventBus | None = None,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> None:
         self._router = router
         self._bus = bus
+        # 不给就用 Provider 自己的默认值（1024），给了就按 Agent 输出预算放开
+        self._max_output_tokens = max_output_tokens
 
     async def run(
         self, handle: AgentHandle, instruction: str, *, task_id: str | None = None
@@ -56,7 +64,11 @@ class AgentExecutor:
         messages.extend(handle.context.messages)
         messages.append(ChatMessage(role="user", content=instruction))
 
-        result = await self._router.chat(messages, provider=handle.spec.model_provider)
+        result = await self._router.chat(
+            messages,
+            provider=handle.spec.model_provider,
+            max_tokens=self._max_output_tokens,
+        )
 
         handle.context.task_id = task_id or handle.context.task_id
         handle.context.add("user", instruction)

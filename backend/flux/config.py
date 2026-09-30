@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # HTTP 调用策略（§5.1 错误处理：模型失败 / 超时 → 重试）
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
+    # Agent 单次输出的 token 上限。Provider 模块里的 1024 是"下限而非推荐值"，
+    # 而 Agent 一次要产出**完整文件内容**（多文件实现动辄数千 token），上限过小会让
+    # 输出被截断、提案 JSON 解析失败，所以在 Agent 执行层统一给足。
+    model_max_output_tokens: int = 8192
 
     # --- DSH Agent Runtime（集成方案 §17 配置表；Phase 1 用官方 Python SDK）---
     # 是否启用 DSH Agent Runtime（默认关闭，未启用时 /dsh 接口返回 503）

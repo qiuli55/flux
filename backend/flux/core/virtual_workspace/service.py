@@ -27,6 +27,10 @@ from flux.models.workspace import VirtualChange
 
 logger = get_logger(__name__)
 
+# apply_error 里保留的测试输出上限。测试失败时最该被看到的是「哪个用例挂了、挂在哪行」，
+# 这些都在 pytest 输出的尾部；全文可能上千行，截太长反而读不出重点。
+APPLY_ERROR_OUTPUT_CHARS = 4000
+
 # 允许的审查状态跃迁（§7.2 文件状态机 + 实施计划 §5 的 FAILED）
 ALLOWED: dict[VirtualChangeStatus, frozenset[VirtualChangeStatus]] = {
     VirtualChangeStatus.PENDING: frozenset(
@@ -191,7 +195,7 @@ class VirtualWorkspaceService:
             failed = await self._repo.set_apply_result(
                 change.id,
                 status=VirtualChangeStatus.FAILED,
-                apply_error=str(exc),
+                apply_error=_failure_reason(exc),
             )
             await self._publish(
                 failed,
@@ -252,6 +256,21 @@ class VirtualWorkspaceService:
         if extra:
             payload.update(extra)
         await self._bus.publish(Events.WORKSPACE_CHANGED, payload)
+
+
+def _failure_reason(exc: Exception) -> str:
+    """拼出落到 apply_error 的失败原因（§7.6 要求"失败必留痕"）。
+
+    只写异常消息的话，用户看到的是"Apply 后测试未通过（exit=1）"，既不知道哪个用例挂了、
+    也不知道下一轮该改什么——测试输出才是修复的依据，所以从 details 里取出来一并记下。
+    """
+    message = str(exc)
+    details = getattr(exc, "details", None)
+    test = details.get("test") if isinstance(details, Mapping) else None
+    output = test.get("output") if isinstance(test, Mapping) else None
+    if not isinstance(output, str) or not output.strip():
+        return message
+    return f"{message}\n\n{output.strip()[-APPLY_ERROR_OUTPUT_CHARS:]}"
 
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
