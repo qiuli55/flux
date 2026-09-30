@@ -1,8 +1,10 @@
 # Flux × DeepSeek Harness 集成方案
 
-> 状态：设计方案
+> 状态：设计方案（2026-09-30 回写接入口径：**官方 Python SDK**，见 §10）
 >
 > 目标：以 DeepSeek Harness（DSH）作为 Flux 内置 Agent Runtime 的基础，保留 DSH/Cordis 的 Agent、Plugin、Tool、Skill、Session 等能力，同时通过 Flux Bridge 注入 Flux 的 AI Engineering 能力。
+>
+> 本文档的架构决策（§1–§9、§11–§15、§19–§23）保持不变；§10、§16、§17、§18 已按「官方 Python SDK 接入」重写，理由见 §10.2。
 
 ## 1. 核心决策
 
@@ -187,6 +189,8 @@ ApplyEngine
 
 `workspace.apply` 不能成为普通 Agent Tool 的直接写文件能力；真实落盘仍由 ApplyEngine 控制，并进行 hash check。
 
+**Phase 1 的现实约束（2026-09-30 补充）**：`sdk` profile 自带完整的文件系统与 shell 工具组，**这条"不能绕过"在 Phase 1 还不成立**——真正的拦截要靠 §9 的 Permission Engine 与 §18 Phase 4 的 flux-workspace 插件。因此在 Phase 1/2，Flux 采取的是**隔离而非拦截**：`cwd` 指向独立空目录 `/opt/flux/dsh-ws`，`dsh_home` 指向 `/opt/flux/dsh-home`，两者都不指向用户真实项目，确保这一阶段无论 Agent 怎么调用工具都碰不到真实文件。拦截能力随 Phase 4 一起交付。
+
 ## 9. Permission Engine
 
 所有 DSH Plugin 和 Agent 的 Flux 能力必须经过 Flux Permission Engine。
@@ -210,31 +214,83 @@ ApplyEngine
 
 ## 10. Python 与 DSH 通信
 
-DSH 是 Node/TypeScript Runtime，而 Flux Engineering Core 当前是 Python。第一阶段建议使用明确的 Agent Bridge。
+DSH 是 Node/TypeScript Runtime，而 Flux Engineering Core 是 Python。**第一阶段用官方 Python SDK 作为唯一接入面**：不自建 Node 服务、不自建传输层、不 vendor 源码。
 
 ```
-Python Flux Core
-      │
-      │ localhost HTTP / Unix Socket / RPC
+Python Flux Core（Flux AgentRuntime）
+      │  deepseek-harness-sdk（PyPI 官方包）
       ▼
-Node DSH Runtime
+HarnessClient（SDK 内置，同步 JSON-RPC 客户端）
+      │  stdio NDJSON JSON-RPC（dsh --profile sdk）
+      ▼
+deepseek-harness-sdk-runtime-linux-x64（自包含单文件可执行）
       │
       ▼
 DSH Agent
 ```
 
-初期可以使用 localhost HTTP，接口保持内部 Agent API 语义，例如：
+Flux 侧只需要一个薄客户端。下面这段是可直接运行的形态（路径为 A 机实际取值）：
 
-```
-POST /api/v1/agent-runtime/workspace/read
-POST /api/v1/agent-runtime/workspace/propose
-POST /api/v1/agent-runtime/brain/search
-POST /api/v1/agent-runtime/test/run
-POST /api/v1/agent-runtime/git/status
-POST /api/v1/agent-runtime/operation/record
+```python
+from deepseek_harness import DeepSeekHarness
+
+with DeepSeekHarness(
+    dsh_home="/opt/flux/dsh-home",   # 必须显式指定；SDK 绝不隐式使用 ~/.dsh
+    cwd="/opt/flux/dsh-ws",          # Agent 工作区，由 Flux 决定
+    provider="deepseek-official",
+    model="deepseek-v4-flash",
+    max_tokens=49152,
+) as harness:
+    result = harness.run("把 auth/login.py 的登录校验拆成独立函数", session_id="flux-run-0001")
+    print(result.session_id, result.finish_reason)
+    print(result.final_response)
 ```
 
-未来可以替换为 Unix Socket / JSON-RPC / 其他 IPC，而不改变 Flux Capability 层。
+关键契约（均取自 SDK 公开 API 与上游 README，非推测）：
+
+- `DeepSeekHarness` **惰性启动**，实例可复用到 `close()` 或退出上下文；初始化握手默认 30 秒超时（`initialize_timeout_seconds`），普通轮次默认不设超时。
+- `Session.run()` 有明确活动区间：从 prompt 的 inbox receipt 起，到整棵 Agent 树 idle 止，然后返回 `RunResult(session_id, final_response, finish_reason, events, notifications)`。
+- `finish_reason` 取最后一个根会话 `turn/end` 的 `data.reason.kind`（如 `completed` / `max-tokens` / `error`）。
+- 流式：`Session.run(..., on_notification=...)` 按 wire order 收到根会话与已发现子 Agent 的通知；`RunResult.events` 只含根会话事件，子 Agent 输出不会顶替根响应。
+- 中断：runtime 协议含 `session/cancel`（通知，参数 `{"sessionId": ...}`），SDK 未封装成高层方法，但 `harness.client.notify("session/cancel", {"sessionId": sid})` 是公开面；取消后运行循环会在会话转 idle 时正常收尾。
+- 环境变量：运行子进程默认继承调用方环境，`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` 可直接生效，也可用 `api_key` / `base_url` 显式覆盖（Flux 用后者，不写文件）。
+- 运行时自带 ripgrep sidecar（`deepseek-harness-sdk-runtime-linux-x64-rg`），**目标机器不需要 Node**。
+
+### 10.1 已核实的上游事实（2026-09-30 快照）
+
+| 项 | 值 | 来源 |
+| --- | --- | --- |
+| SDK 包 | `deepseek-harness-sdk` = `0.1.5rc1` | 安装元数据 |
+| 依赖约束 | `deepseek-harness-runtime-bin==0.1.5rc1`、`pydantic>=2.12,<3`、Python `>=3.10` | SDK `METADATA` |
+| 许可 | MIT | SDK `METADATA` |
+| 运行时载体 | 单文件可执行 `deepseek-harness-sdk-runtime-linux-x64`，274,599,104 字节（约 261.9 MiB），另有 `-rg` sidecar | `deepseek_harness_runtime` 包文档 |
+| runtime-bin 元数据版本 | `0.0.0-dev`（该 wheel 的 `deepseek-harness-runtime.json` 未填真实版本） | 运行时包元数据 |
+| 上游仓库 `master` | 版本 `0.2.0-rc.1`，`engines.node = ^22.19.0 \|\| >=24.0.0`，`packageManager: pnpm@11.7.0` | 上游根 `package.json` |
+| 本机前提 | glibc 2.35、Python 3.10.12、Flux venv 内 pydantic 2.13.5（满足 `>=2.12,<3`） | 实测 |
+| 冒烟结果 | 隔离环境 `/opt/dsh-smoke` 实测通过：输出 `FINAL_RESPONSE: DSH_OK`，退出码 0 | 实测 |
+
+> 由于 runtime-bin 自身不报版本，**锁版本一律以 SDK 版本为准**，并在 `DSH_UPSTREAM.md` 同时记录 wheel 文件名与 sha256。
+
+### 10.2 口径变更与理由（2026-09-30，已批准）
+
+**旧口径**：Python ↔ Node 走 localhost HTTP（`POST /api/v1/agent-runtime/...`），并 vendor DSH 源码、自建 Node Agent Runtime、装 Node 22/24 + pnpm 构建。
+**新口径**：Phase 1 直接用官方 Python SDK 的 stdio NDJSON JSON-RPC；不 vendor、不装 Node、不构建。
+
+理由：
+
+1. **上游已提供官方 SDK**：`dsh --profile sdk` 由 wheel 内的自包含可执行承载，目标机器不需要 Node / pnpm / 构建。
+2. **整体消除自建桥的工程量与故障面**：跨进程 HTTP 服务、端口、鉴权、生命周期、版本漂移都不复存在。
+3. **已实测跑通**，不是纸面方案。
+4. **能力语义不变**：§7 的 Flux Capability / Tool API 与 §9 的 Permission Engine 不受影响，它们描述的是「Flux 暴露什么」，与「用哪种传输」解耦。
+
+保留项：若将来出现 SDK 覆盖不到的控制面（进程外多路复用，或 Flux 需要作为协议 client 接管文件与权限请求），再增加补通道，不改 Capability 层。
+
+### 10.3 实现注意（写代码前必须知道的四条）
+
+1. **SDK 是同步的，Flux 是异步的**。`Session.run()` 阻塞至会话 idle；在 FastAPI 里必须用 `asyncio.to_thread`（或专用线程池）卸载，不能直接 await。
+2. **一个 harness 实例串行使用**。runtime 子进程由实例独占，多 Agent 并发需要按 Agent 各持一个实例（或显式排队），不要共享单实例并发 `run`。
+3. **`dsh_home` 必须显式给，且要放仓库外**（如 `/opt/flux/dsh-home`），否则会污染 git 工作区；每个 home 内含 profiles / plugins / 会话落盘。
+4. **不要在 Flux 主进程用 `on_notification` 直接做重活**：回调在 SDK 读线程对应的同步上下文里执行，只做「转成 Flux 事件投递」，落库与广播交给 EventBus。
 
 ## 11. Model Gateway
 
@@ -251,6 +307,8 @@ DSH Agent
 ```
 
 第一阶段不要同时重构 Model Gateway。先让 DSH 使用成熟的 LLM Runtime，Flux 记录 Agent Run / Model / Usage。稳定后再实现 DSH → Flux Model Gateway。
+
+**Phase 1 取值（2026-09-30）**：DSH 侧的 provider 用 `deepseek-official`，model 用 `deepseek-v4-flash`；凭据用 Flux 现有的 `/opt/ops/.env` 读进来后，以 `DeepSeekHarness(api_key=...)` 注入子进程，不落任何文件。Flux 现有的 `agent_runtime` 仍保留 `ModelRouter`（当前默认走 MiniMax 的 Anthropic 兼容端点），两条路径在 Phase 1 并存：**内置工程 Agent 走 ModelRouter，DSH Agent 走 DSH LLM Runtime**。
 
 ## 12. Session 与 Context 分层
 
@@ -345,30 +403,29 @@ AgentRun
 
 这将直接服务未来 Agent Team Room、Cost Center 和 Operation Timeline。
 
-## 16. DSH Vendor / Upstream 策略
+## 16. DSH 上游策略
 
 DSH 当前处于快速迭代阶段，因此 Flux 不应让 Python/业务层直接依赖 DSH 内部实现。
 
-建议：
+**2026-09-30 回写**：不再 vendor 源码，也不再自建 Node 侧产物。改为**只用官方 Python SDK + 锁版本**。
 
 ```
-agent-runtime/
-└── dsh/
-    ├── vendor/
-    │   └── deepseek-harness/
-    ├── flux-plugins/
-    ├── patches/
-    └── UPSTREAM.md
+backend/
+└── vendor-notes/
+    └── DSH_UPSTREAM.md      # 记录 SDK 版本、wheel 文件名与 sha256、冒烟结论
 ```
 
-`UPSTREAM.md` 记录 DSH version 和 commit。
+约束：
 
-原则：
-1. 尽量不修改 vendor 中的 DSH 核心代码。
-2. Flux-specific 逻辑优先写成 Plugin。
-3. 必须修改 DSH 时使用小而明确的 patch。
-4. 每次升级 DSH 后运行 Flux Compatibility Test。
-5. Flux 业务层不直接 import DSH 内部实现。
+1. Flux 业务层只 import `deepseek_harness` 的公开符号（`DeepSeekHarness`、`RunResult`、`Session`、`Notification`、`SdkProtocolError`），不 import 私有模块，不硬编码 runtime 内部协议细节。
+2. `deepseek-harness-sdk==0.1.5rc1` 与 `deepseek-harness-runtime-bin==0.1.5rc1` 都要锁死（含 `rc` 标记），写进 `backend/requirements.txt`；升级单独成一次提交，并附冒烟结果。
+3. 需要 Flux 专属逻辑时，优先写成 DSH Plugin（见 §6），而不是改 runtime。
+4. 每次升级后跑一次 Flux Compatibility Test（验收口径：Flux → DSH → DeepSeek → Agent Response）。
+5. **产物不进仓库**：wheel 80.7MB、解包出的可执行 261.9MiB，仓库只记版本号与安装命令。
+
+**为什么不再 vendor**：vendor 源码路线要求系统 Node `^22.19.0 || >=24.0.0` 与 `pnpm@11.7.0`，还要自行构建（上游 `master` 为 `0.2.0-rc.1`）[2026-09-30 快照]；SDK 路线把这些前提全部去掉，装包即用，且版本可锁、可回滚。
+
+**何时才需要 Node 侧开发**：只有进入 §18 Phase 3 之后、真正要写 DSH Plugin（TS/Cordis）时才需要 Node 工具链。届时再单独评估，不影响 Phase 1/2。
 
 ## 17. 推荐代码结构
 
@@ -380,7 +437,7 @@ backend/flux/
 │   ├── agent_runtime/
 │   │   ├── manager.py
 │   │   ├── dsh_client.py
-│   │   ├── events.py
+│   │   ├── dsh_events.py
 │   │   └── types.py
 │   ├── task_engine/
 │   ├── project_brain/
@@ -394,36 +451,66 @@ backend/flux/
 ### DSH Runtime
 
 ```
+backend/flux/core/agent_runtime/
+├── manager.py        # 既有：Agent 注册表与生命周期（对外接口不变）
+├── dsh_client.py     # 新增：包装 DeepSeekHarness，同步 run 卸载到线程
+├── dsh_events.py     # 新增：DSH Notification → Flux EventBus 事件映射
+└── types.py
+
+backend/vendor-notes/
+└── DSH_UPSTREAM.md   # 上游版本与冒烟记录（见 §16）
+
+/opt/flux/            # 运行期产物，不进仓库
+├── dsh-home/         # DSH_HOME：profiles / plugins / 会话落盘
+└── dsh-ws/           # DSH Agent 的工作区（Phase 1 用独立空目录，不指向真实项目）
+```
+
+配置项（沿用 Flux 既有的 `FLUX_` 前缀与 pydantic-settings 风格）：
+
+| 变量 | 含义 | 默认 |
+| --- | --- | --- |
+| `FLUX_DSH_ENABLED` | 是否启用 DSH Agent Runtime | `false` |
+| `FLUX_DSH_HOME` | DSH_HOME 绝对路径 | `/opt/flux/dsh-home` |
+| `FLUX_DSH_WORKSPACE` | DSH Agent 的 `cwd` | `/opt/flux/dsh-ws` |
+| `FLUX_DSH_PROVIDER` | DSH provider 路由 | `deepseek-official` |
+| `FLUX_DSH_MODEL` | DSH 模型 id | `deepseek-v4-flash` |
+| `FLUX_DSH_MAX_TOKENS` | 单次输出上限 | `49152` |
+| `FLUX_DSH_INIT_TIMEOUT_SECONDS` | 初始化握手超时 | `30` |
+| `FLUX_DSH_RUN_TIMEOUT_SECONDS` | 单轮超时（0 表示不设限） | `0` |
+
+DSH Plugin 目录（§18 Phase 3 起才创建，届时才需要 Node 工具链）：
+
+```
 agent-runtime/
 └── dsh/
-    ├── vendor/
-    │   └── deepseek-harness/
-    ├── flux-plugins/
-    │   ├── flux-core/
-    │   ├── flux-context/
-    │   ├── flux-brain/
-    │   ├── flux-workspace/
-    │   ├── flux-proposal/
-    │   ├── flux-sandbox/
-    │   ├── flux-test/
-    │   ├── flux-git/
-    │   └── flux-operation/
-    └── patches/
+    └── flux-plugins/
+        ├── flux-core/
+        ├── flux-context/
+        ├── flux-brain/
+        ├── flux-workspace/
+        ├── flux-proposal/
+        ├── flux-sandbox/
+        ├── flux-test/
+        ├── flux-git/
+        └── flux-operation/
 ```
+
+**Phase 1 / Phase 2 不建 `agent-runtime/` 目录**，因为这两个阶段的 Node 侧代码量为零。
 
 ## 18. 实施顺序
 
 ### Phase 1：DSH Runtime
-1. 引入 DSH。
-2. 建立 Node Agent Runtime。
-3. 启动 DSH headless/profile runtime。
-4. Flux 创建 DSH Agent。
-5. Flux 发送任务。
-6. 接收 streaming events。
-7. 支持 interrupt。
-8. 支持完成/失败状态。
 
-验收：Flux → DSH → DeepSeek → Agent Response。
+1. **引入 SDK**：在 Flux venv 里安装 `deepseek-harness-sdk==0.1.5rc1`（连带 `deepseek-harness-runtime-bin==0.1.5rc1`），并把两者锁进 `backend/requirements.txt`。**不需要 Node / pnpm / 构建**。
+2. **Agent Runtime 宿主**：不再"建立 Node Agent Runtime"。本步改为定配置——`FLUX_DSH_HOME`（`/opt/flux/dsh-home`）与 `FLUX_DSH_WORKSPACE`（`/opt/flux/dsh-ws`），纳入 pydantic-settings，并在启动时确保目录存在。
+3. **启动 runtime**：`FluxDshClient` 包装 `DeepSeekHarness(dsh_home=..., cwd=..., provider="deepseek-official", model="deepseek-v4-flash", max_tokens=...)`；实例惰性启动、按 Agent 持有、随应用关闭时 `close()`。
+4. **Flux 创建 DSH Agent**：把 Flux `AgentSpec`（name / role / model 等）映射为 SDK 参数，`session_id` 用 Flux 的 `run_id`，做到 DSH Session ↔ Flux Agent Run 一一对应。
+5. **Flux 发送任务**：`Session.run(instruction)`，通过 `asyncio.to_thread` 卸载（SDK 同步，见 §10.3）。
+6. **接收 streaming events**：`on_notification` 回调 → `dsh_events.py` 映射 → Flux EventBus 广播（复用既有 `Events` 通道，前端沿用现有事件消费方式）。
+7. **支持 interrupt**：`harness.client.notify("session/cancel", {"sessionId": sid})`；取消后 `Session.run()` 会在会话转 idle 时正常返回，Flux 侧状态置为 `STOPPED`。
+8. **完成 / 失败状态**：`RunResult.finish_reason` 与异常（`SdkProtocolError` / `TimeoutError` / `TransportClosedError`）映射到既有 `AgentState`（`COMPLETED` / `FAILED`），错误文本进 `AgentHandle.last_error`，并沿用既有 `assert_transition` 状态机。
+
+**验收**：Flux → DSH → DeepSeek → Agent Response。具体口径：进程内创建一个 DSH Agent → 发一条真实指令 → 模型真实回复写入 Agent Run → 前端可见流式事件 → 中途 interrupt 能停下且状态正确。
 
 ### Phase 2：Flux Bridge
 - Flux Agent Client
@@ -545,6 +632,7 @@ Git Commit
 6. **权限统一由 Flux 控制**：插件安装不等于获得全部权限。
 7. **保持上游可升级**：尽量用 Plugin 扩展，减少 fork patch。
 8. **先原生兼容，再 AI 自动适配**。
+9. **接上游只走官方 SDK**：不 vendor 源码、不自建桥；锁死版本，每次升级附冒烟结果（§16）。
 
 ## 23. 最终定位
 

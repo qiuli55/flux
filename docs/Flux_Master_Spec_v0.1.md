@@ -186,6 +186,8 @@ CREATED → INITIALIZING → READY → RUNNING → WAITING_TOOL → REVIEWING �
 
 **主要实现类**：`AgentManager`（创建与管理）、`AgentExecutor`（执行）、`AgentContext`（上下文）、`AgentScheduler`（调度）、`AgentMemory`（记忆）。
 
+**【DSH 接入裁决，2026-09-30】** 本节的 Agent Loop / Session / Tool / Skill / Subagent **不由 Flux 自研**，改由 DeepSeek Harness（DSH）提供；Flux 保留 `AgentManager` 等对外接口与生命周期语义不变，新增 `FluxDshClient` 作为接入层。接入方式为**官方 Python SDK**（`deepseek-harness-sdk==0.1.5rc1`，stdio NDJSON JSON-RPC，不需要系统 Node / pnpm / 构建），模型走 DeepSeek 官方 `deepseek-v4-flash`。范围内不做：自研 Agent Loop、自研 Plugin Runtime、自研 Session Runtime。完整方案与分阶段实施顺序见 [DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md)（§10 接入口径、§18 Phase 1–7）。
+
 **Agent 接口**：`create()`、`execute()`、`stop()`、`get_status()`。
 （Connector 接口见 §8.2。）
 
@@ -1314,6 +1316,8 @@ backend/
 ⑫ 最小 IDE（Virtual Workspace 为界面中心）   ← 已完成，提交 7128812 + 96cc2ed（后端写入口 `POST /workspace/generate`；前端 apps/web-dashboard 三栏界面，端到端实测：需求 → 提案 → 审阅 diff → 批准 → 落盘 → 跑测试 → 提交，见 §13 与 §19.8）
 ⑬ Beginner Mode
 ```
+
+**【DSH 接入并入，2026-09-30】** 上表不再追加序号：DSH 接入作为**独立并行轨道**推进（Phase 1 DSH Runtime → Phase 2 Flux Bridge → Phase 3+ 逐步接入 Flux 能力），它替换的是「自研 Agent Loop / Plugin Runtime / Session Runtime」这条路，不改变 ①–⑬ 已交付的闭环。Phase 1 的验收是 Flux → DSH → DeepSeek → Agent Response（接入口径与实施步骤见 [DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md) §10、§18）。
 
 **M2 范围据此加厚**：`Virtual Workspace + 最小闭环`（Tech Lead → Developer → Proposal → 人工审阅 → Apply → Tester → Git Commit）。M3 IDE 及以后全部顺延。内置 Agent 第一批只做 4 个：Tech Lead、Developer、Reviewer、Tester；Architect、DevOps 待闭环稳定后再加。
 
