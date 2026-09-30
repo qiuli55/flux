@@ -11,7 +11,8 @@
 2. **不跟随符号链接**：树遍历跳过所有软链，读文件遇到软链一律拒绝——指向工作区根
    之外的软链永远拿不到内容；
 3. **路径必须落在工作区根内**：复用 Apply Engine 的 `safe_relative_path` 与
-   `resolve_workspace_root`（§7.6 同一个函数），`../` 与绝对路径在入口就被拒绝；
+   `resolve_workspace_root`，软链防护用同一份 `resolve_within_root`（§7.6 同源），
+   `../` 与绝对路径在入口就被拒绝；
 4. **有界**：条目数、深度、单文件字节数都有上限，触顶时明确标记 `truncated`，
    绝不静默丢数据、也绝不把巨型文件整个读进内存。
 
@@ -31,6 +32,7 @@ from typing import Any
 
 from flux.core.project_scanner.scanner import IGNORED_DIRS
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root, safe_relative_path
+from flux.core.virtual_workspace.path_guard import resolve_within_root
 from flux.errors import NotFoundError, ValidationError
 
 #: 文件树一次最多返回多少条（超出即截断，不让"列目录"变成无界内存操作）
@@ -100,14 +102,6 @@ def _modified_at(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds")
 
 
-def _within_root(root: Path, candidate: Path) -> bool:
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _scan_directory(directory: Path) -> list[tuple[str, str, bool, bool, bool, int, float]]:
     """读一层目录（`lstat`，不跟随软链），返回可排序的裸数据。
 
@@ -158,7 +152,7 @@ class WorkspaceFileExplorer:
     ) -> FileTree:
         root = resolve_workspace_root(self._pick_root(workspace_root))
         relative = self._relative_directory(path)
-        target = self._resolve_entry(root, relative)
+        target = resolve_within_root(root, relative)
         if not target.exists():
             raise NotFoundError(
                 f"目录不存在：{relative.as_posix() or '.'}",
@@ -224,7 +218,7 @@ class WorkspaceFileExplorer:
     def read(self, *, path: str, workspace_root: str | Path | None = None) -> FileContent:
         root = resolve_workspace_root(self._pick_root(workspace_root))
         relative = safe_relative_path(path)
-        target = self._resolve_entry(root, relative)
+        target = resolve_within_root(root, relative)
         if not target.exists():
             raise NotFoundError(
                 f"文件不存在：{relative.as_posix()}", details={"path": relative.as_posix()}
@@ -284,27 +278,6 @@ class WorkspaceFileExplorer:
         if path is None or not path.strip():
             return Path()
         return safe_relative_path(path)
-
-    @staticmethod
-    def _resolve_entry(root: Path, relative: Path) -> Path:
-        """在根内解析目标路径，并对沿途的软链 fail-closed。"""
-        if not relative.parts:
-            return root
-        current = root
-        for part in relative.parts:
-            current = current / part
-            if current.is_symlink():
-                resolved = Path(os.path.realpath(current))
-                if not _within_root(root, resolved):
-                    raise ValidationError(
-                        f"路径是符号链接且指向工作区根之外，已拒绝：{relative.as_posix()}",
-                        details={"path": relative.as_posix(), "resolved": str(resolved)},
-                    )
-                raise ValidationError(
-                    f"路径是符号链接，本接口不跟随符号链接：{relative.as_posix()}",
-                    details={"path": relative.as_posix()},
-                )
-        return root / relative
 
 
 __all__ = [

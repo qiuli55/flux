@@ -218,6 +218,27 @@ def test_workspace_apply_conflict_when_file_changed(
     assert (workspace_root / "a.py").read_text(encoding="utf-8") == "user 自己改的\n"
 
 
+def test_workspace_apply_rejects_symlink_escape(
+    apply_client: TestClient, workspace_root: Path
+) -> None:
+    """被改文件是软链（指向工作区根之外）→ 422；根外文件保持原样，提案停在 accepted。"""
+    secret = workspace_root.parent / "secret.py"
+    secret.write_text("return False\n", encoding="utf-8")
+    (workspace_root / "a.py").symlink_to(secret)
+    change_id = _seed_proposal(apply_client, file_path="a.py")
+
+    response = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert "符号链接" in body["message"]
+    assert secret.read_text(encoding="utf-8") == "return False\n"
+    assert not (workspace_root / ".flux").exists()
+    detail = apply_client.get(f"{PREFIX}/workspace/changes/{change_id}").json()["data"]
+    assert detail["status"] == "accepted"
+
+
 def test_workspace_get_unknown_change(client: TestClient) -> None:
     response = client.get(f"{PREFIX}/workspace/changes/0f5b6f4c-0000-0000-0000-000000000000")
     assert response.status_code == 404

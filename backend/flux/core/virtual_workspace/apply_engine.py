@@ -8,6 +8,9 @@
 
 任何一步失败都尽可能把原文件还原回去，并把完整错误交给上层记录。
 **这里是 Flux 里唯一会写用户真实文件的地方**——API、Agent、UI 都不允许自己落盘。
+
+路径在碰盘前先经 `resolve_within_root` 校验：沿途任何一段是软链一律 fail-closed，
+落盘永远发生在工作区根之内（否则仓库里一个提交的软链就能把改动写到根外）。
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from typing import Any
 
 from flux.core.virtual_workspace.backup import BackupService
 from flux.core.virtual_workspace.diff_engine import content_hash
+from flux.core.virtual_workspace.path_guard import resolve_within_root
 from flux.core.virtual_workspace.test_runner import TestOutcome, TestRunner
 from flux.errors import ApplyFailedError, ConflictError, ValidationError
 from flux.logging import get_logger
@@ -105,7 +109,7 @@ class ApplyEngine:
     ) -> ApplyOutcome:
         root = self._resolve_root(workspace_root)
         relative = safe_relative_path(change.file_path)
-        target = root / relative
+        target = resolve_within_root(root, relative)
         backups = BackupService(workspace_root=root)
 
         # 1) 复验 original_hash：用户在 Agent 生成提案后手动改过文件就禁止落盘
@@ -130,7 +134,9 @@ class ApplyEngine:
                     details={"file_path": change.file_path, "test": test.to_dict()},
                 )
         except Exception as exc:
-            self._rollback(root, backups, backup_path=backup_path, relative=relative, wrote=wrote)
+            self._rollback(
+                backups, backup_path=backup_path, relative=relative, target=target, wrote=wrote
+            )
             if isinstance(exc, (ApplyFailedError, ConflictError, ValidationError)):
                 raise
             raise ApplyFailedError(
@@ -212,19 +218,18 @@ class ApplyEngine:
 
     @staticmethod
     def _rollback(
-        root: Path,
         backups: BackupService,
         *,
         backup_path: Path | None,
         relative: Path,
+        target: Path,
         wrote: bool,
     ) -> None:
+        """还原原文件；只碰 apply() 一开始就校验过的 `target`，回滚阶段不再重新解析路径。"""
         if backup_path is not None and backup_path.is_file():
             backups.restore(backup_path=backup_path, relative_target=relative)
             return
-        if wrote:
-            # 新建文件：没有备份可还原，直接删掉刚写下的文件
-            target = root / relative
-            if target.is_file():
-                target.unlink()
-                logger.warning("apply.rollback 删除新建文件 %s", target)
+        # 新建文件：没有备份可还原，直接删掉刚写下的文件
+        if wrote and target.is_file():
+            target.unlink()
+            logger.warning("apply.rollback 删除新建文件 %s", target)

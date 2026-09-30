@@ -13,6 +13,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from flux.core.virtual_workspace.path_guard import resolve_within_root
 from flux.logging import get_logger
 
 logger = get_logger(__name__)
@@ -30,11 +31,17 @@ class BackupService:
         return self._root / self._dirname / "backups"
 
     def backup(self, *, change_id: str, file_path: str, relative_target: Path) -> Path | None:
-        """把待改文件复制到备份目录。文件不存在（新建文件）时返回 None。"""
-        source = self._root / relative_target
+        """把待改文件复制到备份目录。文件不存在（新建文件）时返回 None。
+
+        待改文件与备份落点都先过 `resolve_within_root`：文件本身、沿途目录或
+        `.flux/` 是软链时一律拒绝——绝不把用户文件复制到工作区之外。
+        """
+        source = resolve_within_root(self._root, relative_target)
         if not source.is_file():
             return None
-        destination = self.backup_root / change_id / relative_target
+        destination = resolve_within_root(
+            self._root, Path(self._dirname) / "backups" / change_id / relative_target
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_git_ignored()
         shutil.copy2(source, destination)
@@ -42,8 +49,8 @@ class BackupService:
         return destination
 
     def restore(self, *, backup_path: Path, relative_target: Path) -> None:
-        """用备份覆盖回原文件（回滚）。"""
-        target = self._root / relative_target
+        """用备份覆盖回原文件（回滚）；还原目标同样不许是软链。"""
+        target = resolve_within_root(self._root, relative_target)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(backup_path, target)
         logger.warning("apply.rollback file=%s ← %s", target, backup_path)

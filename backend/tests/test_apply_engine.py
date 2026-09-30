@@ -324,3 +324,88 @@ def test_backup_ignores_non_repository_workspace(workspace_root: Path) -> None:
     )
 
     assert backup_path is not None and backup_path.is_file()
+
+
+# --- 软链逃逸防护（分析文档 §5.1）---
+
+
+def test_apply_rejects_symlinked_file_escaping_workspace(
+    workspace_root: Path, tmp_path: Path
+) -> None:
+    """工作区里的软链文件指向根外：apply 必须拒绝，根外文件一个字节都不能动。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.py"
+    secret.write_text(ORIGINAL, encoding="utf-8")
+    (workspace_root / "config.py").symlink_to(secret)
+
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply(_change("config.py"), run_tests=False)
+
+    assert "符号链接" in excinfo.value.message
+    assert secret.read_text(encoding="utf-8") == ORIGINAL
+    # 拒绝发生在备份之前：工作区里连 .flux 都不该出现
+    assert not (workspace_root / ".flux").exists()
+
+
+def test_apply_rejects_symlinked_directory_escape_for_new_file(
+    workspace_root: Path, tmp_path: Path
+) -> None:
+    """目录软链指向根外：新建文件的提案同样拒绝，不在根外造出任何文件。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace_root / "evil").symlink_to(outside, target_is_directory=True)
+
+    change = _change("evil/new.py", original="", proposed="print('boom')\n")
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply(change, run_tests=False)
+
+    assert "符号链接" in excinfo.value.message
+    assert list(outside.iterdir()) == []
+
+
+def test_apply_rejects_symlink_even_when_it_stays_inside_root(workspace_root: Path) -> None:
+    """指向根内的软链也 fail-closed：不支持跟随软链是一条规则，不做例外判断。"""
+    _write(workspace_root, "real/config.py", ORIGINAL)
+    (workspace_root / "config.py").symlink_to(workspace_root / "real" / "config.py")
+
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply(_change("config.py"), run_tests=False)
+
+    assert "符号链接" in excinfo.value.message
+    assert (workspace_root / "real" / "config.py").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_backup_rejects_symlinked_backup_root(workspace_root: Path, tmp_path: Path) -> None:
+    """`.flux/` 本身被软链到根外：备份先拒绝，绝不把用户文件复制到工作区之外。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write(workspace_root, "a.py", ORIGINAL)
+    (workspace_root / ".flux").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValidationError) as excinfo:
+        BackupService(workspace_root=workspace_root).backup(
+            change_id="c1", file_path="a.py", relative_target=Path("a.py")
+        )
+
+    assert "符号链接" in excinfo.value.message
+    assert list(outside.iterdir()) == []
+
+
+def test_backup_restore_rejects_symlinked_target(workspace_root: Path, tmp_path: Path) -> None:
+    """回滚目标变成软链时同样拒绝：别把备份内容写到根外去。"""
+    _write(workspace_root, "a.py", ORIGINAL)
+    backups = BackupService(workspace_root=workspace_root)
+    backup_path = backups.backup(change_id="c1", file_path="a.py", relative_target=Path("a.py"))
+    assert backup_path is not None
+
+    secret = tmp_path / "secret.py"
+    secret.write_text("根外内容\n", encoding="utf-8")
+    (workspace_root / "a.py").unlink()
+    (workspace_root / "a.py").symlink_to(secret)
+
+    with pytest.raises(ValidationError) as excinfo:
+        backups.restore(backup_path=backup_path, relative_target=Path("a.py"))
+
+    assert "符号链接" in excinfo.value.message
+    assert secret.read_text(encoding="utf-8") == "根外内容\n"
