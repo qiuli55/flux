@@ -782,6 +782,29 @@ POST /api/v1/workspace/reject                  拒绝，可带 reason
 
 **供应商回退**：Developer 的 Manifest 声明 `deepseek`；若该供应商没有密钥（本地环境常态），容器按 §5.3 的简化路由退回 `FLUX_DEFAULT_PROVIDER`，而不是让"让 AI 改"在第一步就报错。一个供应商都没配置时保持 fail-closed，明确报 `provider_not_configured`。
 
+**【文档第二阶段 A 的前置，2026-09-30】** 前端要落地"真正的 File Explorer + Code Editor"，而 `POST /projects/{project_id}/scan` 返回的 `structure` 只是**顶层条目名**（见 §5.8），既不能展开成树、也没有读文件内容的能力。因此新增两个**只读**接口（复用 Apply Engine 的 `resolve_workspace_root()` / `safe_relative_path()`，见 §7.6）：
+
+```
+GET  /api/v1/projects/{project_id}/files          工作区文件树（只读）
+GET  /api/v1/projects/{project_id}/files/content  读单个文件的文本内容（只读）
+```
+
+**文件树** `GET /{project_id}/files`：查询参数 `path`（可选，工作区内相对子目录，缺省为根，走 `safe_relative_path` 校验）、`depth`（可选，默认 `2`、**上限 `4`**，超出即 `validation_error`/422）、`workspace_root`（可选，语义同 `ScanRequest.workspace_root`；缺省 `FLUX_WORKSPACE_ROOT`）。响应 `data = {root, path, entries, truncated}`，`entries` 为扁平条目表：`{"path": "app/auth.py", "name": "auth.py", "kind": "file", "size": 412, "modified_at": "2026-09-30T10:00:00+00:00"}`（`kind` 取 `dir`/`file`，目录的 `size` 为 `null`，`modified_at` 为 UTC ISO-8601）。硬约束：
+
+1. 项目不存在 → `not_found`；`path` 指向文件 → `validation_error`（这是文件树接口）；`path` 指向不存在的目录 → `not_found`。
+2. **不跟随符号链接**：遍历用 `lstat`，软链一律不进结果，指向工作区根之外的软链既不可见也不会被展开。
+3. 忽略规则**复用 Project Scanner** 的 `IGNORED_DIRS`（至少含 `.git`、`node_modules`、`__pycache__`、`.venv`、`dist`、`.flux`），不另起一套。
+4. 条目总数上限 `2000`，超出即停止并置 `truncated = true`（不静默丢结果）。
+5. 不在这里标注"是否有待审提案"：前端用 `GET /workspace/changes` 自行关联，后端不耦合。
+
+**读文件** `GET /{project_id}/files/content`：查询参数 `path`（**必填**，工作区内相对路径）、`workspace_root`（可选，同上）。响应 `data = {path, content, size, truncated}`，其中 `size` 是**文件真实字节数**（不是截断后的长度）。硬约束：
+
+1. **只读**：不写入、不创建任何文件。
+2. 路径必须落在工作区根内：`../` 逃逸、绝对路径（如 `/etc/passwd`）、指向根外的软链一律 `validation_error`（422）并给出明确文案。
+3. 目标不是普通文件（目录、socket、设备）→ 422；目标不存在 → `not_found`（404）。
+4. 含 NUL 字节的二进制文件 → 422（文案说明是二进制文件，不返回乱码）；UTF-8 解码失败 → 422。
+5. 单文件返回上限 `256 * 1024` 字节：超出只返回前 256 KiB 并置 `truncated = true`，不把整个文件读进响应。
+
 ### 12.6 Model Gateway API
 
 ```

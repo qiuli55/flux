@@ -1,0 +1,319 @@
+"""工作区文件浏览（实施计划 ⑫ 前端 File Explorer / Code Editor 的后端前置）。
+
+两个只读能力：
+
+1. `tree()` —— 把工作区的一层/多层目录读成扁平条目表（每条带工作区内的相对路径）；
+2. `read()` —— 读单个文件的文本内容。
+
+四条边界（与 §12.5 的落地说明一致）：
+
+1. **只读**：不写、不建、不改任何用户文件；
+2. **不跟随符号链接**：树遍历跳过所有软链，读文件遇到软链一律拒绝——指向工作区根
+   之外的软链永远拿不到内容；
+3. **路径必须落在工作区根内**：复用 Apply Engine 的 `safe_relative_path` 与
+   `resolve_workspace_root`（§7.6 同一个函数），`../` 与绝对路径在入口就被拒绝；
+4. **有界**：条目数、深度、单文件字节数都有上限，触顶时明确标记 `truncated`，
+   绝不静默丢数据、也绝不把巨型文件整个读进内存。
+
+忽略规则复用 Project Scanner 的 `IGNORED_DIRS`（`.git` / `node_modules` /
+`__pycache__` / `.venv` / `dist` / `.flux` 等），不另起一套。
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from flux.core.project_scanner.scanner import IGNORED_DIRS
+from flux.core.virtual_workspace.apply_engine import resolve_workspace_root, safe_relative_path
+from flux.errors import NotFoundError, ValidationError
+
+#: 文件树一次最多返回多少条（超出即截断，不让"列目录"变成无界内存操作）
+MAX_TREE_ENTRIES = 2000
+#: 文件树默认向下展开几层（根的直接子项算第 1 层）
+DEFAULT_TREE_DEPTH = 2
+#: 文件树允许的最大层数（再深由前端逐层请求）
+MAX_TREE_DEPTH = 4
+#: 单文件最大返回字节数；超出只截断返回，不拒绝（配合 `truncated` 标记）
+MAX_CONTENT_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """文件树里的一条（路径是相对工作区根的 POSIX 路径，前端可直接拼接）。"""
+
+    path: str
+    name: str
+    kind: str  # "dir" | "file"
+    size: int | None
+    modified_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "name": self.name,
+            "kind": self.kind,
+            "size": self.size,
+            "modified_at": self.modified_at,
+        }
+
+
+@dataclass(frozen=True)
+class FileTree:
+    root: str
+    path: str
+    entries: tuple[FileEntry, ...]
+    truncated: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "root": self.root,
+            "path": self.path,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class FileContent:
+    path: str
+    content: str
+    size: int
+    truncated: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "content": self.content,
+            "size": self.size,
+            "truncated": self.truncated,
+        }
+
+
+def _modified_at(timestamp: float) -> str:
+    """UTC ISO-8601（秒精度），与 §12.5 的响应示例一致。"""
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _within_root(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _scan_directory(directory: Path) -> list[tuple[str, str, bool, bool, bool, int, float]]:
+    """读一层目录（`lstat`，不跟随软链），返回可排序的裸数据。
+
+    `os.scandir` 的 DirEntry 在迭代器关闭后的行为依平台而定，所以这里当场把所有
+    需要的字段取出来，后续排序/遍历只碰普通数据。
+    """
+    items: list[tuple[str, str, bool, bool, bool, int, float]] = []
+    try:
+        with os.scandir(directory) as scanner:
+            for entry in scanner:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                items.append(
+                    (
+                        entry.name,
+                        entry.path,
+                        stat.S_ISLNK(info.st_mode),
+                        stat.S_ISDIR(info.st_mode),
+                        stat.S_ISREG(info.st_mode),
+                        info.st_size,
+                        info.st_mtime,
+                    )
+                )
+    except OSError:
+        # 权限不足 / 竞态删除：把这一层当作空目录，不因为一个坏目录让整棵树失败
+        return []
+    # 目录在前、文件在后，同级按名字升序（与 Scanner 的 `_structure` 同一种直观顺序）
+    items.sort(key=lambda item: (not item[3], item[0]))
+    return items
+
+
+class WorkspaceFileExplorer:
+    """工作区文件树 / 文件内容的只读实现。"""
+
+    def __init__(self, *, workspace_root: str | Path | None = None) -> None:
+        self._workspace_root = workspace_root
+
+    # --- 文件树 ---
+
+    def tree(
+        self,
+        *,
+        path: str | None = None,
+        depth: int = DEFAULT_TREE_DEPTH,
+        workspace_root: str | Path | None = None,
+    ) -> FileTree:
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = self._relative_directory(path)
+        target = self._resolve_entry(root, relative)
+        if not target.exists():
+            raise NotFoundError(
+                f"目录不存在：{relative.as_posix() or '.'}",
+                details={"path": relative.as_posix()},
+            )
+        if not target.is_dir():
+            raise ValidationError(
+                f"路径不是目录，无法列出文件树：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
+        entries, truncated = self._walk(root, target, depth=depth)
+        return FileTree(
+            root=str(root),
+            path=relative.as_posix() if relative.parts else "",
+            entries=tuple(entries),
+            truncated=truncated,
+        )
+
+    def _walk(self, root: Path, base: Path, *, depth: int) -> tuple[list[FileEntry], bool]:
+        """广度优先展开 `base` 下方至多 `depth` 层；条目数触顶立即停止并标记截断。"""
+        entries: list[FileEntry] = []
+        queue: deque[tuple[Path, int]] = deque([(base, 0)])
+        while queue:
+            directory, level = queue.popleft()
+            for name, raw_path, is_link, is_dir, is_file, size, mtime in _scan_directory(directory):
+                if is_link:  # 不跟随软链：根外的软链既进不了结果，也不会被展开
+                    continue
+                if is_dir:
+                    if name in IGNORED_DIRS:
+                        continue
+                    if len(entries) >= MAX_TREE_ENTRIES:
+                        return entries, True
+                    child = Path(raw_path)
+                    entries.append(
+                        FileEntry(
+                            path=child.relative_to(root).as_posix(),
+                            name=name,
+                            kind="dir",
+                            size=None,
+                            modified_at=_modified_at(mtime),
+                        )
+                    )
+                    if level + 1 < depth:
+                        queue.append((child, level + 1))
+                elif is_file:
+                    if len(entries) >= MAX_TREE_ENTRIES:
+                        return entries, True
+                    child = Path(raw_path)
+                    entries.append(
+                        FileEntry(
+                            path=child.relative_to(root).as_posix(),
+                            name=name,
+                            kind="file",
+                            size=size,
+                            modified_at=_modified_at(mtime),
+                        )
+                    )
+                # 其余类型（socket / 设备 / fifo）不是"目录或文件"，不进文件树
+        return entries, False
+
+    # --- 读文件 ---
+
+    def read(self, *, path: str, workspace_root: str | Path | None = None) -> FileContent:
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = safe_relative_path(path)
+        target = self._resolve_entry(root, relative)
+        if not target.exists():
+            raise NotFoundError(
+                f"文件不存在：{relative.as_posix()}", details={"path": relative.as_posix()}
+            )
+        info = os.stat(target)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValidationError(
+                f"路径不是普通文件：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
+
+        with open(target, "rb") as handle:
+            data = handle.read(MAX_CONTENT_BYTES)
+            truncated = handle.read(1) != b""
+        if b"\x00" in data:
+            raise ValidationError(
+                f"文件是二进制文件（含 NUL 字节），无法作为文本返回：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
+        content = self._decode(data, truncated=truncated, relative=relative)
+        return FileContent(
+            path=relative.as_posix(),
+            content=content,
+            size=info.st_size,  # 真实字节数，不是截断后的长度
+            truncated=truncated,
+        )
+
+    # --- 内部工具 ---
+
+    @staticmethod
+    def _decode(data: bytes, *, truncated: bool, relative: Path) -> str:
+        """UTF-8 解码；截断可能正好切在多字节字符中间，此时丢掉残缺尾部再解码。"""
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            if truncated:
+                for drop in range(1, 4):
+                    trimmed = data[: max(0, len(data) - drop)]
+                    try:
+                        return trimmed.decode("utf-8")
+                    except UnicodeDecodeError:
+                        continue
+            raise ValidationError(
+                f"文件不是合法的 UTF-8 文本：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            ) from exc
+
+    def _pick_root(self, workspace_root: str | Path | None) -> str | Path | None:
+        """显式传入的根优先，其次用服务配置的根；都没有交给 `resolve_workspace_root` 报错。"""
+        if workspace_root:
+            return workspace_root
+        return self._workspace_root
+
+    @staticmethod
+    def _relative_directory(path: str | None) -> Path:
+        """把可选子目录参数规整成相对路径；空值表示工作区根。"""
+        if path is None or not path.strip():
+            return Path()
+        return safe_relative_path(path)
+
+    @staticmethod
+    def _resolve_entry(root: Path, relative: Path) -> Path:
+        """在根内解析目标路径，并对沿途的软链 fail-closed。"""
+        if not relative.parts:
+            return root
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                resolved = Path(os.path.realpath(current))
+                if not _within_root(root, resolved):
+                    raise ValidationError(
+                        f"路径是符号链接且指向工作区根之外，已拒绝：{relative.as_posix()}",
+                        details={"path": relative.as_posix(), "resolved": str(resolved)},
+                    )
+                raise ValidationError(
+                    f"路径是符号链接，本接口不跟随符号链接：{relative.as_posix()}",
+                    details={"path": relative.as_posix()},
+                )
+        return root / relative
+
+
+__all__ = [
+    "DEFAULT_TREE_DEPTH",
+    "MAX_CONTENT_BYTES",
+    "MAX_TREE_DEPTH",
+    "MAX_TREE_ENTRIES",
+    "FileContent",
+    "FileEntry",
+    "FileTree",
+    "WorkspaceFileExplorer",
+]

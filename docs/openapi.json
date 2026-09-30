@@ -1176,6 +1176,177 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/files": {
+      "get": {
+        "description": "列出工作区文件树（只读）。\n\n路径经 `safe_relative_path` 校验、沿途软链一律拒绝；忽略规则复用 Project Scanner；\n条目数触顶时 `truncated=true`，绝不静默丢结果。这里**不**关联待审提案——\n前端用 `/workspace/changes` 自行关联，后端不耦合。",
+        "operationId": "list_project_files_api_v1_projects__project_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "工作区内的相对子目录，缺省为工作区根",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "工作区内的相对子目录，缺省为工作区根",
+              "title": "Path"
+            }
+          },
+          {
+            "description": "向下展开的层数（上限 4）",
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 2,
+              "description": "向下展开的层数（上限 4）",
+              "maximum": 4,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "按次覆盖工作区根；缺省用 FLUX_WORKSPACE_ROOT",
+            "in": "query",
+            "name": "workspace_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按次覆盖工作区根；缺省用 FLUX_WORKSPACE_ROOT",
+              "title": "Workspace Root"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Project Files Api V1 Projects  Project Id  Files Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Project Files",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/files/content": {
+      "get": {
+        "description": "读单个文件的文本内容（只读，绝不写入或创建文件）。\n\n越界路径（`../`、绝对路径、根外软链）一律 `validation_error`；二进制（含 NUL）\n与非 UTF-8 文本同样拒绝；超过 256 KiB 只返回前 256 KiB 并置 `truncated=true`，\n`size` 仍是文件真实字节数。",
+        "operationId": "read_project_file_api_v1_projects__project_id__files_content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "工作区内的文件相对路径（必填）",
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "工作区内的文件相对路径（必填）",
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "description": "按次覆盖工作区根；缺省用 FLUX_WORKSPACE_ROOT",
+            "in": "query",
+            "name": "workspace_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按次覆盖工作区根；缺省用 FLUX_WORKSPACE_ROOT",
+              "title": "Workspace Root"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Project File Api V1 Projects  Project Id  Files Content Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Project File",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/memory": {
       "get": {
         "description": "六个分区全部列出（缺给空列表），便于前端直接渲染。",

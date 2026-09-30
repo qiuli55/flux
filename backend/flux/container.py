@@ -24,6 +24,7 @@ from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
 from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
+from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
@@ -50,6 +51,7 @@ class Container:
     git_client: GitClient = field(init=False)
     git: GitService = field(init=False)
     scanner: ProjectScanner = field(init=False)
+    files: WorkspaceFileExplorer = field(init=False)
     brain_repo: ProjectBrainRepository = field(init=False)
     brain: ProjectBrain = field(init=False)
     task_repo: TaskRepository = field(init=False)
@@ -87,6 +89,9 @@ class Container:
             max_files=self.settings.project_scan_max_files,
             max_depth=self.settings.project_scan_max_depth,
         )
+        # 文件浏览（只读）：与 Apply / Scanner 共用同一个工作区根配置，
+        # 请求里的 workspace_root 只是按次覆盖，不是新的默认来源。
+        self.files = WorkspaceFileExplorer(workspace_root=self.settings.workspace_root)
         self.brain_repo = ProjectBrainRepository(self.session_factory)  # type: ignore[attr-defined]
         self.brain = ProjectBrain(
             self.brain_repo,
