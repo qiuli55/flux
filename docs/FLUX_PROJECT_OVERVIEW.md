@@ -67,11 +67,12 @@ agent 侧    内置 agent（DeepSeek Harness + Cordis，--profile flux）
 - **M1 大部分**：真实供应商适配器（`local` / `openai` / `anthropic` / `deepseek`，统一薄 HTTP 层，不引入各家 SDK）、超时退避重试与错误映射。
 - **近期新增**：DSH 客户端骨架（起 Run / 流式事件 / 中断 / 查状态）、`flux` profile 在 A 机实测跑通（`/opt/flux/dsh-home`、`/opt/flux/dsh-ws`）。
 - **2026-10-01 架构修正（Phase 1，commit `45db1b9`）**：删除 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `codex_cli` provider / `virtual_workspace/flow.py`；`AgentManager` 重构为纯档案注册表；manifest 与 4 份内置档案去掉 model / system_prompt；`/api/v1/agents/{id}/execute` 与 `/api/v1/workspace/generate` 撤下（提案改由 agent 经 MCP `proposal.create` 提交）。
+- **2026-10-01 Phase 1 收尾（commit `5babc59`）**：补齐虚拟工作区的 symlink 逃逸防护——新增 `flux/core/virtual_workspace/path_guard.py`（`within_root` / `resolve_within_root`，逐段 `is_symlink()` fail-closed + realpath 包含性兜底）作为唯一真源，Apply Engine（写 / 回滚）、Backup Service（备份 / 还原）、Project File Explorer（读）三处共用。
 
 **进行中 / 未完成**
 
 - Task 由内存落库到 `tasks` 表（M1 最后一项）。
-- Virtual Workspace 的真实写盘、备份、测试回归、Git 集成（M2）。
+- Virtual Workspace 剩多文件提案的原子 Apply（Proposal / ChangeSet 级事务，分析文档 §5.2）；单文件真实写盘 / 备份 / 测试回归 / Git 集成已随 ApplyEngine 落地。
 - DSH 集成 Phase 1 剩余：`FLUX_DSH_PROFILE` / `FLUX_DSH_PATCHES` 配置项、事件映射补齐（`tool/call`、`tool/result`、`step/*` 等）、AgentSpec → SDK 参数映射、审批请求通道。
 - 桌面端 UI（solo / ide 两页）尚未开始，`apps/desktop/` 为空目录。
 

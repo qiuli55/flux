@@ -102,7 +102,7 @@ L2 Run Context ───┘        │
 | `brain.search` | 读 | 扩展 `ProjectBrain`（[project_brain/service.py](file:///root/workspace/flux/backend/flux/core/project_brain/service.py) 现有 `sections()`/`context()`，补 `search()`：section + 关键词结构化检索，向量检索后置） | `file.read` | Allow | — |
 | `skill.get` | 读 | 新建 `flux/skill_runtime/`（Skill 声明式定义 + 加载器 + 渲染器） | `file.read` | Allow | — |
 | `handoff.put` | 写 | 新建 `handoffs` 表 + service | 无敏感（写 Flux 内部状态） | Allow（限本 Run 关联 Task） | `agent.handoff` |
-| `proposal.create` | 写 | 复用 `VirtualWorkspaceService.propose_changes()`（[service.py](file:///root/workspace/flux/backend/flux/core/virtual_workspace/service.py#L103)）；入参校验复用 `developer.py` 的解析器 | `file.write`（仅提案，不落盘） | Allow；路径命中保护名单 → Require Approval | `workspace.changed` |
+| `proposal.create` | 写 | 复用 `VirtualWorkspaceService.propose_changes()`（[service.py](file:///root/workspace/flux/backend/flux/core/virtual_workspace/service.py#L104)）；入参校验复用 `proposal_parser.py` 的解析器（Phase 1 从 `developer.py` 拆出） | `file.write`（仅提案，不落盘） | Allow；路径命中保护名单 → Require Approval | `workspace.changed` |
 | `operation.record` | 写 | 新建 `operations` 表 + service | — | Allow | `operation.recorded` |
 
 `operations` 表字段：`id / task_id / run_id / agent（盖章）/ kind（assertion|evidence|fact）/ tool / params_digest / result_hash / body / ts`。**`fact` 只能由 Flux 自己写**（tester/apply 的结果），agent 只能写 `assertion` 与 `evidence`。
@@ -235,11 +235,11 @@ agent → tools/call（Require Approval 类）
 | --- | --- |
 | **退役**（冻结 → 删除） | `AgentExecutor`、`DeveloperAgent`/`TesterAgent` 的 Agent 部分、`codex_cli` provider、`AgentContext` 的消息存储 |
 | **重构**（保留外壳、换职责） | `AgentManager` → 档案注册表 + Run 记录（去掉 model 执行入口）；`/api/v1/agents` → 档案 + 下发 Run；`/api/v1/models` → 仅服务平台内部（T2 压缩、扫描、摘要） |
-| **保留 + 补强** | `workflow_engine`（状态机）、`permission_engine`（升级为 MCP 策略执行点）、`virtual_workspace`（补 symlink 逃逸防护 + Proposal 级批量事务，分析文档 §5）、`project_*`、`event`、`connectors`、`git_integration` |
+| **保留 + 补强** | `workflow_engine`（状态机）、`permission_engine`（升级为 MCP 策略执行点）、`virtual_workspace`（symlink 逃逸防护**已完成**：`path_guard.py`；Proposal 级批量事务待补，分析文档 §5）、`project_*`、`event`、`connectors`、`git_integration` |
 | **保留 + 改造** | `dsh_client` / `dsh_events` → 内置 agent 的启动器与事件桥（不进 ModelGateway） |
 | **新建** | `backend/flux/mcp/`（MCP Server + 鉴权 + 打包器）、`flux/skill_runtime/`、`handoffs` / `operations` / `agent_tokens` / `context_snapshots` 持久化 |
 
-**执行状态（2026-10-01）**：表中「退役」与「重构」两行的代码修正已完成并推送（commit `45db1b9`，删 6 个模块 / 4 个专属测试文件，286 个用例全绿、`verify.sh` 五步全过）；「保留 + 补强 / 保留 + 改造 / 新建」属后续 Phase。
+**执行状态（2026-10-01）**：表中「退役」与「重构」两行的代码修正已完成并推送（commit `45db1b9`，删 6 个模块 / 4 个专属测试文件，286 个用例全绿、`verify.sh` 五步全过）；「保留 + 补强」里 `virtual_workspace` 的 symlink 逃逸防护已完成（commit `5babc59`，新增 `path_guard.py` 作唯一真源、写 / 备份 / 读三处共用，292 个用例全绿）；其余「保留 + 补强 / 保留 + 改造 / 新建」属后续 Phase。
 
 ## 9. 实施顺序与验收
 

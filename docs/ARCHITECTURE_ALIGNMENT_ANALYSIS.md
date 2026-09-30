@@ -31,6 +31,8 @@
 
 ## 2. 模块级分析表（§21 Phase 1 要求的输出格式）
 
+> 说明：「现状」列是 2026-10-01 修正前的代码快照（分析留档）；退役 / 重构项的落地结果与后续进度见 §6。
+
 | 模块 | 现状（代码事实） | 正确职责 | 处置 | 新边界 |
 | --- | --- | --- | --- | --- |
 | `agent_runtime/executor.py` | 组装 system/user 消息、调 `ModelRouter.chat`、把对话写进 `AgentContext`（executor.py:58-75） | 无——Flux 不跑 agent loop | **退役**（先冻结，DSH/MCP 链路可用后删除） | 模型调用、prompt 组装、对话存储全部归 agent |
@@ -44,7 +46,7 @@
 | `model_gateway/providers/codex_cli.py` | 把 `codex exec` 包成模型供应商（codex_cli.py:108-197） | 无 | **撤下**（去留见 §6 待裁决） | Codex 走外部 agent 通道（Phase 4 验证其经 MCP 工作） |
 | `api/v1/agents.py` `api/v1/models.py` | `/agents` 可执行 agent（agents.py:15-54）；`/models/chat` 暴露模型调用（models.py:19-40） | 任务下发面 / 平台模型服务 | **重构** | `/agents` 的 execute 改为「创建/下发 Run」，不代跑模型 |
 | `permission_engine/policy.py` | 角色能力集 + `require()` / `require_agent_capability()`（policy.py:26-49），connectors API 已接线 | MCP 工具调用的策略执行点 | **保留 + 升级** | fail-closed；`workspace.apply` / `git.push` / `secret.read` 不上面 |
-| `virtual_workspace/*` | 提案状态机 + diff + 唯一写盘入口 + 备份回滚（apply_engine.py:98-151） | 核心安全边界 | **保留 + 补强** | 补 symlink 逃逸防护、Proposal 级批量事务（§5） |
+| `virtual_workspace/*` | 提案状态机 + diff + 唯一写盘入口 + 备份回滚（apply_engine.py:98-151） | 核心安全边界 | **保留 + 补强** | symlink 逃逸防护**已完成**（`path_guard.py`，§5.1）；Proposal 级批量事务待补（§5.2） |
 | **Flux MCP Server** | **不存在**（backend grep 无实现） | 唯一能力出口 | **新建（Phase 2）** | Streamable HTTP；工具清单见集成方案 §25 |
 | **Skill 运行时** | 不存在（只有 `connectors/` 契约） | `skill.get` 的真源 | **新建（Phase 2）** | — |
 | 平台模块 `task_engine` / `project_brain` / `project_scanner` / `project_files` / `git_integration` / `event` / `connectors` / `models` | 已实现（M0/M1） | 平台能力 | **保留** | 按 MCP 面暴露，实现形态不动 |
@@ -73,8 +75,8 @@
 
 ## 5. 安全缺口（对齐文档 §12 / §13 的落地项，代码级事实）
 
-1. **symlink 逃逸（§12）**：`safe_relative_path` 只做字符串级校验（apply_engine.py:47-63）。`_assert_unchanged` / `_write` / `_verify`（apply_engine.py:159-205）与 `BackupService.backup` / `restore`（backup.py:32-49）都走 `Path` 接口：若 `workspace/config.py` 是指向外部文件的 symlink，读写与备份都会跟随它，逃出 workspace。需补：realpath 包含性校验 + `lstat` 逐段校验（与 Project File Explorer 同级保护）。
-2. **批量原子性（§13）**：`service.apply` 以单条 `VirtualChange` 为粒度（service.py:165+），无 Proposal / ChangeSet 级事务——多文件提案会出现「A 成功、B 失败、A 留在盘上」。需补 Batch Apply Transaction（全成功或全回滚）。
+1. **symlink 逃逸（§12）——已完成**（commit `5babc59`）：`safe_relative_path` 只做字符串级校验（apply_engine.py:47-63），而 `_assert_unchanged` / `_write` / `_verify` 与 `BackupService.backup` / `restore` 原本都走 `Path` 接口——工作区里一个指向根外的软链（例如被提交的 `.flux/` 或 `config.py`）就能让读写与备份逃出 workspace。现补：新增 `flux/core/virtual_workspace/path_guard.py`（`within_root` realpath 包含性 + `resolve_within_root` 逐段 `is_symlink()` fail-closed）作为唯一真源，Apply Engine（写 / 回滚）、Backup Service（备份 / 还原）、Project File Explorer（读）三处共用；`explorer.py` 的私有 `_resolve_entry` / `_within_root` 已删除。用例：`test_apply_engine.py` 5 条 + `test_api.py` 1 条。
+2. **批量原子性（§13）——待补**：`service.apply` 以单条 `VirtualChange` 为粒度（service.py:166+），无 Proposal / ChangeSet 级事务——多文件提案会出现「A 成功、B 失败、A 留在盘上」。需补 Batch Apply Transaction（全成功或全回滚）。
 
 ## 6. 裁决结论与执行进度
 
@@ -86,7 +88,8 @@
 **执行进度**（对齐文档 §21）
 
 1. ~~按 §4 修正文档（先对齐文字，再动代码）~~ → 已完成；Phase 1 代码修正已推送（commit `45db1b9`，286 用例全绿）。
-2. Phase 2：Flux MCP Server（先出工具清单 × Permission 映射 × 鉴权方式，再实现）。
-3. Phase 3：DSH → Flux MCP 打通（含事件映射补齐、审批回流）。
-4. Phase 4：Codex / Claude Code / OpenCode 经同一 MCP 面验证。
-5. Phase 5：真实工程闭环（Requirement → Agent → Context/Brain → Proposal → Review → Apply → Test → Repair → Git）。
+2. Phase 1 收尾 · §5.1 symlink 逃逸防护 → 已完成（commit `5babc59`；292 用例全绿、`verify.sh` 五步全过）。
+3. Phase 2：Flux MCP Server（先出工具清单 × Permission 映射 × 鉴权方式，再实现）。
+4. Phase 3：DSH → Flux MCP 打通（含事件映射补齐、审批回流）。
+5. Phase 4：Codex / Claude Code / OpenCode 经同一 MCP 面验证。
+6. Phase 5：真实工程闭环（Requirement → Agent → Context/Brain → Proposal → Review → Apply → Test → Repair → Git）。

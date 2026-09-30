@@ -20,7 +20,7 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 | --- | --- | --- |
 | 数据层：14 张表 + Alembic 迁移 | 完成 | `alembic upgrade head` / `downgrade base` 双向通过，autogenerate 无漂移 |
 | API 契约：13 条路径（规格 §12 全覆盖） | 完成 | `docs/openapi.json`，`scripts/export_openapi.py --check` 通过 |
-| Agent Runtime 状态机（含 STOPPED） | 完成 | 59 个 pytest 用例全绿（全仓现为 286 个） |
+| Agent Runtime 状态机（含 STOPPED） | 完成 | 59 个 pytest 用例全绿（全仓现为 292 个） |
 | Model Gateway（本地 echo 供应商可离线跑通） | 完成 | 真实供应商适配器属 M1（#013–#015） |
 | Virtual Workspace 状态机 + unified diff | 完成 | M0 只做状态跃迁与审计，真实写盘属 M2 |
 | 权限策略（RBAC + Capability，fail-closed） | 完成 | — |
@@ -39,6 +39,7 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 | 真实供应商适配器（Issues #013–#015） | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家全部注册，28 个离线用例全绿 |
 | 供应商容错：超时、退避重试、错误映射 | 完成 | `429`/`5xx`/超时按 `0.5s × 2^n` 退避重试 2 次，耗尽后映射为领域错误码 |
 | 架构对齐 Phase 1：退役 agent loop | 完成 | 删除 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `codex_cli` provider / `virtual_workspace/flow.py`；`AgentManager` 重构为纯档案注册表（commit `45db1b9`） |
+| 架构对齐 Phase 1 收尾：symlink 逃逸防护 | 完成 | 新增 `flux/core/virtual_workspace/path_guard.py` 作唯一真源（逐段 `is_symlink()` fail-closed + realpath 包含性），Apply / Backup / File Explorer 三处共用（commit `5babc59`） |
 
 **Adapter 用统一的薄 HTTP 层调用上游 API**，不引入各家官方 SDK——依赖面更小，`httpx.MockTransport` 可完全离线断言。默认模型 id 与覆盖方式：
 
