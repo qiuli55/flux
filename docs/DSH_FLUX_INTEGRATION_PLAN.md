@@ -5,6 +5,8 @@
 > 目标：以 DeepSeek Harness（DSH）作为 Flux 内置 Agent Runtime 的基础，保留 DSH/Cordis 的 Agent、Plugin、Tool、Skill、Session 等能力，同时通过 Flux Bridge 注入 Flux 的 AI Engineering 能力。
 >
 > 本文档的架构决策（§1–§9、§11–§15、§19–§23）保持不变；§10、§16、§17、§18 已按「官方 Python SDK 接入」重写，理由见 §10.2。
+>
+> 2026-10-01 回写：新增 §24–§27（术语边界、能力通道、上下文与溯源设计、待确认清单）。其中 §24 的术语口径、§26.4 的溯源指纹（条级 + 统一 agent 注册表）已经用户确认。
 
 ## 1. 核心决策
 
@@ -655,3 +657,93 @@ Flux Built-in Agent
 ```
 
 目标不是做一个更好的 DeepSeek Harness，而是利用成熟 Agent Runtime，把开发精力集中在 Flux 真正差异化的 AI Engineering OS 能力上。
+
+## 24. 术语与边界（2026-10-01 定稿，已确认）
+
+**Flux 本身不是 agent**，只是一个内置了 agent 的平台。三层边界：
+
+| 层 | 是什么 | 不是什么 |
+| --- | --- | --- |
+| Flux | 平台层：工程核心（Task/Workflow、Project Brain、Virtual Workspace、Permission、Sandbox、Test、Git、Operation Timeline）+ 对外能力面（MCP Server）+ UI 面板 | 不是 agent；不做 Agent Loop；不编排 agent 对话 |
+| Flux 内置 agent | 一份以 DeepSeek Harness 为基底的 runtime，随 Flux 交付；桌面端（solo / ide 两页）是它的客户端 | 不等于 Flux；在能力消费上与外部 agent 对等 |
+| 外部 agent | codex / claude-code / opencode 等，同一 MCP 面的其他消费者 | — |
+
+**任务下发与能力供给分离**：Flux 下发任务，agent 自带 loop；agent 干活用的工具不是它自带的，而是通过连 Flux MCP「借」来的（skill / connector / context / brain）。session 归 agent 侧自管，Flux 只记录 Agent Run 与 Operation Timeline。
+
+## 25. 能力通道：Flux MCP Server（2026-10-01）
+
+- **Flux 对外只开一个 MCP 面**，同时服务内置 agent、桌面端与外部 agent。Transport 取 **Streamable HTTP**（一个端点服务所有消费者），stdio 作为单机备选。
+- 已核实（[2026-10-01 实测]）：DSH 捆绑闭包内含 `@deepseek-ai/dsh-mcp-client`，exe 内嵌配置项 `mcpServers`，支持 `stdio` / `sse` / `streamableHttp`；`codex-cli 0.157.1` 支持 `codex mcp add <name> --url <URL>`（streamable HTTP，`--bearer-token-env-var` 带鉴权）与 stdio；`codex exec -c key=value` 可逐次注入 `mcp_servers.*`，不必污染用户全局配置。
+- **面上一律不暴露**：`workspace.apply`、`git.push`、`secret.read`；真实落盘仍由 ApplyEngine + 人审控制（§8、§22）。
+- **工具分级**：读类默认 Allow；动作类按 §9 策略（敏感项 Require Approval），审批请求回流桌面端 UI。
+- **Phase 1 工具清单（6 个）**：`context.get`、`brain.search`、`skill.get`、`handoff.put`、`proposal.create`、`operation.record`。
+
+## 26. 上下文与溯源设计（2026-10-01）
+
+### 26.1 四层结构
+
+| 层 | 内容 | 持有方 | 更新方式 |
+| --- | --- | --- | --- |
+| L0 项目事实 | Project Brain：架构、约定、历史决策、踩坑 | Flux（唯一真源） | 候选知识经人审入库 |
+| L1 任务上下文 | Task / Requirement / 目标 / 验收标准 / 约束 | Flux | 跟随 Task |
+| L2 运行上下文 | 相关文件、diff、提案、测试结果、操作轨迹 | Flux | 跟随每次 Agent Run |
+| L3 对话历史 | 消息、工具调用与结果、session state | agent 自己 | agent 私有；Flux 只留 Run 摘要与轨迹引用 |
+
+共享的只有 L0–L2；L3 不进共享层，**切换 agent 不搬迁对话历史**。
+
+### 26.2 推拉机制
+
+- **推**：下发任务时给一个 Context Envelope（预算上限待确认，建议 ≤4k tokens）——任务目标、验收标准、约束、交接信封摘要、可用能力清单（只列名字，不放正文）。
+- **拉**：正文一律走 MCP 按需取（`context.get` / `brain.search` / `skill.get` / `workspace.read` / connector 工具）。
+- 依据：§12 明确「不要把完整 Project Brain 塞进 system prompt」；且 `codex exec` 没有独立 system 通道（见 `codex_cli.py` 说明），除短 Envelope 无处安放长文。DSH 侧另有 `agent-instructions`（64KB 上限）可注入项目约定。
+
+### 26.3 Handoff（交接信封）
+
+结构化字段：已完成 / 未完成 / 关键决策 / 未决问题 / 涉及文件+hash / 下一步建议。首选由 agent 通过 `handoff.put` 显式提交，Flux 从 Run 事件自动摘要兜底；切换 agent 时 UI 显示「交接卡」，可编辑后再交给下一个 agent。
+
+### 26.4 溯源指纹（条级，已确认）
+
+**条级**：每次工具调用、每条结论各带指纹（不是只标到整段回答）。
+**服务端盖章**：Flux 在 MCP 写入侧自动注入 `provenance`，不接受客户端传入 `agent` 字段——agent 不能冒充他人。
+**统一注册表**：agent id 由 Flux agent 档案注册表统一定义（`flux-builtin` / `codex` / `claude-code` / `opencode` …）。
+
+| 字段 | 含义 |
+| --- | --- |
+| `agent` | 来源 agent（注册表 id） |
+| `run_id` / `session_id` | 回溯到哪一次运行 |
+| `runtime` + `model` | 用什么跑的（如 `codex-cli 0.157.1 → MiniMax`） |
+| `kind` | `assertion`（断言）/ `evidence`（工具产出）/ `fact`（Flux 验证过） |
+| `tool` + 参数摘要 + 结果 hash | 有据可查 |
+| `ts` | 时间戳 |
+
+渲染形态（进入 Envelope 时）：
+
+```
+[codex · r7f2 · 断言] 登录校验应抽成独立函数，理由是……
+[codex · r7f2 · 证据 · flux.workspace.read(auth/login.py@sha256:9c1f)] （文件正文）
+[flux  · 事实 · tester.run(pytest)@sha256:44ab] 3 failed, 12 passed
+```
+
+配套规则写进 Envelope：**历史条目带来源标注；`断言`不等于事实，采信前自行验证。**
+
+### 26.5 防污染
+
+- agent **不能直接写 Brain**，只能提候选知识（`knowledge.propose`）；是否允许低风险类目自动入库待确认（建议仍走人审）。
+- 多 agent 并行时 L0/L1 只读共享；改动只能以 Workspace 提案回流（配 §8 的 hash check）。
+- 每次 Run 记录其引用的 **context 快照 id**，事后可回溯「当时它看到的上下文」。
+
+### 26.6 跨 agent 沙箱口径（待确认）
+
+- 内置 agent：cwd 指向隔离工作区 + 审批通道（§8 Phase 1 现状）。
+- 外部 agent（codex 等）：由 Flux 指定隔离工作目录（`codex exec -C <dir>` + 沙箱策略），产出经提案回流，不允许直写真实项目。
+
+## 27. 待确认清单（2026-10-01）
+
+| # | 事项 | 建议默认 |
+| --- | --- | --- |
+| 1 | Context Envelope 预算上限 | ≤4k tokens，其余走 MCP 按需拉 |
+| 2 | Handoff 产生方式 | agent 显式提交 + Flux 自动摘要兜底 |
+| 3 | 候选知识入库 | 一律人审（不允许自动入 L0） |
+| 4 | 外部 agent 沙箱口径 | 隔离目录 + 提案回流（§26.6） |
+| 5 | solo / ide 两页关系 | 同一会话两种视图，切页保留 agent 与会话 |
+| 6 | 一键切 agent 语义 | 切档案（角色/模型/权限组/可见范围）+ 交接信封，不继承全部对话历史 |
