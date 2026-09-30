@@ -1,7 +1,7 @@
 /** Diff 查看器：把后端 unified diff 渲染成左右并排的红绿对照视图（可切回统一视图）。 */
 import { useMemo, useState, type JSX } from "react";
 
-import { hasChanges, renderSideBySide, type DiffRow } from "../utils/diff";
+import { classifyDiffLines, hasChanges, renderSideBySide, type DiffRow } from "../utils/diff";
 
 function SideCell({
   no,
@@ -64,6 +64,7 @@ export function DiffViewer({
 }): JSX.Element {
   const [mode, setMode] = useState<"split" | "unified">("split");
   const rows = useMemo(() => renderSideBySide(diff), [diff]);
+  const lines = useMemo(() => classifyDiffLines(diff), [diff]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-line bg-surface-1">
@@ -100,21 +101,28 @@ export function DiffViewer({
           <p className="p-3 text-xs text-faint">后端未提供 diff 文本。</p>
         ) : mode === "unified" ? (
           <pre className="w-max min-w-full px-2 py-1 leading-5">
-            {diff.split("\n").map((line, index) => {
-              const tone = line.startsWith("+")
-                ? line.startsWith("+++")
-                  ? "text-faint"
-                  : "text-add bg-add/12"
-                : line.startsWith("-")
-                  ? line.startsWith("---")
-                    ? "text-faint"
-                    : "text-del bg-del/12"
-                  : line.startsWith("@@")
-                    ? "text-info bg-surface-2"
-                    : "text-muted";
+            {lines.map((line, index) => {
+              const tone =
+                line.kind === "del"
+                  ? "text-del bg-del/12"
+                  : line.kind === "add"
+                    ? "text-add bg-add/12"
+                    : line.kind === "hunk"
+                      ? "text-info bg-surface-2"
+                      : line.kind === "header"
+                        ? "text-faint"
+                        : "text-muted";
+              const display =
+                line.kind === "del"
+                  ? `-${line.text}`
+                  : line.kind === "add"
+                    ? `+${line.text}`
+                    : line.kind === "context"
+                      ? ` ${line.text}`
+                      : line.text;
               return (
                 <span key={index} className={`block px-1 whitespace-pre ${tone}`}>
-                  {line.length === 0 ? " " : line}
+                  {display.length === 0 ? " " : display}
                 </span>
               );
             })}

@@ -58,11 +58,15 @@ class FileDiff:
 def compute_file_diff(file_path: str, original: str, proposed: str) -> FileDiff:
     unified = build_unified_diff(file_path, original, proposed)
     added = removed = hunks = 0
+    # 只跳过真正的文件头那两行（--- a/<path> / +++ b/<path>），
+    # 之后内容行即使以 -- / ++ 开头也照常按 hunk 计数。
+    header_lines = 2
     for line in unified.splitlines():
+        if header_lines:
+            header_lines -= 1
+            continue
         if line.startswith("@@"):
             hunks += 1
-        elif line.startswith("+++") or line.startswith("---"):
-            continue
         elif line.startswith("+"):
             added += 1
         elif line.startswith("-"):

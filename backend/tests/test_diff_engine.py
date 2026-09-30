@@ -51,6 +51,12 @@ def test_stats_ignore_file_headers() -> None:
     assert (result.added_lines, result.removed_lines) == (1, 1)
 
 
+def test_stats_count_lines_starting_with_dashes() -> None:
+    """内容以 -- / ++ 开头的行要计入 removed_lines / added_lines，不能被当成文件头漏计。"""
+    result = compute_file_diff("a.py", "-- comment\n", "++ count\n")
+    assert (result.removed_lines, result.added_lines) == (1, 1)
+
+
 def test_two_far_apart_edits_produce_two_hunks() -> None:
     original = "".join(f"line{i}\n" for i in range(40))
     proposed = original.replace("line1\n", "line1-changed\n").replace(

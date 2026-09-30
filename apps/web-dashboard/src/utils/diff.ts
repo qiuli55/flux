@@ -3,7 +3,11 @@
  *
  * 后端 diff 由标准库 difflib 产出（diff_engine.py）：文件头 a/<path> / b/<path>，
  * 变更块以 @@ -旧起始,行数 +新起始,行数 @@ 分段，行首 ` ` / `-` / `+` 标记。
- * 这里按块把连续的删除行与新增行配对，缺失的一侧留空，得到并排视图。
+ *
+ * 解析统一先走 classifyDiffLines()：用显式 inHunk 状态判定文件头，只有尚未进入
+ * hunk 时的 --- / +++ 才是文件头；进入 hunk 后行首前缀就只是内容标记，内容本身
+ * 以 -- / ++ 开头的合法代码行照常按删除 / 新增处理，不会被误吞。
+ * 统一视图与并排视图共用同一份分类结果，保证「改动行集合」判定完全一致。
  */
 
 export type DiffRowKind = "context" | "change" | "hunk";
@@ -20,52 +24,94 @@ export interface DiffRow {
   rightText: string | null;
 }
 
+/** unified diff 里一行的类别：header=文件头，meta="\ No newline..." 之类无关行 */
+export type UnifiedKind = "header" | "hunk" | "meta" | "del" | "add" | "context";
+
+export interface UnifiedLine {
+  kind: UnifiedKind;
+  /** del/add 去掉行首标记、context 去掉前导空格后的正文；header/hunk/meta 保留整行 */
+  text: string;
+}
+
 const HUNK_PATTERN = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
-/** 解析 unified diff；空 diff 返回空数组。 */
-export function renderSideBySide(unified: string): DiffRow[] {
-  const rows: DiffRow[] = [];
-  if (!unified) return rows;
+/**
+ * 把 unified diff 逐行分类。空 diff 返回空数组。
+ *
+ * 只有尚未进入 hunk 时的 --- / +++ 才是文件头；进入 hunk 后前缀只是内容标记，
+ * 因此 `-- 注释` / `++ 计数` 这类行会被正确归为 del / add，而不是被当成文件头跳过。
+ */
+export function classifyDiffLines(unified: string): UnifiedLine[] {
+  const out: UnifiedLine[] = [];
+  if (!unified) return out;
 
   const lines = unified.replace(/\n$/, "").split("\n");
+  let inHunk = false;
+
+  for (const line of lines) {
+    if (!inHunk) {
+      if (line.startsWith("---") || line.startsWith("+++")) {
+        out.push({ kind: "header", text: line });
+      } else if (HUNK_PATTERN.test(line)) {
+        inHunk = true;
+        out.push({ kind: "hunk", text: line });
+      } else {
+        out.push({ kind: "meta", text: line });
+      }
+      continue;
+    }
+
+    if (line.startsWith("\\")) {
+      out.push({ kind: "meta", text: line });
+    } else if (HUNK_PATTERN.test(line)) {
+      out.push({ kind: "hunk", text: line });
+    } else if (line.startsWith("+")) {
+      out.push({ kind: "add", text: line.slice(1) });
+    } else if (line.startsWith("-")) {
+      out.push({ kind: "del", text: line.slice(1) });
+    } else if (line.startsWith(" ")) {
+      out.push({ kind: "context", text: line.slice(1) });
+    } else {
+      out.push({ kind: "context", text: line });
+    }
+  }
+
+  return out;
+}
+
+/** 解析 unified diff 为并排行模型；空 diff 返回空数组。 */
+export function renderSideBySide(unified: string): DiffRow[] {
+  const rows: DiffRow[] = [];
+  const lines = classifyDiffLines(unified);
+  if (lines.length === 0) return rows;
+
   let leftNo = 0;
   let rightNo = 0;
-  let index = 0;
+  let i = 0;
 
-  while (index < lines.length) {
-    const line = lines[index] ?? "";
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line) break;
 
-    // 文件头：跳过
-    if (line.startsWith("---") || line.startsWith("+++")) {
-      index += 1;
-      continue;
-    }
-    // "\ No newline at end of file"：跳过
-    if (line.startsWith("\\")) {
-      index += 1;
-      continue;
-    }
-    // 变更块头：重置两侧行号
-    const hunk = HUNK_PATTERN.exec(line);
-    if (hunk) {
-      leftNo = Number(hunk[1]);
-      rightNo = Number(hunk[2]);
-      rows.push({ kind: "hunk", leftNo: null, leftText: line, rightNo: null, rightText: null });
-      index += 1;
+    if (line.kind === "hunk") {
+      const match = HUNK_PATTERN.exec(line.text);
+      leftNo = Number(match?.[1] ?? leftNo);
+      rightNo = Number(match?.[2] ?? rightNo);
+      rows.push({ kind: "hunk", leftNo: null, leftText: line.text, rightNo: null, rightText: null });
+      i += 1;
       continue;
     }
 
-    // 连续的删除行 + 新增行 → 配对成并排的"改动"行
-    if (line.startsWith("-")) {
+    if (line.kind === "del" || line.kind === "add") {
       const removed: string[] = [];
-      while (index < lines.length && (lines[index] ?? "").startsWith("-") && !(lines[index] ?? "").startsWith("---")) {
-        removed.push((lines[index] ?? "").slice(1));
-        index += 1;
+      while (i < lines.length && lines[i]?.kind === "del") {
+        removed.push(lines[i]?.text ?? "");
+        i += 1;
       }
       const added: string[] = [];
-      while (index < lines.length && (lines[index] ?? "").startsWith("+") && !(lines[index] ?? "").startsWith("+++")) {
-        added.push((lines[index] ?? "").slice(1));
-        index += 1;
+      while (i < lines.length && lines[i]?.kind === "add") {
+        added.push(lines[i]?.text ?? "");
+        i += 1;
       }
       const span = Math.max(removed.length, added.length);
       for (let offset = 0; offset < span; offset += 1) {
@@ -82,29 +128,20 @@ export function renderSideBySide(unified: string): DiffRow[] {
       continue;
     }
 
-    // 单独的新增行
-    if (line.startsWith("+")) {
+    if (line.kind === "context") {
       rows.push({
-        kind: "change",
-        leftNo: null,
-        leftText: null,
+        kind: "context",
+        leftNo: leftNo++,
+        leftText: line.text,
         rightNo: rightNo++,
-        rightText: line.slice(1),
+        rightText: line.text,
       });
-      index += 1;
+      i += 1;
       continue;
     }
 
-    // 上下文行（行首为空格；difflib 对空行可能给出空串）
-    const text = line.startsWith(" ") ? line.slice(1) : line;
-    rows.push({
-      kind: "context",
-      leftNo: leftNo++,
-      leftText: text,
-      rightNo: rightNo++,
-      rightText: text,
-    });
-    index += 1;
+    // header / meta 不产生任何 diff 行
+    i += 1;
   }
 
   return rows;
