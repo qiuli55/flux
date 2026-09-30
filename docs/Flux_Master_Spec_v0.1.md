@@ -1038,7 +1038,7 @@ backend/
 ```
 ① Task 持久化（tasks 表为状态事实来源）   ← 已完成，提交 21abdfe
 ② Agent Manifest（不含 API Key 的 Agent 统一配置）   ← 已完成，提交 f7aa3ce
-③ Developer Agent
+③ Developer Agent   ← 已完成，提交 22e9ab7
 ④ Virtual File / Proposal
 ⑤ Diff Engine（unified diff）
 ⑥ Review / Approve / Reject
