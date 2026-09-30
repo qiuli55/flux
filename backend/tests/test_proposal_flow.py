@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from flux.config import Settings
 from flux.container import Container
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.manifest import builtin_manifests
@@ -311,10 +313,30 @@ def test_generate_endpoint_reports_bad_model_output_as_validation_error(
 
 
 def test_container_developer_falls_back_to_configured_provider(apply_container: Container) -> None:
-    """Manifest 声明的 deepseek 没有密钥时，退回默认供应商（local），而不是直接报错。"""
+    """Manifest 声明的 deepseek 没有密钥时，退回默认供应商（local），而不是直接报错。
+
+    退回落同时必须换模型：Manifest 里写的是 deepseek 家的 `deepseek-flash`，
+    把这个名字发给其他供应商会被上游直接拒掉。
+    """
     developer = apply_container.developer
 
     assert developer.manifest.provider is ModelProvider.LOCAL
     assert developer.manifest.model == apply_container.settings.local_model_name
     # Manifest 文件本身没有被改写：退回落只在容器装配时生效
     assert builtin_manifests()["developer"].provider is ModelProvider.DEEPSEEK
+
+
+def test_container_developer_fallback_uses_provider_model(
+    settings: Settings, workspace_root: Path
+) -> None:
+    """回退到非 local 供应商时，模型 id 换成该供应商配置里的默认模型，而不是 Manifest 的。"""
+    # 场景：deepseek 没配，但 anthropic 配了，默认供应商 = anthropic
+    settings.default_provider = ModelProvider.ANTHROPIC.value
+    settings.anthropic_api_key = "sk-test-anthropic"
+    settings.anthropic_model = "claude-sonnet-5-5"
+    container = Container(settings)
+
+    manifest = container._developer_manifest()
+
+    assert manifest.provider is ModelProvider.ANTHROPIC
+    assert manifest.model == settings.anthropic_model

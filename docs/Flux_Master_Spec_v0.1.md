@@ -205,6 +205,11 @@ Workflow Engine 负责多步骤流程编排。
 
 **【裁决】** 供应商口径以架构层为准，统一为 **OpenAI / Anthropic / DeepSeek / 本地模型** 四类。源 PRD 中的「Claude」「Codex」属品牌举例，分别归入 Anthropic 与 OpenAI；「Developer Agent → Model: Codex」的写法改为「模型供应商可选」。
 
+**【实施计划落地，2026-09-30】协议兼容的复用与回退规则**（⑫ 端到端实测时补）：
+
+- **协议兼容即复用，不新增适配器。** 只要上游的请求/响应结构符合四类协议之一，就直接指向既有适配器。实例：MiniMax 提供 Anthropic 兼容端点（`https://api.minimaxi.com/anthropic`，`x-api-key` + `anthropic-version` + `POST /v1/messages`），因此接入 MiniMax 只需设 `FLUX_ANTHROPIC_BASE_URL` / `FLUX_ANTHROPIC_MODEL` / `FLUX_ANTHROPIC_API_KEY`，**不写任何新供应商代码**。
+- **回退必须同时换供应商与模型 id。** Agent Manifest 里声明的是某个供应商的模型名（如 developer 的 `deepseek-flash`）。当该供应商未配置、按默认供应商回退时（见 §12.5），必须把 model 一并换成目标供应商在配置里声明的模型 id；否则会把别家的模型名发给上游，被直接拒绝。规则实现在 `container._developer_manifest()` / `_model_for()`，并由单测锁定。
+
 ### 5.4 Event Bus
 
 服务间通过事件通信。事件命名格式 `resource.action`：
