@@ -882,6 +882,13 @@ Agent 名称、角色、当前任务、模型、token 用量、成本、状态�
 
 前端**只**通过已定义的 API 通信。技术栈见 §17。
 
+**【实施计划 ⑫ 落地，2026-09-30】** 首个前端 `apps/web-dashboard` 已按 §13.1–13.4 实现并端到端跑通：
+
+- **技术栈**（§17.4）：React 19.3 + Vite 6.4 + TypeScript 5.9 + Tailwind 4.3（经 `@tailwindcss/vite`），无路由库 / 状态库 / 图标库 / diff 库——路由用组件状态，图标手写 SVG，unified diff 在前端解析成左右并排对照。
+- **同源约定**：前端只发 `/api/v1/...` 同源请求，由 Vite 的 `server.proxy` / `preview.proxy` 转发到 `127.0.0.1:8010`。因此**后端不挂 CORS 中间件**；前端也绝不直连后端端口。
+- **无 mock**：所有面板数据来自真实接口（health/ready、projects、scan、workspace/changes、accept/apply/reject、git/status、git/commit、agents）。后端未提供的字段（如 token 用量与成本，§13.3）在界面上显式标注「后端未提供」，不编造数值。
+- **运行方式**：`npm run dev` / `npm run build`；默认端口 5180（被占用时 Vite 会顺延并在控制台提示）。
+
 ---
 
 ## 14. 安全
@@ -1276,7 +1283,7 @@ backend/
 ⑨ Git Integration（status/diff/branch/checkout/commit）   ← 已完成，提交 93e304d（本地可回退的 5 个操作 + 只有 applied 的改动才能提交，见 §7.7）
 ⑩ Project Scanner（项目画像，不引入向量库）   ← 已完成，提交 b4c6aa6（只读有界扫描 + 项目画像，见 §5.8）
 ⑪ Project Brain v1（结构化，非 RAG）   ← 已完成，提交 b4c6aa6（六分区结构化记忆 + context 拼装，见 §5.6、§12.12）
-⑫ 最小 IDE（Virtual Workspace 为界面中心）
+⑫ 最小 IDE（Virtual Workspace 为界面中心）   ← 已完成，提交 7128812 + 96cc2ed（后端写入口 `POST /workspace/generate`；前端 apps/web-dashboard 三栏界面，端到端实测：需求 → 提案 → 审阅 diff → 批准 → 落盘 → 跑测试 → 提交，见 §13 与 §19.8）
 ⑬ Beginner Mode
 ```
 
