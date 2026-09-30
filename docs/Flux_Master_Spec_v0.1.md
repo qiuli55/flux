@@ -1263,8 +1263,8 @@ backend/
 ⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）   ← 已完成，提交 ee6ebaf（唯一落盘入口，备份 + 回滚 + 测试执行，见 §7.6）
 ⑧ Tester Agent   ← 已完成，提交 8c94e81（真实执行项目配置的测试命令 + 结构化回报 + 失败原因分析，见 §6.8）
 ⑨ Git Integration（status/diff/branch/checkout/commit）   ← 已完成，提交 93e304d（本地可回退的 5 个操作 + 只有 applied 的改动才能提交，见 §7.7）
-⑩ Project Scanner（项目画像，不引入向量库）
-⑪ Project Brain v1（结构化，非 RAG）
+⑩ Project Scanner（项目画像，不引入向量库）   ← 已完成，提交 b4c6aa6（只读有界扫描 + 项目画像，见 §5.8）
+⑪ Project Brain v1（结构化，非 RAG）   ← 已完成，提交 b4c6aa6（六分区结构化记忆 + context 拼装，见 §5.6、§12.12）
 ⑫ 最小 IDE（Virtual Workspace 为界面中心）
 ⑬ Beginner Mode
 ```
