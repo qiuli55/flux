@@ -38,6 +38,9 @@ class Events:
     DSH_RUN_COMPLETED = "dsh.run_completed"
     DSH_RUN_FAILED = "dsh.run_failed"
     DSH_RUN_CANCELLED = "dsh.run_cancelled"
+    # MCP 能力面的工具调用（目标架构 §3.2：越权不静默降级，必须留痕）
+    MCP_TOOL_CALLED = "mcp.tool_called"
+    MCP_TOOL_DENIED = "mcp.tool_denied"
 
 
 class EventBus:

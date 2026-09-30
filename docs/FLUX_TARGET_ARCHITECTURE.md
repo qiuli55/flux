@@ -96,6 +96,12 @@ L2 Run Context ───┘        │
 
 ### 3.3 Phase 1 工具清单（6 个，先上）
 
+> **落地进度（2026-10-01）**：第一批 4 个已实现并测试通过——`context.get` / `workspace.read` /
+> `workspace.diff` / `proposal.create`（`backend/flux/core/mcp/`）。剩下 `brain.search`、
+> `skill.get`、`handoff.put`、`operation.record` 未实现，其中 `operation.record` 依赖
+> `operations` 表，`handoff.put` 依赖 `handoffs` 表——两张表随第二批一起上。
+> 首批刻意不含任何需要"挂起等审批"的工具，审批回流桥（§3.6）与审查页一并落地。
+
 | 工具 | 类别 | 后端映射（现状 → 目标） | Permission | 默认策略 | 事件 |
 | --- | --- | --- | --- | --- | --- |
 | `context.get` | 读 | 新建 `mcp/context_packager.py`；数据源：tasks 表、Run 记录、`virtual_changes`、operations | `file.read`（限任务范围） | Allow | — |
@@ -239,7 +245,13 @@ agent → tools/call（Require Approval 类）
 | **保留 + 改造** | `dsh_client` / `dsh_events` → 内置 agent 的启动器与事件桥（不进 ModelGateway） |
 | **新建** | `backend/flux/mcp/`（MCP Server + 鉴权 + 打包器）、`flux/skill_runtime/`、`handoffs` / `operations` / `agent_tokens` / `context_snapshots` 持久化 |
 
-**执行状态（2026-10-01）**：表中「退役」与「重构」两行的代码修正已完成并推送（commit `45db1b9`，删 6 个模块 / 4 个专属测试文件，286 个用例全绿、`verify.sh` 五步全过）；「保留 + 补强」里 `virtual_workspace` 的 symlink 逃逸防护已完成（commit `5babc59`，新增 `path_guard.py` 作唯一真源、写 / 备份 / 读三处共用，292 个用例全绿）；其余「保留 + 补强 / 保留 + 改造 / 新建」属后续 Phase。
+**执行状态（2026-10-01）**：表中「退役」与「重构」两行的代码修正已完成并推送（commit `45db1b9`，删 6 个模块 / 4 个专属测试文件，286 个用例全绿、`verify.sh` 五步全过）；「保留 + 补强」里 `virtual_workspace` 的 symlink 逃逸防护已完成（commit `5babc59`，新增 `path_guard.py` 作唯一真源、写 / 备份 / 读三处共用）；「新建」里的 **MCP Server 已完成**：
+
+- `backend/flux/core/mcp/`：`server.py`（Streamable HTTP 单端点 `POST /mcp`，无状态，支持 `initialize` / `tools/list` / `tools/call` / `ping`，通知回 202）、`auth.py`（令牌签发与校验）、`context_packager.py`（全量 + T1 规则裁剪）、`tools/`（4 个工具 + 工具注册表）。
+- `agent_tokens` 表 + 迁移 `f2a7c1d9b6e4`；令牌 `fxt_` + 32 字节 hex 只存 sha256，`secret.access` 在签发入口即被拒绝（§3.5），撤销后下一个请求失效（鉴权不做缓存）。
+- REST 侧新增 `/api/v1/agents/{agent_id}/tokens`（签发 / 列出 / 撤销）供"接入 agent"使用；明文只在签发响应里出现一次。
+- `operations` / `handoffs` / `context_snapshots` 三张表**尚未落地**，第二批随 `operation.record` / `handoff.put` 一起上；当前工具调用事件走 EventBus（`mcp.tool_called` / `mcp.tool_denied`），事件体不含入参（提案入参可能带整份文件内容）。
+- 已知缺口：M0 的 REST 面整体没有用户鉴权，因此签发令牌的接口目前只以内网/本机为信任边界；桌面端用户鉴权落地后必须补 owner 校验（`api/v1/agents.py` 已就地注明）。
 
 ## 9. 实施顺序与验收
 

@@ -4,6 +4,7 @@
 """
 
 from flux.models.agent import Agent, AgentExecutionLog, AgentSkill
+from flux.models.agent_token import AgentToken
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
 from flux.models.project import Project, ProjectMemory
@@ -16,6 +17,7 @@ __all__ = [
     "Agent",
     "AgentExecutionLog",
     "AgentSkill",
+    "AgentToken",
     "Base",
     "ConnectorConfig",
     "ConnectorLog",

@@ -23,6 +23,18 @@ class AgentCreateRequest(BaseModel):
     permissions: list[Capability] = Field(default_factory=list)
 
 
+class AgentTokenIssueRequest(BaseModel):
+    """为某个 Agent 签发一枚 MCP 接入令牌（目标架构 §3.2）。
+
+    `scopes` 决定这枚令牌能调用哪些工具；`secret.access` 不在可授予范围内（§3.5）。
+    明文令牌只在签发响应里出现一次，之后任何接口都取不回——丢了就重新签一枚。
+    """
+
+    # 默认只给只读：让"什么都没配"的调用方拿到的是最小权限，而不是能写提案的权限
+    scopes: list[Capability] = Field(default_factory=lambda: [Capability.FILE_READ])
+    label: str = Field(default="", max_length=128)
+
+
 class TaskCreateRequest(BaseModel):
     description: str = Field(min_length=1)
     project_id: str | None = None

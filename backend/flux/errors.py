@@ -64,6 +64,16 @@ class PermissionDeniedError(AIOSError):
     http_status = 403
 
 
+class AuthenticationError(AIOSError):
+    """调用方身份未通过校验（MCP 面的 401，目标架构 §3.2 fail-closed）。
+
+    无令牌、令牌非法、令牌已撤销一律同一个错误——区分原因等于给攻击者提供探测信号。
+    """
+
+    code = "unauthenticated"
+    http_status = 401
+
+
 class ProviderNotConfiguredError(AIOSError):
     code = "provider_not_configured"
     http_status = 503

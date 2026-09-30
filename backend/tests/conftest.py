@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from flux.config import Settings
 from flux.container import Container
 from flux.db.session import create_engine
+from flux.enums import Capability
 from flux.main import create_app
 from flux.models import Base
 
@@ -93,3 +94,24 @@ def apply_client(apply_settings: Settings, db_schema: None) -> Iterator[TestClie
     app = create_app(apply_settings)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture()
+def mcp_client(apply_client: TestClient) -> TestClient:
+    """MCP 用例专用：工作区根已配置（proposal.create 要读原文件）。"""
+    return apply_client
+
+
+def issue_token(
+    client: TestClient,
+    *,
+    agent_id: str = "codex",
+    scopes: list[Capability] | None = None,
+) -> str:
+    """经 REST 签发一枚接入令牌，返回明文（测试里直接用真实签发路径，不走内部捷径）。"""
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/tokens",
+        json={"scopes": [str(s) for s in (scopes or [Capability.FILE_READ])]},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["token"]

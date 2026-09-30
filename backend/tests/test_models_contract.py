@@ -31,6 +31,9 @@ SPEC_TABLES = {
     "connectors",
     "connector_logs",
     "usage_records",
+    # §11.2 之外的新增表：MCP 能力面的鉴权凭据（目标架构 §3.2）。
+    # 它不是业务实体，因此不入主规格表清单，但必须与其余表一样受本文件全部约束。
+    "agent_tokens",
 }
 
 

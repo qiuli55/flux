@@ -13,9 +13,9 @@ from flux.api.errors import register_exception_handlers
 from flux.api.v1 import api_v1_router
 from flux.config import Settings, get_settings
 from flux.container import Container
+from flux.core.mcp.server import router as mcp_router
 from flux.logging import configure_logging
-
-VERSION = "0.1.0"
+from flux.version import VERSION
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,6 +39,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.container = container
     register_exception_handlers(app)
     app.include_router(api_v1_router, prefix=app_settings.api_v1_prefix)
+    # MCP 能力面（目标架构 §3.1）：与 REST 同进程同生命周期，但不挂在 /api/v1 下——
+    # 它是给 agent 用的协议端点，不是给前端用的业务接口。
+    app.include_router(mcp_router)
     return app
 
 

@@ -12,7 +12,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.manager import AgentHandle, AgentSpec
-from flux.schemas.api import AgentCreateRequest
+from flux.schemas.api import AgentCreateRequest, AgentTokenIssueRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -44,6 +44,46 @@ async def get_agent(
     agent_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
     return ok(container.agents.get(agent_id).to_dict())
+
+
+# --- MCP 接入令牌（目标架构 §3.2）---
+# 注意：M0 的 REST 面整体尚无用户鉴权（与 /api/v1/* 其它接口同一现状），
+# 因此本组接口的信任前提是"后端只对内网/本机开放"。桌面端用户鉴权落地后，
+# 签发令牌必须再收一道 owner 校验——这里不预先造一套假的权限检查。
+
+
+@router.post("/{agent_id}/tokens")
+async def issue_agent_token(
+    agent_id: str,
+    payload: AgentTokenIssueRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。"""
+    token, raw = await container.agent_tokens.issue(
+        agent_id=agent_id, scopes=payload.scopes, label=payload.label
+    )
+    return ok(
+        {**token.to_dict(), "token": raw},
+        metadata={"notice": "明文令牌仅此一次返回，请立即写入 agent 配置；服务端只存哈希"},
+    )
+
+
+@router.get("/{agent_id}/tokens")
+async def list_agent_tokens(
+    agent_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """列出该 agent 的令牌（只有元信息，取不回明文）。"""
+    tokens = await container.agent_tokens.list(agent_id=agent_id)
+    return ok([token.to_dict() for token in tokens], metadata={"count": len(tokens)})
+
+
+@router.delete("/{agent_id}/tokens/{token_id}")
+async def revoke_agent_token(
+    agent_id: str, token_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """撤销令牌：下一个 MCP 请求立即失效（鉴权不做缓存）。"""
+    token = await container.agent_tokens.revoke(token_id)
+    return ok(token.to_dict())
 
 
 __all__ = ["router"]

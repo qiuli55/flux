@@ -16,6 +16,7 @@ from flux.core.agent_runtime.manager import AgentManager
 from flux.core.event.bus import EventBus
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
+from flux.core.mcp.auth import AgentTokenService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
@@ -53,6 +54,7 @@ class Container:
     task_repo: TaskRepository = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
+    agent_tokens: AgentTokenService = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -103,6 +105,9 @@ class Container:
         # DSH Agent Runtime（集成方案 §18 Phase 1）：内置 agent 的接入层，
         # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
         self.dsh = FluxDshClient(self.settings, bus=self.bus)
+        # MCP 能力面的鉴权（目标架构 §3.2）：令牌是 agent 进入平台的唯一凭据，
+        # 与权限策略同源——工具要求的 Capability 直接取自 flux.enums.Capability。
+        self.agent_tokens = AgentTokenService(self.session_factory)  # type: ignore[attr-defined]
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:

@@ -60,6 +60,26 @@
         "title": "AgentRole",
         "type": "string"
       },
+      "AgentTokenIssueRequest": {
+        "description": "为某个 Agent 签发一枚 MCP 接入令牌（目标架构 §3.2）。\n\n`scopes` 决定这枚令牌能调用哪些工具；`secret.access` 不在可授予范围内（§3.5）。\n明文令牌只在签发响应里出现一次，之后任何接口都取不回——丢了就重新签一枚。",
+        "properties": {
+          "label": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Label",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/Capability"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "title": "AgentTokenIssueRequest",
+        "type": "object"
+      },
       "BrainSection": {
         "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n前四个是\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n后两个是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
         "enum": [
@@ -640,6 +660,158 @@
           }
         },
         "summary": "Get Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/tokens": {
+      "get": {
+        "description": "列出该 agent 的令牌（只有元信息，取不回明文）。",
+        "operationId": "list_agent_tokens_api_v1_agents__agent_id__tokens_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agent Tokens Api V1 Agents  Agent Id  Tokens Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agent Tokens",
+        "tags": [
+          "agents"
+        ]
+      },
+      "post": {
+        "description": "签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。",
+        "operationId": "issue_agent_token_api_v1_agents__agent_id__tokens_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTokenIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Agent Token Api V1 Agents  Agent Id  Tokens Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Agent Token",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/tokens/{token_id}": {
+      "delete": {
+        "description": "撤销令牌：下一个 MCP 请求立即失效（鉴权不做缓存）。",
+        "operationId": "revoke_agent_token_api_v1_agents__agent_id__tokens__token_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "token_id",
+            "required": true,
+            "schema": {
+              "title": "Token Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Agent Token Api V1 Agents  Agent Id  Tokens  Token Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Agent Token",
         "tags": [
           "agents"
         ]
@@ -1992,6 +2164,32 @@
         "summary": "Reject Changes",
         "tags": [
           "workspace"
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "description": "MCP 唯一入口。鉴权先于解析：没有合法令牌，任何方法都不可见。",
+        "operationId": "mcp_endpoint_mcp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "JSON-RPC 响应（工具结果或协议错误）"
+          },
+          "202": {
+            "description": "通知类消息，无正文"
+          },
+          "401": {
+            "description": "缺少或非法/已撤销的 Bearer 令牌"
+          }
+        },
+        "summary": "MCP Streamable HTTP 端点（Agent 能力面）",
+        "tags": [
+          "mcp"
         ]
       }
     }
