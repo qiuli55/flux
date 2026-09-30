@@ -48,6 +48,7 @@ export default function App() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [ready, setReady] = useState<ReadyData | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [readyError, setReadyError] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -111,6 +112,7 @@ export default function App() {
     }
     try {
       setReady(await api.ready());
+      setReadyError(null);
     } catch (error) {
       // 就绪探针失败（如数据库不可用）时，details 里仍带 database/providers
       if (error instanceof ApiError && error.details && typeof error.details === "object") {
@@ -118,7 +120,7 @@ export default function App() {
       } else {
         setReady(null);
       }
-      setHealthError(errorMessage(error));
+      setReadyError(errorMessage(error));
     }
     setHealthLoading(false);
   }, []);
@@ -394,7 +396,8 @@ export default function App() {
       <TopBar
         health={health}
         ready={ready}
-        readyError={healthError}
+        readyError={readyError}
+        healthError={healthError}
         loading={healthLoading}
         onRefresh={() => void loadHealth()}
       />

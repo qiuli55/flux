@@ -8,12 +8,14 @@ export function TopBar({
   health,
   ready,
   readyError,
+  healthError,
   loading,
   onRefresh,
 }: {
   health: HealthData | null;
   ready: ReadyData | null;
   readyError: string | null;
+  healthError: string | null;
   loading: boolean;
   onRefresh: () => void;
 }): JSX.Element {
@@ -97,6 +99,11 @@ export function TopBar({
       {readyError ? (
         <span className="hidden max-w-[18rem] truncate text-[11px] text-danger lg:block" title={readyError}>
           {readyError}
+        </span>
+      ) : null}
+      {healthError ? (
+        <span className="hidden max-w-[18rem] truncate text-[11px] text-danger lg:block" title={healthError}>
+          存活探针失败：{healthError}
         </span>
       ) : null}
     </header>
