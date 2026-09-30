@@ -12,6 +12,7 @@ SPEC_ENDPOINTS: dict[str, set[str]] = {
     "/api/v1/tasks": {"post"},
     "/api/v1/tasks/{task_id}": {"get"},
     "/api/v1/tasks/{task_id}/cancel": {"post"},
+    "/api/v1/workspace/generate": {"post"},
     "/api/v1/workspace/changes": {"get"},
     "/api/v1/workspace/changes/{change_id}": {"get"},
     "/api/v1/workspace/accept": {"post"},

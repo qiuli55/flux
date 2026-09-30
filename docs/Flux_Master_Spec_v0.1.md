@@ -766,6 +766,17 @@ POST /api/v1/workspace/reject                  拒绝，可带 reason
 
 错误码：未知提案 `not_found`；未配置工作区根目录 / 路径非法 `validation_error`；文件已被用户改过 `conflict`；落盘或测试失败 `apply_failed`；对终态提案重复操作 `invalid_state_transition`。请求体分别为 `{"change_ids": [...]}` 与 `{"change_ids": [...], "reason": "..."}`。
 
+**【实施计划 ⑫ 落地，2026-09-30】** 最小 IDE 的"让 AI 改"需要一个真正的写入口：`POST /api/v1/workspace/generate`。请求体 `{"instruction": "...", "paths": ["auth/login.py"], "task_id": null, "project_id": null}`，语义固定为：
+
+1. 按 `paths`（相对工作区根）读取文件**现状**作为上下文，一次最多 `5` 个文件、单文件最多 `60_000` 字节，越界即 `validation_error`；`paths` 为空表示不携带上下文；
+2. 交给 Developer Agent（Manifest 见 §6.2）产出 `CodeChangeSet`，模型输出不合契约即 `validation_error`（fail-closed，不静默兜底）；
+3. 逐文件落成 `pending` 提案（`agent_source = developer`），整个过程中**不写任何用户文件**——落盘仍然只能由 `apply` 经 Apply Engine 完成；
+4. 响应 `data = {summary, files, proposals}`，`proposals` 即刚创建的提案。
+
+这一步是 §19.8「一条完整开发任务端到端跑通」在 HTTP 层的起点：`generate → accept → apply → commit`。
+
+**供应商回退**：Developer 的 Manifest 声明 `deepseek`；若该供应商没有密钥（本地环境常态），容器按 §5.3 的简化路由退回 `FLUX_DEFAULT_PROVIDER`，而不是让"让 AI 改"在第一步就报错。一个供应商都没配置时保持 fail-closed，明确报 `provider_not_configured`。
+
 ### 12.6 Model Gateway API
 
 ```

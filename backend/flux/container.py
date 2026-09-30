@@ -5,14 +5,16 @@ M0 是单进程装配。后续拆分微服务（§17.2 后端服务拆分）时�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
+from flux.core.agent_runtime.developer import DEV_AGENT_NAME, DeveloperAgent
 from flux.core.agent_runtime.manager import AgentManager
+from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.core.agent_runtime.tester import TesterAgent
 from flux.core.event.bus import EventBus
 from flux.core.git_integration.client import GitClient
@@ -26,6 +28,7 @@ from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
+from flux.core.virtual_workspace.flow import DeveloperProposalFlow
 from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.core.virtual_workspace.service import VirtualWorkspaceService
 from flux.db.session import create_engine, create_session_factory
@@ -105,6 +108,41 @@ class Container:
             test_command=self.settings.test_command,
             workspace_root=self.settings.workspace_root,
             timeout_seconds=self.settings.test_timeout_seconds,
+        )
+
+    @cached_property
+    def developer(self) -> DeveloperAgent:
+        """Developer Agent（③）：按需创建，理由同 tester。"""
+        return DeveloperAgent(self.agents, self._developer_manifest())
+
+    @cached_property
+    def dev_flow(self) -> DeveloperProposalFlow:
+        """需求 → 提案的入口（⑫）：最小 IDE 里"让 AI 改"走的就是它。"""
+        return DeveloperProposalFlow(
+            self.developer,
+            self.workspace,
+            workspace_root=self.settings.workspace_root,
+        )
+
+    def _developer_manifest(self) -> AgentManifest:
+        """Developer 的 Manifest，必要时按 §5.3 简化路由退回默认供应商。
+
+        Manifest 里声明的是 deepseek；本地没有密钥时该供应商未配置，若不回退，
+        "让 AI 改"会在第一步就报 provider 未配置——离线回显（local）本来就是
+        为了"没有密钥也能端到端跑通"而存在的，所以这里按路由规则退回默认供应商。
+        """
+        manifest = builtin_manifests()[DEV_AGENT_NAME]
+        if manifest.provider in self.router.available():
+            return manifest
+        fallback = self._resolve_default_provider()
+        if fallback not in self.router.available():
+            return manifest  # 一个都没配：保持原样，让调用方拿到"供应商未配置"的明确报错
+        return replace(
+            manifest,
+            provider=fallback,
+            model=self.settings.local_model_name
+            if fallback is ModelProvider.LOCAL
+            else manifest.model,
         )
 
     def _resolve_default_provider(self) -> ModelProvider:
