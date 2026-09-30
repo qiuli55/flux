@@ -360,9 +360,33 @@ REAL_FILE → AI_PROPOSAL → USER_REVIEW → ACCEPTED → APPLIED
 
 file_path、original_content、proposed_content、diff、agent_source、timestamp。
 
+**【实施计划 ④⑤ 落地，2026-09-30】** 提案的权威存储是 `virtual_changes` 表（进程重启后审核队列不丢）。落地字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 提案 UUID |
+| `project_id` | 可空：本地临时目录也能跑完整闭环，不强制先注册项目 |
+| `task_id` | 产生该提案的任务（可空；与 `tasks.agent_id` 一样本轮不设外键） |
+| `file_path` | 相对项目根的路径，每个文件一条提案 |
+| `original_hash` | 生成提案时原文件的 sha256，**Apply 前必须复验**（见 7.6） |
+| `original_content` | 提案生成时的原文件内容（新文件为空串） |
+| `proposed_content` | 提案后的完整文件内容 |
+| `diff` | 标准 unified diff 文本 |
+| `added_lines` / `removed_lines` / `hunks` | Diff 概览，落库供列表直接展示 |
+| `reason` / `summary` | 为什么这样改（来自 Developer Agent 的 reason / summary） |
+| `agent_source` | 产出提案的 Agent 标识 |
+| `status` | `pending` / `accepted` / `rejected` / `applied` / `failed` |
+| `created_at` / `updated_at` | 审计时间戳 |
+
+**状态跃迁（服务层强制）**：`pending → accepted | rejected`；`accepted → applied | rejected | failed`；`rejected` / `applied` / `failed` 均为终态。`apply()` 对 `pending` 会先自动转 `accepted`（调用即视为人工批准，§7.5）。
+
+**提案生成约束**：内容与原文一致的条目直接跳过（不占用审核队列）；整个 CodeChangeSet 无有效改动时报 `validation_error`。
+
 ### 7.4 Diff 能力
 
 行级 diff、块级 diff、多文件改动、合并冲突检测。
+
+**【实施计划 ④⑤ 落地，2026-09-30】** 第一版不自研 diff 算法，直接基于标准库 `difflib.unified_diff`，产出 git 风格的 unified diff（文件头 `--- a/<path>` / `+++ b/<path>`，新增/删除行前缀 `+`/`-`，文件头不计入统计）。落地位置 `flux.core.virtual_workspace.diff_engine`：`content_hash()`、`build_unified_diff()`、`compute_file_diff()`（返回 `FileDiff`：`unified` + `added_lines` / `removed_lines` / `hunks` / `changed`）。块级 diff 与合并冲突检测暂不做。
 
 ### 7.5 审查操作
 

@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
+
+from flux.core.virtual_workspace.repository import ProposalRepository
+from flux.core.virtual_workspace.service import VirtualWorkspaceService
+from flux.db.session import create_engine, create_session_factory
 
 PREFIX = "/api/v1"
 
@@ -130,15 +136,28 @@ def test_get_unknown_task_not_found(client: TestClient) -> None:
 
 
 def _seed_proposal(client: TestClient, *, file_path: str = "auth/login.py") -> str:
-    container = client.app.state.container
-    proposal = container.workspace.propose(
-        project_id="proj-1",
-        file_path=file_path,
-        original_content="return False\n",
-        proposed_content="return check_password(user)\n",
-        agent_source="developer-agent",
-    )
-    return proposal.id
+    """直接经服务层写库（提案已落 virtual_changes 表，不能用内存字典塞）。
+
+    单独开一个短生命周期引擎：app 的容器跑在自己的事件循环里，跨循环复用它的
+    连接池会踩到 aiosqlite 的连接绑定问题。
+    """
+    database_url = client.app.state.container.settings.database_url
+    engine = create_engine(database_url)
+
+    async def _insert() -> str:
+        service = VirtualWorkspaceService(ProposalRepository(create_session_factory(engine)))
+        change = await service.propose(
+            file_path=file_path,
+            original_content="return False\n",
+            proposed_content="return check_password(user)\n",
+            agent_source="developer-agent",
+        )
+        return str(change.id)
+
+    try:
+        return asyncio.run(_insert())
+    finally:
+        asyncio.run(engine.dispose())
 
 
 def test_workspace_list_apply_reject(client: TestClient) -> None:
@@ -148,6 +167,11 @@ def test_workspace_list_apply_reject(client: TestClient) -> None:
     listed = client.get(f"{PREFIX}/workspace/changes").json()
     assert listed["metadata"]["count"] == 2
     assert listed["data"][0]["diff"].startswith("---")
+    assert listed["data"][0]["added_lines"] == 1
+
+    detail = client.get(f"{PREFIX}/workspace/changes/{apply_id}").json()["data"]
+    assert detail["status"] == "pending"
+    assert detail["original_hash"]
 
     applied = client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [apply_id]})
     assert applied.status_code == 200
@@ -161,6 +185,12 @@ def test_workspace_list_apply_reject(client: TestClient) -> None:
     assert rejected.json()["metadata"]["reason"] == "改动范围过大"
 
     assert len(client.get(f"{PREFIX}/workspace/changes?status=applied").json()["data"]) == 1
+
+
+def test_workspace_get_unknown_change(client: TestClient) -> None:
+    response = client.get(f"{PREFIX}/workspace/changes/0f5b6f4c-0000-0000-0000-000000000000")
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
 
 
 def test_workspace_apply_unknown_change(client: TestClient) -> None:

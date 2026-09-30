@@ -1,0 +1,140 @@
+"""virtual_changes 表的读写入口（主规格 §7.3 / §11.2；实施计划 §5）。
+
+提案的权威存储在这里：进程重启后人工审核队列不能丢，Apply 前的 hash 复验也必须
+读库里的 original_hash，而不是 Agent 手里的副本。
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from flux.enums import VirtualChangeStatus
+from flux.errors import BadRequestError, NotFoundError
+from flux.logging import get_logger
+from flux.models.project import Project
+from flux.models.workspace import VirtualChange
+
+logger = get_logger(__name__)
+
+
+class ProposalRepository:
+    """virtual_changes 表的读写入口。每次调用自开一个会话并提交。"""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def create(
+        self,
+        *,
+        file_path: str,
+        original_content: str,
+        proposed_content: str,
+        original_hash: str,
+        diff: str,
+        added_lines: int,
+        removed_lines: int,
+        hunks: int,
+        project_id: uuid.UUID | None = None,
+        task_id: uuid.UUID | None = None,
+        agent_source: str | None = None,
+        reason: str | None = None,
+        summary: str | None = None,
+        status: VirtualChangeStatus = VirtualChangeStatus.PENDING,
+        change_id: uuid.UUID | None = None,
+    ) -> VirtualChange:
+        """写入一条提案。project_id 指向不存在的项目时抛 NotFoundError。
+
+        与 TaskRepository 保持同一语义：合法 UUID 但关联实体不存在一律 404，
+        不把问题留给数据库外键（那会退化成 400，同一类问题两种错误码）。
+        """
+        async with self._session_factory() as session:
+            if project_id is not None:
+                exists = await session.scalar(select(Project.id).where(Project.id == project_id))
+                if exists is None:
+                    raise NotFoundError(
+                        f"项目 {project_id} 不存在", details={"project_id": str(project_id)}
+                    )
+            change = VirtualChange(
+                id=change_id or uuid.uuid4(),
+                project_id=project_id,
+                task_id=task_id,
+                file_path=file_path,
+                original_hash=original_hash,
+                original_content=original_content,
+                proposed_content=proposed_content,
+                diff=diff,
+                added_lines=added_lines,
+                removed_lines=removed_lines,
+                hunks=hunks,
+                reason=reason,
+                summary=summary,
+                agent_source=agent_source,
+                status=status.value,
+            )
+            session.add(change)
+            await self._commit(session)
+            return change
+
+    async def get(self, change_id: str | uuid.UUID) -> VirtualChange:
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            return change
+
+    async def list(
+        self,
+        *,
+        project_id: str | uuid.UUID | None = None,
+        task_id: str | uuid.UUID | None = None,
+        status: str | VirtualChangeStatus | None = None,
+    ) -> list[VirtualChange]:
+        statement = select(VirtualChange).order_by(VirtualChange.created_at, VirtualChange.id)
+        if project_id is not None:
+            statement = statement.where(VirtualChange.project_id == self._as_uuid(project_id))
+        if task_id is not None:
+            statement = statement.where(VirtualChange.task_id == self._as_uuid(task_id))
+        if status is not None:
+            statement = statement.where(VirtualChange.status == str(status))
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def set_status(
+        self, change_id: str | uuid.UUID, status: VirtualChangeStatus
+    ) -> VirtualChange:
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            change.status = status.value
+            await self._commit(session)
+            return change
+
+    async def _commit(self, session: AsyncSession) -> None:
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            logger.warning("提案写入违反数据库约束：%s", exc.orig)
+            raise BadRequestError(f"提案写入违反数据库约束：{exc.orig}") from exc
+
+    @staticmethod
+    def _as_uuid(value: str | uuid.UUID) -> uuid.UUID:
+        if isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except ValueError as exc:
+            raise NotFoundError(
+                f"虚拟改动 {value} 不存在", details={"change_id": str(value)}
+            ) from exc

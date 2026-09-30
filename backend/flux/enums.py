@@ -37,12 +37,17 @@ class TaskStatus(StrEnum):
 
 
 class VirtualChangeStatus(StrEnum):
-    """Virtual Workspace 文件状态机（主规格 §7.2）。"""
+    """Virtual Workspace 文件状态机（主规格 §7.2）。
+
+    FAILED 用于 Apply 阶段：补丁打不上或校验不通过时留下终态记录（实施计划 §5 状态列表），
+    不允许从 FAILED 回到任何可执行状态——失败原因必须由人重新生成提案。
+    """
 
     PENDING = "pending"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     APPLIED = "applied"
+    FAILED = "failed"
 
 
 class MessageType(StrEnum):

@@ -1,10 +1,15 @@
-"""Virtual Workspace 持久化模型（主规格 §7.3 Change Object / §11.2）。"""
+"""Virtual Workspace 持久化模型（主规格 §7.3 Change Object / §11.2）。
+
+提案的权威存储在 virtual_changes 表：进程重启后人工审核队列不能丢，
+且 Apply 必须拿库里的 original_hash 与磁盘现状比对（实施计划 §5 关键规则）。
+"""
 
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from sqlalchemy import ForeignKey, String, Text, Uuid
+from sqlalchemy import ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -15,14 +20,49 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "virtual_changes"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    # 提案可以脱离项目存在（本地临时目录也能跑闭环），故 project_id 可空
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
+    # 产生该提案的任务；tasks 表已存在但本轮不设外键（与 tasks.agent_id 同一处理，
+    # 见附录 A 裁决 A21）
+    task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), index=True, nullable=True)
     file_path: Mapped[str] = mapped_column(String(512), index=True)
+    # 生成提案时该文件的 sha256（十六进制）；Apply 前必须与磁盘现状复验（实施计划 §5）
+    original_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     original_content: Mapped[str] = mapped_column(Text)
     proposed_content: Mapped[str] = mapped_column(Text)
     diff: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Diff 概览，供 UI 列表直接展示，避免每次列表都重算 diff
+    added_lines: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    removed_lines: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    hunks: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # 为什么这样改（来自 Developer Agent 的 reason / summary，主规格 §6 的"修改原因"）
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 产出该提案的 Agent 标识
     agent_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # 取值见 flux.enums.VirtualChangeStatus
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "project_id": str(self.project_id) if self.project_id is not None else None,
+            "task_id": str(self.task_id) if self.task_id is not None else None,
+            "file_path": self.file_path,
+            "original_hash": self.original_hash,
+            "original_content": self.original_content,
+            "proposed_content": self.proposed_content,
+            "diff": self.diff or "",
+            "added_lines": self.added_lines,
+            "removed_lines": self.removed_lines,
+            "hunks": self.hunks,
+            "reason": self.reason,
+            "summary": self.summary,
+            "agent_source": self.agent_source,
+            "status": self.status,
+        }

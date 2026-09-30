@@ -20,11 +20,20 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 @router.get("/changes")
 async def list_changes(
     project_id: str | None = None,
+    task_id: str | None = None,
     status: str | None = None,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    changes = container.workspace.list(project_id=project_id, status=status)
+    changes = await container.workspace.list(project_id=project_id, task_id=task_id, status=status)
     return ok([c.to_dict() for c in changes], metadata={"count": len(changes)})
+
+
+@router.get("/changes/{change_id}")
+async def get_change(
+    change_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    change = await container.workspace.get(change_id)
+    return ok(change.to_dict())
 
 
 @router.post("/apply")

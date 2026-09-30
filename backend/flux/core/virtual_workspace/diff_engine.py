@@ -1,0 +1,77 @@
+"""Diff Engine（主规格 §7.4；实施计划 §6）。
+
+不自研 diff 算法：直接基于标准库 difflib 产出标准 unified diff。
+职责只有一件事——`original + proposed → unified diff + 概览`，供人工审阅与 UI 展示。
+"""
+
+from __future__ import annotations
+
+import difflib
+import hashlib
+from dataclasses import dataclass
+from typing import Any
+
+
+def content_hash(text: str) -> str:
+    """文件内容的 sha256（十六进制）。
+
+    提案生成时记下它，Apply 前再算一次与磁盘现状比对：不一致说明用户中途改过文件，
+    必须禁止直接落盘（实施计划 §5 关键规则）。
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_unified_diff(file_path: str, original: str, proposed: str) -> str:
+    """行级 unified diff，文件头固定为 a/<path> 与 b/<path>（git 风格）。"""
+    return "".join(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=f"a/{file_path}",
+            tofile=f"b/{file_path}",
+        )
+    )
+
+
+@dataclass(frozen=True)
+class FileDiff:
+    """一份文件的完整差异：文本 diff + 概览（新增/删除行、改动块数）。"""
+
+    file_path: str
+    unified: str
+    added_lines: int
+    removed_lines: int
+    hunks: int
+    changed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "unified": self.unified,
+            "added_lines": self.added_lines,
+            "removed_lines": self.removed_lines,
+            "hunks": self.hunks,
+            "changed": self.changed,
+        }
+
+
+def compute_file_diff(file_path: str, original: str, proposed: str) -> FileDiff:
+    unified = build_unified_diff(file_path, original, proposed)
+    added = removed = hunks = 0
+    for line in unified.splitlines():
+        if line.startswith("@@"):
+            hunks += 1
+        elif line.startswith("+++") or line.startswith("---"):
+            continue
+        elif line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return FileDiff(
+        file_path=file_path,
+        unified=unified,
+        added_lines=added,
+        removed_lines=removed,
+        hunks=hunks,
+        changed=bool(unified),
+    )

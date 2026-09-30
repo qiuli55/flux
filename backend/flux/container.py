@@ -18,6 +18,7 @@ from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
+from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.core.virtual_workspace.service import VirtualWorkspaceService
 from flux.db.session import create_engine, create_session_factory
 from flux.enums import ModelProvider
@@ -35,17 +36,20 @@ class Container:
     connectors: ConnectorRegistry = field(init=False)
     workspace: VirtualWorkspaceService = field(init=False)
     task_repo: TaskRepository = field(init=False)
+    proposal_repo: ProposalRepository = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
         self.session_factory = create_session_factory(self.engine)  # type: ignore[attr-defined]
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
+        self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
         default_provider = self._resolve_default_provider()
         self.router = ModelRouter(build_providers(self.settings), default_provider=default_provider)
         self.agents = AgentManager(self.router, self.bus)
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
-        self.workspace = VirtualWorkspaceService(self.bus)
+        self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus)
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:
