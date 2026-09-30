@@ -971,7 +971,48 @@ backend/
 ### 19.6 MVP 范围（明确不做）
 
 **做**：Flux Core、Agent Runtime、Virtual Workspace、GitHub Connector、VS Code Extension、Model Router。
-**不做**：手机 App、iOS 测试、自研浏览器、Marketplace、企业权限。
+**不做**（清单以裁决 A23 为准）：手机 App、iOS / Android 测试节点、自研浏览器、Marketplace / Plugin Marketplace、企业 Team Workspace、企业会议模式、企业本地文件同步、Cloud Agent、NAS 集群、高级成本中心、AI Code Completion、复杂 RAG、大规模分布式 Worker。
+
+### 19.7 当前执行顺序与范围收窄（裁决 A23）
+
+**【裁决】** 里程碑编号不再决定开发顺序。当前唯一目标是**让 Flux 第一次完整完成一个真实开发任务**，因此严格按下表顺序推进，任何"以后很有用"的能力都不得插队：
+
+```
+① Task 持久化（tasks 表为状态事实来源）   ← 已完成，提交 21abdfe
+② Agent Manifest（不含 API Key 的 Agent 统一配置）
+③ Developer Agent
+④ Virtual File / Proposal
+⑤ Diff Engine（unified diff）
+⑥ Review / Approve / Reject
+⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）
+⑧ Tester Agent
+⑨ Git Integration（status/diff/branch/checkout/commit）
+⑩ Project Scanner（项目画像，不引入向量库）
+⑪ Project Brain v1（结构化，非 RAG）
+⑫ 最小 IDE（Virtual Workspace 为界面中心）
+⑬ Beginner Mode
+```
+
+**M2 范围据此加厚**：`Virtual Workspace + 最小闭环`（Tech Lead → Developer → Proposal → 人工审阅 → Apply → Tester → Git Commit）。M3 IDE 及以后全部顺延。内置 Agent 第一批只做 4 个：Tech Lead、Developer、Reviewer、Tester；Architect、DevOps 待闭环稳定后再加。
+
+**当前阶段明确不做**（保留在 Roadmap，不进入主线）：Mobile App、iOS/Android 测试节点、企业 Team Workspace、企业会议模式、企业本地文件同步、Cloud Agent、NAS 集群、Marketplace、Plugin Marketplace、高级成本中心、自研浏览器、AI Code Completion、复杂 RAG、大规模分布式 Worker。
+
+**M2 的产品原则**：Agent 永不直接覆盖用户真实文件；Proposal 的 `original_hash` 在 Apply 时必须复验，不一致则禁止 Apply 并提示文件已被改动；Diff Engine 不自研算法，直接产出标准 unified diff；Apply 流程固定为 `校验 Proposal → 校验 hash → 备份 → 打补丁 → 校验文件 → 跑配置的测试`，失败要尽可能回滚原文件并留完整错误。
+
+**【裁决】验收基准升级**：禁止以"代码写完了"作为完成标准，统一走 `实现 → 单元测试 → 集成测试 → 真实项目测试 → 用户操作测试 → 验收`。Virtual Workspace 的验收必须真实走完这条序列：
+
+```
+Agent 修改代码 → 真实文件没有变化 → 用户看到 Diff → 用户拒绝 → 真实文件仍然没有变化
+→ 重新生成 Proposal → 用户 Accept → Apply → 测试通过 → 真实文件改变
+```
+
+### 19.8 个人版 MVP 完成定义（Definition of Done）
+
+以下全部满足，才算从"工程骨架"进入"可用个人版 MVP"：Task 完整持久化、Agent Manifest、Developer / Tech Lead / Tester Agent、Virtual Proposal、Unified Diff、Accept / Reject、Apply、Apply 前 hash 校验、Apply 失败恢复、测试执行、Git Commit、Project Scanner、最小 IDE、一条完整开发任务端到端跑通、自动化测试覆盖核心流程、至少用一个真实项目验证。
+
+第一个值得公开的 Demo 是「给我这个项目增加一个功能」，并完整展示：谁在工作、用什么模型、为什么改、改了什么、改动前后差异、测试是否通过、最终由谁批准。
+
+**此后顺序**：Project Brain → Skill System → Cost / Observability → Beginner Mode → Cloud / Pro → Enterprise。
 
 ---
 
@@ -1040,6 +1081,7 @@ GitHub Discussions、技术文章、开发者社区、开源贡献；提供 Issu
 | A20 | `tasks` 表缺调度优先级列 | §11.2 定义 `tasks` 只有 `id、project_id、description、status、cost、result`；但 §5.1 要求调度器管优先级，§12.4 的 Task API 已暴露 `priority` | **增列 `tasks.priority`（INTEGER，NOT NULL，默认 100，数字越小越优先）** | 实施期发现：M0 的任务对象存内存时 `priority` 天然可用，落库后若不建列，会出现「创建时返回 `priority=5`、重启后 GET 回来变成默认值」的静默不一致。优先级是调度器的输入而非临时元数据，必须随任务持久化 |
 | A21 | `tasks.agent_id` 暂不设外键 | §11.2 未定义该列；§11.4 也未规定其外键关系。而 §11.2 的 `agents` 表在 M1 尚无任何写入路径 | **增列 `tasks.agent_id`（UUID，可空，本阶段不加外键）**；待 Agent Runtime 持久化落地后，由后续迁移补 `agent_id → agents.id` 外键 | 与 A20 同因（API 已暴露 `agent_id`，不落库会不一致）。**不加外键是有意为之**：`agents` 表当前写不进去，任何带 `agent_id` 的建任务在 PostgreSQL 上都会立即违反外键，等于把功能做死。M1 阶段 Agent 存在性由进程内 Agent 注册表在 API 边界校验（fail-closed） |
 | A22 | 产品与工程标识改名 | 产品名 `AI Engineering OS`、Python 包 `aios`、环境变量前缀 `AIOS_`、规格文件名 `AI_Engineering_OS_Master_Spec_v0.1.md`、仓库名 `ai-engineering-os` | **产品名统一为 `Flux`**；Python 包 `backend/aios/` → **`backend/flux/`**；环境变量前缀 `AIOS_` → **`FLUX_`**；仓库 `github.com/qiuli55/flux`，默认分支 `main`；规格文档移入仓库并更名 **`docs/Flux_Master_Spec_v0.1.md`** | 用户 2026-09-30 决定「项目名字叫 flux」，并要求此后每做一次修改即提交推送到 flux 仓库。A8 的缩写规则随之作废（Flux 本身即短名）；§1.1、§7 术语表、§11.1 目录结构、A12、A19 中的旧名均已同步替换。**本机仓库目录已于同日一并改名：`/root/workspace/ai-engineering-os/` → `/root/workspace/flux/`**；注意 virtualenv 不可搬迁——改名后必须修复 `.venv/bin/*` 脚本内嵌的旧绝对路径并清掉内嵌旧路径的 `__pycache__`（`.venv/bin/python` 是指向系统解释器的符号链接，不受影响） |
+| A23 | 开发顺序与当前范围 | 里程碑编号不再决定开发顺序，改为「闭环优先」，严格按 §19.7 的 ①–⑬ 推进，任何"以后很有用"的能力都不得插队；M2 范围加厚为 `Virtual Workspace + 最小闭环（Tech Lead → Developer → Proposal → 人工审阅 → Apply → Tester → Git Commit）`，M3 IDE 及以后顺延；内置 Agent 第一批只做 Tech Lead / Developer / Reviewer / Tester；「明确不做」清单以 §19.6 为准；**验收基准升级**：统一走 `实现 → 单元测试 → 集成测试 → 真实项目测试 → 用户操作测试 → 验收`，禁止以"代码写完了"作为完成标准 | 当前唯一目标是让 Flux 第一次完整完成一个真实开发任务；进度：① Task 持久化已完成（提交 21abdfe）|
 
 ## 附录 A-2　外部事实快照（接入期核实）
 
