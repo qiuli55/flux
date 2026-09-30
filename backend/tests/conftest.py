@@ -20,9 +20,11 @@ from flux.models import Base
 def settings(tmp_path) -> Settings:
     """测试用配置：SQLite 落临时目录，日志降到 WARNING，供应商用离线回显。
 
-    三个真实供应商的密钥显式传 None：pydantic-settings 的默认值仍是"读环境"，
-    开发机仓库根的 .env 一旦填了 FLUX_OPENAI_API_KEY 之类，就会让"未配置供应商"
-    的断言变成"已配置"，测试结果随开发机环境漂移。显式 None 让用例与外部环境无关。
+    三个真实供应商的密钥显式传 None、Codex CLI 的可执行文件指向一个不存在的名字：
+    pydantic-settings 的默认值仍是"读环境"，开发机仓库根的 .env 一旦填了
+    FLUX_OPENAI_API_KEY 之类、或本机装了 /usr/local/bin/codex-minimax，就会让
+    "未配置供应商"的断言变成"已配置"，测试结果随开发机环境漂移。
+    显式钉死让用例与外部环境无关。
     """
     return Settings(
         env="test",
@@ -31,6 +33,7 @@ def settings(tmp_path) -> Settings:
         openai_api_key=None,
         anthropic_api_key=None,
         deepseek_api_key=None,
+        codex_cli_binary="flux-nonexistent-codex-binary",
         default_provider="local",
     )
 

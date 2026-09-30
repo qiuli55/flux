@@ -164,6 +164,7 @@ class Container:
             ModelProvider.OPENAI: self.settings.openai_model,
             ModelProvider.ANTHROPIC: self.settings.anthropic_model,
             ModelProvider.DEEPSEEK: self.settings.deepseek_model,
+            ModelProvider.CODEX_CLI: self.settings.codex_cli_model,
         }[provider]
 
     def _resolve_default_provider(self) -> ModelProvider:

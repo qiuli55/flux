@@ -46,8 +46,10 @@ logger = get_logger(__name__)
 ANTHROPIC_VERSION = "2023-06-01"
 
 # Anthropic 的 `max_tokens` 是必填字段，做不到"不传就不限"，所以调用方未指定时必须给一个值。
-# 这是不得已的兜底，仅本适配器需要；OpenAI / DeepSeek 不传时整条字段都不下发。
-DEFAULT_MAX_TOKENS = 1024
+# 这个兜底绝不能小：Agent 一次要产出完整文件内容，被截断会让提案 JSON 解析失败，
+# 因此默认给足 32000（Claude Sonnet 5.5 的输出上限远高于此），并允许用
+# FLUX_ANTHROPIC_MAX_TOKENS 配置。仅本适配器需要——OpenAI / DeepSeek 不传时整条字段都不下发。
+DEFAULT_MAX_TOKENS = 32000
 
 
 class AnthropicProvider(ModelProviderBase):
@@ -61,6 +63,7 @@ class AnthropicProvider(ModelProviderBase):
         base_url: str,
         timeout: float = 60.0,
         max_retries: int = 2,
+        default_max_tokens: int = DEFAULT_MAX_TOKENS,
         pricing: ModelPricing | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -69,6 +72,8 @@ class AnthropicProvider(ModelProviderBase):
         self.base_url = base_url
         self.timeout = timeout
         self.max_retries = max_retries
+        # 调用方未指定生成上限时的实际下发值（字段必填，只能给一个明确的值）
+        self.default_max_tokens = default_max_tokens
         # 生产留空：每次调用临时建连；测试注入带 MockTransport 的 client，断言不触网
         self._client = client
 
@@ -83,7 +88,7 @@ class AnthropicProvider(ModelProviderBase):
 
         payload: dict[str, Any] = {
             "model": self.model_name,
-            "max_tokens": kwargs.get("max_tokens") or DEFAULT_MAX_TOKENS,
+            "max_tokens": kwargs.get("max_tokens") or self.default_max_tokens,
             "messages": dialog,
             "stream": False,
         }
