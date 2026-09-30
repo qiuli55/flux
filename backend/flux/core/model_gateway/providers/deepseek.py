@@ -12,8 +12,8 @@
 推理 token 计入 `max_tokens`。2026-09-30 用 `deepseek-flash` 实测：`max_tokens=32` 时
 32 个输出 token 全被推理吃掉，`choices[0].message.content` 返回空串，
 而 `choices[0].message.reasoning_content` 有值；同一请求 `max_tokens=512` 正常返回
-`content="收到"`、`finish_reason="stop"`。故调用方不要用很小的 max_tokens 做探活，
-模块默认值 `DEFAULT_MAX_TOKENS = 1024` 是下限而非推荐值。
+`content="收到"`、`finish_reason="stop"`。故调用方不要用很小的 max_tokens 做探活；
+不传则整条字段都不下发，由模型自身的默认输出上限决定。
 
 为什么自己写 `httpx` 而不用官方 SDK：见 `flux.core.model_gateway.http` 的模块说明。
 """

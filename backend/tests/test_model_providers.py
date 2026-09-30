@@ -146,6 +146,38 @@ async def test_deepseek_request_and_default_model() -> None:
     assert result.cost is None
 
 
+@pytest.mark.parametrize(
+    ("provider_cls", "base_url"),
+    [
+        (OpenAIProvider, "https://api.openai.com/v1"),
+        (DeepSeekProvider, "https://api.deepseek.com"),
+    ],
+)
+async def test_no_token_limit_field_when_caller_omits_it(provider_cls: Any, base_url: str) -> None:
+    """调用方不设上限 → 请求体里不出现任何生成上限字段（不填 1024 兜底）。
+
+    兜底值会把 Agent 的完整文件输出截断、让提案 JSON 解析失败，所以"不传"必须等于
+    "不下发"，而不是"退回某个默认值"。
+    """
+    recorder = _Recorder()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        recorder.body = _json_body(request)
+        return httpx.Response(200, json=_openai_response())
+
+    provider = provider_cls(
+        model_name="test-model",
+        api_key="test-key",
+        base_url=base_url,
+        client=_client(handler),
+        max_retries=0,
+    )
+    await provider.chat([ChatMessage(role="user", content="你好")])
+
+    assert "max_tokens" not in recorder.body
+    assert "max_completion_tokens" not in recorder.body
+
+
 def test_deepseek_default_model_name_from_settings() -> None:
     providers = build_providers(Settings())
     assert providers[ModelProvider.DEEPSEEK].model_name == "deepseek-flash"

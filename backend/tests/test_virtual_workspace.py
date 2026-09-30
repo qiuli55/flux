@@ -141,9 +141,7 @@ def test_apply_pending_goes_through_accepted(apply_container: Container, workspa
     assert applied.status == VirtualChangeStatus.APPLIED.value
 
 
-def test_apply_failure_records_test_output(
-    apply_settings, db_schema: None, workspace_root
-) -> None:
+def test_apply_failure_records_test_output(apply_settings, db_schema: None, workspace_root) -> None:
     """落盘后测试不过 → failed，且 apply_error 必须带测试输出（§7.6 失败必留痕）。
 
     只留一句"测试未通过"的话，人看不出是哪个用例挂了、下一轮该改哪里。
@@ -151,9 +149,7 @@ def test_apply_failure_records_test_output(
     (workspace_root / "auth").mkdir()
     (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
     failing = workspace_root / "failing_check.py"
-    failing.write_text(
-        "import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8"
-    )
+    failing.write_text("import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8")
     settings = apply_settings.model_copy(
         update={"test_command": f"{shlex.quote(sys.executable)} {shlex.quote(str(failing))}"}
     )

@@ -36,7 +36,6 @@ from flux.core.model_gateway.base import (
     TokenUsage,
 )
 from flux.core.model_gateway.http import post_json
-from flux.core.model_gateway.providers.openai_compatible import DEFAULT_MAX_TOKENS
 from flux.enums import ModelProvider
 from flux.errors import ProviderError
 from flux.logging import get_logger
@@ -45,6 +44,10 @@ logger = get_logger(__name__)
 
 # Anthropic 要求的 API 版本头，缺失会被上游拒绝
 ANTHROPIC_VERSION = "2023-06-01"
+
+# Anthropic 的 `max_tokens` 是必填字段，做不到"不传就不限"，所以调用方未指定时必须给一个值。
+# 这是不得已的兜底，仅本适配器需要；OpenAI / DeepSeek 不传时整条字段都不下发。
+DEFAULT_MAX_TOKENS = 1024
 
 
 class AnthropicProvider(ModelProviderBase):

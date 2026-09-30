@@ -52,7 +52,7 @@ class AgentExecutor:
     ) -> None:
         self._router = router
         self._bus = bus
-        # 不给就用 Provider 自己的默认值（1024），给了就按 Agent 输出预算放开
+        # None = 不设上限：Agent 要产出完整文件内容，截断会让提案 JSON 解析失败
         self._max_output_tokens = max_output_tokens
 
     async def run(

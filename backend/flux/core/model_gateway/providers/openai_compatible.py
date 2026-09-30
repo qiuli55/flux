@@ -5,6 +5,9 @@
 
 两家的协议差异只有一处——生成上限参数名不同：OpenAI 用 `max_completion_tokens`
 （`max_tokens` 已废弃），DeepSeek 仍用 `max_tokens`。子类通过 `token_limit_param` 覆写。
+
+调用方不传 `max_tokens` 时**不下发**该字段，由模型自身的默认输出上限决定；本适配器不填
+兜底值——写死的兜底会把长输出截断（Agent 一次要产出完整文件内容，动辄数千 token）。
 """
 
 from __future__ import annotations
@@ -24,9 +27,6 @@ from flux.core.model_gateway.base import (
 from flux.core.model_gateway.http import post_json
 from flux.enums import ModelProvider
 from flux.errors import ProviderError
-
-# 调用方未显式给出生成上限时的默认值（三家适配器共用口径）
-DEFAULT_MAX_TOKENS = 1024
 
 
 class OpenAICompatibleProvider(ModelProviderBase):
@@ -59,13 +59,15 @@ class OpenAICompatibleProvider(ModelProviderBase):
     async def chat(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         self._ensure_configured()
 
-        max_tokens = kwargs.get("max_tokens") or DEFAULT_MAX_TOKENS
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
-            self.token_limit_param: max_tokens,
         }
+        # 不给上限就整条字段都不下发，让模型用自己的默认输出上限；不填兜底值以免截断长输出
+        max_tokens = kwargs.get("max_tokens")
+        if max_tokens is not None:
+            payload[self.token_limit_param] = max_tokens
         temperature = kwargs.get("temperature")
         if temperature is not None:
             payload["temperature"] = temperature
