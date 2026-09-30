@@ -33,6 +33,11 @@ class Events:
     PROJECT_SCANNED = "project.scanned"
     BRAIN_UPDATED = "project.brain_updated"
     USAGE_RECORDED = "usage.recorded"
+    DSH_RUN_STARTED = "dsh.run_started"
+    DSH_EVENT = "dsh.event"
+    DSH_RUN_COMPLETED = "dsh.run_completed"
+    DSH_RUN_FAILED = "dsh.run_failed"
+    DSH_RUN_CANCELLED = "dsh.run_cancelled"
 
 
 class EventBus:

@@ -68,6 +68,24 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
 
+    # --- DSH Agent Runtime（集成方案 §17 配置表；Phase 1 用官方 Python SDK）---
+    # 是否启用 DSH Agent Runtime（默认关闭，未启用时 /dsh 接口返回 503）
+    dsh_enabled: bool = False
+    # DSH_HOME 绝对路径：profiles / plugins / 会话落盘，必须放仓库外
+    dsh_home: str = "/opt/flux/dsh-home"
+    # DSH Agent 的工作目录（cwd），Phase 1 用独立空目录，不指向真实项目
+    dsh_workspace: str = "/opt/flux/dsh-ws"
+    # DSH provider 路由
+    dsh_provider: str = "deepseek-official"
+    # DSH 模型 id
+    dsh_model: str = "deepseek-v4-flash"
+    # 单次输出 token 上限
+    dsh_max_tokens: int = 49152
+    # 初始化握手超时（秒）
+    dsh_init_timeout_seconds: float = 30.0
+    # 单轮超时（秒）；0 表示不设限
+    dsh_run_timeout_seconds: float = 0.0
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.developer import DEV_AGENT_NAME, DeveloperAgent
+from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.core.agent_runtime.tester import TesterAgent
@@ -56,6 +57,7 @@ class Container:
     brain: ProjectBrain = field(init=False)
     task_repo: TaskRepository = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
+    dsh: FluxDshClient = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -99,6 +101,9 @@ class Container:
             bus=self.bus,
             workspace_root=self.settings.workspace_root,
         )
+        # DSH Agent Runtime（集成方案 §18 Phase 1）：Phase 1 只装配薄客户端，
+        # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
+        self.dsh = FluxDshClient(self.settings, bus=self.bus)
 
     @cached_property
     def tester(self) -> TesterAgent:
@@ -164,4 +169,5 @@ class Container:
             return ModelProvider.LOCAL
 
     async def dispose(self) -> None:
+        self.dsh.close()
         await self.engine.dispose()

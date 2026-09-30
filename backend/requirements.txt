@@ -15,6 +15,8 @@ asyncpg==0.31.0
 redis==8.1.0
 # 模型供应商适配器用手写 httpx 调用上游 HTTP API（不用官方 SDK），故列为运行时依赖
 httpx==0.28.1
+# 官方 Python SDK，自带 runtime 可执行，不需要系统 Node
+deepseek-harness-sdk==0.1.5rc1
 
 # --- 测试与开发 ---
 pytest==9.1.1

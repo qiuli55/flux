@@ -264,6 +264,32 @@
         "title": "ConnectorExecuteRequest",
         "type": "object"
       },
+      "DshRunCreateRequest": {
+        "description": "起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。",
+        "properties": {
+          "instruction": {
+            "minLength": 1,
+            "title": "Instruction",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "instruction"
+        ],
+        "title": "DshRunCreateRequest",
+        "type": "object"
+      },
       "GenerateProposalsRequest": {
         "description": "让 Developer Agent 依据一句需求产出提案（⑫ 最小 IDE 的\"让 AI 改\"）。\n\npaths 是需求相关的文件（相对工作区根）；服务端只读这些文件的现状当作上下文，\n产出的是待审阅提案，不会写任何用户文件。paths 为空表示不携带上下文。",
         "properties": {
@@ -802,6 +828,181 @@
         "summary": "Execute Connector",
         "tags": [
           "connectors"
+        ]
+      }
+    },
+    "/api/v1/dsh/runs": {
+      "get": {
+        "operationId": "list_runs_api_v1_dsh_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Runs Api V1 Dsh Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "dsh"
+        ]
+      },
+      "post": {
+        "operationId": "start_run_api_v1_dsh_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DshRunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Run Api V1 Dsh Runs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Run",
+        "tags": [
+          "dsh"
+        ]
+      }
+    },
+    "/api/v1/dsh/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_api_v1_dsh_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Run Api V1 Dsh Runs  Run Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "dsh"
+        ]
+      }
+    },
+    "/api/v1/dsh/runs/{run_id}/interrupt": {
+      "post": {
+        "operationId": "interrupt_run_api_v1_dsh_runs__run_id__interrupt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Interrupt Run Api V1 Dsh Runs  Run Id  Interrupt Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Interrupt Run",
+        "tags": [
+          "dsh"
+        ]
+      }
+    },
+    "/api/v1/dsh/status": {
+      "get": {
+        "operationId": "status_api_v1_dsh_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Status Api V1 Dsh Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status",
+        "tags": [
+          "dsh"
         ]
       }
     },

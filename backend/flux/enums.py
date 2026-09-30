@@ -86,6 +86,16 @@ class MessageType(StrEnum):
     HANDOFF = "HANDOFF"
 
 
+class DshRunStatus(StrEnum):
+    """DSH Agent Run 状态机（集成方案 §18 Phase 1）。"""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class Capability(StrEnum):
     """Capability 权限项（主规格 §5.5 / §8.4）。"""
 

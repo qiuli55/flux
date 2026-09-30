@@ -69,6 +69,13 @@ class ProviderNotConfiguredError(AIOSError):
     http_status = 503
 
 
+class ConfigurationError(AIOSError):
+    """能力未启用或未配置（例如 DSH Agent Runtime 未开启）。集成方案 §18 Phase 1。"""
+
+    code = "configuration_error"
+    http_status = 503
+
+
 class ProviderError(AIOSError):
     """上游模型供应商调用失败（主规格 §5.1 错误处理）。"""
 
