@@ -1140,7 +1140,7 @@ backend/
 ⑤ Diff Engine（unified diff）   ← 已完成，提交 f2b2786
 ⑥ Review / Approve / Reject   ← 已完成，提交 ee6ebaf（accept / apply / reject 三动作 + 状态机，见 §7.5、§12.5）
 ⑦ Apply Engine（hash 校验 + 备份 + 失败恢复）   ← 已完成，提交 ee6ebaf（唯一落盘入口，备份 + 回滚 + 测试执行，见 §7.6）
-⑧ Tester Agent   ← 已完成（真实执行项目配置的测试命令 + 结构化回报 + 失败原因分析，见 §6.8）
+⑧ Tester Agent   ← 已完成，提交 8c94e81（真实执行项目配置的测试命令 + 结构化回报 + 失败原因分析，见 §6.8）
 ⑨ Git Integration（status/diff/branch/checkout/commit）
 ⑩ Project Scanner（项目画像，不引入向量库）
 ⑪ Project Brain v1（结构化，非 RAG）
