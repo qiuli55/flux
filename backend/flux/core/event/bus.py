@@ -38,6 +38,9 @@ class Events:
     DSH_RUN_COMPLETED = "dsh.run_completed"
     DSH_RUN_FAILED = "dsh.run_failed"
     DSH_RUN_CANCELLED = "dsh.run_cancelled"
+    # P2-15：超时（startup / idle / hard）与重启接管导致的终态，单列事件便于前端区分展示
+    DSH_RUN_TIMEOUT = "dsh.run_timeout"
+    DSH_RUN_INTERRUPTED = "dsh.run_interrupted"
     # MCP 能力面的工具调用（目标架构 §3.2：越权不静默降级，必须留痕）
     MCP_TOOL_CALLED = "mcp.tool_called"
     MCP_TOOL_DENIED = "mcp.tool_denied"

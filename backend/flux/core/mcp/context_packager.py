@@ -82,7 +82,15 @@ async def package_context(
             )
         )
 
-    changes = await container.workspace.list(task_id=task_uuid, project_id=project_uuid)
+    # L2 只带与本次打包直接相关的提案：有任务就按任务取，否则按项目取。
+    # 不能两个条件同时下（仓库层是 AND）——提案常常只挂了 task_id 没有 project_id，
+    # 那样会被过滤成空；也不能在任务包里顺带拉全项目提案，那正是 §6 要防的跨任务污染。
+    if task_uuid is not None:
+        changes = await container.workspace.list(task_id=task_uuid)
+    elif project_uuid is not None:
+        changes = await container.workspace.list(project_id=project_uuid)
+    else:
+        changes = await container.workspace.list()
     recent = changes[-MAX_CHANGES:]
     if recent:
         lines = ["# 近期提案（L2，人审队列）"]

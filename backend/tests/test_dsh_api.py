@@ -36,7 +36,7 @@ def _blocking_behavior(
     )
 
 
-def test_post_runs_disabled_returns_503(settings: Settings) -> None:
+def test_post_runs_disabled_returns_503(settings: Settings, db_schema: None) -> None:
     """未启用时（默认）POST /dsh/runs 必须 503 configuration_error。"""
     disabled = settings.model_copy(update={"dsh_enabled": False})
     with TestClient(create_app(disabled)) as client:
@@ -48,16 +48,16 @@ def test_post_runs_disabled_returns_503(settings: Settings) -> None:
     assert body["code"] == "configuration_error"
 
 
-def test_status_reports_configuration(settings: Settings) -> None:
+def test_status_reports_configuration(settings: Settings, db_schema: None) -> None:
     with TestClient(create_app(settings)) as client:
         response = client.get(f"{PREFIX}/dsh/status")
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert set(data) == {"enabled", "home", "workspace", "provider", "model"}
+    assert set(data) == {"enabled", "home", "workspace", "provider", "model", "mcp"}
 
 
-def test_dsh_run_api_chain(settings: Settings, tmp_path) -> None:
+def test_dsh_run_api_chain(settings: Settings, tmp_path, db_schema: None) -> None:
     """POST → GET → interrupt 全链路：注入 fake harness，Run 最终落到 cancelled。"""
     enabled = settings.model_copy(
         update={
@@ -71,14 +71,21 @@ def test_dsh_run_api_chain(settings: Settings, tmp_path) -> None:
 
     with TestClient(app) as client:
         container = app.state.container
-        container.dsh = FluxDshClient(enabled, bus=container.bus, harness_factory=factory)
+        # 走真实装配路径：MCP 注入默认开启，起 Run 会签发内置 Agent 令牌（需要库表与令牌服务）
+        container.dsh = FluxDshClient(
+            enabled,
+            bus=container.bus,
+            harness_factory=factory,
+            token_service=container.agent_tokens,
+        )
 
         created = client.post(
             f"{PREFIX}/dsh/runs", json={"instruction": "写一个测试", "session_id": "api-1"}
         )
         assert created.status_code == 200
         run = created.json()["data"]
-        assert run["status"] == "running"
+        # P2-15：起 Run 只登记，实际执行在后台协程里推进（PENDING → STARTING → RUNNING）
+        assert run["status"] in {"pending", "starting", "running"}
         assert run["session_id"] == "api-1"
 
         listed = client.get(f"{PREFIX}/dsh/runs")
@@ -112,7 +119,7 @@ def test_dsh_run_api_chain(settings: Settings, tmp_path) -> None:
     assert final["duration_seconds"] is not None
 
 
-def test_get_missing_run_returns_404(settings: Settings, tmp_path) -> None:
+def test_get_missing_run_returns_404(settings: Settings, tmp_path, db_schema: None) -> None:
     enabled = settings.model_copy(
         update={
             "dsh_enabled": True,

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -40,10 +42,12 @@ class ProposalRepository:
         hunks: int,
         project_id: uuid.UUID | None = None,
         task_id: uuid.UUID | None = None,
+        group_id: uuid.UUID | None = None,
         agent_source: str | None = None,
         reason: str | None = None,
         summary: str | None = None,
         status: VirtualChangeStatus = VirtualChangeStatus.PENDING,
+        expires_at: datetime | None = None,
         change_id: uuid.UUID | None = None,
     ) -> VirtualChange:
         """写入一条提案。project_id 指向不存在的项目时抛 NotFoundError。
@@ -62,6 +66,7 @@ class ProposalRepository:
                 id=change_id or uuid.uuid4(),
                 project_id=project_id,
                 task_id=task_id,
+                group_id=group_id,
                 file_path=file_path,
                 original_hash=original_hash,
                 original_content=original_content,
@@ -74,6 +79,7 @@ class ProposalRepository:
                 summary=summary,
                 agent_source=agent_source,
                 status=status.value,
+                expires_at=expires_at,
             )
             session.add(change)
             await self._commit(session)
@@ -94,6 +100,8 @@ class ProposalRepository:
         *,
         project_id: str | uuid.UUID | None = None,
         task_id: str | uuid.UUID | None = None,
+        group_id: str | uuid.UUID | None = None,
+        file_path: str | None = None,
         status: str | VirtualChangeStatus | None = None,
     ) -> list[VirtualChange]:
         statement = select(VirtualChange).order_by(VirtualChange.created_at, VirtualChange.id)
@@ -101,8 +109,31 @@ class ProposalRepository:
             statement = statement.where(VirtualChange.project_id == self._as_uuid(project_id))
         if task_id is not None:
             statement = statement.where(VirtualChange.task_id == self._as_uuid(task_id))
+        if group_id is not None:
+            statement = statement.where(VirtualChange.group_id == self._as_uuid(group_id))
+        if file_path is not None:
+            statement = statement.where(VirtualChange.file_path == file_path)
         if status is not None:
             statement = statement.where(VirtualChange.status == str(status))
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def list_expirable(self) -> list[VirtualChange]:
+        """所有"设了截止时间且仍在可审状态"的提案，供服务层做惰性/批量过期。
+
+        时间比较放在 Python 侧做：SQLite 不存时区，库里读出来的时间可能没有 tzinfo，
+        在 SQL 里直接比较会因绑定参数带时区而结果不稳定（详见 service._as_utc）。
+        """
+        statement = (
+            select(VirtualChange)
+            .where(
+                VirtualChange.status.in_(
+                    [VirtualChangeStatus.PENDING.value, VirtualChangeStatus.ACCEPTED.value]
+                ),
+                VirtualChange.expires_at.is_not(None),
+            )
+            .order_by(VirtualChange.created_at, VirtualChange.id)
+        )
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
@@ -119,6 +150,44 @@ class ProposalRepository:
             change.status = status.value
             await self._commit(session)
             return change
+
+    async def set_expires_at(
+        self, change_id: str | uuid.UUID, expires_at: datetime | None
+    ) -> VirtualChange:
+        """改写提案的审核截止时间（续期 / 取消 TTL / 测试预置过期）。"""
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            change.expires_at = expires_at
+            await self._commit(session)
+            return change
+
+    async def mark_expired(
+        self, change_ids: Sequence[uuid.UUID], *, reason: str
+    ) -> list[VirtualChange]:
+        """把一批提案统一置为 expired 终态，并记下失效原因。
+
+        不在这里做状态合法性判断——那是服务层的职责（服务层已经按当前状态筛过一轮）；
+        本方法只负责"这一批原子地写进终态"，任何一个 ID 不存在则整批回滚不落库。
+        """
+        if not change_ids:
+            return []
+        async with self._session_factory() as session:
+            loaded: list[VirtualChange] = []
+            for key in change_ids:
+                change = await session.get(VirtualChange, key)
+                if change is None:
+                    raise NotFoundError(f"虚拟改动 {key} 不存在", details={"change_id": str(key)})
+                loaded.append(change)
+            for change in loaded:
+                change.status = VirtualChangeStatus.EXPIRED.value
+                change.expired_reason = reason
+            await self._commit(session)
+            return loaded
 
     async def set_apply_result(
         self,

@@ -251,6 +251,72 @@ def test_workspace_apply_unknown_change(client: TestClient) -> None:
     assert response.json()["code"] == "not_found"
 
 
+def test_workspace_apply_batch_writes_all_files(apply_client: TestClient, workspace_root) -> None:
+    """一次 apply 三条：全部落盘成功，返回的每条都带自己的备份路径。"""
+    for name in ("a.py", "b.py", "c.py"):
+        (workspace_root / name).write_text("return False\n", encoding="utf-8")
+    ids = [_seed_proposal(apply_client, file_path=name) for name in ("a.py", "b.py", "c.py")]
+
+    response = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": ids})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["count"] == 3
+    assert [item["status"] for item in body["data"]] == ["applied"] * 3
+    for name in ("a.py", "b.py", "c.py"):
+        content = (workspace_root / name).read_text(encoding="utf-8")
+        assert content == "return check_password(user)\n"
+
+
+def test_workspace_apply_batch_has_no_partial_apply(
+    apply_client: TestClient, workspace_root
+) -> None:
+    """P0-03 核心判据：batch 里一条过期 → 409，另外两条也不许留在盘上。"""
+    for name in ("a.py", "b.py", "c.py"):
+        (workspace_root / name).write_text("return False\n", encoding="utf-8")
+    ids = [_seed_proposal(apply_client, file_path=name) for name in ("a.py", "b.py", "c.py")]
+    # 人工在提案生成后改了中间那个文件 → 该提案过期
+    (workspace_root / "b.py").write_text("user 自己改的\n", encoding="utf-8")
+
+    response = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": ids})
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conflict"
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "return False\n"
+    assert (workspace_root / "b.py").read_text(encoding="utf-8") == "user 自己改的\n"
+    assert (workspace_root / "c.py").read_text(encoding="utf-8") == "return False\n"
+    for change_id in ids:
+        detail = apply_client.get(f"{PREFIX}/workspace/changes/{change_id}").json()["data"]
+        assert detail["status"] == "accepted", change_id
+        assert detail["apply_error"] is None
+
+
+def test_workspace_accept_batch_rejects_bad_id_without_partial_state(client: TestClient) -> None:
+    """accept 整批要么全成功要么全不动：坏 ID 不能让前一条先变成 accepted。"""
+    first = _seed_proposal(client, file_path="a.py")
+
+    response = client.post(f"{PREFIX}/workspace/accept", json={"change_ids": [first, "不存在"]})
+
+    assert response.status_code == 404
+    detail = client.get(f"{PREFIX}/workspace/changes/{first}").json()["data"]
+    assert detail["status"] == "pending"
+
+
+def test_workspace_apply_batch_rejects_duplicate_ids(
+    apply_client: TestClient, workspace_root
+) -> None:
+    (workspace_root / "a.py").write_text("return False\n", encoding="utf-8")
+    change_id = _seed_proposal(apply_client, file_path="a.py")
+
+    response = apply_client.post(
+        f"{PREFIX}/workspace/apply", json={"change_ids": [change_id, change_id]}
+    )
+
+    assert response.status_code == 422
+    assert "重复" in response.json()["message"]
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == "return False\n"
+
+
 # --- Git 集成（§17.6；实施计划 ⑨）---
 
 

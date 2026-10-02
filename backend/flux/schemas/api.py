@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from flux.enums import AgentRole, BrainSection, Capability, ModelProvider
+from flux.enums import AgentRole, BrainSection, Capability, DecisionMode, ModelProvider
 
 
 class AgentCreateRequest(BaseModel):
@@ -41,6 +41,70 @@ class TaskCreateRequest(BaseModel):
     agent_id: str | None = None
     # 数字越小越优先（主规格 §5.1 调度依据）
     priority: int = 100
+    # 任务级决策策略（文档 §5）：建任务时就定下来，之后可单独切换
+    decision_mode: DecisionMode = DecisionMode.AUTO
+
+
+class TaskMessageCreateRequest(BaseModel):
+    """发一条任务消息（任务执行中心的对话输入）。
+
+    只有 user 能由调用方写入：assistant 的回复必须来自平台真实模型调用，
+    不接受客户端伪造（role 不在请求体里，由服务端决定）。
+    """
+
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class ConfirmationItem(BaseModel):
+    """需求确认的一项：维度 + 结论（P0-06 六个固定维度，label 由服务端校验）。"""
+
+    label: str = Field(min_length=1, max_length=32)
+    value: str = Field(min_length=1, max_length=2000)
+
+
+class ConfirmationUpdateRequest(BaseModel):
+    """用户改后的需求确认内容：必须恰好覆盖六个维度（服务端 fail-closed 校验）。"""
+
+    items: list[ConfirmationItem] = Field(min_length=1, max_length=8)
+
+
+class DecisionModeRequest(BaseModel):
+    """切换任务级决策策略（文档 §5 模式 A / B）。"""
+
+    mode: DecisionMode
+
+
+class DecisionOption(BaseModel):
+    """一个候选方案：做什么、带来什么影响、是不是推荐项。"""
+
+    label: str = Field(min_length=1, max_length=64)
+    description: str | None = Field(default=None, max_length=2000)
+    impact: str | None = Field(default=None, max_length=2000)
+    recommended: bool = False
+
+
+class DecisionCreateRequest(BaseModel):
+    """Agent 遇到决策点时向平台登记（文档 §5）：平台按任务策略自动拍板或挂起等用户。"""
+
+    question: str = Field(min_length=1, max_length=2000)
+    options: list[DecisionOption] = Field(min_length=2, max_length=6)
+    context: str | None = Field(default=None, max_length=4000)
+    recommendation: str | None = Field(default=None, max_length=2000)
+
+
+class DecisionChooseRequest(BaseModel):
+    """用户对挂起的决策点做选择：choose 需要给出 option，reject 表示全部候选都不接受。"""
+
+    decision_id: str = Field(min_length=1, max_length=64)
+    action: Literal["choose", "reject"] = "choose"
+    option: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class TaskStartRequest(BaseModel):
+    """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。"""
+
+    confirmation: list[ConfirmationItem] | None = None
 
 
 class ChangeIdsRequest(BaseModel):
@@ -48,6 +112,19 @@ class ChangeIdsRequest(BaseModel):
 
 
 class RejectRequest(ChangeIdsRequest):
+    reason: str | None = None
+
+
+class ExpireRequest(ChangeIdsRequest):
+    """显式让一批提案失效（P0-02）。reason 留空时用默认的"过期"原因。"""
+
+    reason: str | None = None
+
+
+class GroupRequest(BaseModel):
+    """按一次提交（group_id）整组操作（P0-02）。"""
+
+    group_id: str = Field(min_length=1)
     reason: str | None = None
 
 

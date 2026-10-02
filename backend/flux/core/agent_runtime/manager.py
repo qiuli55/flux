@@ -5,8 +5,9 @@ Flux 本身不执行 Agent——没有 loop、不组装 prompt、不存对话（
 执行由各 Agent 自己的运行时完成（内置 DSH Agent 或外部 Codex / Claude Code 等）。
 档案里的 permissions 是平台侧权限的唯一来源（Connector 按 agent_id 解析）。
 
-M0 为进程内实现（档案存内存）。M1 里程碑接入 agents 表持久化，
-届时本类的公开接口保持不变。
+P3-16 起档案落库（agents 表），canonical id（UUID）是 Agent 身份的唯一权威：
+内存注册表只是它的运行时视图，启动时用 `load_from_db()` 重建，
+MCP 令牌、Proposal attribution、任务归属统一引用这个 UUID，不再有"第二套身份"。
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 
 from flux.core.agent_runtime.lifecycle import assert_transition
 from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
+from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.event.bus import EventBus, Events
 from flux.enums import AgentRole, AgentState, Capability
 from flux.errors import NotFoundError
@@ -66,8 +68,13 @@ class AgentHandle:
 
 
 class AgentManager:
-    def __init__(self, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        bus: EventBus | None = None,
+        repository: AgentRepository | None = None,
+    ) -> None:
         self._bus = bus
+        self._repository = repository
         self._agents: dict[uuid.UUID, AgentHandle] = {}
 
     # --- 接口：create ---
@@ -77,6 +84,7 @@ class AgentManager:
         self._agents[handle.id] = handle
         await self._transition(handle, AgentState.INITIALIZING)
         await self._transition(handle, AgentState.READY)
+        await self._persist(handle)
         logger.info("agent.create id=%s name=%s role=%s", handle.id_str, spec.name, spec.role)
         return handle
 
@@ -106,11 +114,42 @@ class AgentManager:
             raise NotFoundError(f"Agent {agent_id} 不存在", details={"agent_id": str(agent_id)})
         return handle
 
+    def find_by_name(self, name: str) -> AgentHandle | None:
+        """按档案名解析 Agent（供令牌签发 / 内置 Agent 启动器按名字定位 canonical id）。
+
+        名字不唯一时不猜：取最早创建的一个并记警告——令牌与 attribution 必须指向确定身份。
+        """
+        target = (name or "").strip()
+        if not target:
+            return None
+        matches = [h for h in self._agents.values() if h.spec.name == target]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning("agent.find_by_name 命中多个同名档案 name=%s，取最早创建的一个", target)
+        return min(matches, key=lambda h: h.id.int)
+
     def list(self) -> list[AgentHandle]:
         return list(self._agents.values())
 
     def count(self) -> int:
         return len(self._agents)
+
+    async def load_from_db(self) -> list[AgentHandle]:
+        """启动时用 agents 表重建内存注册表（canonical id 以库为准）。
+
+        库里没有档案（首次启动）时返回空；调用方再按需创建内置档案。
+        """
+        if self._repository is None:
+            return []
+        handles: list[AgentHandle] = []
+        for row in await self._repository.list():
+            handle = self._handle_from_row(row)
+            self._agents[handle.id] = handle
+            handles.append(handle)
+        if handles:
+            logger.info("agent.load_from_db 已从库重建 %d 个档案", len(handles))
+        return handles
 
     # --- 接口：stop ---
 
@@ -122,6 +161,39 @@ class AgentManager:
         return handle
 
     # --- 内部 ---
+
+    async def _persist(self, handle: AgentHandle) -> None:
+        """把档案落库（未装配仓储时跳过——纯内存用例仍可只用 AgentManager）。"""
+        if self._repository is None:
+            return
+        await self._repository.save(
+            agent_id=handle.id,
+            name=handle.spec.name,
+            role=str(handle.spec.role),
+            status=str(handle.state),
+            description=handle.spec.description,
+            skills=tuple(handle.spec.skills),
+            tools=tuple(handle.spec.tools),
+            permissions=tuple(sorted(str(p) for p in handle.spec.permissions)),
+        )
+
+    @staticmethod
+    def _handle_from_row(row: object) -> AgentHandle:
+        """把 agents 行还原成运行时句柄（config JSON 回填档案附属字段）。"""
+        config = getattr(row, "config", None) or {}
+        spec = AgentSpec(
+            name=str(getattr(row, "name", "")),
+            role=AgentRole(str(getattr(row, "role", AgentRole.DEVELOPER))),
+            description=str(config.get("description", "")),
+            skills=tuple(config.get("skills") or ()),
+            tools=tuple(config.get("tools") or ()),
+            permissions=frozenset(Capability(str(p)) for p in (config.get("permissions") or ())),
+        )
+        return AgentHandle(
+            spec=spec,
+            state=AgentState(str(getattr(row, "status", AgentState.CREATED))),
+            id=row.id,
+        )
 
     async def _transition(self, handle: AgentHandle, target: AgentState) -> None:
         assert_transition(handle.state, target)

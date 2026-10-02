@@ -3,11 +3,19 @@
 本模块把官方 Python SDK（`deepseek-harness-sdk`）包一层，向 Flux 暴露
 "起一次 Run / 收流式事件 / 中断 / 查状态" 四个动作。Phase 1 不引入 Node 侧产物，
 也不落库：Run 记录只存进程内字典，M1 里程碑再持久化。
+
+P0-01 起这里还负责**把 Flux 的 MCP 能力面注入 DSH**：起 Run 前确保内置 Agent
+有一枚可用令牌，并用 DSH 的 loader patch 机制挂上 `@deepseek-ai/dsh-mcp-client`
+插件（streamable-http + Bearer）。Agent 因此只能"看项目、提提案"，
+改文件仍然必须经过人审 + Apply Engine——它拿不到任何直接落盘的工具。
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,36 +23,87 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
 from deepseek_harness import DeepSeekHarness, Notification
+from deepseek_harness.client import HarnessClient
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_events import to_flux_event
-from flux.core.event.bus import EventBus, Events
-from flux.enums import DshRunStatus
-from flux.errors import ConfigurationError, NotFoundError
+from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
+from flux.core.agent_runtime.supervisor import RunSupervisor
+from flux.core.event.bus import EventBus
+from flux.core.mcp.auth import AgentTokenService
+from flux.enums import Capability, DshRunStatus
+from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
 from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: 终止态：进入后不再接受 interrupt
-TERMINAL_STATUSES = frozenset({DshRunStatus.COMPLETED, DshRunStatus.FAILED, DshRunStatus.CANCELLED})
+#: 终止态：进入后不再接受 cancel（含超时/重启接管等 P2-15 新增终态）
+TERMINAL_STATUSES = frozenset(DshRunStatus(s) for s in TERMINAL_RUN_STATUSES)
 
-#: 终态 → 对外发布的事件名
-_STATUS_EVENTS = {
-    DshRunStatus.COMPLETED: Events.DSH_RUN_COMPLETED,
-    DshRunStatus.FAILED: Events.DSH_RUN_FAILED,
-    DshRunStatus.CANCELLED: Events.DSH_RUN_CANCELLED,
-}
+#: P2-15：把 DSH 子进程变成"独立会话 + 独立进程组组长"的启动垫片。
+#: 直接 Popen 的进程与 Flux 同组，`killpg` 会连 uvicorn 一起杀；垫片先 setsid() 再 execv，
+#: 于是 pid == pgid == sid，取消时能精准清理整棵进程树而不误伤 Flux 自身。
+_SETSID_SHIM = (
+    "import os,sys\n"
+    "try:\n"
+    "    os.setsid()\n"
+    "except OSError:\n"
+    "    pass\n"
+    "os.execv(sys.argv[1], sys.argv[1:])\n"
+)
+
+
+def _supervised_launch_args(base: tuple[str, ...]) -> tuple[str, ...]:
+    """把 SDK 拼好的启动命令包一层 setsid 垫片（见 _SETSID_SHIM）。"""
+    return (sys.executable, "-c", _SETSID_SHIM, *base)
+
+
+class _SupervisedHarnessClient(HarnessClient):
+    """HarnessClient 子类：仅覆写启动参数，让 runtime 子进程独占一个进程组。"""
+
+    def _default_launch_args(self, env: dict[str, str]) -> tuple[str, ...]:
+        return _supervised_launch_args(super()._default_launch_args(env))
+
+
+class _SupervisedDeepSeekHarness(DeepSeekHarness):
+    """DeepSeekHarness 子类：把内部 client 换成进程组受控的那一个。
+
+    换掉的旧 client 从未 start（无子进程、无读线程），不产生泄漏。
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._client = _SupervisedHarnessClient(
+            self._client.config, _launch_args=self._client._launch_args
+        )
+
+
+#: 内置 Agent 令牌的能力：读项目 + 提提案，仅此两样（apply / git / shell 不在 MCP 面上）
+MCP_TOKEN_SCOPES = (Capability.FILE_READ, Capability.FILE_WRITE)
+
+#: DSH MCP 客户端插件（runtime 捆绑的 cordis 插件名）
+MCP_PLUGIN_NAME = "@deepseek-ai/dsh-mcp-client"
+#: patch 文件落点（dsh_home 下，仓库外）
+MCP_PATCH_DIRNAME = "patches"
+MCP_PATCH_FILENAME = "flux-mcp.patch.yml"
+#: serverName 必须是合法标识符（插件侧正则 ^[A-Za-z0-9_-]{1,32}$）
+_SERVER_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
 @dataclass
 class DshRun:
-    """一次 DSH Agent Run 的内存记录（Phase 1 不落库，M1 里程碑再持久化）。"""
+    """一次 DSH Agent Run 的对外快照。
+
+    权威状态由 RunSupervisor 写进 agent_runs 表（P2-15）；这个对象是 API 响应形态，
+    并把进程树与心跳信息一并暴露出来（取消后能看出"进程是否真的没了"）。
+    """
 
     session_id: str
     instruction: str
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    status: DshRunStatus = DshRunStatus.QUEUED
+    status: DshRunStatus = DshRunStatus.PENDING
     final_response: str = ""
     finish_reason: str | None = None
     error: str | None = None
@@ -53,6 +112,11 @@ class DshRun:
     finished_at: datetime | None = None
     duration_seconds: float | None = None
     cancel_requested: bool = False
+    pid: int | None = None
+    pgid: int | None = None
+    timeout_kind: str | None = None
+    agent_id: str | None = None
+    last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,14 +132,24 @@ class DshRun:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "duration_seconds": self.duration_seconds,
             "cancel_requested": self.cancel_requested,
+            "pid": self.pid,
+            "pgid": self.pgid,
+            "timeout_kind": self.timeout_kind,
+            "agent_id": self.agent_id,
+            "last_state_change_at": (
+                self.last_state_change_at.isoformat() if self.last_state_change_at else None
+            ),
         }
 
 
 class FluxDshClient:
-    """DSH Agent Runtime 的薄客户端（集成方案 §10）。
+    """DSH Agent Runtime 的客户端（集成方案 §10；P2-15 起生命周期交给 RunSupervisor）。
 
-    Run 记录存进程内字典（Phase 1 不落库，M1 里程碑再持久化）。
-    `harness_factory` 默认是 SDK 的 `DeepSeekHarness`；测试注入替身即可绕开真实 runtime。
+    Run 权威状态在 agent_runs 表（RunSupervisor 写），本类只负责"起一次 Run / 收事件流"。
+    `harness_factory` 默认是 SDK 的 `DeepSeekHarness`（进程组受控子类）；测试注入替身即可
+    绕开真实 runtime。`token_service` 用于给内置 Agent 签发 MCP 接入令牌（P0-01）；未注入
+    且 MCP 注入已启用时，起 Run 会显式报错，而不是让 Agent 在"没有平台能力"的状态下空跑。
+    `supervisor` 由容器装配（带数据库仓储）；未注入时退化成纯内存看护，单测可直接使用。
     """
 
     def __init__(
@@ -83,12 +157,27 @@ class FluxDshClient:
         settings: Settings,
         bus: EventBus | None = None,
         harness_factory: Callable[..., DeepSeekHarness] | None = None,
+        token_service: AgentTokenService | None = None,
+        supervisor: RunSupervisor | None = None,
+        run_repository: AgentRunRepository | None = None,
     ) -> None:
         self._settings = settings
         self._bus = bus
-        self._harness_factory = harness_factory or DeepSeekHarness
+        self._harness_factory = harness_factory or _SupervisedDeepSeekHarness
+        self._token_service = token_service
         self._runs: dict[str, DshRun] = {}
         self._harnesses: dict[str, DeepSeekHarness] = {}
+        self._supervisor = supervisor or RunSupervisor(
+            settings=settings, repository=run_repository, bus=bus
+        )
+        #: 进程内缓存的内置 Agent 令牌明文（明文只在签发时出现一次）
+        self._mcp_token: str | None = None
+        #: 内置 Agent 的 canonical UUID（P3-16：令牌与 Run 归属都用它）
+        self._mcp_agent_id: str | None = None
+
+    @property
+    def supervisor(self) -> RunSupervisor:
+        return self._supervisor
 
     # --- 就绪 ---
 
@@ -99,42 +188,183 @@ class FluxDshClient:
         for path in (self._settings.dsh_home, self._settings.dsh_workspace):
             Path(path).mkdir(parents=True, exist_ok=True)
 
+    # --- MCP 注入（P0-01）---
+
+    async def prepare_mcp_patch(self) -> Path | None:
+        """确保内置 Agent 有一条可用的 MCP 通道，返回 DSH loader patch 文件路径。
+
+        未启用 MCP 注入时返回 None（DSH 退化成裸 agent，仅用于排查）。
+        patch 里含 Bearer 令牌明文，因此写在 dsh_home（仓库外）并收紧到 0600——
+        DSH 只能从配置文件读 header，这是它拿到令牌的唯一途径。
+        """
+        if not self._settings.dsh_mcp_enabled:
+            logger.warning("DSH MCP 注入已关闭：本次 Run 的 Agent 将看不到项目、也提不了提案")
+            return None
+        if self._token_service is None:
+            raise ConfigurationError(
+                "已启用 DSH MCP 注入，但未装配 AgentTokenService",
+                details={"hint": "由容器把 container.agent_tokens 传给 FluxDshClient"},
+            )
+        server_name = self._settings.dsh_mcp_server_name.strip()
+        if not _SERVER_NAME_PATTERN.fullmatch(server_name):
+            raise ConfigurationError(
+                f"MCP serverName 非法（须匹配 ^[A-Za-z0-9_-]{{1,32}}$）：{server_name!r}",
+                details={"server_name": server_name},
+            )
+        url = self._settings.dsh_mcp_url.strip()
+        if not url.startswith(("http://", "https://")):
+            raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
+
+        token = await self._ensure_mcp_token()
+        entries = [
+            {
+                "id": f"flux-mcp-{server_name}",
+                "name": MCP_PLUGIN_NAME,
+                "config": {
+                    "transport": "streamable-http",
+                    "serverName": server_name,
+                    "url": url,
+                    "headers": {"Authorization": f"Bearer {token}"},
+                    "toolCallTimeoutMs": self._settings.dsh_mcp_tool_timeout_ms,
+                    # Flux 不可达时宁可起不来：起得来的裸 agent 会假装自己什么都能干
+                    "failOnStartupError": True,
+                },
+            }
+        ]
+        path = (Path(self._settings.dsh_home) / MCP_PATCH_DIRNAME / MCP_PATCH_FILENAME).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._render_patch(entries), encoding="utf-8")
+        os.chmod(path, 0o600)
+        logger.info(
+            "dsh.mcp patch 已就绪 path=%s server=%s agent=%s",
+            path,
+            server_name,
+            self._settings.dsh_mcp_agent_id,
+        )
+        return path
+
+    async def _ensure_mcp_token(self) -> str:
+        """返回一枚可用的内置 Agent 令牌明文；该 Agent 名下旧令牌一律撤销后重签。
+
+        明文只在 `issue` 时出现一次，进程重启后无法从库里取回——这正是设计：
+        与其在库里存一份可还原的密文，不如重签一枚，并把旧的撤销掉。
+
+        P3-16：令牌的 `agent_id` 必须是 Agent Registry 的 canonical UUID。配置里的
+        `dsh_mcp_agent_id`（如 `dsh-builtin`）只是 display_name，先按名字解析档案、
+        没有就补建，再拿 UUID 去签令牌——身份只有一套。
+        """
+        assert self._token_service is not None  # 调用方已确保
+        if self._mcp_token and self._mcp_agent_id:
+            try:
+                identity = await self._token_service.authenticate(self._mcp_token)
+            except AuthenticationError:
+                logger.warning("缓存的 MCP 令牌已失效（被撤销？），将重签一枚")
+                self._mcp_token = None
+            else:
+                self._mcp_agent_id = identity.agent_id
+                return self._mcp_token
+
+        handle = await self._token_service.ensure_agent(
+            name=self._settings.dsh_mcp_agent_id, permissions=MCP_TOKEN_SCOPES
+        )
+        agent_id = handle.id_str  # type: ignore[attr-defined]
+        for token in await self._token_service.list(agent_id=agent_id):
+            if token.revoked_at is None:
+                await self._token_service.revoke(token.id)
+        _, raw = await self._token_service.issue(
+            agent_id=agent_id,
+            scopes=MCP_TOKEN_SCOPES,
+            label="DSH 内置 Agent（Flux 自动签发）",
+        )
+        self._mcp_token = raw
+        self._mcp_agent_id = agent_id
+        return raw
+
+    @staticmethod
+    def _render_patch(entries: list[dict[str, Any]]) -> str:
+        """渲染 loader patch：**必须包在 `insert` 里**。
+
+        DSH 的 patch 数组有两种条目语义：带 `id` 的是"覆盖已存在条目"，带 `insert` 的才是
+        "新增条目"。直接把 `{id, name, config}` 放进顶层数组会被当成前者，DSH 只打印一句
+        `patch: entry "flux-mcp-flux" not found` 就跳过——Run 照常跑完，但 Agent 的工具集里
+        没有任何 Flux MCP 工具（P0-01 静默失效）。
+        """
+        header = (
+            "# Flux 自动生成：把平台 MCP 能力面注入 DSH runtime。\n"
+            "# 文件含 Agent 接入令牌（权限 0600），勿提交版本库；Flux 起 Run 时会按需覆盖。\n"
+            "# 结构：insert 列表——顶层数组的 {id: ...} 语义是覆盖已有条目，新插件必须 insert。\n"
+        )
+        return header + yaml.safe_dump([{"insert": entries}], allow_unicode=True, sort_keys=False)
+
     # --- 起 Run ---
 
-    async def start_run(self, instruction: str, *, session_id: str | None = None) -> DshRun:
-        """建一条 Run 记录、发布 started 事件，并把实际执行交给后台任务。"""
+    async def start_run(
+        self,
+        instruction: str,
+        *,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        task_id: object | None = None,
+    ) -> DshRun:
+        """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
+
+        权威状态由 RunSupervisor 写进 agent_runs 表；本方法只负责"建记录 + 起协程"。
+        MCP patch 在起 Run 前准备好：拿不到令牌 / 写不出 patch 就直接报错，
+        不把"Agent 摸不到项目"这种残废状态放进运行队列。
+
+        `run_id` 可由调用方预先指定：任务链路要先把它登记到任务上再起 Run，
+        否则 Run 结束时事件可能先到、任务还查不到自己的 Run（P0-05 的竞态）。
+        """
         self.ensure_ready()
-        run_id = uuid.uuid4().hex
+        patch_path = await self.prepare_mcp_patch()
+        run_id = run_id or uuid.uuid4().hex
         run = DshRun(
             run_id=run_id,
             session_id=session_id or f"flux-{run_id}",
             instruction=instruction,
-            status=DshRunStatus.RUNNING,
+            status=DshRunStatus.PENDING,
             started_at=datetime.now(timezone.utc),
+            agent_id=self._mcp_agent_id,
         )
         self._runs[run.run_id] = run
-        await self._publish(Events.DSH_RUN_STARTED, run)
-        asyncio.create_task(self._execute(run))
+        await self._supervisor.create_run(
+            run_id=run.run_id,
+            session_id=run.session_id,
+            instruction=instruction,
+            agent_id=run.agent_id,
+            task_id=task_id,
+        )
+        asyncio.create_task(self._execute(run, patch_path))
         return run
 
-    async def _execute(self, run: DshRun) -> None:
+    async def _execute(self, run: DshRun, patch_path: Path | None = None) -> None:
         """在线程里跑一次 DSH 会话，并把通知转成 Flux 事件。
 
         SDK 是同步阻塞的（§10.3），必须用 `asyncio.to_thread` 卸载；每次 Run **新建一个**
         harness，因为一个 SDK 实例独占一个 runtime 子进程且只能串行使用，不能共享单实例并发 run。
+
+        生命周期动作全部经 RunSupervisor（P2-15）：STARTING → RUNNING（记 pid/pgid）→ 终态；
+        取消/超时若已先落定终态，这里的结果不再覆盖（is_settled）。
         """
         loop = asyncio.get_running_loop()
+        run_id = run.run_id
 
         def _on_notification(notification: Notification) -> None:
-            # 回调由 SDK 读线程同步调用，不能直接 await；把发布动作交回事件循环线程。
+            # 回调由 SDK 读线程同步调用，不能直接 await；把动作交回事件循环线程。
             event, body = to_flux_event(notification)
-            record = {**body, "run_id": run.run_id}
+            record = {**body, "run_id": run_id}
             run.events.append(record)
             if self._bus is not None:
                 asyncio.run_coroutine_threadsafe(self._bus.publish(event, record), loop)
+            # 收到事件即算一次有效进展（P2-15 §2.4：不能只看 stdout 有没有字节）
+            asyncio.run_coroutine_threadsafe(
+                self._supervisor.note_output(run_id, _progress_snapshot(record)), loop
+            )
 
         status = DshRunStatus.COMPLETED
+        error: str | None = None
         harness: DeepSeekHarness | None = None
+        await self._supervisor.mark_starting(run_id)
         try:
             harness = self._harness_factory(
                 dsh_home=self._settings.dsh_home,
@@ -142,20 +372,27 @@ class FluxDshClient:
                 provider=self._settings.dsh_provider,
                 model=self._settings.dsh_model,
                 max_tokens=self._settings.dsh_max_tokens,
+                patches=(str(patch_path),) if patch_path is not None else (),
                 initialize_timeout_seconds=self._settings.dsh_init_timeout_seconds,
                 request_timeout_seconds=self._settings.dsh_run_timeout_seconds or None,
+                env=self._agent_env(run),
             )
             self._harnesses[run.run_id] = harness
+            if not await self._mark_process_started(run_id, harness):
+                # 取消/超时抢先把 Run 落成了终态：不要再跑，直接收摊
+                return
             result = await asyncio.to_thread(
                 harness.run,
                 run.instruction,
                 session_id=run.session_id,
                 on_notification=_on_notification,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - 上游任何异常都归到失败终态
             logger.exception("dsh.run 执行失败 run=%s", run.run_id)
             status = DshRunStatus.FAILED
-            run.error = str(exc)
+            error = str(exc)
         else:
             run.final_response = result.final_response
             run.finish_reason = result.finish_reason
@@ -168,24 +405,64 @@ class FluxDshClient:
                     logger.exception("dsh.harness 关闭失败 run=%s", run.run_id)
             self._harnesses.pop(run.run_id, None)
 
-        # 中断优先于完成/失败：只要请求过 cancel，终态一律置 CANCELLED。
-        if run.cancel_requested:
-            status = DshRunStatus.CANCELLED
-        self._finish(run, status)
-        await self._publish(_STATUS_EVENTS[status], run)
+        final = await self._supervisor.finish(
+            run_id,
+            status,
+            final_response=run.final_response,
+            finish_reason=run.finish_reason,
+            error=error,
+        )
+        run.error = error
+        self._sync_snapshot(run, final)
+        self._supervisor.release(run_id)
 
-    def interrupt(self, run_id: str) -> DshRun:
-        """请求中断一次 Run：给活跃 harness 发 `session/cancel`，等 _execute 收尾成 CANCELLED。"""
-        run = self.get_run(run_id)
-        if run.status in TERMINAL_STATUSES:
-            return run
-        harness = self._harnesses.get(run_id)
-        if harness is not None:
-            harness.client.notify("session/cancel", {"sessionId": run.session_id})
-        run.cancel_requested = True
+    async def _mark_process_started(self, run_id: str, harness: DeepSeekHarness) -> bool:
+        """把真实子进程的 pid/pgid 登记给看护器；返回 False 表示 Run 已被取消/超时落定。
+
+        setid 垫片让子进程自己成为进程组组长，故 pid == pgid；拿不到进程对象
+        （测试替身）时按"无进程"登记，看护器退化为纯状态机。
+        """
+        pid, pgid = _process_group_of(harness)
+        if self._supervisor.is_settled(run_id):
+            return False
+        await self._supervisor.mark_running(run_id, pid=pid, pgid=pgid)
+        self._supervisor.register_interrupt(
+            run_id,
+            lambda: _notify_cancel(harness, session_id=self._runs[run_id].session_id),
+        )
+        return not self._supervisor.is_settled(run_id)
+
+    def _agent_env(self, run: DshRun) -> dict[str, str]:
+        """启动时注入身份（P3-16 §4.5）：只是辅助信息，鉴权仍以令牌 → canonical id 为准。"""
+        env = {"FLUX_RUN_ID": run.run_id}
+        if run.agent_id:
+            env["FLUX_AGENT_ID"] = run.agent_id
+        return env
+
+    async def cancel(self, run_id: str) -> DshRun:
+        """取消一次 Run：CANCELLING → 优雅通知 → 清理整个进程树 → CANCELLED。
+
+        进程树确认清理干净才算 CANCELLED；清理不掉落 FAILED 并在 error 里说明
+        （P2-15 §2.5：绝不把残留进程伪装成取消成功）。
+        """
+        run = self._runs.get(run_id)
+        status = await self._supervisor.cancel(run_id)
+        if run is None:
+            return await self._snapshot_from_repo(run_id, status)
+        self._sync_snapshot(run, status)
+        await self._refresh_from_row(run)
         return run
 
     # --- 查询 ---
+
+    async def get_run_async(self, run_id: str) -> DshRun:
+        """查一次 Run：内存快照优先，没有就回落到库（Flux 重启后遗留的 Run 仍可查）。"""
+        run = self._runs.get(run_id)
+        if run is None:
+            run = await self._snapshot_from_repo(run_id, None)
+        else:
+            await self._refresh_from_row(run)
+        return run
 
     def get_run(self, run_id: str) -> DshRun:
         run = self._runs.get(run_id)
@@ -204,6 +481,14 @@ class FluxDshClient:
             "workspace": self._settings.dsh_workspace,
             "provider": self._settings.dsh_provider,
             "model": self._settings.dsh_model,
+            # MCP 注入状态（P0-01）：agent 能否通过平台拿项目上下文、提提案就看这里
+            "mcp": {
+                "enabled": self._settings.dsh_mcp_enabled,
+                "url": self._settings.dsh_mcp_url,
+                "server_name": self._settings.dsh_mcp_server_name,
+                "agent_name": self._settings.dsh_mcp_agent_id,
+                "agent_id": self._mcp_agent_id,
+            },
         }
 
     def close(self) -> None:
@@ -215,18 +500,93 @@ class FluxDshClient:
                 logger.exception("dsh.harness 关闭失败 run=%s", run_id)
             self._harnesses.pop(run_id, None)
 
+    async def shutdown(self) -> None:
+        """应用退出：停掉看护循环、清理仍在跑的进程树、关闭 harness（P2-15 §2.5）。"""
+        await self._supervisor.stop_background()
+        await self._supervisor.kill_active_processes()
+        self.close()
+
     # --- 内部 ---
 
-    def _finish(self, run: DshRun, status: DshRunStatus) -> None:
-        """写终态与耗时；所有路径都走这里，保证 finished_at / duration_seconds 必填。"""
+    @staticmethod
+    def _sync_snapshot(run: DshRun, status: DshRunStatus) -> None:
+        """把看护器落定的终态同步进内存快照。"""
         run.status = status
-        run.finished_at = datetime.now(timezone.utc)
-        if run.started_at is not None:
-            run.duration_seconds = (run.finished_at - run.started_at).total_seconds()
+        run.cancel_requested = run.cancel_requested or status is DshRunStatus.CANCELLED
+        if status in TERMINAL_STATUSES:
+            run.finished_at = run.finished_at or datetime.now(timezone.utc)
+            if run.started_at is not None:
+                run.duration_seconds = (run.finished_at - run.started_at).total_seconds()
+
+    async def _refresh_from_row(self, run: DshRun) -> None:
+        """用库里的权威状态刷新内存快照（错误信息、超时类型、进程信息都以库为准）。"""
+        row = await self._supervisor.repository.get(run.run_id)
+        if row is None:
+            return
+        try:
+            run.status = DshRunStatus(row.status)
+        except ValueError:
+            logger.warning("agent_runs 行 %s 的状态无法识别：%s", run.run_id, row.status)
+        run.error = row.error
+        run.finish_reason = row.finish_reason or run.finish_reason
+        run.timeout_kind = row.timeout_kind
+        run.cancel_requested = bool(row.cancel_requested)
+        run.pid = row.pid
+        run.pgid = row.pgid
+        run.agent_id = row.agent_id or run.agent_id
+        run.last_state_change_at = row.last_state_change_at
+        if row.finished_at is not None:
+            run.finished_at = row.finished_at
+            if run.started_at is not None:
+                run.duration_seconds = (row.finished_at - run.started_at).total_seconds()
+
+    async def _snapshot_from_repo(self, run_id: str, status: DshRunStatus | None) -> DshRun:
+        """从库里重建一条 Run 快照（Flux 重启后内存里没有、库里还在的场景）。"""
+        row = await self._supervisor.repository.get(run_id)
+        if row is None:
+            raise NotFoundError(f"DSH Run {run_id} 不存在", details={"run_id": run_id})
+        run = DshRun(
+            run_id=row.id,
+            session_id=row.session_id,
+            instruction=row.instruction,
+            status=DshRunStatus(row.status),
+            agent_id=row.agent_id,
+        )
+        await self._refresh_from_row(run)
+        if status is not None:
+            run.status = status
+        return run
 
     async def _publish(self, event: str, run: DshRun) -> None:
         if self._bus is not None:
             await self._bus.publish(event, run.to_dict())
+
+
+def _process_group_of(harness: DeepSeekHarness) -> tuple[int | None, int | None]:
+    """取 harness 子进程的 (pid, pgid)。
+
+    setid 垫片保证 pid == pgid；即便拿不到 pgid 也返回 pid，看护器会退化成单进程清理。
+    测试替身没有 `_proc`，返回 (None, None)——看护器按"无进程"处理。
+    """
+    proc = getattr(getattr(harness, "client", None), "_proc", None)
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return None, None
+    return pid, pid
+
+
+def _notify_cancel(harness: DeepSeekHarness, *, session_id: str) -> None:
+    """请 DSH runtime 自己收尾（会话转 idle）；子进程退出由看护器确认。"""
+    harness.client.notify("session/cancel", {"sessionId": session_id})
+
+
+def _progress_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    """落库用的最后事件摘要：不存文本正文，避免把整段回复塞进 JSON 列。"""
+    return {
+        "event_type": record.get("event_type"),
+        "session_id": record.get("session_id"),
+        "finish_reason": record.get("finish_reason"),
+    }
 
 
 __all__ = ["FluxDshClient", "DshRun", "TERMINAL_STATUSES"]

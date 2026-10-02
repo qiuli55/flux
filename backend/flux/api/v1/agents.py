@@ -58,7 +58,11 @@ async def issue_agent_token(
     payload: AgentTokenIssueRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。"""
+    """签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。
+
+    P3-16：路径里的 `agent_id` 必须是 Agent Registry 的 canonical UUID
+    （先 `POST /agents` 建档拿到的那个 id）——名字只是 display_name，不能用来签令牌。
+    """
     token, raw = await container.agent_tokens.issue(
         agent_id=agent_id, scopes=payload.scopes, label=payload.label
     )

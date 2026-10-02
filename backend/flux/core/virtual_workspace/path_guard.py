@@ -12,9 +12,67 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from flux.errors import ValidationError
+from flux.errors import PermissionDeniedError, ValidationError
+
+#: Flux 自己的内部目录（备份、锁、临时文件）。提案不得写进这里，否则 Agent 能改
+#: Apply Engine 的回滚依据（备份），等于绕过"改动必须可回退"这条底线。
+FLUX_INTERNAL_DIRNAME = ".flux"
+
+#: 密钥/凭证类文件名（小写精确匹配）。Secret 读取是 MCP 面的硬禁令（目标架构 §3.5），
+#: 这里不是配置项，是一份固定名单。
+_SECRET_FILENAMES = frozenset(
+    {
+        ".env",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".htpasswd",
+        ".git-credentials",
+        "credentials",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    }
+)
+
+#: `.env.xxx` 里属于"模板/示例"的后缀——没有真实密钥，允许读写。
+_SECRET_ENV_ALLOWED_SUFFIXES = frozenset({"example", "sample", "template", "dist", "defaults"})
+
+#: 密钥类扩展名（证书 / 私钥 / 密钥库）
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+
+
+def is_secret_path(path: str) -> bool:
+    """路径是否指向密钥类文件。只看文件名——密钥文件放在哪一层都一样敏感。"""
+    name = PurePosixPath((path or "").replace("\\", "/")).name.lower()
+    if not name:
+        return False
+    if name.startswith(".env."):
+        return name.rsplit(".", 1)[-1] not in _SECRET_ENV_ALLOWED_SUFFIXES
+    if name in _SECRET_FILENAMES or name.startswith(("id_rsa", "id_ed25519", "id_dsa", "id_ecdsa")):
+        return True
+    return name.endswith(_SECRET_SUFFIXES)
+
+
+def ensure_not_secret_path(path: str, *, where: str = "MCP 能力面") -> None:
+    """拒绝一切密钥类文件读写；命中即 403，不做例外判断（fail-closed）。"""
+    if is_secret_path(path):
+        raise PermissionDeniedError(
+            f"{where}禁止读写密钥/凭证类文件：{path}",
+            details={"path": path, "policy": "secret.read 是硬禁令（目标架构 §3.5）"},
+        )
+
+
+def ensure_not_flux_internal(relative: Path) -> None:
+    """拒绝写进 Flux 内部目录 `.flux/`（备份、锁都在那）。"""
+    if relative.parts and relative.parts[0] == FLUX_INTERNAL_DIRNAME:
+        raise ValidationError(
+            f"路径落在 Flux 内部目录 {FLUX_INTERNAL_DIRNAME}/ 内，已拒绝：{relative.as_posix()}",
+            details={"path": relative.as_posix()},
+        )
 
 
 def within_root(root: Path, candidate: Path) -> bool:
@@ -53,4 +111,11 @@ def resolve_within_root(root: Path, relative: Path) -> Path:
     return current
 
 
-__all__ = ["resolve_within_root", "within_root"]
+__all__ = [
+    "FLUX_INTERNAL_DIRNAME",
+    "ensure_not_flux_internal",
+    "ensure_not_secret_path",
+    "is_secret_path",
+    "resolve_within_root",
+    "within_root",
+]

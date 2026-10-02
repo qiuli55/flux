@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import PurePosixPath
 from typing import Any
 
 from flux.core.mcp.context_packager import DEFAULT_BUDGET_CHARS, package_context
@@ -19,6 +20,10 @@ from flux.core.mcp.tools.base import (
     require_str,
 )
 from flux.core.virtual_workspace.diff_engine import content_hash
+from flux.core.virtual_workspace.path_guard import (
+    ensure_not_flux_internal,
+    ensure_not_secret_path,
+)
 from flux.enums import Capability
 from flux.errors import ValidationError
 
@@ -66,6 +71,10 @@ WORKSPACE_READ_SCHEMA: dict[str, Any] = {
 async def workspace_read(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"path"})
     path = require_str(params, "path")
+    # Secret 与 Flux 内部数据（备份/锁）是 MCP 面的硬禁令（§3.5 / §7）：直接拒绝，
+    # 不因为"只是读一下"而放行
+    ensure_not_secret_path(path)
+    ensure_not_flux_internal(PurePosixPath(path.replace("\\", "/")))
     # workspace_root 不接受外部传入：能读到哪个目录由 Flux 配置决定，不由调用方指定
     content = await asyncio.to_thread(ctx.container.files.read, path=path)
     return {
@@ -94,6 +103,10 @@ async def workspace_diff(ctx: ToolContext, params: dict[str, Any]) -> dict[str, 
     reject_unknown(params, {"change_id"})
     change_id = require_str(params, "change_id")
     change = await ctx.container.workspace.get(change_id)
+    # 历史提案可能是在密钥禁令收紧之前落库的，这里按当前策略复核一次：
+    # diff 里就是完整文件内容，不能借"看 diff"把密钥读出去
+    ensure_not_secret_path(change.file_path)
+    ensure_not_flux_internal(PurePosixPath(change.file_path.replace("\\", "/")))
     return {
         "change_id": str(change.id),
         "file_path": change.file_path,

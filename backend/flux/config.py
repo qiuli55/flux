@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Apply 之后要跑的测试命令（如 "pytest -q"）；留空表示不跑测试
     test_command: str | None = None
     test_timeout_seconds: float = 300.0
+    # 提案审核 TTL（秒）。> 0 时，新提案带一个 expires_at，超过即失效（pending → expired）；
+    # <= 0 表示不启用超时失效——改动的有效性完全由 original_hash 复验来把关。
+    proposal_ttl_seconds: int = 86400
 
     # --- Git 集成（主规格 §17.6；实施计划 ⑨）---
     # git 命令超时；Git 操作同样只在 workspace_root 下执行
@@ -92,6 +95,34 @@ class Settings(BaseSettings):
     dsh_init_timeout_seconds: float = 30.0
     # 单轮超时（秒）；0 表示不设限
     dsh_run_timeout_seconds: float = 0.0
+
+    # --- Run 生命周期看护（修复方案 §2.3~§2.7）---
+    # 三类 timeout，全部可关（0 = 关闭该判据）：
+    #   startup：进程起来但始终没有进入 RUNNING（构造/握手卡住）的上限
+    #   idle：进程还在、但既无输出也无 MCP 活动、状态也不变的上限
+    #   hard：无论有无输出都不放行的绝对上限
+    dsh_startup_timeout_seconds: float = 120.0
+    dsh_idle_timeout_seconds: float = 600.0
+    dsh_hard_timeout_seconds: float = 1800.0
+    # 心跳周期：写 last_heartbeat_at 并检查三类超时 / 进程存活
+    dsh_heartbeat_interval_seconds: float = 5.0
+    # Reconciler 对账周期：数据库状态 ↔ 真实进程状态
+    dsh_reconcile_interval_seconds: float = 10.0
+    # Cancel 优雅期：SIGTERM 进程组后等这么久，仍在则 SIGKILL
+    dsh_cancel_grace_seconds: float = 5.0
+
+    # --- DSH × MCP 注入（目标架构 §3；P0-01 真闭环）---
+    # 内置 Agent 只能经 MCP 看项目、提提案；启动 DSH 时自动生成 patch 注入 MCP 客户端插件。
+    # 关闭后 DSH 会退化成"没有平台的裸 agent"——仅用于本地排查，默认必须开着。
+    dsh_mcp_enabled: bool = True
+    # Flux MCP 端点（streamable-http）。默认同机默认端口；隔离实例请显式指向自己的端口
+    dsh_mcp_url: str = "http://127.0.0.1:8000/mcp"
+    # MCP serverName（注入后工具名形如 mcp__flux__workspace.read）
+    dsh_mcp_server_name: str = "flux"
+    # 内置 Agent 的令牌身份：Flux 用它在 MCP 面盖章 provenance
+    dsh_mcp_agent_id: str = "flux-builtin"
+    # 单次工具调用超时（毫秒）
+    dsh_mcp_tool_timeout_ms: int = 60000
 
     @property
     def is_sqlite(self) -> bool:

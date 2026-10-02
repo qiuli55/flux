@@ -3,9 +3,9 @@
 这是 MCP 面唯一的鉴权凭据：明文形如 `fxt_` + 32 字节随机 hex，
 库里只存 sha256——数据库泄露也拿不到可用令牌（明文只在签发那一刻返回一次）。
 
-agent_id 不设外键：内置档案来自 AgentManager 的内存注册表，
-外部 agent（codex / claude-code / opencode）本就不在 agents 表里，
-加外键会逼着"为了发令牌先往 agents 表塞一行假档案"。
+agent_id 不设外键：Flux 可能先建档案、再由 Agent 自己接入，外键会在"档案还没落库"
+或"历史令牌迁移"这类跨步骤场景里制造顺序耦合。P3-16 起它不再是自由字符串，而是
+Agent Registry 里的 canonical UUID（鉴权时回查注册表，解析不到即拒绝）。
 """
 
 from __future__ import annotations

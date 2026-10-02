@@ -5,6 +5,8 @@
 
 入参解析复用 `proposal_parser`（与 REST 导入路径同一份校验），
 provenance 的 `agent_source` 由服务端用令牌身份盖章，客户端传什么都不作数。
+P3-16 §4.4：请求体里若自带 `agent_id`，必须与令牌身份一致，否则直接拒绝——
+不允许 Agent 假冒别的 Agent 提交提案。
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from flux.core.mcp.tools.base import (
 )
 from flux.core.virtual_workspace.proposal_parser import parse_code_change_set
 from flux.enums import Capability
-from flux.errors import NotFoundError, ValidationError
+from flux.errors import NotFoundError, PermissionDeniedError, ValidationError
 
 PROPOSAL_CREATE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -35,6 +37,10 @@ PROPOSAL_CREATE_SCHEMA: dict[str, Any] = {
         },
         "task_id": {"type": "string", "description": "该改动服务的任务 UUID（可空）"},
         "project_id": {"type": "string", "description": "项目 UUID（可空）"},
+        "agent_id": {
+            "type": "string",
+            "description": "（可空）调用方声明的 Agent canonical UUID；与令牌不一致会被拒绝",
+        },
     },
     "required": ["payload"],
     "additionalProperties": False,
@@ -42,7 +48,8 @@ PROPOSAL_CREATE_SCHEMA: dict[str, Any] = {
 
 
 async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
-    reject_unknown(params, {"payload", "task_id", "project_id"})
+    reject_unknown(params, {"payload", "task_id", "project_id", "agent_id"})
+    _reject_impersonation(ctx, optional_str(params, "agent_id"))
     change_set = parse_code_change_set(_as_text(params.get("payload")), source="proposal.create")
 
     originals: dict[str, str] = {}
@@ -73,6 +80,24 @@ async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str,
         ],
         "note": "提案已进入人工审核队列，尚未落盘；落盘只在人审通过后由 Apply Engine 执行。",
     }
+
+
+def _reject_impersonation(ctx: ToolContext, declared: str | None) -> None:
+    """请求自报的 agent_id 与令牌不一致时拒绝（P3-16 §4.4 / TC-16C）。
+
+    身份以令牌为准；这里只额外检查"有没有人试图冒充别人"，不做任何"以请求体为准"的兜底。
+    """
+    if not declared:
+        return
+    if declared.strip() != ctx.identity.agent_id:
+        raise PermissionDeniedError(
+            "请求声明的 agent_id 与令牌身份不一致，已拒绝（禁止身份冒充）",
+            details={
+                "declared": declared.strip(),
+                "token_agent_id": ctx.identity.agent_id,
+                "token_id": ctx.identity.token_id,
+            },
+        )
 
 
 def _as_text(payload: Any) -> str:

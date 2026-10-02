@@ -17,6 +17,8 @@ redis==8.1.0
 httpx==0.28.1
 # 官方 Python SDK，自带 runtime 可执行，不需要系统 Node
 deepseek-harness-sdk==0.1.5rc1
+# DSH loader patch（YAML）生成：注入 MCP 客户端插件配置
+PyYAML==6.0.3
 
 # --- 测试与开发 ---
 pytest==9.1.1

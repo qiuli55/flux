@@ -32,14 +32,15 @@ async def list_runs(container: Container = Depends(get_container)) -> dict[str, 
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, container: Container = Depends(get_container)) -> dict[str, object]:
-    return ok(container.dsh.get_run(run_id).to_dict())
+    return ok((await container.dsh.get_run_async(run_id)).to_dict())
 
 
 @router.post("/runs/{run_id}/interrupt")
 async def interrupt_run(
     run_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
-    return ok(container.dsh.interrupt(run_id).to_dict())
+    """请求取消一次 Run：进程树确认清理干净才返回 CANCELLED（P2-15 §2.5）。"""
+    return ok((await container.dsh.cancel(run_id)).to_dict())
 
 
 @router.get("/status")

@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from flux.core.virtual_workspace.path_guard import (
+    ensure_not_flux_internal,
+    ensure_not_secret_path,
+)
 from flux.errors import ValidationError
 
 _FENCED_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
@@ -126,7 +130,12 @@ def _require_path(raw: Any, index: int, source: str, full: str) -> str:
     if not pure.parts:
         raise _invalid(source, f"changes[{index}].path 非法：{raw}", full)
     # 归一化 a/./b、a//b 之类的写法，保证同一次提案里路径唯一可比
-    return str(pure)
+    normalized = str(pure)
+    # 密钥类文件与 Flux 内部目录（备份/锁）永不接受提案：前者是硬禁令（§3.5），
+    # 后者一旦被改就等于抽掉 Apply Engine 的回滚依据
+    ensure_not_secret_path(normalized)
+    ensure_not_flux_internal(pure)
+    return normalized
 
 
 def _invalid(source: str, message: str, full: str) -> ValidationError:

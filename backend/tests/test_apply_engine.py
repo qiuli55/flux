@@ -10,6 +10,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -409,3 +410,280 @@ def test_backup_restore_rejects_symlinked_target(workspace_root: Path, tmp_path:
 
     assert "符号链接" in excinfo.value.message
     assert secret.read_text(encoding="utf-8") == "根外内容\n"
+
+
+# --- 多文件原子 Apply（P0-03）---
+#
+# 目标：A ✓ B ✓ C ✗ 之后 A/B 绝不允许留在盘上。以下用例全部在真实临时目录里
+# 制造各类失败，逐个断言"用户文件回到 Apply 之前的样子"。
+
+
+def _batch(workspace_root: Path, *paths: str) -> tuple[list[VirtualChange], dict[str, Path]]:
+    """按 (路径 → 原文 ORIGINAL / 提案 PROPOSED) 铺好文件并构造批次。"""
+    changes: list[VirtualChange] = []
+    targets: dict[str, Path] = {}
+    for path in paths:
+        targets[path] = _write(workspace_root, path, ORIGINAL)
+        changes.append(_change(path))
+    return changes, targets
+
+
+def test_apply_many_writes_every_file_and_returns_one_outcome_per_change(
+    workspace_root: Path,
+) -> None:
+    changes, targets = _batch(workspace_root, "a.py", "b.py", "c.py")
+    engine = ApplyEngine(workspace_root=workspace_root, test_command="exit 0")
+
+    outcomes = engine.apply_many(changes, run_tests=True)
+
+    assert [o.change_id for o in outcomes] == [str(c.id) for c in changes]
+    for path, target in targets.items():
+        assert target.read_text(encoding="utf-8") == PROPOSED, path
+    # 每条改动都有独立的备份，且内容都是改动前的原文
+    for outcome in outcomes:
+        assert Path(outcome.backup_path).read_text(encoding="utf-8") == ORIGINAL
+    # 整批只跑一次测试，结果挂在每条 outcome 上（同一份凭据）
+    assert all(o.test is not None and o.test.passed for o in outcomes)
+    assert len({id(o.test) for o in outcomes}) == 1
+
+
+def test_apply_many_runs_the_test_command_only_once(workspace_root: Path) -> None:
+    changes, _ = _batch(workspace_root, "a.py", "b.py", "c.py")
+    counter = workspace_root / "runs.txt"
+    engine = ApplyEngine(
+        workspace_root=workspace_root,
+        test_command=f"printf x >> {shlex.quote(str(counter))} && exit 0",
+    )
+
+    engine.apply_many(changes)
+
+    assert counter.read_text(encoding="utf-8") == "x"
+
+
+def test_apply_many_creates_new_files_without_backups(workspace_root: Path) -> None:
+    _write(workspace_root, "a.py", ORIGINAL)
+    changes = [
+        _change("a.py"),
+        _change("pkg/__init__.py", original="", proposed="# 包入口\n"),
+    ]
+
+    outcomes = ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert (workspace_root / "pkg" / "__init__.py").read_text(encoding="utf-8") == "# 包入口\n"
+    assert outcomes[0].backup_path is not None
+    assert outcomes[1].backup_path is None
+
+
+def test_apply_many_rolls_back_all_files_when_tests_fail(workspace_root: Path) -> None:
+    """A 改、B 改、C 新建，测试不过 → A/B 回原文、C 删除，一个都不许留。"""
+    changes, targets = _batch(workspace_root, "a.py", "b.py")
+    created = _change("c.py", original="", proposed="fresh\n")
+    changes.append(created)
+    engine = ApplyEngine(workspace_root=workspace_root, test_command="exit 9")
+
+    with pytest.raises(ApplyFailedError) as excinfo:
+        engine.apply_many(changes)
+
+    assert "测试未通过" in excinfo.value.message
+    assert excinfo.value.details["test"]["exit_code"] == 9
+    for path, target in targets.items():
+        assert target.read_text(encoding="utf-8") == ORIGINAL, path
+    assert not (workspace_root / "c.py").exists()
+
+
+def test_apply_many_preflight_rejects_expired_proposal_before_touching_any_file(
+    workspace_root: Path,
+) -> None:
+    """batch 里有一条已过期 → 整批拒绝：另一条合法的文件也不许被写。"""
+    user_version = "user 自己改的\n"
+    changes, targets = _batch(workspace_root, "a.py", "b.py")
+    targets["b.py"].write_text(user_version, encoding="utf-8")
+
+    with pytest.raises(ConflictError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "已被改动" in excinfo.value.message
+    assert targets["a.py"].read_text(encoding="utf-8") == ORIGINAL
+    assert targets["b.py"].read_text(encoding="utf-8") == user_version
+    # 预检阶段拒绝：连备份都不该产生
+    assert not (workspace_root / ".flux").exists()
+
+
+def test_apply_many_preflight_rejects_missing_file_batch(workspace_root: Path) -> None:
+    """文件不存在（提案基于有原文的文件）→ 整批拒绝，其余文件保持原样。"""
+    changes, targets = _batch(workspace_root, "a.py")
+    ghost = _change("gone.py")
+    changes.insert(0, ghost)
+
+    with pytest.raises(ConflictError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "已不存在" in excinfo.value.message
+    assert targets["a.py"].read_text(encoding="utf-8") == ORIGINAL
+    assert not (workspace_root / ".flux").exists()
+
+
+def test_apply_many_rejects_duplicate_paths_and_ids(workspace_root: Path) -> None:
+    _write(workspace_root, "a.py", ORIGINAL)
+    same_file = [_change("a.py"), _change("./a.py")]
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(same_file, run_tests=False)
+    assert "同一文件在同一批次里出现了多条提案" in excinfo.value.message
+
+    one = _change("a.py")
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many([one, one], run_tests=False)
+    assert "同一提案在批次里出现了多次" in excinfo.value.message
+
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == ORIGINAL
+    assert not (workspace_root / ".flux").exists()
+
+
+def test_apply_many_rejects_empty_batch() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        ApplyEngine().apply_many([])
+    assert "至少需要一条提案" in excinfo.value.message
+
+
+def test_apply_many_rolls_back_when_write_fails_midway(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写到第二个文件时磁盘写入失败（模拟权限不足）→ 第一个也要恢复原样。"""
+    changes, targets = _batch(workspace_root, "a.py", "b.py", "c.py")
+    original_write = ApplyEngine._write
+    calls: list[str] = []
+
+    def flaky_write(target: Path, content: str) -> None:
+        calls.append(str(target))
+        if len(calls) == 2:
+            raise PermissionError(f"权限不足，无法写入 {target}")
+        original_write(target, content)
+
+    monkeypatch.setattr(ApplyEngine, "_write", staticmethod(flaky_write))
+
+    with pytest.raises(ApplyFailedError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "权限不足" in excinfo.value.message
+    for path, target in targets.items():
+        assert target.read_text(encoding="utf-8") == ORIGINAL, path
+
+
+def test_apply_many_rolls_back_when_new_file_write_fails(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写到"新建文件"这一步失败 → 已写的旧文件回滚，且不留下半成品文件。"""
+    _write(workspace_root, "a.py", ORIGINAL)
+    changes = [
+        _change("a.py"),
+        _change("pkg/new.py", original="", proposed="boom\n"),
+    ]
+    original_write = ApplyEngine._write
+    calls: list[str] = []
+
+    def flaky_write(target: Path, content: str) -> None:
+        calls.append(str(target))
+        if len(calls) == 2:
+            raise OSError("磁盘写满")
+        original_write(target, content)
+
+    monkeypatch.setattr(ApplyEngine, "_write", staticmethod(flaky_write))
+
+    with pytest.raises(ApplyFailedError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "磁盘写满" in excinfo.value.message
+    assert (workspace_root / "a.py").read_text(encoding="utf-8") == ORIGINAL
+    assert not (workspace_root / "pkg" / "new.py").exists()
+
+
+def test_apply_many_backup_failure_leaves_every_file_untouched(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """备份阶段失败 → 一个文件都不许写（用户文件保持原样）。"""
+    changes, targets = _batch(workspace_root, "a.py", "b.py")
+    original_backup = BackupService.backup
+    calls: list[str] = []
+
+    def flaky_backup(self, *, change_id: str, file_path: str, relative_target: Path):
+        calls.append(change_id)
+        if len(calls) == 2:
+            raise OSError("备份目录写不进去")
+        return original_backup(
+            self, change_id=change_id, file_path=file_path, relative_target=relative_target
+        )
+
+    monkeypatch.setattr(BackupService, "backup", flaky_backup)
+
+    with pytest.raises(ApplyFailedError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "备份原文件时出错" in excinfo.value.message
+    for path, target in targets.items():
+        assert target.read_text(encoding="utf-8") == ORIGINAL, path
+
+
+def test_apply_many_surfaces_rollback_failure_instead_of_silence(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写入失败 + 回滚也失败：错误里必须带 rollback_errors，绝不能假装已恢复。"""
+    changes, _ = _batch(workspace_root, "a.py", "b.py")
+    original_write = ApplyEngine._write
+    calls: list[str] = []
+
+    def flaky_write(target: Path, content: str) -> None:
+        calls.append(str(target))
+        if len(calls) == 2:
+            raise OSError("磁盘写入失败")
+        original_write(target, content)
+
+    def broken_restore(self, *, backup_path: Path, relative_target: Path) -> None:
+        raise OSError("备份还原失败")
+
+    monkeypatch.setattr(ApplyEngine, "_write", staticmethod(flaky_write))
+    monkeypatch.setattr(BackupService, "restore", broken_restore)
+
+    with pytest.raises(ApplyFailedError) as excinfo:
+        ApplyEngine(workspace_root=workspace_root).apply_many(changes, run_tests=False)
+
+    assert "回滚未完全成功" in excinfo.value.message
+    rollback_errors = excinfo.value.details["rollback_errors"]
+    # 写入失败的那条也要尝试回滚（write_text 可能已把文件截断），按逆序逐条记录
+    assert [item["file_path"] for item in rollback_errors] == ["b.py", "a.py"]
+    assert all("备份还原失败" in item["error"] for item in rollback_errors)
+
+
+def test_concurrent_batches_do_not_interleave(workspace_root: Path) -> None:
+    """两个线程同时改同一文件：一个成功、另一个按过期冲突拒绝，内容不属于双方混合。"""
+    target = _write(workspace_root, "a.py", ORIGINAL)
+    first = _change("a.py", proposed="first\n")
+    second = _change("a.py", proposed="second\n")
+    engine = ApplyEngine(workspace_root=workspace_root)
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+
+    def run(name: str, change: VirtualChange) -> None:
+        barrier.wait(timeout=5)
+        try:
+            engine.apply(change, run_tests=False)
+        except Exception as exc:  # noqa: BLE001 - 竞争失败方的异常就是断言对象
+            results[name] = exc
+        else:
+            results[name] = "applied"
+
+    threads = [
+        threading.Thread(target=run, args=("first", first)),
+        threading.Thread(target=run, args=("second", second)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    winners = [name for name, value in results.items() if value == "applied"]
+    losers = [value for name, value in results.items() if value != "applied"]
+    assert len(winners) == 1, results
+    assert len(losers) == 1 and isinstance(losers[0], ConflictError)
+    # 盘上必须是胜者提案的完整内容，不能是两段写入的混合
+    expected = "first\n" if winners[0] == "first" else "second\n"
+    assert target.read_text(encoding="utf-8") == expected

@@ -204,6 +204,48 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "ConfirmationItem": {
+        "description": "需求确认的一项：维度 + 结论（P0-06 六个固定维度，label 由服务端校验）。",
+        "properties": {
+          "label": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "ConfirmationItem",
+        "type": "object"
+      },
+      "ConfirmationUpdateRequest": {
+        "description": "用户改后的需求确认内容：必须恰好覆盖六个维度（服务端 fail-closed 校验）。",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmationItem"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ConfirmationUpdateRequest",
+        "type": "object"
+      },
       "ConnectorExecuteRequest": {
         "properties": {
           "action": {
@@ -240,6 +282,172 @@
         "title": "ConnectorExecuteRequest",
         "type": "object"
       },
+      "DecisionChooseRequest": {
+        "description": "用户对挂起的决策点做选择：choose 需要给出 option，reject 表示全部候选都不接受。",
+        "properties": {
+          "action": {
+            "default": "choose",
+            "enum": [
+              "choose",
+              "reject"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "decision_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "option": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option"
+          }
+        },
+        "required": [
+          "decision_id"
+        ],
+        "title": "DecisionChooseRequest",
+        "type": "object"
+      },
+      "DecisionCreateRequest": {
+        "description": "Agent 遇到决策点时向平台登记（文档 §5）：平台按任务策略自动拍板或挂起等用户。",
+        "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionOption"
+            },
+            "maxItems": 6,
+            "minItems": 2,
+            "title": "Options",
+            "type": "array"
+          },
+          "question": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "recommendation": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendation"
+          }
+        },
+        "required": [
+          "question",
+          "options"
+        ],
+        "title": "DecisionCreateRequest",
+        "type": "object"
+      },
+      "DecisionMode": {
+        "description": "任务级决策策略（文档 §5）：Agent 遇到可选方案时是自己拍板还是停下来问用户。",
+        "enum": [
+          "auto",
+          "manual"
+        ],
+        "title": "DecisionMode",
+        "type": "string"
+      },
+      "DecisionModeRequest": {
+        "description": "切换任务级决策策略（文档 §5 模式 A / B）。",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/DecisionMode"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "DecisionModeRequest",
+        "type": "object"
+      },
+      "DecisionOption": {
+        "description": "一个候选方案：做什么、带来什么影响、是不是推荐项。",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
+          "label": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "recommended": {
+            "default": false,
+            "title": "Recommended",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "DecisionOption",
+        "type": "object"
+      },
       "DshRunCreateRequest": {
         "description": "起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。",
         "properties": {
@@ -264,6 +472,35 @@
           "instruction"
         ],
         "title": "DshRunCreateRequest",
+        "type": "object"
+      },
+      "ExpireRequest": {
+        "description": "显式让一批提案失效（P0-02）。reason 留空时用默认的\"过期\"原因。",
+        "properties": {
+          "change_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Change Ids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "change_ids"
+        ],
+        "title": "ExpireRequest",
         "type": "object"
       },
       "GitCheckoutRequest": {
@@ -333,6 +570,32 @@
           }
         },
         "title": "GitDiffRequest",
+        "type": "object"
+      },
+      "GroupRequest": {
+        "description": "按一次提交（group_id）整组操作（P0-02）。",
+        "properties": {
+          "group_id": {
+            "minLength": 1,
+            "title": "Group Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "title": "GroupRequest",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -480,6 +743,10 @@
             ],
             "title": "Agent Id"
           },
+          "decision_mode": {
+            "$ref": "#/components/schemas/DecisionMode",
+            "default": "auto"
+          },
           "description": {
             "minLength": 1,
             "title": "Description",
@@ -506,6 +773,43 @@
           "description"
         ],
         "title": "TaskCreateRequest",
+        "type": "object"
+      },
+      "TaskMessageCreateRequest": {
+        "description": "发一条任务消息（任务执行中心的对话输入）。\n\n只有 user 能由调用方写入：assistant 的回复必须来自平台真实模型调用，\n不接受客户端伪造（role 不在请求体里，由服务端决定）。",
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "TaskMessageCreateRequest",
+        "type": "object"
+      },
+      "TaskStartRequest": {
+        "description": "开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。",
+        "properties": {
+          "confirmation": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConfirmationItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          }
+        },
+        "title": "TaskStartRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -710,7 +1014,7 @@
         ]
       },
       "post": {
-        "description": "签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。",
+        "description": "签发一枚接入令牌。明文只在本响应里出现一次，请立即写入 agent 侧配置。\n\nP3-16：路径里的 `agent_id` 必须是 Agent Registry 的 canonical UUID\n（先 `POST /agents` 建档拿到的那个 id）——名字只是 display_name，不能用来签令牌。",
         "operationId": "issue_agent_token_api_v1_agents__agent_id__tokens_post",
         "parameters": [
           {
@@ -970,6 +1274,7 @@
     },
     "/api/v1/dsh/runs/{run_id}/interrupt": {
       "post": {
+        "description": "请求取消一次 Run：进程树确认清理干净才返回 CANCELLED（P2-15 §2.5）。",
         "operationId": "interrupt_run_api_v1_dsh_runs__run_id__interrupt_post",
         "parameters": [
           {
@@ -1780,6 +2085,82 @@
       }
     },
     "/api/v1/tasks": {
+      "get": {
+        "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。",
+        "operationId": "list_tasks_api_v1_tasks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Tasks Api V1 Tasks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tasks",
+        "tags": [
+          "tasks"
+        ]
+      },
       "post": {
         "operationId": "create_task_api_v1_tasks_post",
         "requestBody": {
@@ -1910,9 +2291,408 @@
         ]
       }
     },
+    "/api/v1/tasks/{task_id}/confirmation": {
+      "put": {
+        "description": "用户修改需求确认（P0-06）：六个维度必须齐全，落库后就是执行依据。\n\n改完会追加一条 kind=confirmation 的用户消息——用户改了什么必须留在对话轨迹里，\n否则\"执行用的是哪一版需求\"事后无从解释（TC-103）。",
+        "operationId": "update_confirmation_api_v1_tasks__task_id__confirmation_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmationUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Confirmation Api V1 Tasks  Task Id  Confirmation Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Confirmation",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/decision-mode": {
+      "post": {
+        "description": "切换任务级决策策略（文档 §5）：auto = AI 默认方案，manual = 由我决定。",
+        "operationId": "set_decision_mode_api_v1_tasks__task_id__decision_mode_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Decision Mode Api V1 Tasks  Task Id  Decision Mode Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Decision Mode",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/decisions": {
+      "post": {
+        "description": "登记一个决策点（文档 §5）：Agent 执行中撞上可选方案时调用。\n\n按任务策略分流——auto 模式当场按推荐方案拍板并留痕，manual 模式把任务挂到\n`waiting_for_user_decision`，等用户选完再继续。",
+        "operationId": "raise_decision_api_v1_tasks__task_id__decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Raise Decision Api V1 Tasks  Task Id  Decisions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raise Decision",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/decisions/choose": {
+      "post": {
+        "description": "用户对挂起的决策点做选择（文档 §5 模式 B）。\n\n- `choose`：必须给出候选方案里的 label，任务回到 running，Agent 从决策点继续；\n- `reject`：全部候选都不接受，任务同样回到 running 并把\"请重新给方案\"写进对话，\n  Agent 可以再问一次（TC-202/203）。",
+        "operationId": "choose_decision_api_v1_tasks__task_id__decisions_choose_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionChooseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Choose Decision Api V1 Tasks  Task Id  Decisions Choose Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Choose Decision",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/messages": {
+      "get": {
+        "description": "按 seq 升序返回一段任务消息；before 为向上加载更早消息的游标。",
+        "operationId": "list_task_messages_api_v1_tasks__task_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Task Messages Api V1 Tasks  Task Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Task Messages",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "description": "发一条消息并取回助手的真实回复。\n\n用户消息先落库（模型调用失败时它也不会丢，刷新页面仍在），\n随后调用模型生成回复并落库——两个步骤都是真实数据，服务端不接受伪造的 assistant 消息。",
+        "operationId": "create_task_message_api_v1_tasks__task_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskMessageCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Task Message Api V1 Tasks  Task Id  Messages Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task Message",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/start": {
+      "post": {
+        "description": "开始执行（P0-05）：把确认过的需求交给 DSH 起一次 Run，任务进入 running。\n\n确认卡可以随请求一起传（前端\"改完直接执行\"），也可以留空用任务上已保存的那份。\nDSH 未启用时起 Run 会抛 503 configuration_error——不在\"假装开始执行\"的假状态下返回 200。",
+        "operationId": "start_task_api_v1_tasks__task_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Task Api V1 Tasks  Task Id  Start Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
     "/api/v1/workspace/accept": {
       "post": {
-        "description": "批准提案但不落盘：pending → accepted，等人工再决定何时 apply。",
+        "description": "批准提案但不落盘：pending → accepted，等人工再决定何时 apply。\n\n整批先校验再执行（P0-03）：列表里有一个坏 ID 或非法状态，整批都不动。",
         "operationId": "accept_changes_api_v1_workspace_accept_post",
         "requestBody": {
           "content": {
@@ -1954,8 +2734,53 @@
         ]
       }
     },
+    "/api/v1/workspace/accept-group": {
+      "post": {
+        "description": "整组批准：一次提交（group_id）下的全部提案一起进入 accepted。",
+        "operationId": "accept_group_api_v1_workspace_accept_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Accept Group Api V1 Workspace Accept Group Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Group",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/workspace/apply": {
       "post": {
+        "description": "原子批量落盘（P0-03）：要么全部成功，要么全部恢复原样并标记 failed。",
         "operationId": "apply_changes_api_v1_workspace_apply_post",
         "requestBody": {
           "content": {
@@ -1997,8 +2822,53 @@
         ]
       }
     },
+    "/api/v1/workspace/apply-group": {
+      "post": {
+        "description": "整组原子落盘：任一条失败则整组恢复原样（与 apply 同一语义）。",
+        "operationId": "apply_group_api_v1_workspace_apply_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apply Group Api V1 Workspace Apply Group Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Group",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/workspace/changes": {
       "get": {
+        "description": "列出提案。group_id 看整组、file_path 看单个文件，都支持（P0-02 按文件/按组审核）。",
         "operationId": "list_changes_api_v1_workspace_changes_get",
         "parameters": [
           {
@@ -2031,6 +2901,38 @@
                 }
               ],
               "title": "Task Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "file_path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Path"
             }
           },
           {
@@ -2124,6 +3026,74 @@
         ]
       }
     },
+    "/api/v1/workspace/expire": {
+      "post": {
+        "description": "显式让一批提案失效（P0-02）：pending/accepted → expired 终态。\n\n过期的提案不能再被批准或落盘，只能由 agent 重新提交新提案。",
+        "operationId": "expire_changes_api_v1_workspace_expire_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpireRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Expire Changes Api V1 Workspace Expire Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Expire Changes",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/expire-stale": {
+      "post": {
+        "description": "清理所有已超过审核有效期的提案（幂等，可被定时任务或人工调用）。",
+        "operationId": "expire_stale_api_v1_workspace_expire_stale_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Expire Stale Api V1 Workspace Expire Stale Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Expire Stale",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/workspace/reject": {
       "post": {
         "operationId": "reject_changes_api_v1_workspace_reject_post",
@@ -2162,6 +3132,49 @@
           }
         },
         "summary": "Reject Changes",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/reject-group": {
+      "post": {
+        "operationId": "reject_group_api_v1_workspace_reject_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reject Group Api V1 Workspace Reject Group Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Group",
         "tags": [
           "workspace"
         ]

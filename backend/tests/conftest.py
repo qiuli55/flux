@@ -102,16 +102,51 @@ def mcp_client(apply_client: TestClient) -> TestClient:
     return apply_client
 
 
+#: 测试档案的默认权限：除硬禁令（secret.access）外的全部能力。
+#: 单测关心的是"令牌 scopes 生效"，档案权限给足，交集即等于令牌声明的 scopes。
+ALL_TEST_CAPABILITIES = tuple(c for c in Capability if c is not Capability.SECRET_ACCESS)
+
+
+def create_agent(
+    client: TestClient,
+    *,
+    name: str,
+    permissions: list[Capability] | None = None,
+    role: str = "developer",
+) -> str:
+    """按名字登记一个 Agent 档案（已存在则复用），返回 canonical UUID（P3-16）。"""
+    for agent in client.get("/api/v1/agents").json()["data"]:
+        if agent["spec"]["name"] == name:
+            return str(agent["id"])
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "name": name,
+            "role": role,
+            "permissions": [str(p) for p in (permissions or ALL_TEST_CAPABILITIES)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    return str(response.json()["data"]["id"])
+
+
 def issue_token(
     client: TestClient,
     *,
     agent_id: str = "codex",
     scopes: list[Capability] | None = None,
+    permissions: list[Capability] | None = None,
+    label: str = "",
 ) -> str:
-    """经 REST 签发一枚接入令牌，返回明文（测试里直接用真实签发路径，不走内部捷径）。"""
+    """经 REST 签发一枚接入令牌，返回明文（测试里直接用真实签发路径，不走内部捷径）。
+
+    P3-16 起令牌只能绑定注册表里的 canonical UUID：先按 name 建/取档案，再拿 UUID 签发。
+    `permissions` 可单独指定档案权限，用于验证"档案收权 → 令牌可用面收窄"。
+    """
+    canonical = create_agent(client, name=agent_id, permissions=permissions)
     response = client.post(
-        f"/api/v1/agents/{agent_id}/tokens",
-        json={"scopes": [str(s) for s in (scopes or [Capability.FILE_READ])]},
+        f"/api/v1/agents/{canonical}/tokens",
+        json={"scopes": [str(s) for s in (scopes or [Capability.FILE_READ])], "label": label},
     )
     assert response.status_code == 200, response.text
-    return response.json()["data"]["token"]
+    return str(response.json()["data"]["token"])

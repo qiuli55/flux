@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -30,6 +31,10 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # 产生该提案的任务；tasks 表已存在但本轮不设外键（与 tasks.agent_id 同一处理，
     # 见附录 A 裁决 A21）
     task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), index=True, nullable=True)
+    # 同一次 CodeChangeSet 落成的多条提案共享一个 group_id：审核/落盘可按整组进行（P0-02）
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), index=True, nullable=True
+    )
     file_path: Mapped[str] = mapped_column(String(512), index=True)
     # 生成提案时该文件的 sha256（十六进制）；Apply 前必须与磁盘现状复验（实施计划 §5）
     original_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
@@ -51,12 +56,19 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     backup_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # Apply 失败的完整错误；成功时为空
     apply_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 审核截止时间（UTC）：为空表示这条提案不会因超时失效（P0-02 的 TTL）
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True, nullable=True
+    )
+    # 失效原因（超时 / 被新提案取代），供 UI 与审计解释"为什么这条不能再审"
+    expired_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
             "project_id": str(self.project_id) if self.project_id is not None else None,
             "task_id": str(self.task_id) if self.task_id is not None else None,
+            "group_id": str(self.group_id) if self.group_id is not None else None,
             "file_path": self.file_path,
             "original_hash": self.original_hash,
             "original_content": self.original_content,
@@ -71,4 +83,6 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "status": self.status,
             "backup_path": self.backup_path,
             "apply_error": self.apply_error,
+            "expires_at": self.expires_at.isoformat() if self.expires_at is not None else None,
+            "expired_reason": self.expired_reason,
         }

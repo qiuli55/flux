@@ -133,6 +133,9 @@ class McpServer:
             data = await spec.handler(ctx, arguments)
         except AIOSError as exc:
             await self._publish(Events.MCP_TOOL_CALLED, identity, spec, error=exc.code)
+            logger.info(
+                "MCP 工具调用失败 agent=%s tool=%s error=%s", identity.agent_id, name, exc.code
+            )
             return _result(request_id, _tool_error(f"{exc.code}: {exc.message}"))
         except Exception as exc:  # noqa: BLE001 - 工具边界：任何异常都要转成显式失败
             await self._publish(Events.MCP_TOOL_CALLED, identity, spec, error="internal_error")
@@ -140,6 +143,8 @@ class McpServer:
             return _result(request_id, _tool_error(f"工具执行失败：{exc}"))
 
         await self._publish(Events.MCP_TOOL_CALLED, identity, spec)
+        # 审计轨迹：谁（agent/token）调了哪个工具、成没成，落一行日志（入参不落，可能含整份文件）
+        logger.info("MCP 工具调用成功 agent=%s tool=%s", identity.agent_id, name)
         return _result(request_id, _tool_text(data))
 
     async def _publish(

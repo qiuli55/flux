@@ -198,7 +198,11 @@ class GitClient:
 
     def status(self, *, workspace_root: str | Path | None = None) -> GitStatus:
         root = self._root(workspace_root)
-        return parse_status(self._run("status", "--porcelain=v1", "--branch", root=root))
+        # --untracked-files=all：默认 git 会把新增目录折叠成 `docs/`，前端按变更文件的完整路径
+        # 匹配“可提交项”时就匹配不上，导致已落盘的新文件无法在 IDE 里提交。展开后逐文件列出。
+        return parse_status(
+            self._run("status", "--porcelain=v1", "--branch", "--untracked-files=all", root=root)
+        )
 
     def diff(
         self,

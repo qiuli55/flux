@@ -119,6 +119,22 @@ def test_status_on_real_repository(tmp_path: Path) -> None:
     assert {f.path for f in status.files} == {"README.md", "fresh.txt"}
 
 
+def test_status_lists_untracked_files_in_new_directories(tmp_path: Path) -> None:
+    """新增目录里的未跟踪文件必须逐个列出，而不是折叠成 `docs/`。
+
+    前端 Git 面板用落盘变更的完整文件路径去匹配 git 状态里的路径；若状态只给目录，
+    已落盘的新文件就无法被识别为“可提交”，提交按钮会被错误禁用。
+    """
+    repo = _repo(tmp_path / "repo")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "note.md").write_text("# note\n", encoding="utf-8")
+
+    status = GitClient(workspace_root=repo).status()
+
+    assert status.clean is False
+    assert {f.path for f in status.files} == {"docs/note.md"}
+
+
 def test_status_on_clean_repository(tmp_path: Path) -> None:
     status = GitClient(workspace_root=_repo(tmp_path / "repo")).status()
     assert status.clean is True and status.branch == "main"

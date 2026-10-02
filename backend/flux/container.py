@@ -13,7 +13,9 @@ from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.manager import AgentManager
-from flux.core.event.bus import EventBus
+from flux.core.agent_runtime.repository import AgentRepository
+from flux.core.agent_runtime.run_repository import AgentRunRepository
+from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
 from flux.core.mcp.auth import AgentTokenService
@@ -24,6 +26,8 @@ from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
+from flux.core.task_engine.assistant import TaskAssistant
+from flux.core.task_engine.dsh_bridge import TaskRunBridge
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
@@ -52,9 +56,13 @@ class Container:
     brain_repo: ProjectBrainRepository = field(init=False)
     brain: ProjectBrain = field(init=False)
     task_repo: TaskRepository = field(init=False)
+    task_runs: TaskRunBridge = field(init=False)
+    assistant: TaskAssistant = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
     agent_tokens: AgentTokenService = field(init=False)
+    agent_repo: AgentRepository = field(init=False)
+    run_repo: AgentRunRepository = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -62,13 +70,17 @@ class Container:
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
         # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
-        # Agent 档案注册表：Flux 不执行 Agent，只维护档案与权限边界（目标架构 §1）
-        self.agents = AgentManager(self.bus)
+        # Agent 档案注册表：Flux 不执行 Agent，只维护档案与权限边界（目标架构 §1）。
+        # P3-16 起档案落 agents 表，canonical UUID 是身份的唯一权威（重启后 load_from_db 重建）。
+        self.agent_repo = AgentRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.agents = AgentManager(self.bus, self.agent_repo)
         # 模型路由仅供平台内部使用（T2 压缩、摘要等），不是任何 agent loop 的模型通道
         self.router = ModelRouter(
             build_providers(self.settings),
             default_provider=self._resolve_default_provider(),
         )
+        # Solo 对话助手：平台侧助手（非 agent），回复内容来自 router 的真实模型调用
+        self.assistant = TaskAssistant(self.router)
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
         # Apply Engine 是唯一会写用户真实文件的组件（§7.6），根目录与测试命令来自配置
@@ -77,7 +89,12 @@ class Container:
             test_command=self.settings.test_command,
             test_timeout_seconds=self.settings.test_timeout_seconds,
         )
-        self.workspace = VirtualWorkspaceService(self.proposal_repo, self.bus, self.apply_engine)
+        self.workspace = VirtualWorkspaceService(
+            self.proposal_repo,
+            self.bus,
+            self.apply_engine,
+            proposal_ttl_seconds=self.settings.proposal_ttl_seconds,
+        )
         # Git 集成（⑨）：与 Apply 共用同一个工作区根；按 change_ids 提交时
         # 由 GitService 复验提案是否已 applied，未落盘/未过测试的改动进不了 Git 历史
         self.git_client = GitClient(
@@ -102,12 +119,37 @@ class Container:
             bus=self.bus,
             workspace_root=self.settings.workspace_root,
         )
-        # DSH Agent Runtime（集成方案 §18 Phase 1）：内置 agent 的接入层，
-        # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
-        self.dsh = FluxDshClient(self.settings, bus=self.bus)
         # MCP 能力面的鉴权（目标架构 §3.2）：令牌是 agent 进入平台的唯一凭据，
         # 与权限策略同源——工具要求的 Capability 直接取自 flux.enums.Capability。
-        self.agent_tokens = AgentTokenService(self.session_factory)  # type: ignore[attr-defined]
+        # 先于 DSH 装配：DSH 起 Run 时要拿内置 Agent 的令牌注入 MCP patch（P0-01）。
+        # P3-16：令牌只引用 Agent Registry 的 canonical UUID，故注入注册表做校验与解析。
+        self.agent_tokens = AgentTokenService(self.session_factory, self.agents)  # type: ignore[attr-defined]
+        # Run 权威状态落 agent_runs 表（P2-15）：多实例共享同库时用 owner_pid 区分归属
+        self.run_repo = AgentRunRepository(self.session_factory)  # type: ignore[attr-defined]
+        # DSH Agent Runtime（集成方案 §18 Phase 1）：内置 agent 的接入层，
+        # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
+        self.dsh = FluxDshClient(
+            self.settings,
+            bus=self.bus,
+            token_service=self.agent_tokens,
+            run_repository=self.run_repo,
+        )
+        # DSH Run 终态 → 任务状态（P0-05）：订阅事件总线，Run 结束即回写所属任务。
+        # 同时把任务级对账挂上看护器的对账循环：事件在崩溃时会丢，running 任务需要兜底收尾
+        # （P2-04 / TC-502），Run 状态先对完再让下游据真实状态判断。
+        self.task_runs = TaskRunBridge(self.task_repo, self.run_repo)
+        self.task_runs.attach(self.bus)
+        self.dsh.supervisor.add_reconcile_hook(self.task_runs.reconcile_orphan_tasks)
+        # MCP 工具调用成功 = 一次有效进展（P2-15 §2.4）：接线到看护器，避免 idle timeout 误杀
+        self.bus.subscribe(Events.MCP_TOOL_CALLED, self._on_mcp_tool_called)
+
+    async def _on_mcp_tool_called(self, _event: str, payload: dict[str, object]) -> None:
+        """MCP 工具调用成功后刷新对应 Agent 名下 Run 的 last_mcp_activity_at。"""
+        if payload.get("error"):
+            return
+        agent_id = payload.get("agent_id")
+        if isinstance(agent_id, str):
+            await self.dsh.supervisor.note_mcp_activity(agent_id)
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:
@@ -116,5 +158,6 @@ class Container:
             return ModelProvider.LOCAL
 
     async def dispose(self) -> None:
-        self.dsh.close()
+        # 退出时先停看护循环并清理仍在跑的 Agent 进程树，再释放连接（P2-15 §2.5）
+        await self.dsh.shutdown()
         await self.engine.dispose()

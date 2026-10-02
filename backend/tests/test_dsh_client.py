@@ -6,22 +6,34 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
 import pytest
+import yaml
 from deepseek_harness import Notification, RunResult, SdkProtocolError
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_client import (
+    MCP_PLUGIN_NAME,
+    MCP_TOKEN_SCOPES,
     TERMINAL_STATUSES,
     DshRun,
     FluxDshClient,
 )
 from flux.core.agent_runtime.dsh_events import to_flux_event
+from flux.core.agent_runtime.manager import AgentManager
+from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.event.bus import EventBus, Events
-from flux.enums import DshRunStatus
-from flux.errors import ConfigurationError, NotFoundError
+from flux.core.mcp.auth import AgentTokenService
+from flux.db.session import create_engine, create_session_factory
+from flux.enums import Capability, DshRunStatus
+from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
+from flux.main import create_app
+from flux.models import Base
 from tests.fakes import (
     DshBehavior,
     FakeDshHarness,
@@ -31,7 +43,11 @@ from tests.fakes import (
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
-    """启用态的测试配置：DSH_HOME / 工作区落在 tmp_path 下。"""
+    """启用态的测试配置：DSH_HOME / 工作区落在 tmp_path 下。
+
+    这些用例只验证 Run 生命周期，不接 MCP：默认关掉注入，避免起 Run 时要求令牌服务。
+    MCP 注入本身由本文件末尾的专项用例覆盖。
+    """
     base = Settings(
         env="test",
         log_level="WARNING",
@@ -43,6 +59,7 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         dsh_enabled=True,
         dsh_home=str(tmp_path / "dsh-home"),
         dsh_workspace=str(tmp_path / "dsh-ws"),
+        dsh_mcp_enabled=False,
     )
     return base.model_copy(update=overrides) if overrides else base
 
@@ -90,7 +107,8 @@ async def test_start_run_completes_and_maps_events(tmp_path: Path) -> None:
     client = FluxDshClient(settings, bus=bus, harness_factory=factory)
 
     run = await client.start_run("写一个加法函数", session_id="s-1")
-    assert run.status is DshRunStatus.RUNNING
+    # P2-15：起 Run 只登记（PENDING），实际执行在后台协程里推进
+    assert run.status is DshRunStatus.PENDING
     assert run.session_id == "s-1"
     assert run.started_at is not None
 
@@ -108,9 +126,9 @@ async def test_start_run_completes_and_maps_events(tmp_path: Path) -> None:
     assert finished.events[1]["event_type"] == "turn/end"
     assert finished.events[1]["finish_reason"] == "completed"
 
-    # run 结束后 harness 被关闭并移出活跃表
+    # run 结束后 harness 被关闭并移出活跃表，且看护器已把该 Run 落定为终态
     assert factory.created[0].closed is True
-    assert client.interrupt(run.run_id).status is DshRunStatus.COMPLETED
+    assert client.supervisor.is_settled(run.run_id) is True
 
     names = [name for name, _ in bus.history]
     assert Events.DSH_RUN_STARTED in names
@@ -145,21 +163,16 @@ async def test_run_failure_maps_to_failed(tmp_path: Path) -> None:
     client.close()
 
 
-async def test_interrupt_marks_run_cancelled(tmp_path: Path) -> None:
+async def test_cancel_marks_run_cancelled(tmp_path: Path) -> None:
     bus = EventBus()
     factory = FakeDshHarnessFactory(_blocking_behavior)
     client = FluxDshClient(_settings(tmp_path), bus=bus, harness_factory=factory)
     run = await client.start_run("长任务", session_id="s-i")
 
-    # 轮询触发，直到 harness 真正注册并收到 session/cancel（规避注册竞态）
-    for _ in range(300):
-        interrupted = client.interrupt(run.run_id)
-        if factory.created and factory.created[0].notifications:
-            break
-        await asyncio.sleep(0.01)
-
-    assert interrupted.status is DshRunStatus.RUNNING
-    assert interrupted.cancel_requested is True
+    # P2-15：cancel 会等进程登记后补发 session/cancel，进程树确认清理干净才算 CANCELLED
+    cancelled = await client.cancel(run.run_id)
+    assert cancelled.status is DshRunStatus.CANCELLED
+    assert cancelled.cancel_requested is True
     assert factory.created[0].notifications == [("session/cancel", {"sessionId": "s-i"})]
 
     finished = await _wait_terminal(client, run.run_id)
@@ -170,17 +183,10 @@ async def test_interrupt_marks_run_cancelled(tmp_path: Path) -> None:
     client.close()
 
 
-async def test_interrupt_terminal_run_is_noop(tmp_path: Path) -> None:
-    factory = FakeDshHarnessFactory()
-    client = FluxDshClient(_settings(tmp_path), harness_factory=factory)
-    run = await client.start_run("done", session_id="s-2")
-    finished = await _wait_terminal(client, run.run_id)
-
-    again = client.interrupt(run.run_id)
-    assert again is finished
-    assert again.status is DshRunStatus.COMPLETED
-    assert again.cancel_requested is False
-    assert factory.created[0].notifications == []
+async def test_cancel_unknown_run_raises_not_found(tmp_path: Path) -> None:
+    client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory())
+    with pytest.raises(NotFoundError):
+        await client.cancel("从来没有过的-run")
     client.close()
 
 
@@ -232,3 +238,256 @@ def test_default_behavior_is_a_valid_dsh_behavior() -> None:
     """确认默认替身行为满足 DshBehavior 契约（类型层面外的运行时自检）。"""
     behavior: DshBehavior = default_dsh_behavior
     assert callable(behavior)
+
+
+# --- MCP 注入（P0-01）---
+#
+# 这些用例走真实令牌签发（真实 SQLite），断言生成的 patch 能被 DSH 读取、
+# 令牌能真的通过 /mcp 鉴权——不是"生成了个文件"就算数。
+
+
+async def _token_service(settings: Settings) -> tuple[AgentTokenService, AsyncEngine]:
+    """真实令牌服务 + 真实 Agent 注册表（P3-16：身份只能来自 Registry 的 canonical UUID）。"""
+    engine = create_engine(settings.database_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    agents = AgentManager(repository=AgentRepository(session_factory))
+    return AgentTokenService(session_factory, agents), engine
+
+
+async def _builtin_agent_id(service: AgentTokenService) -> str:
+    """内置 Agent 的 canonical UUID（按名字解析，不存在则补建，与生产 ensure_agent 同路径）。"""
+    handle = await service.ensure_agent(name="flux-builtin", permissions=MCP_TOKEN_SCOPES)
+    return handle.id_str  # type: ignore[attr-defined]
+
+
+def _mcp_settings(tmp_path: Path, **overrides: object) -> Settings:
+    merged: dict[str, object] = {
+        "dsh_mcp_enabled": True,
+        "dsh_mcp_url": "http://127.0.0.1:8012/mcp",
+    }
+    merged.update(overrides)
+    return _settings(tmp_path, **merged)
+
+
+def _patch_payload(path: Path) -> dict:
+    """读回生成的 patch：取 insert 列表里的那条 MCP 插件条目。
+
+    顶层必须是 `insert` 条目——写成 `{id: ...}` 会被 DSH 当成"覆盖已有条目"，
+    找不到同名条目就静默跳过，MCP 插件根本不会被加载（P0-01 曾因此整条链路失效）。
+    """
+    entries = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(entries, list) and len(entries) == 1
+    patch_entry = entries[0]
+    assert list(patch_entry.keys()) == ["insert"], "顶层必须是 insert 条目，不能是 id 覆盖"
+    inserted = patch_entry["insert"]
+    assert isinstance(inserted, list) and len(inserted) == 1
+    entry = inserted[0]
+    assert entry["name"] == MCP_PLUGIN_NAME
+    return entry
+
+
+async def test_prepare_mcp_patch_writes_dsh_patch_with_a_working_token(tmp_path: Path) -> None:
+    settings = _mcp_settings(tmp_path)
+    service, engine = await _token_service(settings)
+    client = FluxDshClient(settings, token_service=service)
+
+    path = await client.prepare_mcp_patch()
+
+    assert path == Path(settings.dsh_home) / "patches" / "flux-mcp.patch.yml"
+    assert path is not None and path.is_file()
+    # 内含令牌明文 → 权限必须收紧到 0600
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+    entry = _patch_payload(path)
+    assert entry["id"] == "flux-mcp-flux"
+    config = entry["config"]
+    assert config["transport"] == "streamable-http"
+    assert config["serverName"] == "flux"
+    assert config["url"] == "http://127.0.0.1:8012/mcp"
+    assert config["toolCallTimeoutMs"] == 60000
+    assert config["failOnStartupError"] is True
+
+    raw = config["headers"]["Authorization"].removeprefix("Bearer ")
+    assert raw.startswith("fxt_")
+    builtin_id = await _builtin_agent_id(service)
+    identity = await service.authenticate(raw)
+    assert identity.agent_id == builtin_id
+    assert identity.name == "flux-builtin"
+    # 内置 Agent 只有"读项目 + 提提案"两样能力，apply / git / shell 一律没有
+    assert identity.scopes == {Capability.FILE_READ, Capability.FILE_WRITE}
+    await engine.dispose()
+
+
+async def test_prepare_mcp_patch_reuses_the_same_token_within_a_process(tmp_path: Path) -> None:
+    settings = _mcp_settings(tmp_path)
+    service, engine = await _token_service(settings)
+    client = FluxDshClient(settings, token_service=service)
+
+    first = await client.prepare_mcp_patch()
+    token_first = _patch_payload(first)["config"]["headers"]["Authorization"]
+    second = await client.prepare_mcp_patch()
+    token_second = _patch_payload(second)["config"]["headers"]["Authorization"]
+
+    assert token_first == token_second
+    assert len(await service.list(agent_id=await _builtin_agent_id(service))) == 1
+    await engine.dispose()
+
+
+async def test_prepare_mcp_patch_reissues_after_revocation(tmp_path: Path) -> None:
+    """令牌被撤销后（进程重启拿不回明文）→ 旧的一律撤销、重签一枚并覆盖 patch。"""
+    settings = _mcp_settings(tmp_path)
+    service, engine = await _token_service(settings)
+    client = FluxDshClient(settings, token_service=service)
+    builtin_id = await _builtin_agent_id(service)
+    path = await client.prepare_mcp_patch()
+    old_raw = _patch_payload(path)["config"]["headers"]["Authorization"].removeprefix("Bearer ")
+    await service.revoke((await service.list(agent_id=builtin_id))[0].id)
+
+    # 模拟进程重启：新客户端没有明文缓存，只能重签
+    restarted = FluxDshClient(settings, token_service=service)
+    await restarted.prepare_mcp_patch()
+    new_raw = _patch_payload(path)["config"]["headers"]["Authorization"].removeprefix("Bearer ")
+
+    assert new_raw != old_raw
+    assert (await service.authenticate(new_raw)).agent_id == builtin_id
+    with pytest.raises(AuthenticationError):
+        await service.authenticate(old_raw)
+    recorded = await service.list(agent_id=builtin_id)
+    assert len(recorded) == 2 and sum(1 for t in recorded if t.revoked_at is None) == 1
+    await engine.dispose()
+
+
+async def test_start_run_injects_the_patch_into_the_harness(tmp_path: Path) -> None:
+    settings = _mcp_settings(tmp_path)
+    service, engine = await _token_service(settings)
+    factory = FakeDshHarnessFactory()
+    client = FluxDshClient(settings, harness_factory=factory, token_service=service)
+
+    run = await client.start_run("看下项目", session_id="mcp-1")
+    await _wait_terminal(client, run.run_id)  # harness 在 Run 执行协程里创建，等它跑完再断言
+
+    patch = Path(settings.dsh_home) / "patches" / "flux-mcp.patch.yml"
+    assert factory.created[0].kwargs["patches"] == (str(patch),)
+    client.close()
+    await engine.dispose()
+
+
+async def test_start_run_fails_closed_without_token_service(tmp_path: Path) -> None:
+    """启用了 MCP 注入却没装配令牌服务：必须明确报错，而不是发一个"瞎眼"的 Run。"""
+    client = FluxDshClient(_mcp_settings(tmp_path), harness_factory=FakeDshHarnessFactory())
+    with pytest.raises(ConfigurationError) as excinfo:
+        await client.start_run("hi")
+    assert "AgentTokenService" in excinfo.value.message
+    assert client.list_runs() == []
+
+
+async def test_mcp_disabled_skips_patch_and_token(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)  # dsh_mcp_enabled=False
+    service, engine = await _token_service(settings)
+    factory = FakeDshHarnessFactory()
+    client = FluxDshClient(settings, harness_factory=factory, token_service=service)
+
+    run = await client.start_run("hi")
+    await _wait_terminal(client, run.run_id)
+
+    assert factory.created[0].kwargs["patches"] == ()
+    # 未启用注入就不该为一个"用不到的 Agent"建档案、签令牌
+    assert await service.list() == []
+    assert not (Path(settings.dsh_home) / "patches" / "flux-mcp.patch.yml").exists()
+    client.close()
+    await engine.dispose()
+
+
+async def test_prepare_mcp_patch_rejects_bad_server_name_and_url(tmp_path: Path) -> None:
+    settings = _mcp_settings(tmp_path, dsh_mcp_server_name="有 空格")
+    service, engine = await _token_service(settings)
+    client = FluxDshClient(settings, token_service=service)
+    with pytest.raises(ConfigurationError) as excinfo:
+        await client.prepare_mcp_patch()
+    assert "serverName" in excinfo.value.message
+
+    bad_url = FluxDshClient(
+        _mcp_settings(tmp_path, dsh_mcp_url="localhost:8012/mcp"), token_service=service
+    )
+    with pytest.raises(ConfigurationError) as excinfo:
+        await bad_url.prepare_mcp_patch()
+    assert "http(s)" in excinfo.value.message
+    await engine.dispose()
+
+
+def test_generated_patch_token_is_accepted_by_the_real_mcp_endpoint(tmp_path: Path) -> None:
+    """P0-01 的硬判据：patch 里的令牌拿到真实 /mcp 面能用——不是占位符。"""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "todo.py").write_text("def done():\n    return False\n", encoding="utf-8")
+    settings = _mcp_settings(tmp_path, workspace_root=str(project))
+    engine = create_engine(settings.database_url)
+
+    async def _schema() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_schema())
+    asyncio.run(engine.dispose())
+
+    async def _prepare() -> tuple[Path, str]:
+        own_engine = create_engine(settings.database_url)
+        session_factory = create_session_factory(own_engine)
+        agents = AgentManager(repository=AgentRepository(session_factory))
+        await agents.load_from_db()
+        service = AgentTokenService(session_factory, agents)
+        dsh = FluxDshClient(settings, token_service=service)
+        path = await dsh.prepare_mcp_patch()
+        handle = agents.find_by_name("flux-builtin")
+        assert handle is not None
+        builtin_id = handle.id_str
+        await own_engine.dispose()
+        return path, builtin_id
+
+    # 先建档案 + 签令牌（落库），再起 app：启动时 load_from_db 才能把身份装进注册表，
+    # 否则鉴权回查注册表会 fail-closed 拒绝——这正是 P3-16 要的行为。
+    patch, builtin_id = asyncio.run(_prepare())
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        raw = _patch_payload(patch)["config"]["headers"]["Authorization"].removeprefix("Bearer ")
+        headers = {"Authorization": f"Bearer {raw}"}
+
+        listed = client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers
+        )
+        assert listed.status_code == 200, listed.text
+        names = sorted(tool["name"] for tool in listed.json()["result"]["tools"])
+        assert names == ["context.get", "proposal.create", "workspace.diff", "workspace.read"]
+
+        created = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "proposal.create",
+                    "arguments": {
+                        "payload": {
+                            "summary": "让 done() 说真话",
+                            "changes": [
+                                {"path": "todo.py", "content": "def done():\n    return True\n"}
+                            ],
+                        }
+                    },
+                },
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        result = created.json()["result"]
+        assert result["isError"] is False, result["content"][0]["text"]
+        proposal = json.loads(result["content"][0]["text"])
+        assert proposal["agent"] == builtin_id
+        assert proposal["changes"][0]["status"] == "pending"
+        # 提案只进审核队列，磁盘上必须还是旧内容（Agent 没有直接落盘能力）
+        on_disk = (project / "todo.py").read_text(encoding="utf-8")
+        assert on_disk == "def done():\n    return False\n"

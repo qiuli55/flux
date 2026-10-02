@@ -753,6 +753,16 @@ GET  /api/v1/tasks/{id}             查询任务状态
 POST /api/v1/tasks/{id}/cancel      取消任务
 ```
 
+**【Solo 任务执行中心增量落地，2026-10-01】** 任务执行中心需要「任务列表 + 对话消息」两个面。助手回复由平台侧助手（`core/task_engine/assistant.py`）经 ModelRouter 真实模型调用生成，服务端不接受调用方伪造 assistant 消息。实际暴露的接口（`docs/openapi.json` 为准）：
+
+```
+GET  /api/v1/tasks                   列出任务，支持 project_id / status 过滤，按创建时间倒序（limit 1~200）
+GET  /api/v1/tasks/{id}/messages     取一段对话（seq 升序）；before 为向上加载更早消息的游标，metadata.has_more 标识是否还有更早
+POST /api/v1/tasks/{id}/messages     发一条用户消息并取回助手真实回复，请求体 {"content": "..."}
+```
+
+对话落 `task_messages` 表（§11.2 之外的新增表，随任务级联删除；`seq` 为任务内单调序号，向上懒加载的游标）。用户消息先落库，模型调用失败时也不会丢。首次真实处理会把任务由 `pending` 推进到 `running`。错误码：非法 status / project_id / limit `bad_request`；终态任务追加消息 `conflict`；未知任务 `not_found`。
+
 ### 12.5 Virtual Workspace API
 
 ```

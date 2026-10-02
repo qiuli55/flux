@@ -31,9 +31,38 @@ class AgentState(StrEnum):
 class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    #: 执行中撞上需要用户拍板的决策点（文档 §5 模式 B）：任务停在原地等人，
+    #: 既不是失败也不是完成——用户长时间不响应时状态必须保持在这里。
+    WAITING_FOR_USER_DECISION = "waiting_for_user_decision"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class DecisionMode(StrEnum):
+    """任务级决策策略（文档 §5）：Agent 遇到可选方案时是自己拍板还是停下来问用户。"""
+
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+class DecisionStatus(StrEnum):
+    """一个决策点的状态（文档 §5）。"""
+
+    PENDING = "pending"
+    #: auto 模式：平台按推荐方案自行拍板，不打断用户
+    AUTO_RESOLVED = "auto_resolved"
+    #: manual 模式：用户已在候选方案里选了一个
+    RESOLVED = "resolved"
+    #: 用户拒绝全部候选方案，要求重新给方案
+    REJECTED = "rejected"
+
+
+class TaskMessageRole(StrEnum):
+    """任务对话消息的说话方（task_messages.role）。"""
+
+    USER = "user"
+    ASSISTANT = "assistant"
 
 
 class VirtualChangeStatus(StrEnum):
@@ -41,6 +70,9 @@ class VirtualChangeStatus(StrEnum):
 
     FAILED 用于 Apply 阶段：补丁打不上或校验不通过时留下终态记录（实施计划 §5 状态列表），
     不允许从 FAILED 回到任何可执行状态——失败原因必须由人重新生成提案。
+
+    EXPIRED 用于提案过期/失效（P0-02）：超过 TTL 仍未审核，或同文件被更新的提案取代时，
+    提案进入 EXPIRED 终态，不允许再被批准或落盘——审核队列里不该长期挂着改不动的旧提案。
     """
 
     PENDING = "pending"
@@ -48,6 +80,7 @@ class VirtualChangeStatus(StrEnum):
     REJECTED = "rejected"
     APPLIED = "applied"
     FAILED = "failed"
+    EXPIRED = "expired"
 
 
 class BrainSection(StrEnum):
@@ -87,13 +120,23 @@ class MessageType(StrEnum):
 
 
 class DshRunStatus(StrEnum):
-    """DSH Agent Run 状态机（集成方案 §18 Phase 1）。"""
+    """DSH Agent Run 状态机（修复方案 §2.2）。
+
+    PENDING → STARTING → RUNNING → COMPLETED / FAILED / TIMEOUT，
+    取消走 RUNNING → CANCELLING → CANCELLED（进程树确认清理完成才算 CANCELLED），
+    重启接管的遗留 Run 归 INTERRUPTED。QUEUED 为 Phase 1 遗留值，保留以免旧数据反序列化失败。
+    """
 
     QUEUED = "queued"
+    PENDING = "pending"
+    STARTING = "starting"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    TIMEOUT = "timeout"
+    CANCELLING = "cancelling"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class Capability(StrEnum):

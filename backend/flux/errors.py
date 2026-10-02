@@ -47,6 +47,16 @@ class InvalidTransitionError(ConflictError):
     code = "invalid_state_transition"
 
 
+class ProposalExpiredError(ConflictError):
+    """提案已过期/被更新提案取代，不能再审核或落盘（P0-02 生命周期）。
+
+    与 InvalidTransitionError 分开：前者是"时间到了"，后者是"状态机不允许"，
+    两者对用户的下一步指引不同（过期要重新发起提案，非法跃迁通常是用错了接口）。
+    """
+
+    code = "proposal_expired"
+
+
 class ValidationError(AIOSError):
     code = "validation_error"
     http_status = 422

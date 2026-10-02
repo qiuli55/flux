@@ -14,8 +14,23 @@ from flux.models.project import Project
 
 PREFIX = "/api/v1"
 
-# M0 冻结的响应体字段（不含 cost / created_at）
-_RESPONSE_KEYS = {"id", "description", "status", "priority", "agent_id", "project_id", "result"}
+# M0 冻结的响应体字段（不含 cost）+ 后续增量追加的 created_at
+# + Solo 生命周期字段（P0-05/P0-06 与 §5 决策模式：决策策略、需求确认、决策点、DSH Run）
+_RESPONSE_KEYS = {
+    "id",
+    "description",
+    "status",
+    "priority",
+    "agent_id",
+    "project_id",
+    "result",
+    "created_at",
+    "decision_mode",
+    "confirmation",
+    "decisions",
+    "pending_decision",
+    "run_id",
+}
 
 
 def _seed_project(database_url: str) -> str:
@@ -40,13 +55,15 @@ def _new_client(settings: Settings) -> TestClient:
 
 
 def test_create_then_get_reads_back_same_task(client: TestClient) -> None:
-    """创建后 GET 能读回同一条任务，且响应体是 M0 冻结的 7 个键。"""
+    """创建后 GET 能读回同一条任务，且响应体是 M0 冻结字段与 Solo 生命周期字段的并集。"""
     created = client.post(f"{PREFIX}/tasks", json={"description": "修复登录缺陷", "priority": 5})
     assert created.status_code == 200
     task = created.json()["data"]
     assert set(task) == _RESPONSE_KEYS
     assert task["status"] == "pending"
     assert task["priority"] == 5
+    # created_at 来自数据库（server_default）而不是请求体，必须是非空时间串
+    assert isinstance(task["created_at"], str) and task["created_at"]
 
     fetched = client.get(f"{PREFIX}/tasks/{task['id']}")
     assert fetched.status_code == 200
