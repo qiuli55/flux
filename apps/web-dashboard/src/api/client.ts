@@ -9,6 +9,9 @@ import type {
   AgentCreateRequest,
   AgentHandle,
   Change,
+  ConfirmationItem,
+  DecisionMode,
+  DecisionOutcome,
   Envelope,
   FileContent,
   FileTree,
@@ -16,9 +19,14 @@ import type {
   GitStatus,
   HealthData,
   Project,
-  ProposalOutcome,
   ReadyData,
   ScanOutcome,
+  Task,
+  TaskConfirmationOutcome,
+  TaskMessage,
+  TaskMessagePage,
+  TaskReplyOutcome,
+  TaskStartOutcome,
 } from "./types";
 
 /** API 基址：允许用 VITE_API_BASE 覆盖，默认同源 /api/v1 */
@@ -67,7 +75,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new ApiError("无法连接后端服务，请确认 8010 端口的 Flux 后端已启动", "network_error", 0);
+    throw new ApiError("无法连接后端服务，请确认 Flux 后端已启动", "network_error", 0);
   }
 
   let envelope: Envelope<T> | null = null;
@@ -136,9 +144,6 @@ export const api = {
   listChanges: (status?: string) => getData<Change[]>("GET", `/workspace/changes${query({ status })}`),
   /** 变更详情 */
   getChange: (changeId: string) => getData<Change>("GET", `/workspace/changes/${changeId}`),
-  /** 让 AI 改：一句话需求 → pending 提案 */
-  generate: (body: { instruction: string; paths: string[]; task_id: string | null; project_id: string | null }) =>
-    getData<ProposalOutcome>("POST", "/workspace/generate", body),
   /** 批准（不落盘） */
   accept: (changeIds: string[]) => getData<Change[]>("POST", "/workspace/accept", { change_ids: changeIds }),
   /** 批准并落盘（会跑项目测试） */
@@ -157,4 +162,64 @@ export const api = {
   listAgents: () => getData<AgentHandle[]>("GET", "/agents"),
   /** 创建 Agent */
   createAgent: (body: AgentCreateRequest) => getData<AgentHandle>("POST", "/agents", body),
+
+  /** 任务列表（任务执行中心左列/任务切换用），默认按创建时间倒序 */
+  listTasks: (options?: { projectId?: string; status?: string; limit?: number }) =>
+    getData<Task[]>(
+      "GET",
+      `/tasks${query({
+        project_id: options?.projectId,
+        status: options?.status,
+        limit: options?.limit?.toString(),
+      })}`,
+    ),
+  /** 新建任务（描述即需求；decision_mode 缺省时后端用 auto） */
+  createTask: (body: {
+    description: string;
+    project_id: string | null;
+    decision_mode?: DecisionMode;
+  }) => getData<Task>("POST", "/tasks", body),
+  /** 任务详情 */
+  getTask: (taskId: string) => getData<Task>("GET", `/tasks/${taskId}`),
+  /** 任务消息（before 为向上加载更早消息的 seq 游标；metadata 里的 has_more 一并返回） */
+  async listTaskMessages(
+    taskId: string,
+    options?: { limit?: number; before?: number },
+  ): Promise<TaskMessagePage> {
+    const envelope = await request<TaskMessage[]>(
+      "GET",
+      `/tasks/${taskId}/messages${query({
+        limit: options?.limit?.toString(),
+        before: options?.before?.toString(),
+      })}`,
+    );
+    const hasMore = envelope.metadata?.has_more === true;
+    return { items: envelope.data, hasMore };
+  },
+  /** 发一条消息并取回助手回复（用户消息与助手回复都已落库） */
+  sendTaskMessage: (taskId: string, content: string) =>
+    getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  /** 用户修改需求确认（P0-06）：必须传齐六个维度，服务端 fail-closed 校验 */
+  updateTaskConfirmation: (taskId: string, items: ConfirmationItem[]) =>
+    getData<TaskConfirmationOutcome>("PUT", `/tasks/${taskId}/confirmation`, { items }),
+  /** 切换任务级决策策略（文档 §5） */
+  setDecisionMode: (taskId: string, mode: DecisionMode) =>
+    getData<Task>("POST", `/tasks/${taskId}/decision-mode`, { mode }),
+  /**
+   * 开始执行（P0-05）：可选随请求提交用户改后的确认卡，留空则用任务上已保存的那份。
+   * DSH 未启用时后端返回 503，不会假装开始执行。
+   */
+  startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
+    getData<TaskStartOutcome>(
+      "POST",
+      `/tasks/${taskId}/start`,
+      confirmation ? { confirmation } : {},
+    ),
+  /** 对挂起的决策点做选择：choose 需给 option，reject 表示全部候选都不接受 */
+  chooseDecision: (
+    taskId: string,
+    body: { decision_id: string; action: "choose" | "reject"; option?: string; note?: string },
+  ) => getData<DecisionOutcome>("POST", `/tasks/${taskId}/decisions/choose`, body),
+  /** 取消任务 */
+  cancelTask: (taskId: string) => getData<Task>("POST", `/tasks/${taskId}/cancel`),
 };

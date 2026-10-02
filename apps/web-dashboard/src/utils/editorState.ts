@@ -36,13 +36,14 @@ const DRAFT_NOTICE = "本地草稿 · 后端未提供提案编辑接口，刷新
 const TRUNCATED_NOTICE = "文件超过 256 KiB，仅显示前 256 KiB";
 const NO_PROPOSAL_NOTICE = "该文件没有 AI 提案，无法显示建议内容。";
 
-/** 提案优先级的数值表达：pending > accepted > applied > failed > rejected */
+/** 提案优先级的数值表达：pending > accepted > applied > failed > rejected > expired */
 const PROPOSAL_RANK: Record<ChangeStatus, number> = {
   pending: 4,
   accepted: 3,
   applied: 2,
   failed: 1,
   rejected: 0,
+  expired: -1,
 };
 
 /**

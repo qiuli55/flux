@@ -14,6 +14,7 @@ function change(filePath: string, status: ChangeStatus): Change {
     id: `${filePath}-${status}`,
     project_id: null,
     task_id: null,
+    group_id: null,
     file_path: filePath,
     original_hash: "hash",
     original_content: "old",
@@ -28,6 +29,8 @@ function change(filePath: string, status: ChangeStatus): Change {
     status,
     backup_path: null,
     apply_error: null,
+    expires_at: null,
+    expired_reason: null,
   };
 }
 

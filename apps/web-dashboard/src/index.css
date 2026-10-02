@@ -1,47 +1,36 @@
+/* 顺序：先 Tailwind，再设计稿样式基座，最后产品补充（同权重时以靠后者为准） */
 @import "tailwindcss";
+@import "./styles/design-v2.css";
+@import "./styles/product.css";
 
-/* 深色「AI Engineering OS」主题令牌：Tailwind v4 会据此生成 bg / text / border 工具类 */
+/* Flux 设计令牌 v2（事实源：设计稿 v2 的 :root，色值取自设计图，无占位符）。
+   Tailwind v4 会据此生成 bg-* / text-* / border-* 工具类。 */
 @theme {
-  --color-canvas: #060a10;
-  --color-surface-1: #0c121b;
-  --color-surface-2: #111a25;
-  --color-surface-3: #16202d;
-  --color-line: #1e2937;
-  --color-line-soft: #16202c;
-  --color-text: #e6edf3;
-  --color-muted: #8b98a9;
-  --color-faint: #5c6b7f;
-  --color-accent: #2dd4bf;
-  --color-accent-ink: #04211d;
-  --color-add: #3fb950;
-  --color-del: #f0554a;
-  --color-warn: #d29922;
-  --color-info: #58a6ff;
-  --color-danger: #f85149;
+  --color-bg: #08090f;
+  --color-bg-2: #0b0d16;
+  --color-panel: #10121c;
+  --color-panel-2: #141726;
+  --color-panel-3: #181c2e;
+  --color-line: #232741;
+  --color-line-soft: #1c2033;
+  --color-text: #e8eaf3;
+  --color-text-2: #9aa3b8;
+  --color-text-3: #666e85;
+  --color-accent: #7c5cff;
+  --color-accent-2: #5b3df5;
+  --color-blue: #4d7cfe;
+  --color-green: #3ddc97;
+  --color-orange: #f5a623;
+  --color-red: #f16a6a;
 
-  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  background-color: var(--color-canvas);
-  color: var(--color-text);
-  font-family:
-    "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, "Liberation Mono",
+    monospace;
 }
 
 /* 暗色细滚动条，贴合 IDE 观感 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2a3646 transparent;
+  scrollbar-color: #2a2f47 transparent;
 }
 
 *::-webkit-scrollbar {
@@ -50,7 +39,7 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: #2a3646;
+  background-color: #2a2f47;
   border-radius: 9999px;
 }
 
