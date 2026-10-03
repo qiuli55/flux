@@ -1,5 +1,6 @@
 /**
- * API 客户端：只发同源 /api 请求（Vite 已把 /api 代理到 127.0.0.1:8010）。
+ * API 客户端：只发同源 /api 请求（Vite 已把 /api 代理到后端，默认 127.0.0.1:8000，
+ * 可用 FLUX_VITE_BACKEND_ORIGIN 覆盖，见 vite.config.ts）。
  *
  * 统一处理 {success, code, message, data, metadata} 信封：
  * - success=false 或 HTTP 非 2xx → 抛 ApiError（message 优先取后端原文）；
