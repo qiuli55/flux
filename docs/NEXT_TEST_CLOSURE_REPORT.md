@@ -1,9 +1,9 @@
 # Flux Personal MVP 50 任务基准 · 收口报告
 
 > 生成时间：2026-10-04（数据快照：2026-10-04 02:01，补跑收尾时刻）
-> 判定依据：`docs/PERSONAL_MVP_TASK_BENCHMARK.md`（commit `db92620`，在 origin/main；本地未同步，读取时用 `git show`）、`docs/PERSONAL_MVP_KPI.md`（commit `4b3d4c1`）
+> 判定依据：`docs/PERSONAL_MVP_TASK_BENCHMARK.md`（commit `db92620`）与 `docs/PERSONAL_MVP_ACCEPTANCE_METRICS.md`（commit `f7f9702`）
 > 记录来源：`/opt/flux/e2e/bench/records/task-01..50.json` 与 `/opt/flux/e2e/bench/summary.md`（本报告数字均可按这两处复核）
-> 定位：**记录现状 + 暴露口径问题**。本报告与全部代码改动均未 commit（遵守硬约束）。
+> 定位：**记录现状 + 暴露口径问题**。本报告与全部代码改动已于 2026-10-04 按主题提交并同步至 origin/main。
 
 ---
 
@@ -62,7 +62,7 @@
 | 移动端核心流程完成率 | ≥95% | 本轮基准未覆盖 | — |
 | 零容忍项（§6） | 0 次事故 | 逐条核对 0（1 项本轮未覆盖） | ✓（部分） |
 
-> MCP KPI 补充口径：KPI 文档 §5 建议"积累 500 次以上调用再判断 99%"。本次 codex 子集仅 72 次调用，且计数把**模型侧空参调用**也计入失败（43/49 次失败为 `arguments_length=0`），是否应算"工具实现失败"需要先定口径。
+> MCP KPI 补充口径：验收指标文档 §10 建议"至少积累 500 次 MCP 调用"再判断 99%（样本不足时只作记录、不作稳定指标）。本次 codex 子集仅 72 次调用，且计数把**模型侧空参调用**也计入失败（43/49 次失败为 `arguments_length=0`），是否应算"工具实现失败"需要先定口径。
 
 ---
 
@@ -174,7 +174,7 @@
 | P0 README 措辞 | `README.md` L3/L5：agent 面统一表述为"MCP 优先 + CLI 兜底" | 已落地 | — **注意：CLI 兜底通道尚未实现**，见 §10-6 |
 | 建议项：Apply/回滚冒烟 | — | 已验证 | `/tmp/flux_apply_smoke.py` 10/10：MCP 提案→apply→pytest 通过→落盘；故意失败→`apply_failed`→回滚→failed |
 
-> 以上改动已于 2026-10-04 按主题提交到本地 git（未 push）：代理端口统一、DSH 环境变量模板、前端 CI、README 措辞各自独立成 commit，另含 DSH 运行修复与 Solo 页 UI 修复。
+> 以上改动已于 2026-10-04 按主题提交并同步至 origin/main：代理端口统一、DSH 环境变量模板、前端 CI、README 措辞各自独立成 commit，另含 DSH 运行修复与 Solo 页 UI 修复。
 > `docs/UI_TEST_REPORT.md` 依据其文首约定（"本报告不提交 git，保持工作区可审阅"）保留在工作区**未提交**。
 
 ---
