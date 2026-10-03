@@ -106,9 +106,14 @@ class FakeDshHarness:
         self.behavior = behavior
         self.kwargs = kwargs
         self.closed = False
+        self.started = False
         self.notifications: list[tuple[str, dict[str, Any]]] = []
         self.cancel_event = Event()
         self.client = FakeDshHarnessClient(self)
+
+    def start(self) -> None:
+        """真实 harness 的初始化入口（runtime 就绪）；默认成功，需要时可被覆盖。"""
+        self.started = True
 
     def run(
         self,

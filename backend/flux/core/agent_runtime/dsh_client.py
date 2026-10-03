@@ -29,7 +29,7 @@ from deepseek_harness.client import HarnessClient
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_events import to_flux_event
-from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
+from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
 from flux.core.agent_runtime.supervisor import RunSupervisor
 from flux.core.event.bus import EventBus
 from flux.core.mcp.auth import AgentTokenService
@@ -83,6 +83,29 @@ class _SupervisedDeepSeekHarness(DeepSeekHarness):
 #: 内置 Agent 令牌的能力：读项目 + 提提案，仅此两样（apply / git / shell 不在 MCP 面上）
 MCP_TOKEN_SCOPES = (Capability.FILE_READ, Capability.FILE_WRITE)
 
+#: DSH 运行库 finish_reason → Run 终态（P1：Agent 失败不能显示为成功）。
+#: `harness.run()` 正常返回只代表"调用结束"，失败结论在 result.finish_reason 里；
+#: 只映射明确的失败/中断类取值，completed / stop / None 等其余取值仍按成功处理——
+#: 运行库将来新增成功态取值时不会被误判。
+_FINISH_REASON_STATUS = {
+    "error": DshRunStatus.FAILED,
+    "failed": DshRunStatus.FAILED,
+    "cancelled": DshRunStatus.CANCELLED,
+    "timeout": DshRunStatus.TIMEOUT,
+    "interrupted": DshRunStatus.INTERRUPTED,
+    "aborted": DshRunStatus.INTERRUPTED,
+}
+
+#: 失败类 finish_reason 的中文原因（不对用户透运行库英文原文）
+_FINISH_REASON_ERROR = {
+    "error": "Agent 执行出错（运行库 finish_reason=error），未产出可用结果",
+    "failed": "Agent 执行失败（运行库 finish_reason=failed）",
+    "cancelled": "Agent 运行被取消（运行库 finish_reason=cancelled）",
+    "timeout": "Agent 运行超时（运行库 finish_reason=timeout）",
+    "interrupted": "Agent 运行被中断（运行库 finish_reason=interrupted）",
+    "aborted": "Agent 运行被中止（运行库 finish_reason=aborted）",
+}
+
 #: DSH MCP 客户端插件（runtime 捆绑的 cordis 插件名）
 MCP_PLUGIN_NAME = "@deepseek-ai/dsh-mcp-client"
 #: patch 文件落点（dsh_home 下，仓库外）
@@ -90,6 +113,8 @@ MCP_PATCH_DIRNAME = "patches"
 MCP_PATCH_FILENAME = "flux-mcp.patch.yml"
 #: serverName 必须是合法标识符（插件侧正则 ^[A-Za-z0-9_-]{1,32}$）
 _SERVER_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,32}")
+#: start 期间轮询"子进程是否已出现"的步长（秒）：Popen 很快，initialize 才可能长阻塞
+_PROC_REGISTER_POLL = 0.05
 
 
 @dataclass
@@ -363,6 +388,7 @@ class FluxDshClient:
 
         status = DshRunStatus.COMPLETED
         error: str | None = None
+        timeout_kind: str | None = None
         harness: DeepSeekHarness | None = None
         await self._supervisor.mark_starting(run_id)
         try:
@@ -381,21 +407,51 @@ class FluxDshClient:
             if not await self._mark_process_started(run_id, harness):
                 # 取消/超时抢先把 Run 落成了终态：不要再跑，直接收摊
                 return
-            result = await asyncio.to_thread(
-                harness.run,
-                run.instruction,
-                session_id=run.session_id,
-                on_notification=_on_notification,
-            )
+            try:
+                # 初始化与执行分开调：这一步超时说明 Agent 根本没启动起来，
+                # 归成启动超时（中文原因），而不是把 SDK 的英文异常原文透给用户。
+                # start 内先 spawn 再 initialize；spawn 一出现就补登 pid/pgid，
+                # 这样 initialize 卡死（provider 无响应）时超时/取消也能按 pgid 清理进程树。
+                start_task = asyncio.create_task(asyncio.to_thread(harness.start))
+                await self._register_process_group_later(run_id, harness, start_task)
+                await start_task
+            except TimeoutError as exc:
+                logger.warning("dsh.run 启动初始化超时 run=%s error=%s", run.run_id, exc)
+                status = DshRunStatus.TIMEOUT
+                timeout_kind = "startup"
+                error = (
+                    "启动超时（startup）：DSH 运行时在 "
+                    f"{self._settings.dsh_init_timeout_seconds:g} 秒内未完成初始化"
+                )
+            else:
+                # start 返回后再核对一遍（幂等）：轮询没赶上或进程信息变更都以这里为准；
+                # 返回 False 表示取消/超时抢先把 Run 落成终态：不要再跑指令，finally 会清理进程。
+                if not await self._register_process_group(run_id, harness):
+                    return
+                result = await asyncio.to_thread(
+                    harness.run,
+                    run.instruction,
+                    session_id=run.session_id,
+                    on_notification=_on_notification,
+                )
+                run.final_response = result.final_response
+                run.finish_reason = result.finish_reason
+                # P1：run() 正常返回 ≠ 成功——运行库以失败类 finish_reason 收尾时
+                # 必须落非成功终态，否则任务在 UI 上显示"已完成"，用户以为改动已产出。
+                kind = (result.finish_reason or "").strip().lower()
+                mapped = _FINISH_REASON_STATUS.get(kind)
+                if mapped is not None:
+                    logger.warning(
+                        "dsh.run 非成功结束 run=%s finish_reason=%s", run.run_id, kind
+                    )
+                    status = mapped
+                    error = _FINISH_REASON_ERROR[kind]
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 上游任何异常都归到失败终态
             logger.exception("dsh.run 执行失败 run=%s", run.run_id)
             status = DshRunStatus.FAILED
             error = str(exc)
-        else:
-            run.final_response = result.final_response
-            run.finish_reason = result.finish_reason
         finally:
             # 构造也可能失败（无合适 runtime 载体等），关闭同上：单点失败不得吞掉终态写入。
             if harness is not None:
@@ -411,25 +467,67 @@ class FluxDshClient:
             final_response=run.final_response,
             finish_reason=run.finish_reason,
             error=error,
+            timeout_kind=timeout_kind,
         )
+        if final is not status:
+            # 看护器改写了终态（取消语义覆盖迟到的异常/结果）：本线程算出的失败原因
+            # 不该串进"已取消"的结果里（502r 曾出现 cancelled 却带 stdout closed 报错）。
+            error = None
+            timeout_kind = None
+            run.finish_reason = None
         run.error = error
+        run.timeout_kind = timeout_kind
         self._sync_snapshot(run, final)
         self._supervisor.release(run_id)
 
     async def _mark_process_started(self, run_id: str, harness: DeepSeekHarness) -> bool:
-        """把真实子进程的 pid/pgid 登记给看护器；返回 False 表示 Run 已被取消/超时落定。
+        """起进程前的登记：进入 RUNNING 并注册优雅中断；返回 False 表示已被取消/超时落定。
 
-        setid 垫片让子进程自己成为进程组组长，故 pid == pgid；拿不到进程对象
-        （测试替身）时按"无进程"登记，看护器退化为纯状态机。
+        此刻子进程尚未创建（SDK 在 `harness.start()` 里才 Popen），pid/pgid 必然拿不到，
+        真实进程信息由 `_register_process_group` 在 start 成功后补登。
         """
-        pid, pgid = _process_group_of(harness)
         if self._supervisor.is_settled(run_id):
             return False
-        await self._supervisor.mark_running(run_id, pid=pid, pgid=pgid)
+        await self._supervisor.mark_running(run_id, pid=None, pgid=None)
         self._supervisor.register_interrupt(
             run_id,
             lambda: _notify_cancel(harness, session_id=self._runs[run_id].session_id),
         )
+        return not self._supervisor.is_settled(run_id)
+
+    async def _register_process_group_later(
+        self, run_id: str, harness: DeepSeekHarness, start_task: asyncio.Task[None]
+    ) -> None:
+        """start 在线程里跑期间轮询：Popen 一出现就把 pid/pgid 补登给看护器。
+
+        `client.start()` 同步 Popen 后立刻做 initialize，后者可能长时间阻塞
+        （provider 无字节返回等）。如果等到 start 返回才登记，超时落库时 pid/pgid 仍是 null，
+        看护器判"无进程可清理"，残留进程只能等 SDK 自己超时（D-01 的 504 现场）。
+        """
+        while not start_task.done():
+            if self._supervisor.is_settled(run_id):
+                return
+            pid, pgid = _process_group_of(harness)
+            if pid is not None:
+                await self._supervisor.mark_running(run_id, pid=pid, pgid=pgid)
+                return
+            await asyncio.sleep(_PROC_REGISTER_POLL)
+
+    async def _register_process_group(self, run_id: str, harness: DeepSeekHarness) -> bool:
+        """`harness.start()` 成功后补登真实 pid/pgid，取消/超时才能按 pgid 清理整棵进程树。
+
+        D-01 根因：原实现在 start 之前登记，`_proc` 尚为 None，agent_runs 里 pid/pgid
+        永远为 null，killpg 不可用、进程树清理退化成等它自退。setsid 垫片保证
+        pid == pgid == sid；测试替身没有 `_proc`，按"无进程"继续（看护器退化为状态机）。
+        返回 False 表示 Run 已被抢落终态，不应再执行指令。
+        """
+        if self._supervisor.is_settled(run_id):
+            return False
+        pid, pgid = _process_group_of(harness)
+        if pid is None:
+            logger.warning("dsh.run 未取到子进程 pid（按无进程看护）run=%s", run_id)
+            return True
+        await self._supervisor.mark_running(run_id, pid=pid, pgid=pgid)
         return not self._supervisor.is_settled(run_id)
 
     def _agent_env(self, run: DshRun) -> dict[str, str]:
@@ -524,7 +622,19 @@ class FluxDshClient:
         if row is None:
             return
         try:
-            run.status = DshRunStatus(row.status)
+            row_status = DshRunStatus(row.status)
+            if run.status in TERMINAL_STATUSES and row_status not in TERMINAL_STATUSES:
+                # 本进程看护器已落定终态、库里这一行只是还没写完（取消与异常收尾并发的
+                # 窗口里，胜者要先确认进程树清理才落库）。不能拿慢一拍的旧状态覆盖，
+                # 否则取消接口会把刚取消的 Run 读成 cancelling，任务被误判成失败（502r）。
+                logger.info(
+                    "agent_runs 行 %s 尚在 %s，内存快照已落定 %s：以看护器为准",
+                    run.run_id,
+                    row_status,
+                    run.status,
+                )
+            else:
+                run.status = row_status
         except ValueError:
             logger.warning("agent_runs 行 %s 的状态无法识别：%s", run.run_id, row.status)
         run.error = row.error
@@ -536,9 +646,11 @@ class FluxDshClient:
         run.agent_id = row.agent_id or run.agent_id
         run.last_state_change_at = row.last_state_change_at
         if row.finished_at is not None:
-            run.finished_at = row.finished_at
+            # SQLite 不存时区：库里读出来的时间是 naive，直接与 aware 的 started_at
+            # 相减会抛 TypeError（取消接口 500 的根因，实测复现）。归一到 aware UTC 再算。
+            run.finished_at = as_utc(row.finished_at)
             if run.started_at is not None:
-                run.duration_seconds = (row.finished_at - run.started_at).total_seconds()
+                run.duration_seconds = (run.finished_at - run.started_at).total_seconds()
 
     async def _snapshot_from_repo(self, run_id: str, status: DshRunStatus | None) -> DshRun:
         """从库里重建一条 Run 快照（Flux 重启后内存里没有、库里还在的场景）。"""

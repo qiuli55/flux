@@ -284,7 +284,12 @@ class RunSupervisor:
         error: str | None = None,
         timeout_kind: str | None = None,
     ) -> DshRunStatus:
-        """落定终态。已是终态则原样返回——cancel/timeout 先落定的结果不会被迟到写入覆盖。"""
+        """落定终态。已是终态则原样返回——cancel/timeout 先落定的结果不会被迟到写入覆盖。
+
+        终态在第一个 await 之前同步占位（terminal=True）：用户取消的同时 runtime 被
+        killpg 掐断、执行线程抛异常也来收尾时，并发的第二个 finish 只会拿到已落定的
+        状态返回，不会再写一条终态事件 / 结果消息（TC-N-502r 曾因此把任务写成 failed）。
+        """
         monitor = self._monitors.get(run_id)
         if monitor is not None and monitor.terminal:
             return monitor.status
@@ -292,10 +297,23 @@ class RunSupervisor:
             row = await self._repo.get(run_id)
             if row is not None and is_terminal(row.status):
                 return DshRunStatus(row.status)
-        if monitor is not None and monitor.cancel_requested and status is DshRunStatus.COMPLETED:
-            # 已请求取消的 Run "正常返回"就是被取消：runtime 收到 session/cancel 后收尾退出，
-            # 不能记成成功完成（进程树是否清理干净由 cancel 流程另行确认）。
-            status = DshRunStatus.CANCELLED
+        # 已请求取消的 Run 以取消收尾为准：正常返回（COMPLETED）与"被清理掐断"抛出的
+        # 异常（FAILED）都不是新结果。能否记 CANCELLED 仍由进程树是否清理干净决定（§2.5）。
+        as_cancel = monitor is not None and monitor.cancel_requested and status in (
+            DshRunStatus.COMPLETED,
+            DshRunStatus.FAILED,
+        )
+        if monitor is not None:
+            monitor.status = DshRunStatus.CANCELLED if as_cancel else status
+            monitor.terminal = True
+            monitor.last_state_mono = self._clock()
+        if as_cancel and monitor is not None:
+            row = await self._repo.get(run_id)
+            if not await self._ensure_process_gone(monitor, row):
+                return await self._finish_cancel_failure(run_id, monitor)
+            await self._record_terminal(run_id, DshRunStatus.CANCELLED)
+            monitor.settled.set()
+            return DshRunStatus.CANCELLED
         await self._record_terminal(
             run_id,
             status,
@@ -305,9 +323,6 @@ class RunSupervisor:
             timeout_kind=timeout_kind,
         )
         if monitor is not None:
-            monitor.status = status
-            monitor.terminal = True
-            monitor.last_state_mono = self._clock()
             monitor.settled.set()
         return status
 

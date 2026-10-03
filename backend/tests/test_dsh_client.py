@@ -8,7 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -163,6 +167,105 @@ async def test_run_failure_maps_to_failed(tmp_path: Path) -> None:
     client.close()
 
 
+def _error_behavior(kind: str) -> DshBehavior:
+    """运行库"正常返回但结论是失败"：SDK 不抛异常，失败写在 finish_reason 里。"""
+
+    def behavior(
+        harness: FakeDshHarness,
+        instruction: str,
+        session_id: str | None,
+        on_notification: Callable[[Notification], None] | None,
+    ) -> RunResult:
+        sid = session_id or "session"
+        end = {"type": "turn/end", "data": {"reason": {"kind": kind}}}
+        if on_notification is not None:
+            on_notification(
+                Notification(method="session.event", payload={"sessionId": sid, "event": end})
+            )
+        return RunResult(
+            session_id=sid,
+            final_response="",
+            finish_reason=kind,
+            events=[end],
+            notifications=[],
+        )
+
+    return behavior
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_status", "expected_event"),
+    [
+        ("error", DshRunStatus.FAILED, Events.DSH_RUN_FAILED),
+        ("failed", DshRunStatus.FAILED, Events.DSH_RUN_FAILED),
+        ("timeout", DshRunStatus.TIMEOUT, Events.DSH_RUN_TIMEOUT),
+        ("interrupted", DshRunStatus.INTERRUPTED, Events.DSH_RUN_INTERRUPTED),
+        ("aborted", DshRunStatus.INTERRUPTED, Events.DSH_RUN_INTERRUPTED),
+        ("cancelled", DshRunStatus.CANCELLED, Events.DSH_RUN_CANCELLED),
+    ],
+)
+async def test_error_finish_reason_does_not_map_to_completed(
+    tmp_path: Path, kind: str, expected_status: DshRunStatus, expected_event: str
+) -> None:
+    """回归（P1）：运行库以失败类 finish_reason 收尾时，Run 不能落成 COMPLETED。
+
+    现场：Agent 实际失败了，但 `_execute` 只看有没有抛异常，把 error 当成功 —— 任务在
+    UI 上显示"已完成"，用户误以为改动已产出（NEXT_TEST_CLOSURE §14「P1 Critical」判定项）。
+    """
+    bus = EventBus()
+    client = FluxDshClient(
+        _settings(tmp_path), bus=bus, harness_factory=FakeDshHarnessFactory(_error_behavior(kind))
+    )
+    run = await client.start_run("会失败的活", session_id=f"s-{kind}")
+
+    finished = await _wait_terminal(client, run.run_id)
+    assert finished.status is expected_status
+    assert finished.finish_reason == kind
+    assert finished.error is not None and "Agent" in finished.error
+
+    names = [name for name, _ in bus.history]
+    assert expected_event in names
+    assert Events.DSH_RUN_COMPLETED not in names
+    client.close()
+
+
+class _InitTimeoutHarness(FakeDshHarness):
+    """初始化阶段必超时的替身：模拟 runtime 迟迟不就绪（黑洞 MCP / Provider 无响应）。"""
+
+    def start(self) -> None:
+        raise TimeoutError(
+            "initialize timed out waiting for DeepSeek Harness runtime\nselected dsh profile 'sdk'"
+        )
+
+
+async def test_init_timeout_maps_to_startup_timeout(tmp_path: Path) -> None:
+    """回归（UI-503 现场）：DSH 初始化超时不能落成通用失败 + SDK 英文原文。
+
+    initialize 超时（上限 dsh_init_timeout_seconds）说明 Agent 没启动成功，
+    应落 TIMEOUT/startup 并给中文原因，UI 才能向用户说明这是"启动超时"。
+    """
+    bus = EventBus()
+    created: list[_InitTimeoutHarness] = []
+
+    def factory(**kwargs: Any) -> _InitTimeoutHarness:
+        harness = _InitTimeoutHarness(default_dsh_behavior, **kwargs)
+        created.append(harness)
+        return harness
+
+    client = FluxDshClient(_settings(tmp_path), bus=bus, harness_factory=factory)
+    run = await client.start_run("初始化超时", session_id="s-t")
+
+    finished = await _wait_terminal(client, run.run_id)
+    assert finished.status is DshRunStatus.TIMEOUT
+    assert finished.timeout_kind == "startup"
+    assert finished.error is not None and "启动超时" in finished.error
+    assert created[0].closed is True
+
+    names = [name for name, _ in bus.history]
+    assert Events.DSH_RUN_TIMEOUT in names
+    client.close()
+
+
 async def test_cancel_marks_run_cancelled(tmp_path: Path) -> None:
     bus = EventBus()
     factory = FakeDshHarnessFactory(_blocking_behavior)
@@ -187,6 +290,43 @@ async def test_cancel_unknown_run_raises_not_found(tmp_path: Path) -> None:
     client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory())
     with pytest.raises(NotFoundError):
         await client.cancel("从来没有过的-run")
+    client.close()
+
+
+async def test_refresh_from_row_tolerates_naive_finished_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：SQLite 读回的 finished_at 是 naive，不能直接与 aware 的 started_at 相减。
+
+    线上实测：取消失败返回 500 —— `_refresh_from_row` 里 naive − aware 抛 TypeError。
+    用例按 SQLite 读回的形态构造库行（时间为 naive），验证刷新不再抛错且时长被算出。
+    """
+    client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory())
+    run = await client.start_run("hi")
+    finished = await _wait_terminal(client, run.run_id)
+    naive_finished = (finished.finished_at or datetime.now(timezone.utc)).replace(tzinfo=None)
+    row = SimpleNamespace(
+        id=run.run_id,
+        status=DshRunStatus.COMPLETED.value,
+        error=None,
+        finish_reason="stop",
+        timeout_kind=None,
+        cancel_requested=False,
+        pid=None,
+        pgid=None,
+        agent_id=None,
+        last_state_change_at=naive_finished,
+        finished_at=naive_finished,
+    )
+
+    async def fake_get(_run_id: str) -> object:
+        return row
+
+    monkeypatch.setattr(client.supervisor.repository, "get", fake_get)
+    refreshed = await client.get_run_async(run.run_id)
+    assert refreshed.finished_at is not None
+    assert refreshed.finished_at.tzinfo is not None
+    assert refreshed.duration_seconds is not None
     client.close()
 
 
