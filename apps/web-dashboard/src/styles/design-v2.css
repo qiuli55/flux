@@ -12,7 +12,8 @@
   --line-soft: #1c2033;
   --text: #e8eaf3;
   --text-2: #9aa3b8;
-  --text-3: #666e85;
+  /* 弱化文字：经 WCAG 对比度实测取值，保证在最亮面板 --panel-3 上也 ≥4.5:1 */
+  --text-3: #7f88a0;
   --accent: #7c5cff;
   --accent-2: #5b3df5;
   --blue: #4d7cfe;
@@ -105,6 +106,8 @@ kbd {
   padding: 8px 10px; border-radius: 8px; color: var(--text-2); cursor: pointer;
 }
 .s-nav-item:hover { background: var(--panel); }
+.s-nav-item.is-disabled { opacity: .6; cursor: default; }
+.s-nav-item.is-disabled:hover { background: none; }
 .s-nav-item.is-active { background: linear-gradient(135deg, rgba(124,92,255,.22), rgba(91,61,245,.14)); color: var(--text); }
 .n-ic { width: 18px; height: 18px; border-radius: 5px; background: var(--panel-3); flex: 0 0 auto; }
 .i-solo { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
@@ -155,6 +158,8 @@ kbd {
 .btn-sm { height: 24px; padding: 0 10px; font-size: 11.5px; }
 .btn-xs { height: 22px; padding: 0 8px; font-size: 11px; }
 .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+.btn-primary:hover { filter: brightness(1.12); }
+.btn-primary:active { filter: brightness(.95); }
 .btn-ghost { border: 1px solid var(--line); color: var(--text-2); background: var(--panel); }
 .btn-ghost:hover { color: var(--text); border-color: #33395c; }
 .btn-block { width: 100%; }
@@ -591,6 +596,8 @@ body.bottom-closed .ide-bottom { display: none; }
   display: flex; align-items: center; gap: 8px; max-width: min(560px, 92vw);
   padding: 10px 18px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line);
   color: var(--text); font-size: 12.5px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  /* 纯状态提示、无交互元素：不能吞掉其下方（Solo 输入框 / 发送按钮）的点击（F-03 修复） */
+  pointer-events: none;
 }
 /* 失败提示与成功提示区分（F-02）：红色描边 + 感叹号图标 + 停留更久（见 toast.tsx） */
 .toast.is-error {

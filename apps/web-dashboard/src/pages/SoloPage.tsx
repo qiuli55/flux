@@ -287,6 +287,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [confirmDraft, setConfirmDraft] = useState<ConfirmationItem[] | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   // 决策点（文档 §5）：选择/拒绝的忙碌态 + 拒绝理由
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [decisionNote, setDecisionNote] = useState("");
@@ -607,6 +608,23 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       toast(errorMessage(error), "error");
     } finally {
       setStartBusy(false);
+    }
+  };
+
+  /** 取消执行（UI-405）：任务已开始、还没进终态时可以把执行停掉 */
+  const cancelExecution = async () => {
+    if (!task) return;
+    setCancelBusy(true);
+    try {
+      const updated = await api.cancelTask(task.id);
+      setTasks((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      toast("已取消执行，任务不会再继续");
+      await reloadMessages();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+      await reloadMessages();
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -1264,6 +1282,16 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                     第 {currentStep} 步 · {flow[currentStep - 1]?.name ?? "待开始"}
                   </span>
                 </div>
+                {task && taskStarted && !taskFinal ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={cancelBusy}
+                    onClick={() => void cancelExecution()}
+                  >
+                    {cancelBusy ? "正在取消…" : "取消执行"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
@@ -1337,9 +1365,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 </div>
                 <div className="cf-foot">
                   <span className="cf-hint">
-                    {taskStarted
-                      ? `已开始执行 · Run ${task.run_id?.slice(0, 8)}`
-                      : "六个维度都可以改：改完保存，或直接开始执行"}
+                    {taskFinal
+                      ? "任务已结束，不会再执行；如需重跑请点左上角「返回任务列表」新建任务"
+                      : taskStarted
+                        ? `已开始执行 · Run ${task.run_id?.slice(0, 8)}`
+                        : "六个维度都可以改：改完保存，或直接开始执行"}
                   </span>
                   <button
                     type="button"
@@ -1355,7 +1385,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                     disabled={taskStarted || taskFinal || startBusy}
                     onClick={() => void startExecution()}
                   >
-                    {startBusy ? "正在开始…" : taskStarted ? "已开始执行" : "开始执行"}
+                    {startBusy ? "正在开始…" : taskFinal ? "任务已结束" : taskStarted ? "已开始执行" : "开始执行"}
                   </button>
                 </div>
               </section>
@@ -1488,8 +1518,13 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 onClick={() => {
                   const next = !stratOpen;
                   setStratOpen(next);
-                  if (next && popRef.current) {
-                    setStratDown(popRef.current.getBoundingClientRect().top < 100);
+                  if (next && stratRef.current) {
+                    // 弹层关闭时是 display:none，量它只能得到全 0 矩形（旧实现因此恒判"向下弹"，
+                    // 手机端选项被推出视口）。改量始终可见的锚点，并按弹层 CSS 高度上限估算上方空间：
+                    // 上方放不下 min(320px, 46vh) 时才翻到下方。
+                    const anchorTop = stratRef.current.getBoundingClientRect().top;
+                    const popMaxH = Math.min(320, window.innerHeight * 0.46);
+                    setStratDown(anchorTop < popMaxH + 16);
                   }
                 }}
               >
