@@ -1,8 +1,8 @@
 # Flux
 
-集合 agent 的 AI 软件工程操作系统：统一上下文、统一工具（MCP 面）、统一 Skill，各只有一份真源，所有 agent 共享。
+集合 agent 的 AI 软件工程操作系统：统一上下文、统一工具（agent 面：MCP 优先 + CLI 兜底）、统一 Skill，各只有一份真源，所有 agent 共享。
 
-Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话（目标架构 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) §1）。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 MCP 面**对等消费能力。
+Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话（目标架构 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) §1）。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 agent 面（MCP 优先 + CLI 兜底）**对等消费能力。
 
 核心差异化是 **Virtual Workspace**——AI 的每一次改动都以"提案 → 虚拟 diff → 人工审查 → 应用"的流程落地，**永不直接覆盖你的文件**。
 
