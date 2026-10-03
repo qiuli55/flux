@@ -410,9 +410,8 @@ DSH 当前处于快速迭代阶段，因此 Flux 不应让 Python/业务层直�
 **2026-09-30 回写**：不再 vendor 源码，也不再自建 Node 侧产物。改为**只用官方 Python SDK + 锁版本**。
 
 ```
-backend/
-└── vendor-notes/
-    └── DSH_UPSTREAM.md      # 记录 SDK 版本、wheel 文件名与 sha256、冒烟结论
+docs/
+└── DSH_UPSTREAM.md      # 记录 SDK 版本、wheel 文件名与 sha256、冒烟结论
 ```
 
 约束：
@@ -457,8 +456,7 @@ backend/flux/core/agent_runtime/
 ├── dsh_events.py     # 新增：DSH Notification → Flux EventBus 事件映射
 └── types.py
 
-backend/vendor-notes/
-└── DSH_UPSTREAM.md   # 上游版本与冒烟记录（见 §16）
+docs/DSH_UPSTREAM.md  # 上游版本与冒烟记录（见 §16）
 
 /opt/flux/            # 运行期产物，不进仓库
 ├── dsh-home/         # DSH_HOME：profiles / plugins / 会话落盘

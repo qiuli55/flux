@@ -1,7 +1,7 @@
 # DeepSeek Harness 上游记录
 
 本文件记录 Flux 依赖的 DSH（DeepSeek Harness）版本与实测结论。规则见
-[DSH_FLUX_INTEGRATION_PLAN.md](../../docs/DSH_FLUX_INTEGRATION_PLAN.md) §16：
+[DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md) §16：
 **只走官方 Python SDK、锁死版本、产物不进仓库**。
 
 ## 当前锁定版本

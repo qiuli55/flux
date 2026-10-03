@@ -140,7 +140,7 @@ flux/
 ├── connectors/                   # 具体连接器实现（M4 起）
 ├── skills/                       # Skill 包（M5 起）：backend / frontend / security / devops
 ├── nodes/                        # Flux Node（M8 起）：android_node / desktop_node
-├── docs/
+├── docs/                         # 全部项目文档（规格 / 架构 / MVP / 测试与报告）+ 设计稿
 │   ├── openapi.json              # 接口契约，随代码一起提交
 │   └── ui-designs/               # 界面设计稿（M3 的输入素材）
 ├── scripts/
@@ -155,7 +155,7 @@ flux/
 
 ## 界面设计稿
 
-`docs/ui-designs/` 下是 9 张设计稿，属于 **M3（IDE 体验）** 的输入素材，不参与 M0/M1 的实现。它们统一采用深色主题 + 青绿主色（约 `#0A0E14` 底 / `#2DD4BF` 强调色）。
+`docs/ui-designs/` 下是 10 张设计稿，属于 **M3（IDE 体验）** 的输入素材，不参与 M0/M1 的实现。它们统一采用深色主题 + 青绿主色（约 `#0A0E14` 底 / `#2DD4BF` 强调色）。
 
 | 文件 | 界面 | 对应规格章节 | 交付里程碑 |
 | --- | --- | --- | --- |
@@ -168,6 +168,7 @@ flux/
 | `connector-marketplace.png` | 连接器市场（连接状态徽标、使用统计、Connector SDK / MCP 入口） | §8、§13.6 | M4 |
 | `settings.png` | 设置（账号与安全 / 工作空间 / 模型管理 / 连接器 / 通知 / 工程配置 / 费用与账单 / 高级设置） | §13.7、§18.4 | M3 |
 | `mobile-screens-10up.png` | 移动控制端 10 屏合集（首页 / 任务 / AI 团队 / 任务详情 / 成本 / 项目 / 通知 / Agent 详情 / 个人中心 / 侧边栏） | §13.8 | M8 |
+| `mobile-v1-20261002.png` | 移动控制端 v1 十屏（任务入口 / Solo 任务创建 / 需求澄清 / 执行方式与决策策略 / 任务执行中 / AI 自动处理 / 高风险决策 / 人工审核点 / 任务完成 / Agent 管理） | §13.8 | M8 |
 
 设计稿中存在若干待收口的用词不一致，实现前需统一：侧边栏语言（`agent-detail-desktop.png` 为英文，其余为中文）、"技能市场 / 插件市场"与"Agent 团队 / 代理团队"的称谓、以及 `agent-detail-desktop.png` 中疑似笔误的 `GRI Repository`（应为 `Git Repository`）。
 

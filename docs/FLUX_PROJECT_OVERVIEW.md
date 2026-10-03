@@ -116,12 +116,20 @@ agent 侧    内置 agent（DeepSeek Harness + Cordis，--profile flux）
 | --- | --- |
 | [Flux_Master_Spec_v0.1.md](Flux_Master_Spec_v0.1.md) | 权威规格（34 份源文档合并，22 条冲突裁决）；代码与规格不一致以规格为准 |
 | [FLUX_TARGET_ARCHITECTURE.md](FLUX_TARGET_ARCHITECTURE.md) | **目标架构（2026-10-01，最高优先级）**：MCP 能力面、内置 DSH agent、上下文流转、退役清单 |
+| [FLUX_ARCHITECTURE_ALIGNMENT.md](FLUX_ARCHITECTURE_ALIGNMENT.md) | 架构偏差整改说明（7 条禁令与整改依据） |
 | [ARCHITECTURE_ALIGNMENT_ANALYSIS.md](ARCHITECTURE_ALIGNMENT_ANALYSIS.md) | 架构对齐分析：模块级处置表、跑偏清单、安全缺口 |
 | [DSH_FLUX_INTEGRATION_PLAN.md](DSH_FLUX_INTEGRATION_PLAN.md) | DSH 集成方案（§24–§27 为本轮新定口径） |
+| [DSH_UPSTREAM.md](DSH_UPSTREAM.md) | DSH 上游版本锁定与实测记录（SDK 0.1.5rc1） |
 | [CONTEXT_DESIGN.md](CONTEXT_DESIGN.md) | 上下文完整设计（存档/投喂、压缩分层、溯源指纹、UI） |
-| [TEST_PLAN.md](TEST_PLAN.md) | 测试计划 |
+| [PERSONAL_MVP_GOALS.md](PERSONAL_MVP_GOALS.md) | Personal MVP 目标与范围（核心闭环、桌面端与移动端目标） |
+| [PERSONAL_MVP_ACCEPTANCE_METRICS.md](PERSONAL_MVP_ACCEPTANCE_METRICS.md) | Personal MVP 量化验收指标（唯一权威，含 Release Gate） |
+| [PERSONAL_MVP_TASK_BENCHMARK.md](PERSONAL_MVP_TASK_BENCHMARK.md) | 50 任务基准规范（任务分布、KPI 定义、安全红线） |
+| [PERSONAL_MVP_NEXT_STEPS.md](PERSONAL_MVP_NEXT_STEPS.md) | 下一阶段完善计划（P3 收口、稳定性、RC 前验证） |
+| [NEXT_TEST_CLOSURE.md](NEXT_TEST_CLOSURE.md) | 本轮完整测试闭调用例（TC-N 系列） |
+| [UI_USER_TEST_PLAN.md](UI_USER_TEST_PLAN.md) | UI 用户级测试方案（L0–L3、移动端、可访问性） |
+| [NEXT_TEST_CLOSURE_REPORT.md](NEXT_TEST_CLOSURE_REPORT.md) | 50 任务基准收口报告（KPI 实测与失败归因） |
 | [openapi.json](openapi.json) | 接口契约，随代码提交 |
-| [ui-designs/](ui-designs/) | 9 张界面设计稿（M3 输入素材） |
+| [ui-designs/](ui-designs/) | 10 张界面设计稿（M3 输入素材） |
 
 ## 11. 待确认清单（截至 2026-10-01）
 
