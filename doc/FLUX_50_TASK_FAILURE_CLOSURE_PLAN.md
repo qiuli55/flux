@@ -1,7 +1,7 @@
 # Flux 50 任务失败收口与修复计划
 
 > 状态：Execution Plan
-> 基于 2026-10-04 的 50 Task 收口报告制定。
+> 基于 2026-10-04 的 50 Task 收口报告以及当前 Agent Runtime / OpenCode Adapter 实现核查。
 > 目标：区分真正的 Flux 缺陷、Agent 产出稳定性问题、Benchmark 判据问题；先修确定性问题，再重新跑受影响任务，最后决定是否全量重跑。
 
 ## 1. 当前结论
@@ -239,7 +239,30 @@ OpenCode
 
 > 当前不能把问题简单归因于 MCP 未接入 Flux。
 
-### 下一步修复
+### 8.1 当前 OpenCode Adapter 核查结果
+
+当前实现已经存在独立的 `OpenCodeAdapter`，并通过 `GenericCliAdapter` 提供：
+
+- `opencode --version` 版本探测；
+- `opencode auth list` 登录状态探测；
+- `opencode run <instruction>` 非交互执行；
+- `mcp` / `stream` 能力声明。
+
+这说明“OpenCode 完全没有被 Flux 发现/启动”目前不是最合理的第一假设。
+
+但是需要注意一个关键问题：
+
+> Adapter 中声明 `capabilities=("mcp", "stream")` 只是能力元数据，并不等价于“本次 run 已经把 Flux MCP 与 Runtime Context 注入给 OpenCode”。
+
+当前 `GenericCliAdapter.build_run_argv()` 的职责只是拼接：
+
+```text
+(opencode, run, instruction)
+```
+
+因此下一步必须继续检查 **Run → Runtime Bootstrap → MCP 配置/环境 → OpenCode 实例** 这一条实际链路，而不能只看 Adapter 的 capabilities。
+
+### 8.2 推荐修复
 
 在 Agent Runtime 启动时增加**最小 System Context / Runtime Bootstrap**，不要把完整产品文档塞进 Prompt。
 
@@ -266,17 +289,58 @@ MCP tools/list
 
 为准。
 
-### 验收
+### 8.3 验收
 
 先只重跑失败的 9 个 OpenCode 任务，不立即重跑全部 50 个。
 
 目标不是保证 9/9 成功，而是确认：
 
-- 是否明显提高 Proposal 产生率；
+- Proposal 产生率是否明显提高；
 - 是否仍出现两轮零 Proposal；
+- OpenCode 是否实际看到 Flux MCP；
+- Runtime Context 是否与当前任务一致；
 - 是否引入新的 Prompt / Runtime 回归。
 
-## 9. 50 Task 的正确修复顺序
+## 9. Agent Runtime 的进一步检查点
+
+在重新执行 9 个任务之前，先完成一次静态链路核查：
+
+```text
+Task
+ ↓
+Agent Adapter
+ ↓
+CLI Process
+ ↓
+Runtime Bootstrap
+ ↓
+FLUX_* 环境 / Runtime Identity
+ ↓
+MCP 配置
+ ↓
+MCP tools/list
+ ↓
+flux_context / context.get
+ ↓
+Proposal.create
+ ↓
+Apply / Gate / Test / Git
+```
+
+重点确认：
+
+1. Runtime Identity 是否始终唯一对应当前 Task；
+2. Workspace 路径是否正确注入；
+3. `proposal_required` 是否真正传递到 Agent；
+4. OpenCode 进程是否拿到了 Flux MCP endpoint / 配置；
+5. MCP token 是否与当前 Runtime 匹配；
+6. Agent 是否能够通过 MCP 获取当前 Flux 上下文；
+7. Proposal 是否成为任务完成的明确出口；
+8. Agent 进程退出后 Runtime 是否能正确回收。
+
+如果这条链路全部成立，而 9 个任务仍大量不产 Proposal，才把问题进一步归类为 OpenCode Agent 行为稳定性，而不是 Flux Runtime 集成缺陷。
+
+## 10. 50 Task 的正确修复顺序
 
 ```text
 ① 修 Benchmark 38 / 41 判据
@@ -285,18 +349,20 @@ MCP tools/list
         ↓
 ③ 修 MCP Tool 列表测试的“固定数组”问题
         ↓
-④ 增加最小 Flux Runtime Bootstrap
+④ 静态核查 OpenCode Runtime / MCP / Context 链路
         ↓
-⑤ 只重跑 9 个 OpenCode 零 Proposal 任务
+⑤ 增加最小 Flux Runtime Bootstrap
         ↓
-⑥ 重新分析 7 个门禁红灯任务
+⑥ 只重跑 9 个 OpenCode 零 Proposal 任务
         ↓
-⑦ 必要时修 Agent 产出质量问题
+⑦ 重新分析 7 个门禁红灯任务
         ↓
-⑧ 再决定是否完整重跑 50
+⑧ 必要时修 Agent 产出质量问题
+        ↓
+⑨ 再决定是否完整重跑 50
 ```
 
-## 10. 不做的事情
+## 11. 不做的事情
 
 本阶段明确不做：
 
@@ -306,17 +372,19 @@ MCP tools/list
 - 不把所有 Apply 预检失败统一改成 failed；
 - 不硬编码 50 个任务的允许文件列表；
 - 不因为 9 个 OpenCode 任务失败就重构整个 Agent Runtime；
-- 不把 MCP 调用次数不足误判为 MCP 本身故障。
+- 不把 MCP 调用次数不足误判为 MCP 本身故障；
+- 不仅凭 Adapter 的 capabilities 声明判断 MCP 已经正确接入。
 
-## 11. 收口标准
+## 12. 收口标准
 
 修复后首先要求：
 
 1. 38 / 41 Benchmark 判定与产品契约一致；
 2. 18 / 29 等 MCP Tool 扩展不再被旧的精确列表测试误杀；
 3. 40 的 409 + accepted 语义固定并有测试覆盖；
-4. 9 个 OpenCode 任务重新执行并获得可解释结果；
-5. 门禁仍保持 fail-closed；
-6. 不出现任何安全红线回归。
+4. OpenCode Runtime / MCP / Context 链路可被验证；
+5. 9 个 OpenCode 任务重新执行并获得可解释结果；
+6. 门禁仍保持 fail-closed；
+7. 不出现任何安全红线回归。
 
 达到以上条件后，再决定是否重新跑完整 50 Task。
