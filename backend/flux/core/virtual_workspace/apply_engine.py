@@ -333,7 +333,8 @@ class ApplyEngine:
         current_hash = content_hash(target.read_text(encoding="utf-8"))
         if current_hash != change.original_hash:
             raise ConflictError(
-                f"文件 {change.file_path} 已被改动，提案已过期，禁止直接 Apply",
+                f"文件 {change.file_path} 已被改动，提案已过期，禁止直接 Apply；"
+                "请让 Agent 基于最新文件重新提交提案，或手动修改该文件",
                 details={
                     "file_path": change.file_path,
                     "expected_hash": change.original_hash,
