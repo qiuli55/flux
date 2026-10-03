@@ -24,6 +24,8 @@ class Events:
     AGENT_STARTED = "agent.started"
     AGENT_COMPLETED = "agent.completed"
     AGENT_STATE_CHANGED = "agent.state_changed"
+    #: 本机 Agent 接入状态变化（最终方案 §3.2：DISCOVERED → … → READY）
+    AGENT_INSTALLATION_CHANGED = "agent.installation_changed"
     TASK_CREATED = "task.created"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"

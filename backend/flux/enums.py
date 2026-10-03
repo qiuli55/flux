@@ -152,6 +152,32 @@ class Capability(StrEnum):
     DEVICE_COMMAND = "device.command"
 
 
+class AgentInstallStatus(StrEnum):
+    """本机 Agent 的可接入状态机（最终方案 §3.2 / §4.1）。
+
+    NOT_INSTALLED 是 Scanner 的发现事实（本机没有这个 CLI），不是"流程中的一步"；
+    已安装的 Agent 沿 DISCOVERED → VERIFIED → CONNECTED → READY 单向收敛。
+    """
+
+    NOT_INSTALLED = "NOT_INSTALLED"
+    DISCOVERED = "DISCOVERED"
+    VERIFIED = "VERIFIED"
+    CONNECTED = "CONNECTED"
+    READY = "READY"
+
+
+class FluxCapability(StrEnum):
+    """Flux Runtime 能力项（最终方案 §8）：与权限项 Capability 不同，它描述
+    "当前这套 Flux 能不能做这件事"，由 `flux_context.capabilities` 声明，缺失即降级。"""
+
+    CONTEXT = "context"
+    WORKSPACE = "workspace"
+    PROPOSAL = "proposal"
+    APPLY = "apply"
+    ROLLBACK = "rollback"
+    GIT = "git"
+
+
 class Role(StrEnum):
     """企业角色（主规格 §5.5）。"""
 

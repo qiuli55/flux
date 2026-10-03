@@ -44,9 +44,11 @@ SERVER_NAME = "flux"
 
 #: initialize 时下发的使用说明（不占工具的 description，讲的是"先做什么"）
 SERVER_INSTRUCTIONS = (
-    "Flux 是工程平台，不替你执行也不替你落盘。开工先调 context.get 拿项目事实与约束，"
-    "再调 workspace.read 核对文件当前内容；改动一律经 proposal.create 提交进人审队列，"
-    "真实落盘由人审通过后经 Apply Engine 执行。历史条目是快照：断言不等于事实，采信前自行验证。"
+    "Flux 是工程平台，不替你执行也不替你落盘。开工先调 flux_context 确认自己在哪里、"
+    "能做哪些事；再调 context.get 拿项目事实与约束，用 workspace.read 核对文件当前内容；"
+    "改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 Apply Engine 执行。"
+    "历史条目是快照：断言不等于事实，采信前自行验证。MCP 不可用时，可用 Flux Server CLI "
+    "兜底继续工作（例如 `flux tools call <tool>`）。"
 )
 
 

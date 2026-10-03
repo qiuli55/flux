@@ -1,7 +1,7 @@
 """Flux MCP 能力面测试（目标架构 §3.2 / §3.3 / §3.5）。
 
 覆盖三条硬判据：
-1. `tools/list` 恰好 4 个工具，且硬禁令工具（apply / git.push / secret / shell）不在面上；
+1. `tools/list` 恰好 5 个工具，且硬禁令工具（apply / git.push / secret / shell）不在面上；
 2. 鉴权 fail-closed——无令牌、坏令牌、已撤销令牌一律 401，连 initialize 都进不来；
 3. 越权不静默降级——能力不足是显式失败（isError），并留下 mcp.tool_denied 事件。
 
@@ -56,11 +56,17 @@ def payload(result: dict) -> dict:
 # --- 1. 工具面 ---
 
 
-def test_tools_list_exposes_exactly_the_four_phase2_tools(mcp_client: TestClient) -> None:
+def test_tools_list_exposes_exactly_the_phase2_tools(mcp_client: TestClient) -> None:
     token = issue_token(mcp_client)
     result = rpc(mcp_client, token, "tools/list").json()["result"]
     names = sorted(tool["name"] for tool in result["tools"])
-    assert names == ["context.get", "proposal.create", "workspace.diff", "workspace.read"]
+    assert names == [
+        "context.get",
+        "flux_context",
+        "proposal.create",
+        "workspace.diff",
+        "workspace.read",
+    ]
     for tool in result["tools"]:
         assert tool["description"] and tool["inputSchema"]["type"] == "object"
 
@@ -547,3 +553,35 @@ def test_proposals_carry_their_own_agent_attribution(
 
     assert _stored(first["changes"][0]["change_id"])["agent_source"] == dsh_id
     assert _stored(second["changes"][0]["change_id"])["agent_source"] == codex_id
+
+
+# --- 6. flux_context（握手 v1 + 能力发现，§6 / §7 / §8）---
+
+
+def test_flux_context_reports_runtime_and_capabilities(mcp_client: TestClient) -> None:
+    token = issue_token(mcp_client)
+    data = payload(call(mcp_client, token, "flux_context", {}))
+    # 握手回执：MCP initialize + flux_context = Handshake v1（§6）
+    assert data["protocol"] == {"name": "flux-agent", "version": "1"}
+    assert data["platform"]["name"] == "Flux"
+    assert data["platform"]["mode"] == "personal"
+    # 平台规则由 Flux 下发，不是 Agent 自选（§13）
+    assert data["policy"] == {"proposal_required": True, "direct_apply": False}
+    # 工作区根已在 mcp_client 夹具里配置 ⇒ workspace/apply/git 可用
+    capabilities = set(data["capabilities"])
+    assert {"context", "workspace", "proposal", "apply", "git"} <= capabilities
+    assert "rollback" not in capabilities  # 未实现的能力不虚报
+    assert data["workspace"]["path"]
+
+
+def test_flux_context_without_run_returns_null_run_and_task(mcp_client: TestClient) -> None:
+    token = issue_token(mcp_client)
+    data = payload(call(mcp_client, token, "flux_context", {}))
+    assert data["run"] is None
+    assert data["task"] is None
+
+
+def test_flux_context_rejects_malformed_task_id(mcp_client: TestClient) -> None:
+    token = issue_token(mcp_client)
+    result = call(mcp_client, token, "flux_context", {"task_id": "not-a-uuid"})
+    assert result["isError"] is True

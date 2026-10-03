@@ -36,6 +36,7 @@ from flux.core.mcp.auth import AgentTokenService
 from flux.enums import Capability, DshRunStatus
 from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
 from flux.logging import get_logger
+from flux.version import VERSION
 
 logger = get_logger(__name__)
 
@@ -141,6 +142,8 @@ class DshRun:
     pgid: int | None = None
     timeout_kind: str | None = None
     agent_id: str | None = None
+    #: 本次 Run 归属的任务（用于注入 FLUX_TASK_ID；独立起 Run 时为 None）
+    task_id: str | None = None
     last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,6 +164,7 @@ class DshRun:
             "pgid": self.pgid,
             "timeout_kind": self.timeout_kind,
             "agent_id": self.agent_id,
+            "task_id": self.task_id,
             "last_state_change_at": (
                 self.last_state_change_at.isoformat() if self.last_state_change_at else None
             ),
@@ -350,6 +354,7 @@ class FluxDshClient:
             status=DshRunStatus.PENDING,
             started_at=datetime.now(timezone.utc),
             agent_id=self._mcp_agent_id,
+            task_id=str(task_id) if task_id is not None else None,
         )
         self._runs[run.run_id] = run
         await self._supervisor.create_run(
@@ -441,9 +446,7 @@ class FluxDshClient:
                 kind = (result.finish_reason or "").strip().lower()
                 mapped = _FINISH_REASON_STATUS.get(kind)
                 if mapped is not None:
-                    logger.warning(
-                        "dsh.run 非成功结束 run=%s finish_reason=%s", run.run_id, kind
-                    )
+                    logger.warning("dsh.run 非成功结束 run=%s finish_reason=%s", run.run_id, kind)
                     status = mapped
                     error = _FINISH_REASON_ERROR[kind]
         except asyncio.CancelledError:
@@ -531,10 +534,24 @@ class FluxDshClient:
         return not self._supervisor.is_settled(run_id)
 
     def _agent_env(self, run: DshRun) -> dict[str, str]:
-        """启动时注入身份（P3-16 §4.5）：只是辅助信息，鉴权仍以令牌 → canonical id 为准。"""
-        env = {"FLUX_RUN_ID": run.run_id}
+        """启动时注入机器可读的 Runtime Identity（最终方案 §5）。
+
+        这些变量只说明"我在 Flux 里、属于哪个 Run / Task / Workspace"，
+        **不是安全凭证**：鉴权仍以令牌 → canonical id 为准，伪造 `FLUX_*`
+        不会带来任何额外权限（真正的判权在 MCP / Apply 层，§5 / §13）。
+        """
+        env = {
+            "FLUX_RUNTIME": "1",
+            "FLUX_VERSION": VERSION,
+            "FLUX_RUN_ID": run.run_id,
+            "FLUX_WORKSPACE": self._settings.workspace_root or self._settings.dsh_workspace,
+        }
+        if run.task_id:
+            env["FLUX_TASK_ID"] = run.task_id
         if run.agent_id:
             env["FLUX_AGENT_ID"] = run.agent_id
+        if self._settings.dsh_mcp_enabled:
+            env["FLUX_MCP_ENDPOINT"] = self._settings.dsh_mcp_url
         return env
 
     async def cancel(self, run_id: str) -> DshRun:

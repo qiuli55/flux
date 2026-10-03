@@ -28,6 +28,11 @@ dev = [
     "ruff>=0.16",
 ]
 
+[project.scripts]
+# Server CLI（NEXT_PHASE_OPTIMIZATION §9）：装包后可直接 `flux doctor`；
+# 未装包时等价入口为 `python -m flux.cli`。
+flux = "flux.cli.main:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # 提案审核 TTL（秒）。> 0 时，新提案带一个 expires_at，超过即失效（pending → expired）；
     # <= 0 表示不启用超时失效——改动的有效性完全由 original_hash 复验来把关。
     proposal_ttl_seconds: int = 86400
+    # 平台规则（最终方案 §13）：Agent 的改动是否必须经 Proposal 审核才能落盘。
+    # 这是 Flux 的规则，不是 Agent 自己选的；下发在 flux_context.policy 里，Agent 不得绕过。
+    proposal_required: bool = True
 
     # --- Git 集成（主规格 §17.6；实施计划 ⑨）---
     # git 命令超时；Git 操作同样只在 workspace_root 下执行

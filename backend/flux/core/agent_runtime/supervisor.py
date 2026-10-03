@@ -299,9 +299,14 @@ class RunSupervisor:
                 return DshRunStatus(row.status)
         # 已请求取消的 Run 以取消收尾为准：正常返回（COMPLETED）与"被清理掐断"抛出的
         # 异常（FAILED）都不是新结果。能否记 CANCELLED 仍由进程树是否清理干净决定（§2.5）。
-        as_cancel = monitor is not None and monitor.cancel_requested and status in (
-            DshRunStatus.COMPLETED,
-            DshRunStatus.FAILED,
+        as_cancel = (
+            monitor is not None
+            and monitor.cancel_requested
+            and status
+            in (
+                DshRunStatus.COMPLETED,
+                DshRunStatus.FAILED,
+            )
         )
         if monitor is not None:
             monitor.status = DshRunStatus.CANCELLED if as_cancel else status

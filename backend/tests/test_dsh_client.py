@@ -38,6 +38,7 @@ from flux.enums import Capability, DshRunStatus
 from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
 from flux.main import create_app
 from flux.models import Base
+from flux.version import VERSION
 from tests.fakes import (
     DshBehavior,
     FakeDshHarness,
@@ -600,7 +601,13 @@ def test_generated_patch_token_is_accepted_by_the_real_mcp_endpoint(tmp_path: Pa
         )
         assert listed.status_code == 200, listed.text
         names = sorted(tool["name"] for tool in listed.json()["result"]["tools"])
-        assert names == ["context.get", "proposal.create", "workspace.diff", "workspace.read"]
+        assert names == [
+            "context.get",
+            "flux_context",
+            "proposal.create",
+            "workspace.diff",
+            "workspace.read",
+        ]
 
         created = client.post(
             "/mcp",
@@ -631,3 +638,63 @@ def test_generated_patch_token_is_accepted_by_the_real_mcp_endpoint(tmp_path: Pa
         # 提案只进审核队列，磁盘上必须还是旧内容（Agent 没有直接落盘能力）
         on_disk = (project / "todo.py").read_text(encoding="utf-8")
         assert on_disk == "def done():\n    return False\n"
+
+
+# --- Runtime Identity 注入（P0-1）---
+
+
+def test_agent_env_injects_runtime_identity(tmp_path: Path) -> None:
+    """FLUX_* 只说明"我在哪 / 属于哪个 Run"，不是安全凭证（最终方案 §5）。"""
+    workspace = tmp_path / "ws"
+    settings = _settings(tmp_path, workspace_root=str(workspace), dsh_mcp_enabled=True)
+    client = FluxDshClient(settings, harness_factory=FakeDshHarnessFactory())
+    run = DshRun(
+        session_id="s",
+        instruction="hi",
+        run_id="run-abc",
+        agent_id="agent-1",
+        task_id="task-1",
+    )
+
+    env = client._agent_env(run)
+
+    assert env == {
+        "FLUX_RUNTIME": "1",
+        "FLUX_VERSION": VERSION,
+        "FLUX_RUN_ID": "run-abc",
+        "FLUX_WORKSPACE": str(workspace),
+        "FLUX_TASK_ID": "task-1",
+        "FLUX_AGENT_ID": "agent-1",
+        "FLUX_MCP_ENDPOINT": settings.dsh_mcp_url,
+    }
+    # 身份不是凭证：环境里绝不出现令牌 / 密钥
+    assert not any("token" in key.lower() or "key" in key.lower() for key in env)
+    client.close()
+
+
+def test_agent_env_omits_optional_fields_when_absent(tmp_path: Path) -> None:
+    """独立起 Run（无 task / agent / MCP）时不该注入空值变量。"""
+    settings = _settings(tmp_path)
+    client = FluxDshClient(settings, harness_factory=FakeDshHarnessFactory())
+    env = client._agent_env(DshRun(session_id="s", instruction="hi", run_id="run-x"))
+
+    assert set(env) == {"FLUX_RUNTIME", "FLUX_VERSION", "FLUX_RUN_ID", "FLUX_WORKSPACE"}
+    assert env["FLUX_WORKSPACE"] == settings.dsh_workspace
+    client.close()
+
+
+async def test_agent_env_reaches_the_harness(tmp_path: Path) -> None:
+    """注入不止停在函数里：起 Run 时 env 真的交给了 harness（P0-1 落点）。"""
+    workspace = tmp_path / "ws"
+    settings = _settings(tmp_path, workspace_root=str(workspace))
+    factory = FakeDshHarnessFactory()
+    client = FluxDshClient(settings, harness_factory=factory)
+
+    run = await client.start_run("hello", task_id="task-9")
+    await _wait_terminal(client, run.run_id)
+
+    env = factory.created[0].kwargs["env"]
+    assert env["FLUX_RUN_ID"] == run.run_id
+    assert env["FLUX_TASK_ID"] == "task-9"
+    assert env["FLUX_WORKSPACE"] == str(workspace)
+    client.close()

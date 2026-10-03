@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
+from flux.core.agent_runtime.adapters import build_default_adapters
 from flux.core.agent_runtime.dsh_client import FluxDshClient
+from flux.core.agent_runtime.installation import InstallationRepository, InstallationService
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.agent_runtime.run_repository import AgentRunRepository
@@ -63,6 +65,7 @@ class Container:
     agent_tokens: AgentTokenService = field(init=False)
     agent_repo: AgentRepository = field(init=False)
     run_repo: AgentRunRepository = field(init=False)
+    installations: InstallationService = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -74,6 +77,13 @@ class Container:
         # P3-16 起档案落 agents 表，canonical UUID 是身份的唯一权威（重启后 load_from_db 重建）。
         self.agent_repo = AgentRepository(self.session_factory)  # type: ignore[attr-defined]
         self.agents = AgentManager(self.bus, self.agent_repo)
+        # Agent Installation（最终方案 §3.2 / §4）：本机 CLI Agent 的发现与接入状态，
+        # 与档案（身份/权限）分离；Adapter 只提供事实，状态机与持久化在本服务里。
+        self.installations = InstallationService(
+            InstallationRepository(self.session_factory),  # type: ignore[attr-defined]
+            bus=self.bus,
+            adapters=build_default_adapters(),
+        )
         # 模型路由仅供平台内部使用（T2 压缩、摘要等），不是任何 agent loop 的模型通道
         self.router = ModelRouter(
             build_providers(self.settings),

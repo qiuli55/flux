@@ -630,6 +630,9 @@ proposal validation, approval, applying changes, testing and git.
 Use the provided Flux MCP tools to inspect runtime context and
 platform capabilities. Follow the Flux proposal/apply workflow
 when proposal_required is enabled.
+
+If MCP is unavailable, use the Flux Server CLI as a fallback
+(e.g. `flux tools call <tool>`) to continue working.
 ```
 
 这段 Prompt 只负责让 Agent 快速进入正确认知。

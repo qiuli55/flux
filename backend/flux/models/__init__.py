@@ -4,6 +4,7 @@
 """
 
 from flux.models.agent import Agent, AgentExecutionLog, AgentSkill
+from flux.models.agent_installation import AgentInstallation
 from flux.models.agent_run import AgentRun
 from flux.models.agent_token import AgentToken
 from flux.models.base import Base
@@ -17,6 +18,7 @@ from flux.models.workspace import VirtualChange
 __all__ = [
     "Agent",
     "AgentExecutionLog",
+    "AgentInstallation",
     "AgentRun",
     "AgentSkill",
     "AgentToken",
