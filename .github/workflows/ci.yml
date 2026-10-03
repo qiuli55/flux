@@ -2,6 +2,7 @@
 #
 # backend           ：在 SQLite 上跑完整本地自检（ruff / OpenAPI 契约 / 迁移往返 / pytest），
 #                     并额外校验契约文件与代码同步；
+# frontend          ：对 apps/web-dashboard 跑 TypeScript 类型检查 + Vite 构建 + Vitest 单测；
 # postgres-migration：在真实 PostgreSQL（pgvector 官方镜像，与 docker-compose.yml 一致）上
 #                     验证初始迁移可 upgrade / downgrade，避免「只在 SQLite 上能跑」。
 name: CI
@@ -42,6 +43,33 @@ jobs:
             echo "::error::docs/openapi.json 与当前代码不一致，请运行 python scripts/export_openapi.py 后提交"
             exit 1
           fi
+
+  frontend:
+    name: 前端自检（tsc / vite build / vitest）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web-dashboard
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # Node 20 与本地开发环境（v20.18.1）保持同一大版本，构建结果可直接对照
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web-dashboard/package-lock.json
+
+      - name: 安装依赖（按 lockfile 精确安装）
+        run: npm ci
+
+      - name: 类型检查与构建（tsc -b && vite build）
+        run: npm run build
+
+      - name: 单元测试（vitest run）
+        run: npm test
 
   postgres-migration:
     name: PostgreSQL 迁移往返验证
