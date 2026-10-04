@@ -490,8 +490,13 @@ async def test_prepare_mcp_patch_writes_dsh_patch_with_a_working_token(tmp_path:
     identity = await service.authenticate(raw)
     assert identity.agent_id == builtin_id
     assert identity.name == "flux-builtin"
-    # 内置 Agent 只有"读项目 + 提提案"两样能力，apply / git / shell 一律没有
-    assert identity.scopes == {Capability.FILE_READ, Capability.FILE_WRITE}
+    # 内置 Agent 的能力：读项目 + 提提案 + 经 Flux 终端执行命令（Agent Terminal Console §4）；
+    # apply / git / secret 一律没有
+    assert identity.scopes == {
+        Capability.FILE_READ,
+        Capability.FILE_WRITE,
+        Capability.TERMINAL_EXECUTE,
+    }
     await engine.dispose()
 
 

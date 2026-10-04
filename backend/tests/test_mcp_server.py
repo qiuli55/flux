@@ -85,6 +85,45 @@ def test_every_tool_declares_a_capability_and_a_handler() -> None:
         assert callable(tool.handler)
 
 
+# --- 终端执行工具（Agent Terminal Console §4 / §5 / §9）---
+
+
+def test_terminal_execute_runs_through_session_and_returns_summary(
+    mcp_client: TestClient,
+) -> None:
+    """Agent 命令走 Flux 的 Terminal Session：命令与输出落成终端事件（source=ai），
+    回给 Agent 的只是摘要——完整输出不回灌 Agent Context（§9）。"""
+    token = issue_token(
+        mcp_client,
+        scopes=[Capability.FILE_READ, Capability.FILE_WRITE, Capability.TERMINAL_EXECUTE],
+    )
+
+    result = call(mcp_client, token, "terminal.execute", {"command": "echo agent-here"})
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["exit_code"] == 0
+    assert payload["succeeded"] is True
+    assert "agent-here" in payload["output_summary"]
+    assert payload["output_truncated"] is False
+
+    events = mcp_client.get(f"/api/v1/terminal/sessions/{payload['session_id']}/events").json()[
+        "data"
+    ]
+    kinds = [item["kind"] for item in events]
+    assert "terminal.command.started" in kinds
+    assert any(item["source"] == "ai" for item in events)
+    assert any("agent-here" in (item["chunk"] or "") for item in events)
+
+
+def test_terminal_execute_requires_the_capability(mcp_client: TestClient) -> None:
+    """没有 terminal.execute 能力的令牌被明确拒绝（越权不静默降级，§3.5）。"""
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+
+    result = call(mcp_client, token, "terminal.execute", {"command": "echo nope"})
+
+    assert result["isError"] is True
+
+
 # --- 2. 鉴权 fail-closed ---
 
 
