@@ -18,9 +18,10 @@ from dataclasses import dataclass, field
 from flux.core.agent_runtime.lifecycle import assert_transition
 from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.core.agent_runtime.repository import AgentRepository
+from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME, KNOWN_RUNTIMES
 from flux.core.event.bus import EventBus, Events
 from flux.enums import AgentRole, AgentState, Capability
-from flux.errors import NotFoundError
+from flux.errors import NotFoundError, ValidationError
 from flux.logging import get_logger
 
 logger = get_logger(__name__)
@@ -39,6 +40,9 @@ class AgentSpec:
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
     permissions: frozenset[Capability] = frozenset()
+    #: 执行该 Agent 的 runtime（P2-1 §6.2）：dsh（内置，默认）/ codex / opencode。
+    #: 落库在 agents.config["runtime"]；不进 to_dict（档案公开形态保持 M0 冻结字段）。
+    runtime: str = DEFAULT_RUNTIME
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -80,6 +84,7 @@ class AgentManager:
     # --- 接口：create ---
 
     async def create(self, spec: AgentSpec) -> AgentHandle:
+        self._validate_runtime(spec.runtime)
         handle = AgentHandle(spec=spec)
         self._agents[handle.id] = handle
         await self._transition(handle, AgentState.INITIALIZING)
@@ -162,6 +167,15 @@ class AgentManager:
 
     # --- 内部 ---
 
+    @staticmethod
+    def _validate_runtime(runtime: str) -> None:
+        """创建 Agent 时校验 runtime 取值合法（P2-1 §6.2），非法即 422，不静默兜底。"""
+        if runtime not in KNOWN_RUNTIMES:
+            raise ValidationError(
+                f"未知的 runtime：{runtime}",
+                details={"runtime": runtime, "known": list(KNOWN_RUNTIMES)},
+            )
+
     async def _persist(self, handle: AgentHandle) -> None:
         """把档案落库（未装配仓储时跳过——纯内存用例仍可只用 AgentManager）。"""
         if self._repository is None:
@@ -175,6 +189,7 @@ class AgentManager:
             skills=tuple(handle.spec.skills),
             tools=tuple(handle.spec.tools),
             permissions=tuple(sorted(str(p) for p in handle.spec.permissions)),
+            runtime=handle.spec.runtime,
         )
 
     @staticmethod
@@ -188,6 +203,7 @@ class AgentManager:
             skills=tuple(config.get("skills") or ()),
             tools=tuple(config.get("tools") or ()),
             permissions=frozenset(Capability(str(p)) for p in (config.get("permissions") or ())),
+            runtime=str(config.get("runtime") or DEFAULT_RUNTIME),
         )
         return AgentHandle(
             spec=spec,

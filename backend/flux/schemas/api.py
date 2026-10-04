@@ -28,6 +28,9 @@ class AgentCreateRequest(BaseModel):
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     permissions: list[Capability] = Field(default_factory=list)
+    #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI（codex / opencode）。
+    #: 取值在边界即校验（非法 → 422），并由 AgentManager 再校验一次（内部调用方同样受约束）。
+    runtime: Literal["dsh", "codex", "opencode"] = "dsh"
 
 
 class AgentTokenIssueRequest(BaseModel):

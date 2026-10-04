@@ -22,7 +22,7 @@ from flux.core.task_engine.assistant import validate_confirmation_items
 from flux.core.task_engine.decisions import build_decision, reject_decision, resolve_decision
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
-from flux.errors import AIOSError, BadRequestError, ConflictError, NotFoundError
+from flux.errors import BadRequestError, ConflictError, NotFoundError
 from flux.models.task import Task
 from flux.schemas.api import (
     ConfirmationUpdateRequest,
@@ -62,46 +62,6 @@ async def _require_open_task(container: Container, task_uuid: uuid.UUID, task_id
             details={"task_id": task_id, "status": task.status},
         )
     return task
-
-
-async def _latest_plan(container: Container, task_uuid: uuid.UUID) -> list[str]:
-    """取最近一轮助手给出的执行计划（开始执行时一并交给 Agent）。"""
-    messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
-    for message in reversed(messages):
-        steps = (message.payload or {}).get("steps")
-        if message.role == TaskMessageRole.ASSISTANT.value and isinstance(steps, list) and steps:
-            return [str(step) for step in steps]
-    return []
-
-
-def _execution_instruction(
-    task: Task, confirmation: dict[str, object] | None, steps: list[str]
-) -> str:
-    """拼出交给 DSH 的执行指令：任务描述 + 用户确认过的需求 + 计划 + 能力边界。"""
-    lines = [task.description.strip()]
-    items = (confirmation or {}).get("items")
-    if isinstance(items, list) and items:
-        lines += ["", "## 需求确认（用户已确认，以此为准）"]
-        lines += [f"- {item['label']}：{item['value']}" for item in items]
-    if steps:
-        lines += ["", "## 执行计划"]
-        lines += [f"{index + 1}. {step}" for index, step in enumerate(steps)]
-    lines += [
-        "",
-        "## 平台身份（调用 Flux MCP 时带上）",
-        f"- task_id：{task.id}",
-        f"- project_id：{task.project_id or '未关联'}",
-        "- 开工先调 `context.get` 并带上 task_id：它会返回项目 Brain（项目结构、技术栈、"
-        "入口文件）与近期提案；不确定文件路径时以它为准，再用 workspace.read 核对内容。",
-    ]
-    lines += [
-        "",
-        "## 执行约束",
-        "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
-        "不要尝试直接写文件、执行 shell 或读取密钥。",
-        "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
-    ]
-    return "\n".join(lines)
 
 
 def _task_dict(task: Task) -> dict[str, object]:
@@ -325,10 +285,12 @@ async def start_task(
     payload: TaskStartRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """开始执行（P0-05）：把确认过的需求交给 DSH 起一次 Run，任务进入 running。
+    """开始执行（P0-05）：把确认过的需求交给该 Agent 的 runtime 起一次 Run，任务进入 running。
 
     确认卡可以随请求一起传（前端"改完直接执行"），也可以留空用任务上已保存的那份。
-    DSH 未启用时起 Run 会抛 503 configuration_error——不在"假装开始执行"的假状态下返回 200。
+    编排收敛在 `TaskRunService`（P2-1 §6.2）：按 `agent.config["runtime"]` 分发 DSH / CLI，
+    对外响应与消息落库行为保持不变。runtime 不可用（DSH 未启用 / CLI 未接入）时不返回
+    "假装开始执行"的 200。
     """
     task_uuid = _task_id(task_id)
     task = await _require_open_task(container, task_uuid, task_id)
@@ -343,47 +305,14 @@ async def start_task(
             details={"task_id": task_id},
         )
 
-    confirmation: dict[str, object] | None = task.confirmation
-    if payload.confirmation is not None:
-        items = validate_confirmation_items([item.model_dump() for item in payload.confirmation])
-        confirmation = {"items": items, "actor": "user", "updated_at": _now_iso()}
-        task = await container.task_repo.set_confirmation(task_uuid, confirmation)
-
-    steps = await _latest_plan(container, task_uuid)
-    instruction = _execution_instruction(task, confirmation, steps)
-    # 先登记 run_id 与 running，再真正起 Run：倒过来的话，Run 结束事件可能先于登记到达，
-    # 任务就永远收不到自己的终态（P0-05）。
-    run_id = uuid.uuid4().hex
-    previous_status = task.status
-    task = await container.task_repo.set_run_id(task_uuid, run_id)
-    task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
-    try:
-        run = await container.dsh.start_run(
-            instruction, session_id=f"flux-task-{task.id}", run_id=run_id, task_id=task.id
-        )
-    except AIOSError:
-        # 起 Run 失败（未启用 / 令牌签发失败 / patch 写不出）时撤回预登记：
-        # 否则任务会卡在"看起来在跑"，用户既看不到 Agent 也再也点不动「开始执行」。
-        await container.task_repo.set_run_id(task_uuid, None)
-        task = await container.task_repo.set_status(task_uuid, TaskStatus(previous_status))
-        raise
-    message = (
-        await container.task_repo.add_messages(
-            task_uuid,
-            [
-                MessageDraft(
-                    role=TaskMessageRole.ASSISTANT.value,
-                    kind="run_started",
-                    content=(
-                        f"已开始执行（DSH Run {run.run_id}），"
-                        "Agent 的改动会以提案形式进入人工审核队列。"
-                    ),
-                    payload={"run_id": run.run_id, "instruction": instruction},
-                )
-            ],
-        )
-    )[0]
-    return ok({"task": _task_dict(task), "run": run.to_dict(), "message": message.to_dict()})
+    result = await container.task_run_service.start(task, payload.confirmation)
+    return ok(
+        {
+            "task": _task_dict(result.task),
+            "run": result.run,
+            "message": result.message.to_dict(),
+        }
+    )
 
 
 @router.post("/{task_id}/decisions")

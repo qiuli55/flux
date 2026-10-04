@@ -17,6 +17,7 @@ from flux.core.agent_runtime.installation import InstallationRepository, Install
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.agent_runtime.run_repository import AgentRunRepository
+from flux.core.agent_runtime.runtimes.service import TaskRunService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
@@ -80,10 +81,13 @@ class Container:
     run_repo: AgentRunRepository = field(init=False)
     installations: InstallationService = field(init=False)
     capability_import: CapabilityImportService = field(init=False)
+    task_run_service: TaskRunService = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
         self.session_factory = create_session_factory(self.engine)  # type: ignore[attr-defined]
+        #: 内建 CLI Agent Adapter 集合：installation 状态机与 P2-1 的 CLI runtime 共用同一批实例
+        cli_adapters = build_default_adapters()
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
         # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
@@ -99,7 +103,7 @@ class Container:
         self.installations = InstallationService(
             InstallationRepository(self.session_factory),  # type: ignore[attr-defined]
             bus=self.bus,
-            adapters=build_default_adapters(),
+            adapters=cli_adapters,
         )
         # 能力导入（批次③ §5）：扫描本机 Agent / Skill / Connector → Flux 标准对象 → 注册表。
         # 扫描源是代码常量（不给设置项、REST 不收路径）；Agent 事实从 installations
@@ -190,6 +194,9 @@ class Container:
         self.dsh.supervisor.add_reconcile_hook(self.task_runs.reconcile_orphan_tasks)
         # MCP 工具调用成功 = 一次有效进展（P2-15 §2.4）：接线到看护器，避免 idle timeout 误杀
         self.bus.subscribe(Events.MCP_TOOL_CALLED, self._on_mcp_tool_called)
+        # P2-1 §6.2：任务「开始执行」的编排收口——按 agent.config["runtime"] 分发
+        # dsh / codex / opencode。CLI runtime 复用同一个 RunSupervisor 与令牌服务，不新建生命周期。
+        self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
 
     async def _on_mcp_tool_called(self, _event: str, payload: dict[str, object]) -> None:
         """MCP 工具调用成功后刷新对应 Agent 名下 Run 的 last_mcp_activity_at。"""

@@ -25,6 +25,16 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole"
           },
+          "runtime": {
+            "default": "dsh",
+            "enum": [
+              "dsh",
+              "codex",
+              "opencode"
+            ],
+            "title": "Runtime",
+            "type": "string"
+          },
           "skills": {
             "items": {
               "type": "string"
@@ -3108,7 +3118,7 @@
     },
     "/api/v1/tasks/{task_id}/start": {
       "post": {
-        "description": "开始执行（P0-05）：把确认过的需求交给 DSH 起一次 Run，任务进入 running。\n\n确认卡可以随请求一起传（前端\"改完直接执行\"），也可以留空用任务上已保存的那份。\nDSH 未启用时起 Run 会抛 503 configuration_error——不在\"假装开始执行\"的假状态下返回 200。",
+        "description": "开始执行（P0-05）：把确认过的需求交给该 Agent 的 runtime 起一次 Run，任务进入 running。\n\n确认卡可以随请求一起传（前端\"改完直接执行\"），也可以留空用任务上已保存的那份。\n编排收敛在 `TaskRunService`（P2-1 §6.2）：按 `agent.config[\"runtime\"]` 分发 DSH / CLI，\n对外响应与消息落库行为保持不变。runtime 不可用（DSH 未启用 / CLI 未接入）时不返回\n\"假装开始执行\"的 200。",
         "operationId": "start_task_api_v1_tasks__task_id__start_post",
         "parameters": [
           {
@@ -3660,6 +3670,107 @@
         ]
       }
     },
+    "/api/v1/workspace/apply-batches": {
+      "get": {
+        "description": "列出最近的 Apply 批（最新在前）；`recent=1` 只返回可回滚的 applied 批。\n\n`recent=1` 驱动前端\"回滚上一次\"按钮：取第一项即最近一次成功 Apply。",
+        "operationId": "list_apply_batches_api_v1_workspace_apply_batches_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "recent",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Recent",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Apply Batches Api V1 Workspace Apply Batches Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Apply Batches",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/apply-batches/{batch_id}/rollback": {
+      "post": {
+        "description": "整批回滚一次 Apply（P1-2）：先全量预检，再按批内逆序还原；不产生任何 git 提交。",
+        "operationId": "rollback_batch_api_v1_workspace_apply_batches__batch_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rollback Batch Api V1 Workspace Apply Batches  Batch Id  Rollback Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback Batch",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/workspace/apply-group": {
       "post": {
         "description": "整组原子落盘：任一条失败则整组恢复原样（与 apply 同一语义）。",
@@ -3859,6 +3970,51 @@
           }
         },
         "summary": "Get Change",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/changes/{change_id}/rollback": {
+      "post": {
+        "description": "单条回滚：撤销一条已落盘提案对文件的改动。",
+        "operationId": "rollback_change_api_v1_workspace_changes__change_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rollback Change Api V1 Workspace Changes  Change Id  Rollback Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback Change",
         "tags": [
           "workspace"
         ]

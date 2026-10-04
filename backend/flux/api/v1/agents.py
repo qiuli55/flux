@@ -28,6 +28,7 @@ async def create_agent(
         skills=tuple(payload.skills),
         tools=tuple(payload.tools),
         permissions=frozenset(payload.permissions),
+        runtime=payload.runtime,
     )
     handle: AgentHandle = await container.agents.create(spec)
     return ok(handle.to_dict())
