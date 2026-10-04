@@ -4,12 +4,19 @@
 T1 只暴露用户命令（source=user）；T2 起 Agent 经 MCP 走同一 Session Manager。
 
 历史按 seq 续读：`GET /terminal/sessions/{id}/events?after_seq=N` 即恢复历史（§12），
-SSE 实时流在 T3 接入（同一 seq 语义，断线重连只带 after_seq）。
+`GET /terminal/sessions/{id}/stream` 是同一 seq 语义的 SSE 实时流（T3）：断线重连带
+`Last-Event-ID` 即可从断点续读，不重复也不丢。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import json
+from collections.abc import AsyncIterator
+from contextlib import suppress
+from typing import Any
+
+from fastapi import APIRouter, Depends, Header
+from fastapi.responses import StreamingResponse
 
 from flux.api.deps import get_container
 from flux.api.response import ok
@@ -22,6 +29,15 @@ from flux.schemas.api import (
 )
 
 router = APIRouter(prefix="/terminal", tags=["terminal"])
+
+#: SSE 事件名：终端窗口按它 addEventListener，与总线事件名一致
+SSE_EVENT_NAME = "terminal.event"
+
+
+def _format_sse(payload: dict[str, Any]) -> str:
+    """一条 SSE 帧：id 用 seq（EventSource 重连时以 Last-Event-ID 回传，即断点续读）。"""
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"id: {payload['seq']}\nevent: {SSE_EVENT_NAME}\ndata: {data}\n\n"
 
 
 @router.post("/sessions")
@@ -60,6 +76,43 @@ async def list_events(
     """按 seq 续读终端事件（历史恢复）：after_seq 之后、按 seq 升序。"""
     events = await container.terminal.list_events(session_id, after_seq=after_seq, limit=limit)
     return ok([e.to_dict() for e in events], metadata={"count": len(events)})
+
+
+@router.get("/sessions/{session_id}/stream")
+async def stream_events(
+    session_id: str,
+    after_seq: int = 0,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    container: Container = Depends(get_container),
+) -> StreamingResponse:
+    """终端事件实时流（SSE，§11 / §12）：先补历史再推增量。
+
+    断线重连时浏览器会带 `Last-Event-ID`（即上一帧的 seq），与 `after_seq` 取较大者续读。
+    会话结束时服务端会推完 `terminal.session.closed` 后收流；客户端断开只结束观察，
+    不会停 Agent（§11）。
+    """
+    # 先校验存在：NotFoundError 要在开始推流之前抛出，否则响应已 200 无法再改状态码
+    await container.terminal.get_session(session_id)
+    resume_from = after_seq
+    if last_event_id:
+        with suppress(ValueError):
+            resume_from = max(resume_from, int(last_event_id))
+
+    async def generate() -> AsyncIterator[str]:
+        async for payload in container.terminal.stream_events(session_id, after_seq=resume_from):
+            # None 是心跳哨兵（服务层产出），转成 SSE 注释行，不触发前端事件
+            yield ": keep-alive\n\n" if payload is None else _format_sse(payload)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # 反向代理（nginx）不缓冲，否则实时流会被攒成一坨
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/sessions/{session_id}/commands")

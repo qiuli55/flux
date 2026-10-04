@@ -354,3 +354,46 @@ export interface DecisionOutcome {
   decision: DecisionRecord;
   message: TaskMessage;
 }
+
+/* ---------- Agent Terminal Console（doc/AGENT_TERMINAL_CONSOLE.md） ---------- */
+
+/** 终端会话状态（terminal_sessions.status） */
+export type TerminalSessionStatus = "active" | "stopped" | "closed";
+
+/** 命令来源：AI 还是 USER（§5 要求两者在输出中必须明确区分） */
+export type TerminalSourceKind = "ai" | "user";
+
+/** 终端事件类型（§8 事件模型，取值同后端 TerminalEventKind） */
+export type TerminalEventKind =
+  | "terminal.session.created"
+  | "terminal.command.started"
+  | "terminal.output"
+  | "terminal.command.finished"
+  | "terminal.command.failed"
+  | "terminal.stop.requested"
+  | "terminal.process.terminated"
+  | "terminal.session.closed";
+
+/** GET /api/v1/terminal/sessions */
+export interface TerminalSession {
+  id: string;
+  run_id: string | null;
+  workspace_root: string;
+  status: TerminalSessionStatus;
+  next_seq: number;
+  created_at: string | null;
+  finished_at: string | null;
+}
+
+/** 终端事件：SSE 帧 data 与 GET /events 的元素同构 */
+export interface TerminalEvent {
+  id: string;
+  session_id: string;
+  seq: number;
+  kind: TerminalEventKind;
+  source: TerminalSourceKind;
+  command: string | null;
+  chunk: string | null;
+  exit_code: number | null;
+  created_at: string | null;
+}

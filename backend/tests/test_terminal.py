@@ -15,7 +15,7 @@ import pytest
 
 from flux.container import Container
 from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
-from flux.errors import ConflictError, ValidationError
+from flux.errors import ConflictError, NotFoundError, ValidationError
 
 
 async def test_create_session_uses_configured_workspace_root(
@@ -120,3 +120,97 @@ def test_terminal_api_roundtrip(apply_client, workspace_root) -> None:
     ).json()
     assert stopped["data"]["status"] == TerminalSessionStatus.STOPPED.value
     assert stopped["metadata"]["force"] is False
+
+
+# --- T3：SSE 实时流（§11 窗口同步 / §12 历史恢复）---
+
+
+async def test_stream_replays_history_and_pushes_live_until_closed(
+    apply_container: Container,
+) -> None:
+    """打开既运行中的会话：先补历史，再实时推 Stop 产生的事件，收流于 session.closed。"""
+    session = await apply_container.terminal.create_session()
+    await apply_container.terminal.run_command(session.id, "echo stream-me")
+
+    collected: list[dict] = []
+
+    async def consume() -> None:
+        async for payload in apply_container.terminal.stream_events(session.id):
+            if payload is None:  # 心跳哨兵
+                continue
+            collected.append(payload)
+            if payload["kind"] == TerminalEventKind.SESSION_CLOSED.value:
+                return
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.3)  # 让补历史先跑完，再触发实时事件
+    await apply_container.terminal.stop(session.id)
+    await asyncio.wait_for(task, timeout=5)
+
+    kinds = [item["kind"] for item in collected]
+    assert TerminalEventKind.OUTPUT.value in kinds
+    assert kinds[-1] == TerminalEventKind.SESSION_CLOSED.value
+    assert any("stream-me" in (item["chunk"] or "") for item in collected)
+    seqs = [item["seq"] for item in collected]
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)  # 历史与实时合并后不重复
+
+
+async def test_stream_resumes_from_after_seq_on_finished_session(
+    apply_container: Container,
+) -> None:
+    """已结束会话 + after_seq 续读：只补断点之后的事件，补完立即收流（不挂住连接）。"""
+    session = await apply_container.terminal.create_session()
+    await apply_container.terminal.run_command(session.id, "echo done")
+    head = await apply_container.terminal.list_events(session.id)
+    await apply_container.terminal.stop(session.id)
+    tail = await apply_container.terminal.list_events(session.id, after_seq=head[-1].seq)
+
+    collected: list[dict] = []
+    async for payload in apply_container.terminal.stream_events(session.id, after_seq=head[-1].seq):
+        if payload is not None:
+            collected.append(payload)
+
+    assert [item["seq"] for item in collected] == [item.seq for item in tail]
+    assert collected[-1]["kind"] == TerminalEventKind.SESSION_CLOSED.value
+
+
+async def test_stream_unknown_session_raises_not_found(apply_container: Container) -> None:
+    with pytest.raises(NotFoundError):
+        async for _ in apply_container.terminal.stream_events(
+            "00000000-0000-0000-0000-000000000000"
+        ):
+            pass
+
+
+def test_terminal_stream_sse_endpoint(apply_client) -> None:
+    """SSE 闭环：事件帧带 id/event/data，会话结束后服务端主动收流。"""
+    created = apply_client.post("/api/v1/terminal/sessions", json={}).json()
+    session_id = created["data"]["id"]
+    apply_client.post(
+        f"/api/v1/terminal/sessions/{session_id}/commands", json={"command": "echo sse-check"}
+    )
+    apply_client.post(f"/api/v1/terminal/sessions/{session_id}/stop", json={})
+
+    url = f"/api/v1/terminal/sessions/{session_id}/stream?after_seq=0"
+    with apply_client.stream("GET", url) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join(response.iter_text())
+
+    assert "event: terminal.event" in body
+    assert "id: 1" in body
+    assert "echo sse-check" in body
+    assert '"kind": "terminal.session.closed"' in body
+
+    # 断线重连：Last-Event-ID 已到末尾时不再重放旧帧，也不挂住连接
+    with apply_client.stream("GET", url, headers={"Last-Event-ID": "9999"}) as response:
+        assert response.status_code == 200
+        assert "data:" not in "".join(response.iter_text())
+
+
+def test_terminal_stream_unknown_session_returns_404(apply_client) -> None:
+    response = apply_client.get(
+        "/api/v1/terminal/sessions/00000000-0000-0000-0000-000000000000/stream"
+    )
+    assert response.status_code == 404

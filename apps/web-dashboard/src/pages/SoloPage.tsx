@@ -21,6 +21,7 @@ import type {
 } from "../api/types";
 import { openCommandPalette } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
+import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
@@ -1156,6 +1157,19 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             <span className="n-tx">
               <b>工作区</b>
               <i>Workspace · IDE</i>
+            </span>
+          </a>
+          <a
+            className="s-nav-item"
+            onClick={openTerminalWindow}
+            onKeyDown={() => undefined}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="n-ic i-term" />
+            <span className="n-tx">
+              <b>Agent Terminal</b>
+              <i>实时观察并接管 AI 命令</i>
             </span>
           </a>
           <a

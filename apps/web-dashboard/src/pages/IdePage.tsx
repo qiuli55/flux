@@ -29,6 +29,7 @@ import type {
 } from "../api/types";
 import { openCommandPalette, setIdeIntentHandler, type IdeIntent } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
+import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
 import { clockOf } from "../components/solo/SoloChat";
@@ -1192,6 +1193,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             onClick={() => showBottom(bottomTab)}
           >
             <span className="ic-tx">&gt;_</span>
+          </button>
+          <button
+            type="button"
+            className="icon-btn m-hide"
+            title="Agent Terminal · 实时观察与接管 AI 命令"
+            onClick={openTerminalWindow}
+          >
+            <span className="ic-tx">▮_</span>
           </button>
           <button
             type="button"

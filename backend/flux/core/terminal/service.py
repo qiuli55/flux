@@ -18,7 +18,9 @@ import signal
 import subprocess
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
@@ -34,6 +36,10 @@ logger = get_logger(__name__)
 STOP_GRACE_SECONDS = 5.0
 #: SIGKILL 后确认进程组消失的等待上限
 KILL_CONFIRM_SECONDS = 2.0
+#: 实时流无事件时的心跳间隔（秒）；到点发一个 None 哨兵，API 层转成 SSE 注释行
+STREAM_HEARTBEAT_SECONDS = 15.0
+#: 补历史时的分页大小
+STREAM_REPLAY_PAGE = 1000
 
 
 class TerminalService:
@@ -76,6 +82,89 @@ class TerminalService:
         self, session_id: str | uuid.UUID, *, after_seq: int = 0, limit: int = 2000
     ) -> list[TerminalEvent]:
         return await self._repo.list_events(session_id, after_seq=after_seq, limit=limit)
+
+    async def stream_events(
+        self, session_id: str | uuid.UUID, *, after_seq: int = 0
+    ) -> AsyncIterator[dict[str, Any] | None]:
+        """历史续读 + 实时增量（§11 窗口同步 / §12 历史恢复）。
+
+        顺序上先订阅总线再补历史：两者之间到达的事件会进订阅缓冲，补历史后按 seq 去重
+        合并，因此既不重复也不丢。会话已结束（session.closed）时推完即收流；仍在跑则保持
+        连接，直到客户端断开（关闭终端窗口不停 Agent，§11）。产出 `None` 表示心跳哨兵。
+        """
+        session = await self._repo.get_session(session_id)
+        key = str(session.id)
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def on_event(_event: str, payload: dict[str, Any]) -> None:
+            if str(payload.get("session_id")) == key:
+                queue.put_nowait(payload)
+
+        if self._bus is not None:
+            self._bus.subscribe(Events.TERMINAL_EVENT, on_event)
+        last_seq = after_seq
+        closed = False
+        try:
+            # 1) 补历史：分页读到追上为止
+            while True:
+                batch = await self._repo.list_events(
+                    session.id, after_seq=last_seq, limit=STREAM_REPLAY_PAGE
+                )
+                if not batch:
+                    break
+                for event in batch:
+                    if event.seq <= last_seq:
+                        continue
+                    last_seq = event.seq
+                    payload = event.to_dict()
+                    yield payload
+                    if payload["kind"] == TerminalEventKind.SESSION_CLOSED.value:
+                        closed = True
+                if len(batch) < STREAM_REPLAY_PAGE or closed:
+                    break
+            # 2) 合并补历史期间缓冲的实时事件（按 seq 去重）
+            while not closed and not queue.empty():
+                payload = queue.get_nowait()
+                seq = payload.get("seq")
+                if not isinstance(seq, int) or seq <= last_seq:
+                    continue
+                last_seq = seq
+                yield payload
+                if payload["kind"] == TerminalEventKind.SESSION_CLOSED.value:
+                    closed = True
+            # 会话已结束且历史已补完：不可能再有新事件，直接收流（重连时 after_seq 已在末尾）
+            if (
+                not closed
+                and TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE
+                and last_seq >= session.next_seq - 1
+                and queue.empty()
+            ):
+                return
+            # 3) 实时推送
+            while not closed:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=STREAM_HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:  # noqa: UP041 - 3.10 下与内置 TimeoutError 不同源
+                    # 总线不可用时也能推进：直接查库补漏
+                    if self._bus is None:
+                        for event in await self._repo.list_events(
+                            session.id, after_seq=last_seq, limit=STREAM_REPLAY_PAGE
+                        ):
+                            last_seq = event.seq
+                            yield event.to_dict()
+                    if not closed:
+                        yield None
+                    continue
+                seq = payload.get("seq")
+                if not isinstance(seq, int) or seq <= last_seq:
+                    continue
+                last_seq = seq
+                yield payload
+                if payload["kind"] == TerminalEventKind.SESSION_CLOSED.value:
+                    closed = True
+        finally:
+            if self._bus is not None:
+                self._bus.unsubscribe(Events.TERMINAL_EVENT, on_event)
 
     # --- 执行 ---
 

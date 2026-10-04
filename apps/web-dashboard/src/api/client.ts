@@ -29,6 +29,8 @@ import type {
   TaskMessagePage,
   TaskReplyOutcome,
   TaskStartOutcome,
+  TerminalEvent,
+  TerminalSession,
 } from "./types";
 
 /** API 基址：允许用 VITE_API_BASE 覆盖，默认同源 /api/v1 */
@@ -233,4 +235,37 @@ export const api = {
   ) => getData<DecisionOutcome>("POST", `/tasks/${taskId}/decisions/choose`, body),
   /** 取消任务 */
   cancelTask: (taskId: string) => getData<Task>("POST", `/tasks/${taskId}/cancel`),
+
+  /* ---------- Agent Terminal Console ---------- */
+
+  /** 开一个终端会话（工作区根由服务端 FLUX_WORKSPACE_ROOT 决定，未配置时后端 422） */
+  createTerminalSession: (body: { run_id?: string | null } = {}) =>
+    getData<TerminalSession>("POST", "/terminal/sessions", body),
+  /** 最近的终端会话列表（最新在前），用于重开窗口时接回已有会话 */
+  listTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/sessions"),
+  /** 单个会话（含状态与 next_seq） */
+  getTerminalSession: (sessionId: string) =>
+    getData<TerminalSession>("GET", `/terminal/sessions/${sessionId}`),
+  /** 按 seq 续读事件（非流式兜底/一次性读取） */
+  listTerminalEvents: (sessionId: string, afterSeq = 0) =>
+    getData<TerminalEvent[]>(
+      "GET",
+      `/terminal/sessions/${sessionId}/events${query({ after_seq: String(afterSeq) })}`,
+    ),
+  /** 执行一条用户命令（输出以 terminal.output 事件落库；返回的结束事件带 exit code） */
+  runTerminalCommand: (sessionId: string, command: string) =>
+    getData<TerminalEvent>("POST", `/terminal/sessions/${sessionId}/commands`, { command }),
+  /** 停止会话：force=false 走 SIGTERM → grace → SIGKILL；force=true 直接 SIGKILL */
+  stopTerminalSession: (sessionId: string, force = false) =>
+    getData<TerminalSession>("POST", `/terminal/sessions/${sessionId}/stop`, { force }),
 };
+
+/**
+ * 终端事件 SSE 地址（EventSource 用）。
+ *
+ * `after_seq` 只在首次连接时生效；浏览器断线重连会自动带上 Last-Event-ID（上一帧的 seq），
+ * 后端取二者较大者续读，因此不会重放旧帧。
+ */
+export function terminalStreamUrl(sessionId: string, afterSeq = 0): string {
+  return `${API_BASE}/terminal/sessions/${sessionId}/stream${query({ after_seq: String(afterSeq) })}`;
+}

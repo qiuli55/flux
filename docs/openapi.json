@@ -3461,6 +3461,73 @@
         ]
       }
     },
+    "/api/v1/terminal/sessions/{session_id}/stream": {
+      "get": {
+        "description": "终端事件实时流（SSE，§11 / §12）：先补历史再推增量。\n\n断线重连时浏览器会带 `Last-Event-ID`（即上一帧的 seq），与 `after_seq` 取较大者续读。\n会话结束时服务端会推完 `terminal.session.closed` 后收流；客户端断开只结束观察，\n不会停 Agent（§11）。",
+        "operationId": "stream_events_api_v1_terminal_sessions__session_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Events",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
     "/api/v1/workspace/accept": {
       "post": {
         "description": "批准提案但不落盘：pending → accepted，等人工再决定何时 apply。\n\n整批先校验再执行（P0-03）：列表里有一个坏 ID 或非法状态，整批都不动。",

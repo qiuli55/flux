@@ -10,6 +10,7 @@
 import { CommandPalette } from "./app/commands";
 import { useView } from "./app/router";
 import { ToastHost } from "./app/toast";
+import { TerminalWindow } from "./components/terminal/TerminalWindow";
 import { IdePage } from "./pages/IdePage";
 import { SoloPage } from "./pages/SoloPage";
 
@@ -24,6 +25,8 @@ export default function App() {
         <IdePage onBackToSolo={() => navigate("solo")} />
       )}
       <CommandPalette view={view} navigate={navigate} />
+      {/* Agent Terminal 独立窗口：跨视图常驻，关闭不停 Agent（AGENT_TERMINAL_CONSOLE §11） */}
+      <TerminalWindow />
       <ToastHost />
     </>
   );

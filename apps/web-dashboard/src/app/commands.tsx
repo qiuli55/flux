@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { View } from "./router";
+import { openTerminalWindow } from "./terminalWindow";
 
 /** IDE 页可被外部（命令面板）触发的意图 */
 export type IdeIntent =
@@ -79,6 +80,12 @@ export function CommandPalette({
     return [
       { id: "go-solo", cat: "导航", name: "切换到 Solo · AI 任务执行中心", run: () => navigate("solo") },
       { id: "go-ide", cat: "导航", name: "切换到 IDE · 工作台", run: () => navigate("ide") },
+      {
+        id: "agent-terminal",
+        cat: "终端",
+        name: "打开 Agent Terminal · 实时观察并接管 AI 命令",
+        run: () => openTerminalWindow(),
+      },
       {
         id: "focus",
         cat: "视图",
