@@ -1,0 +1,67 @@
+{
+  "name": "flux-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flux 桌面端（Electron + 打包后端 sidecar）",
+  "author": {
+    "name": "孟令昕",
+    "email": "2709264162@qq.com"
+  },
+  "homepage": "https://github.com/qiuli55/flux",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qiuli55/flux.git"
+  },
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never",
+    "dist:win": "electron-builder --win nsis --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "top.qiuli55.flux",
+    "productName": "Flux",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist/flux-backend",
+        "to": "backend"
+      },
+      {
+        "from": "../web-dashboard/dist",
+        "to": "web"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "artifactName": "Flux-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Flux-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

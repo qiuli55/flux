@@ -404,6 +404,18 @@
   font-size: 11.5px;
   border-top: 1px solid var(--line-soft);
 }
+/* 桌面端（Electron）Agent Terminal 独立窗口：占满整个原生窗口，不再悬浮 */
+.tw.is-standalone {
+  position: static;
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.tw.is-standalone .tw-head {
+  cursor: default;
+}
 .tw-input {
   display: flex;
   align-items: center;

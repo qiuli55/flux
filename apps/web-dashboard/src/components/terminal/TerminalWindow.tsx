@@ -86,8 +86,8 @@ function TerminalLine({ event }: { event: TerminalEvent }) {
   }
 }
 
-export function TerminalWindow() {
-  const [open, setOpen] = useState(false);
+export function TerminalWindow({ standalone = false }: { standalone?: boolean } = {}) {
+  const [open, setOpen] = useState(standalone);
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [events, setEvents] = useState<TerminalEvent[]>([]);
@@ -127,11 +127,12 @@ export function TerminalWindow() {
     return command ? { command, source } : null;
   }, [events]);
 
-  /* 注册打开入口（跨视图常驻，由 App 挂载） */
+  /* 注册打开入口（跨视图常驻，由 App 挂载）；独立窗口模式下恒开，不需要入口 */
   useEffect(() => {
+    if (standalone) return;
     setTerminalOpener(() => setOpen(true));
     return () => setTerminalOpener(null);
-  }, []);
+  }, [standalone]);
 
   const createSession = useCallback(async () => {
     try {
@@ -273,13 +274,17 @@ export function TerminalWindow() {
 
   return (
     <div
-      className="tw"
+      className={`tw${standalone ? " is-standalone" : ""}`}
       ref={panelRef}
-      style={position ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
+      style={
+        standalone || !position
+          ? undefined
+          : { left: position.x, top: position.y, right: "auto", bottom: "auto" }
+      }
       role="dialog"
       aria-label="Agent Terminal"
     >
-      <div className="tw-head" onMouseDown={onHeaderDown}>
+      <div className="tw-head" onMouseDown={standalone ? undefined : onHeaderDown}>
         <span className="tw-dot" data-on={connected ? "1" : "0"} />
         <b>Agent Terminal</b>
         {session ? (
@@ -297,9 +302,16 @@ export function TerminalWindow() {
         >
           ＋
         </button>
-        <button type="button" className="icon-btn sm" title="关闭窗口（不会停止 Agent）" onClick={() => setOpen(false)}>
-          ×
-        </button>
+        {standalone ? null : (
+          <button
+            type="button"
+            className="icon-btn sm"
+            title="关闭窗口（不会停止 Agent）"
+            onClick={() => setOpen(false)}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       <div className="tw-bar">

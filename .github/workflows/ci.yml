@@ -5,11 +5,16 @@
 # frontend          ：对 apps/web-dashboard 跑 TypeScript 类型检查 + Vite 构建 + Vitest 单测；
 # postgres-migration：在真实 PostgreSQL（pgvector 官方镜像，与 docker-compose.yml 一致）上
 #                     验证初始迁移可 upgrade / downgrade，避免「只在 SQLite 上能跑」。
+# backend-windows   ：设计文档 §11.1：Windows 是发行目标平台，后端需在 windows-latest 上
+#                     跑一遍 ruff + pytest（双平台同构；绿色是 Windows 发行的硬性前置）。
+# desktop-windows   ：设计文档 §10：Windows 安装包（NSIS）只能在 Windows 上构建，
+#                     由本 job 在 tag（v*）或手动触发时产出（Linux 侧无 wine，构建不了）。
 name: CI
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -109,3 +114,83 @@ jobs:
         run: |
           ../.venv/bin/alembic -x db_url=postgresql+asyncpg://flux:flux@localhost:5432/flux upgrade head
           ../.venv/bin/alembic -x db_url=postgresql+asyncpg://flux:flux@localhost:5432/flux downgrade base
+
+  backend-windows:
+    # 设计文档 §11.1 / §11.5：Windows 为发行目标，后端必须在 windows-latest 上跑通
+    # ruff + pytest。与 ubuntu 的 backend job 同构（不跑 bash 版 verify.sh）。
+    name: 后端自检（Windows · ruff / pytest）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+
+      - name: ruff 静态检查
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      - name: pytest 用例
+        run: python -m pytest
+
+  desktop-windows:
+    # 设计文档 §10：Windows 安装包（NSIS .exe）只能在 Windows 上构建；tag（v*）或手动触发。
+    # 完整链路：前端构建 → PyInstaller 后端 sidecar → electron-builder NSIS。
+    name: Windows 桌面安装包（NSIS）
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # electron-builder 26.x 依赖 @noble/hashes v2（ESM-only），需要 Node ≥ 22.12
+      # 的 require(ESM) 支持，故桌面打包链固定使用 Node 22（前端 CI 仍用 Node 20）。
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 安装后端运行时依赖
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: 构建前端（apps/web-dashboard/dist）
+        working-directory: apps/web-dashboard
+        run: |
+          npm ci
+          npm run build
+
+      - name: 冻结后端 sidecar（PyInstaller onedir）
+        working-directory: apps/desktop/backend
+        run: |
+          python -m pip install -r ../requirements-build.txt
+          python -m PyInstaller --noconfirm --clean flux-backend.spec
+
+      - name: 打包 Windows 安装包（electron-builder NSIS）
+        working-directory: apps/desktop
+        run: |
+          npm install
+          npx electron-builder --win nsis --publish never
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: flux-windows-nsis
+          path: apps/desktop/release/*.exe
+          if-no-files-found: error

@@ -10,12 +10,23 @@
 import { CommandPalette } from "./app/commands";
 import { useView } from "./app/router";
 import { ToastHost } from "./app/toast";
+import { readWindowMode } from "./app/windowMode";
 import { TerminalWindow } from "./components/terminal/TerminalWindow";
 import { IdePage } from "./pages/IdePage";
 import { SoloPage } from "./pages/SoloPage";
 
 export default function App() {
   const [view, navigate] = useView();
+
+  // 桌面端 Agent Terminal 独立窗口（Electron 第二个 BrowserWindow）：只渲染终端
+  if (readWindowMode() === "terminal") {
+    return (
+      <>
+        <TerminalWindow standalone />
+        <ToastHost />
+      </>
+    );
+  }
 
   return (
     <>
