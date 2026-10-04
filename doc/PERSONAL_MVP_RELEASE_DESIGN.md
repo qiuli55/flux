@@ -472,7 +472,14 @@ class AgentRuntime(Protocol):
 
 **建议**：走路线 A，但分期——先做 Terminal Session + 用户命令 + 实时流 + Stop/Force Stop（不依赖放开 Agent 工具，可独立验收），再接入 Agent 命令。
 
-**待拍板**：① 是否允许 Agent 经 Flux 的 Shell Runtime 执行命令（即放开 MCP terminal 工具）；② 桌面端打包是否与本功能同批。
+**已拍板（2026-10-05）**：① ✅ **允许** Agent 经 Flux 的 Shell Runtime 执行命令（放开 MCP `terminal.execute` 硬禁，但仍受权限与工作区边界约束）；② ✅ 桌面端打包（§10）**与本功能同批**实施。
+
+**分期（路线 A）**：
+
+- **T1 终端会话核心（可独立验收）**：Terminal Session + 事件落库；用户在终端执行命令（限定工作区根、受既有路径与权限守卫）；输出实时流；Stop / Force Stop 复用 `RunSupervisor` 的进程树终止链路（SIGTERM → grace → SIGKILL → confirm）。验收：文档 §14「用户命令」+「窗口生命周期」。
+- **T2 Agent 命令接入**：放开 MCP `terminal.execute`，Agent 命令经同一 Session Manager 执行；输出只回结构化摘要，不把完整输出塞回 Agent Context（文档 §9）。验收：文档 §14「基础执行」+「人工接管」。
+- **T3 实时通道与前端终端窗口**：SSE 流式端点 + 终端窗口（`[AI]`/`[USER]` 来源标记、状态与 exit code、历史恢复、Stop / Force Stop）。验收：文档 §14 全部 + §11 / §12。
+- **T4 桌面端打包**（§10，Electron + PyInstaller，Linux + Windows 双产物）：终端以独立窗口形态呈现。验收：Scope §6 的安装 → 使用闭环。
 
 ---
 

@@ -52,6 +52,10 @@ SPEC_TABLES = {
     # §11.2 之外的新增表：Apply 事务日志（P0-1 崩溃恢复；P1-2 整批回滚的分组依据）。
     # 一行 = 一次 apply_many，必须在任何磁盘操作之前落库，重启后据此对账。
     "apply_batches",
+    # §11.2 之外的新增表：终端会话与终端事件（Agent Terminal Console §6 / §8）。
+    # 会话是"观察 + 控制"的载体，事件按会话内单调 seq 落库以支持历史恢复与 SSE 重连。
+    "terminal_sessions",
+    "terminal_events",
 }
 
 

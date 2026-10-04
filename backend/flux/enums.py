@@ -115,6 +115,34 @@ class RecoveryResolution(StrEnum):
     KEEP = "keep"
 
 
+class TerminalSessionStatus(StrEnum):
+    """terminal_sessions.status（Agent Terminal Console §8 / §12）。"""
+
+    ACTIVE = "active"
+    STOPPED = "stopped"
+    CLOSED = "closed"
+
+
+class TerminalSource(StrEnum):
+    """终端命令的来源：AI 还是 USER。§5 要求两者在输出中必须明确区分。"""
+
+    AI = "ai"
+    USER = "user"
+
+
+class TerminalEventKind(StrEnum):
+    """terminal_events.kind（§8 事件模型）。"""
+
+    SESSION_CREATED = "terminal.session.created"
+    COMMAND_STARTED = "terminal.command.started"
+    OUTPUT = "terminal.output"
+    COMMAND_FINISHED = "terminal.command.finished"
+    COMMAND_FAILED = "terminal.command.failed"
+    STOP_REQUESTED = "terminal.stop.requested"
+    PROCESS_TERMINATED = "terminal.process.terminated"
+    SESSION_CLOSED = "terminal.session.closed"
+
+
 class BrainSection(StrEnum):
     """Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。
 

@@ -34,6 +34,9 @@ class Events:
     #: Apply 崩溃恢复（P0-1）：进程重启/入口懒检查对账完一批中断的 Apply 后发出，
     #: 载荷含 batch_id、终态（recovered / needs_attention）与逐条处理结论。
     APPLY_RECOVERED = "apply.recovered"
+    #: 终端事件（Agent Terminal Console §8）：终端窗口与主窗口消费同一套事件，
+    #: 载荷即 terminal_events 行（session_id / seq / kind / source / chunk / exit_code）。
+    TERMINAL_EVENT = "terminal.event"
     GIT_COMMITTED = "git.committed"
     PROJECT_SCANNED = "project.scanned"
     BRAIN_UPDATED = "project.brain_updated"

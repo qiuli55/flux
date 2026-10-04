@@ -891,6 +891,52 @@
         "title": "TaskStartRequest",
         "type": "object"
       },
+      "TerminalCommandRequest": {
+        "description": "在终端会话里执行一条命令（§4）。T1 只接 USER 来源；T2 起 Agent 走同一 Session Manager。",
+        "properties": {
+          "command": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "TerminalCommandRequest",
+        "type": "object"
+      },
+      "TerminalSessionCreateRequest": {
+        "description": "开一个终端会话（Agent Terminal Console §6）。工作区根由服务端配置决定，不接受客户端指定。",
+        "properties": {
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "title": "TerminalSessionCreateRequest",
+        "type": "object"
+      },
+      "TerminalStopRequest": {
+        "description": "停止终端会话（§3.3 / §3.4）：force=true 直接 SIGKILL，false 走 SIGTERM → grace → SIGKILL。",
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "TerminalStopRequest",
+        "type": "object"
+      },
       "UserMemoryWriteRequest": {
         "description": "写一条 User Memory（跨 Workspace；只有用户侧入口，Agent 无直写通道）。\n\n上限与 `flux.core.memory.policies.MAX_CONTENT_CHARS` 对齐；密钥/令牌/凭证\n由服务层再次拦截（此处只做长度与形态校验，不做安全判定）。",
         "properties": {
@@ -3112,6 +3158,306 @@
         "summary": "Start Task",
         "tags": [
           "tasks"
+        ]
+      }
+    },
+    "/api/v1/terminal/sessions": {
+      "get": {
+        "description": "最近的终端会话列表，最新的在前。",
+        "operationId": "list_sessions_api_v1_terminal_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Sessions Api V1 Terminal Sessions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Sessions",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "post": {
+        "description": "开一个终端会话（工作区根取服务端配置；未配置时 422，与 Apply 同一口径）。",
+        "operationId": "create_session_api_v1_terminal_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TerminalSessionCreateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Session Api V1 Terminal Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Session",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/api/v1/terminal/sessions/{session_id}": {
+      "get": {
+        "description": "取单个会话（含状态与 next_seq），供终端窗口重开时对齐。",
+        "operationId": "get_session_api_v1_terminal_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Session Api V1 Terminal Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/api/v1/terminal/sessions/{session_id}/commands": {
+      "post": {
+        "description": "执行一条用户命令并返回结束事件（含 exit code）；输出以 terminal.output 事件落库。",
+        "operationId": "run_command_api_v1_terminal_sessions__session_id__commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Command Api V1 Terminal Sessions  Session Id  Commands Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Command",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/api/v1/terminal/sessions/{session_id}/events": {
+      "get": {
+        "description": "按 seq 续读终端事件（历史恢复）：after_seq 之后、按 seq 升序。",
+        "operationId": "list_events_api_v1_terminal_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 2000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Events Api V1 Terminal Sessions  Session Id  Events Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Events",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/api/v1/terminal/sessions/{session_id}/stop": {
+      "post": {
+        "description": "停止会话：默认 SIGTERM → grace → SIGKILL，force=true 直接 SIGKILL。\n\n确认进程组消失之后才落 stopped，不谎报「已停止」（§10）。",
+        "operationId": "stop_session_api_v1_terminal_sessions__session_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TerminalStopRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Session Api V1 Terminal Sessions  Session Id  Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Session",
+        "tags": [
+          "terminal"
         ]
       }
     },

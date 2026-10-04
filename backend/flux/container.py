@@ -37,6 +37,8 @@ from flux.core.task_engine.assistant import TaskAssistant
 from flux.core.task_engine.dsh_bridge import TaskRunBridge
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
+from flux.core.terminal.repository import TerminalRepository
+from flux.core.terminal.service import TerminalService
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
 from flux.core.virtual_workspace.batch_repository import ApplyBatchRepository
 from flux.core.virtual_workspace.repository import ProposalRepository
@@ -57,6 +59,8 @@ class Container:
     connectors: ConnectorRegistry = field(init=False)
     workspace: VirtualWorkspaceService = field(init=False)
     apply_engine: ApplyEngine = field(init=False)
+    terminal_repo: TerminalRepository = field(init=False)
+    terminal: TerminalService = field(init=False)
     git_client: GitClient = field(init=False)
     git: GitService = field(init=False)
     scanner: ProjectScanner = field(init=False)
@@ -127,6 +131,14 @@ class Container:
             proposal_ttl_seconds=self.settings.proposal_ttl_seconds,
             batch_repository=self.batch_repo,
         )
+        # 终端会话（Agent Terminal Console §6）：Flux 自己执行命令，命令与输出都可观察、可停止；
+        # 工作区根与 Apply 同源（FLUX_WORKSPACE_ROOT），未配置时会话创建即 422
+        self.terminal_repo = TerminalRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.terminal = TerminalService(
+            self.terminal_repo,
+            self.bus,
+            workspace_root=self.settings.workspace_root,
+        )
         # Git 集成（⑨）：与 Apply 共用同一个工作区根；按 change_ids 提交时
         # 由 GitService 复验提案是否已 applied，未落盘/未过测试的改动进不了 Git 历史
         self.git_client = GitClient(
@@ -195,5 +207,6 @@ class Container:
 
     async def dispose(self) -> None:
         # 退出时先停看护循环并清理仍在跑的 Agent 进程树，再释放连接（P2-15 §2.5）
+        await self.terminal.shutdown()
         await self.dsh.shutdown()
         await self.engine.dispose()

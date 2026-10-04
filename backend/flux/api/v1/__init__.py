@@ -13,6 +13,7 @@ from flux.api.v1 import (
     models,
     projects,
     tasks,
+    terminal,
     workspace,
 )
 
@@ -21,6 +22,7 @@ api_v1_router.include_router(health.router)
 api_v1_router.include_router(agents.router)
 api_v1_router.include_router(tasks.router)
 api_v1_router.include_router(workspace.router)
+api_v1_router.include_router(terminal.router)
 api_v1_router.include_router(git.router)
 api_v1_router.include_router(projects.router)
 api_v1_router.include_router(memory.router)

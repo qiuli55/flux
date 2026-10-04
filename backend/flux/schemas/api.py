@@ -146,6 +146,24 @@ class RecoveryResolveRequest(BaseModel):
     action: Literal["cover", "keep"]
 
 
+class TerminalSessionCreateRequest(BaseModel):
+    """开一个终端会话（Agent Terminal Console §6）。工作区根由服务端配置决定，不接受客户端指定。"""
+
+    run_id: str | None = None
+
+
+class TerminalCommandRequest(BaseModel):
+    """在终端会话里执行一条命令（§4）。T1 只接 USER 来源；T2 起 Agent 走同一 Session Manager。"""
+
+    command: str = Field(min_length=1, max_length=4000)
+
+
+class TerminalStopRequest(BaseModel):
+    """停止终端会话（§3.3 / §3.4）：force=true 直接 SIGKILL，false 走 SIGTERM → grace → SIGKILL。"""
+
+    force: bool = False
+
+
 class ChatMessageIn(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
     content: str
