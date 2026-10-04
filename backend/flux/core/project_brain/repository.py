@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,6 +24,10 @@ from flux.logging import get_logger
 from flux.models.project import Project, ProjectMemory
 
 logger = get_logger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ProjectBrainRepository:
@@ -82,6 +87,7 @@ class ProjectBrainRepository:
         不用在读取时猜"哪条才是最新的"。历史决策另有 `DECISIONS` 分区承载。
         """
         key = _as_uuid(project_id)
+        now = _utcnow()
         async with self._session_factory() as session:
             await self._require_project(session, key, project_id)
             existing = await session.scalar(
@@ -97,11 +103,14 @@ class ProjectBrainRepository:
                     type=section.value,
                     content=content,
                     meta=meta or {},
+                    created_at=now,
+                    updated_at=now,
                 )
                 session.add(entry)
             else:
                 existing.content = content
                 existing.meta = meta or {}
+                existing.updated_at = now
                 entry = existing
             await self._persist(session, entry, "记忆条目")
             return entry
@@ -116,6 +125,7 @@ class ProjectBrainRepository:
     ) -> ProjectMemory:
         """写入"累积"型分区：每次新增一条，历史不可被覆盖。"""
         key = _as_uuid(project_id)
+        now = _utcnow()
         async with self._session_factory() as session:
             await self._require_project(session, key, project_id)
             entry = ProjectMemory(
@@ -124,10 +134,40 @@ class ProjectBrainRepository:
                 type=section.value,
                 content=content,
                 meta=meta or {},
+                created_at=now,
+                updated_at=now,
             )
             session.add(entry)
             await self._persist(session, entry, "记忆条目")
             return entry
+
+    async def prune_section(
+        self,
+        project_id: str | uuid.UUID,
+        *,
+        section: BrainSection,
+        keep: int,
+    ) -> int:
+        """容量清理：某累积分区只保留最新 keep 条，多余的最旧条目删除，返回删除数。
+
+        写入时间是新条目入库前取的微秒级 UTC 时间戳（见 append_entry），
+        "谁更新"在任何数据库上都可确定排序。
+        """
+        key = _as_uuid(project_id)
+        async with self._session_factory() as session:
+            stale = list(
+                await session.scalars(
+                    select(ProjectMemory.id)
+                    .where(ProjectMemory.project_id == key, ProjectMemory.type == section.value)
+                    .order_by(ProjectMemory.created_at.desc(), ProjectMemory.id.desc())
+                    .offset(keep)
+                )
+            )
+            if not stale:
+                return 0
+            await session.execute(delete(ProjectMemory).where(ProjectMemory.id.in_(stale)))
+            await session.commit()
+            return len(stale)
 
     async def entries(
         self,

@@ -188,6 +188,18 @@ class MemoryWriteRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class UserMemoryWriteRequest(BaseModel):
+    """写一条 User Memory（跨 Workspace；只有用户侧入口，Agent 无直写通道）。
+
+    上限与 `flux.core.memory.policies.MAX_CONTENT_CHARS` 对齐；密钥/令牌/凭证
+    由服务层再次拦截（此处只做长度与形态校验，不做安全判定）。
+    """
+
+    content: str = Field(min_length=1, max_length=8000)
+    source: str = Field(default="user", max_length=64)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ScanRequest(BaseModel):
     """扫描被登记项目的工作区目录（⑩）。
 

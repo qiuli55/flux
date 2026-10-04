@@ -611,6 +611,16 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "MemoryLayer": {
+        "description": "三层记忆边界（批次② §4.2）。\n\n- USER：跨 Workspace 的偏好与约定，用户确认后才写，可查可删；\n- PROJECT：每个 Workspace / Project 自动沉淀（底座是 Project Brain）；\n- ENVIRONMENT：Flux 运行规则，全局、由平台代码维护，优先于普通项目上下文。",
+        "enum": [
+          "user",
+          "project",
+          "environment"
+        ],
+        "title": "MemoryLayer",
+        "type": "string"
+      },
       "MemoryWriteRequest": {
         "description": "写一条项目记忆。分区语义见 flux.enums.BrainSection。",
         "properties": {
@@ -810,6 +820,33 @@
           }
         },
         "title": "TaskStartRequest",
+        "type": "object"
+      },
+      "UserMemoryWriteRequest": {
+        "description": "写一条 User Memory（跨 Workspace；只有用户侧入口，Agent 无直写通道）。\n\n上限与 `flux.core.memory.policies.MAX_CONTENT_CHARS` 对齐；密钥/令牌/凭证\n由服务层再次拦截（此处只做长度与形态校验，不做安全判定）。",
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "source": {
+            "default": "user",
+            "maxLength": 64,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "UserMemoryWriteRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -1556,6 +1593,203 @@
         "summary": "Ready",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/api/v1/memory": {
+      "get": {
+        "description": "三层统一读取口：Environment → User →（可选）Project，按优先级排序并附来源。",
+        "operationId": "recall_memory_api_v1_memory_get",
+        "parameters": [
+          {
+            "description": "项目 UUID；带上时在两层之上拼入该项目的 Project Memory",
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "项目 UUID；带上时在两层之上拼入该项目的 Project Memory",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Recall Memory Api V1 Memory Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recall Memory",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/v1/memory/entries": {
+      "get": {
+        "description": "列出未过期条目。Project 层请走 `GET /projects/{project_id}/memory`。",
+        "operationId": "list_memory_entries_api_v1_memory_entries_get",
+        "parameters": [
+          {
+            "description": "按层过滤；缺省返回 Environment + User 两层",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MemoryLayer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按层过滤；缺省返回 Environment + User 两层",
+              "title": "Layer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Memory Entries Api V1 Memory Entries Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Memory Entries",
+        "tags": [
+          "memory"
+        ]
+      },
+      "post": {
+        "description": "写一条 User Memory（跨 Workspace）。敏感信息（密钥/令牌/凭证）一律拒收。",
+        "operationId": "write_memory_entry_api_v1_memory_entries_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserMemoryWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Write Memory Entry Api V1 Memory Entries Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Memory Entry",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/v1/memory/entries/{entry_id}": {
+      "delete": {
+        "description": "删除一条 User Memory；Environment / Project 层不可经此删除。",
+        "operationId": "delete_memory_entry_api_v1_memory_entries__entry_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Memory Entry Api V1 Memory Entries  Entry Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Memory Entry",
+        "tags": [
+          "memory"
         ]
       }
     },

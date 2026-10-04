@@ -43,6 +43,9 @@ SPEC_TABLES = {
     # §11.2 之外的新增表：本机 CLI Agent 的发现与接入状态（最终方案 §3.2 / §4）。
     # 与 agents 表（身份/权限）分离：这里只记"装没装、哪个版本、接没接入"。
     "agent_installations",
+    # §11.2 之外的新增表：三层记忆的 User / Environment 层（批次② §4.2）。
+    # Project 层复用 project_memory（Project Brain）；本表同样受本文件全部约束。
+    "memories",
 }
 
 

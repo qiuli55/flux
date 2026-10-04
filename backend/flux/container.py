@@ -21,6 +21,8 @@ from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
 from flux.core.mcp.auth import AgentTokenService
+from flux.core.memory.repository import MemoryRepository
+from flux.core.memory.service import MemoryService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
@@ -57,6 +59,8 @@ class Container:
     files: WorkspaceFileExplorer = field(init=False)
     brain_repo: ProjectBrainRepository = field(init=False)
     brain: ProjectBrain = field(init=False)
+    memory_repo: MemoryRepository = field(init=False)
+    memory: MemoryService = field(init=False)
     task_repo: TaskRepository = field(init=False)
     task_runs: TaskRunBridge = field(init=False)
     assistant: TaskAssistant = field(init=False)
@@ -129,6 +133,10 @@ class Container:
             bus=self.bus,
             workspace_root=self.settings.workspace_root,
         )
+        # 三层记忆（批次② §4.2）：User / Environment 落 memories 表，Project 复用 brain；
+        # 写入必须走受控路径（用户 REST / 平台代码），Agent 面只有只读的 memory.recall
+        self.memory_repo = MemoryRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.memory = MemoryService(self.memory_repo, brain=self.brain)
         # MCP 能力面的鉴权（目标架构 §3.2）：令牌是 agent 进入平台的唯一凭据，
         # 与权限策略同源——工具要求的 Capability 直接取自 flux.enums.Capability。
         # 先于 DSH 装配：DSH 起 Run 时要拿内置 Agent 的令牌注入 MCP patch（P0-01）。

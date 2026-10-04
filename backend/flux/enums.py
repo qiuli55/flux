@@ -109,6 +109,19 @@ SINGLETON_BRAIN_SECTIONS = frozenset(
 )
 
 
+class MemoryLayer(StrEnum):
+    """三层记忆边界（批次② §4.2）。
+
+    - USER：跨 Workspace 的偏好与约定，用户确认后才写，可查可删；
+    - PROJECT：每个 Workspace / Project 自动沉淀（底座是 Project Brain）；
+    - ENVIRONMENT：Flux 运行规则，全局、由平台代码维护，优先于普通项目上下文。
+    """
+
+    USER = "user"
+    PROJECT = "project"
+    ENVIRONMENT = "environment"
+
+
 class MessageType(StrEnum):
     """Agent 通信协议消息类型（主规格 §12.8）。"""
 

@@ -26,6 +26,8 @@ RUNTIME_RULES: tuple[str, ...] = (
 RUNTIME_ENTRY: tuple[str, ...] = (
     "Call flux_context first to confirm where you are and what capabilities you have.",
     "Get project facts with context.get (read-only).",
+    "Recall remembered conventions with memory.recall (read-only; Environment / User / "
+    "Project layers).",
 )
 
 #: Runtime Bootstrap：Flux 托管启动 Agent 时注入的**第一份强制上下文**（批次① §5）。

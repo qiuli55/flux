@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from flux.core.event.bus import EventBus, Events
+from flux.core.memory.policies import PROJECT_SECTION_MAX_ENTRIES
+from flux.core.memory.secrets import ensure_no_secret
 from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_scanner.scanner import ProjectProfile, ProjectScanner
 from flux.enums import SINGLETON_BRAIN_SECTIONS, BrainSection
@@ -107,11 +109,14 @@ class ProjectBrain:
         scanner: ProjectScanner | None = None,
         bus: EventBus | None = None,
         workspace_root: str | Path | None = None,
+        section_max_entries: int = PROJECT_SECTION_MAX_ENTRIES,
     ) -> None:
         self._repository = repository
         self._scanner = scanner
         self._bus = bus
         self._workspace_root = workspace_root
+        # 累积型分区的容量上限（批次② §4.2）：超出即裁掉最旧的，库不因只追加而无界增长
+        self._section_max_entries = section_max_entries
 
     # --- 项目 ---
 
@@ -196,10 +201,15 @@ class ProjectBrain:
         content: str,
         meta: dict | None = None,
     ) -> ProjectMemory:
-        """按分区语义写入：现状型分区覆盖，累积型分区追加。"""
+        """按分区语义写入：现状型分区覆盖，累积型分区追加。
+
+        写入前先过记忆红线（密钥 / 令牌 / 凭证永不入库——批次② §4.2）；
+        累积型分区追加后按容量上限裁剪最旧条目（清理机制）。
+        """
         text = (content or "").strip()
         if not text:
             raise ValidationError("记忆内容不能为空", details={"section": str(section)})
+        ensure_no_secret(text, where="Project Memory")
         if section in SINGLETON_BRAIN_SECTIONS:
             entry = await self._repository.replace_section(
                 project_id, section=section, content=text, meta=meta
@@ -207,6 +217,9 @@ class ProjectBrain:
         else:
             entry = await self._repository.append_entry(
                 project_id, section=section, content=text, meta=meta
+            )
+            await self._repository.prune_section(
+                project_id, section=section, keep=self._section_max_entries
             )
         if self._bus is not None:
             await self._bus.publish(
