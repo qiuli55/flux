@@ -44,9 +44,15 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _repo(path: Path) -> Path:
-    """建一个已有一次提交的真实仓库。"""
+    """建一个已有一次提交的真实仓库。
+
+    身份写进**仓库本地配置**：产品代码提交时 Flux 不注入 git 身份，
+    只依赖开发机全局配置的话，CI runner（无全局身份、新版 git 亦不自动推导）会直接失败。
+    """
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-b", "main")
+    _git(path, "config", "user.name", "Flux Test")
+    _git(path, "config", "user.email", "flux-test@example.com")
     (path / "README.md").write_text("# demo\n", encoding="utf-8")
     _git(path, "add", "README.md")
     _git(path, "commit", "-m", "chore: 初始化仓库")

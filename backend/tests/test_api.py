@@ -346,7 +346,7 @@ def test_workspace_apply_batch_rejects_duplicate_ids(
 
 
 def _init_git_repo(repo: Path, *files: str) -> None:
-    """在 workspace_root 里建真实仓库并提交一次（git 身份只在子进程里给）。"""
+    """在 workspace_root 里建真实仓库并提交一次（身份写进仓库本地配置）。"""
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "Flux Test",
@@ -359,6 +359,10 @@ def _init_git_repo(repo: Path, *files: str) -> None:
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)
 
     run("init", "-b", "main")
+    # 产品提交路径（API → GitService → GitClient）不注入 git 身份；
+    # 写 repo-local 配置，CI runner 上无全局身份也能提交
+    run("config", "user.name", "Flux Test")
+    run("config", "user.email", "flux-test@example.com")
     tracked = ["README.md", *files]
     for name in tracked:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
