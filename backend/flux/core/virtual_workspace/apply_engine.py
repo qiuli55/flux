@@ -27,8 +27,9 @@ from typing import Any
 
 from flux.core.virtual_workspace.backup import BACKUP_RELATIVE_ROOT, BackupService
 from flux.core.virtual_workspace.diff_engine import content_hash
-from flux.core.virtual_workspace.path_guard import resolve_within_root
+from flux.core.virtual_workspace.path_guard import ensure_not_git_internal, resolve_within_root
 from flux.core.virtual_workspace.test_runner import TestOutcome, TestRunner
+from flux.enums import ChangeKind
 from flux.errors import ApplyFailedError, ConflictError, ValidationError
 from flux.logging import get_logger
 from flux.models.workspace import VirtualChange
@@ -45,6 +46,13 @@ _APPLY_LOCK = threading.Lock()
 
 #: 一条提案在批量回滚里的失败记录（回滚失败必须被报出来，不能静默）。
 RollbackError = dict[str, str]
+
+
+def _kind_of(change: VirtualChange) -> ChangeKind:
+    """读提案的动作类型；脱离会话构造的实例 kind 可能为 None，按 modify 处理。"""
+    value = getattr(change, "kind", None)
+    return ChangeKind(value) if value else ChangeKind.MODIFY
+
 
 # --- apply_batches.phase 的进度标记（P0-1）---
 #
@@ -97,7 +105,10 @@ def safe_relative_path(file_path: str) -> Path:
         raise ValidationError(
             f"提案的文件路径不得越出工作区根：{file_path}", details={"file_path": file_path}
         )
-    return Path(*pure.parts)
+    relative = Path(*pure.parts)
+    # `.git/` 内部永不落盘（提案入口已拦，这里是落盘前的最后一道防线）
+    ensure_not_git_internal(relative)
+    return relative
 
 
 def resolve_workspace_root(candidate: str | Path | None) -> Path:
@@ -210,11 +221,11 @@ class ApplyEngine:
             _journal(on_phase, PHASE_WRITING)
             for change, _, target in prepared:
                 attempted += 1
-                self._write(target, change.proposed_content)
+                self._write(change, target)
             _journal(on_phase, PHASE_VERIFYING)
             # 4) 全量校验
             for change, _, target in prepared:
-                self._verify(target, change)
+                self._verify(change, target)
             # 5) 跑项目自己配置的测试（整批只跑一次）
             test: TestOutcome | None = None
             if run_tests:
@@ -352,6 +363,29 @@ class ApplyEngine:
 
     @staticmethod
     def _assert_unchanged(change: VirtualChange, target: Path) -> None:
+        if _kind_of(change) is ChangeKind.DELETE:
+            # 删除类：文件必须存在且与提案基线一致，才能安全备份 + unlink
+            if not target.exists():
+                raise ConflictError(
+                    f"文件 {change.file_path} 已不存在，删除提案无法复验原始内容",
+                    details={"file_path": change.file_path},
+                )
+            if not target.is_file():
+                raise ConflictError(
+                    f"路径 {change.file_path} 不是普通文件，拒绝 Apply",
+                    details={"file_path": change.file_path},
+                )
+            current_hash = content_hash(target.read_text(encoding="utf-8"))
+            if current_hash != change.original_hash:
+                raise ConflictError(
+                    f"文件 {change.file_path} 已被改动，删除提案已过期，禁止直接 Apply",
+                    details={
+                        "file_path": change.file_path,
+                        "expected_hash": change.original_hash,
+                        "actual_hash": current_hash,
+                    },
+                )
+            return
         if not target.exists():
             # 磁盘上没有这个文件：只有"新建文件"的提案才允许继续
             if change.original_content != "":
@@ -378,18 +412,28 @@ class ApplyEngine:
             )
 
     @staticmethod
-    def _write(target: Path, content: str) -> None:
+    def _write(change: VirtualChange, target: Path) -> None:
+        if _kind_of(change) is ChangeKind.DELETE:
+            target.unlink()
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text(change.proposed_content or "", encoding="utf-8")
 
     @staticmethod
-    def _verify(target: Path, change: VirtualChange) -> None:
+    def _verify(change: VirtualChange, target: Path) -> None:
+        if _kind_of(change) is ChangeKind.DELETE:
+            if target.exists():
+                raise ApplyFailedError(
+                    f"删除后文件仍存在：{change.file_path}",
+                    details={"file_path": change.file_path},
+                )
+            return
         if not target.is_file():
             raise ApplyFailedError(
                 f"写入后文件不存在：{change.file_path}", details={"file_path": change.file_path}
             )
         actual = content_hash(target.read_text(encoding="utf-8"))
-        expected = content_hash(change.proposed_content)
+        expected = content_hash(change.proposed_content or "")
         if actual != expected:
             raise ApplyFailedError(
                 f"写入后内容与提案不一致：{change.file_path}",
@@ -438,13 +482,17 @@ def _journal(on_phase: Callable[[str], None] | None, phase: str) -> None:
 
 @dataclass(frozen=True)
 class RecoveryEntry:
-    """恢复算法需要的提案事实（从库里读，不信内存/磁盘里的副本）。"""
+    """恢复算法需要的提案事实（从库里读，不信内存/磁盘里的副本）。
+
+    `proposed_hash` 为 None 表示 delete 类：应用后的预期状态是"文件不存在"。
+    """
 
     change_id: str
     file_path: str
     original_hash: str
     original_content: str
-    proposed_hash: str
+    proposed_hash: str | None
+    kind: str = ChangeKind.MODIFY.value
 
 
 @dataclass(frozen=True)
@@ -529,6 +577,9 @@ def _recover_one(
                 "文件已是改动前的内容",
                 str(backup_path),
             )
+        if entry.kind == ChangeKind.DELETE.value and not target_exists:
+            # 删除类：文件已按提案被删掉（崩溃发生在 unlink 之后），从备份还原
+            return _restore_from_backup(root, backups, entry, relative, backup_path)
         if target_is_file and current_hash != entry.proposed_hash:
             # 既非原文也非 Flux 写入的内容 → 崩溃后被外部改动，不许拿备份覆盖
             return ChangeRecovery(
@@ -555,34 +606,7 @@ def _recover_one(
                 "目标路径不是普通文件",
                 str(backup_path),
             )
-        try:
-            backups.restore(backup_path=backup_path, relative_target=relative)
-        except Exception as exc:  # noqa: BLE001 - 单条还原失败转成显式状态
-            return ChangeRecovery(
-                entry.change_id,
-                entry.file_path,
-                OUTCOME_NEEDS_ATTENTION,
-                f"从备份还原失败：{exc}",
-                str(backup_path),
-            )
-        if (
-            not target.is_file()
-            or content_hash(target.read_text(encoding="utf-8")) != entry.original_hash
-        ):
-            return ChangeRecovery(
-                entry.change_id,
-                entry.file_path,
-                OUTCOME_NEEDS_ATTENTION,
-                "还原后内容与备份不一致",
-                str(backup_path),
-            )
-        return ChangeRecovery(
-            entry.change_id,
-            entry.file_path,
-            OUTCOME_RESTORED,
-            "已从备份还原为改动前的内容",
-            str(backup_path),
-        )
+        return _restore_from_backup(root, backups, entry, relative, backup_path)
 
     # 无备份：要么是新建类，要么崩溃发生在备份完成之前（文件还没被动过）
     if not target_exists:
@@ -626,4 +650,229 @@ def _recover_one(
         OUTCOME_NEEDS_ATTENTION,
         "崩溃后检测到外部修改，未覆盖当前内容",
         None,
+    )
+
+
+# --- 正式回滚（P1-2 §5.2）---
+#
+# 与崩溃恢复不同：回滚是人工显式动作，前置条件更严——批必须 applied、每条 change 必须
+# APPLIED、当前内容必须与提案写入的内容一致。先全量预检（不写盘），再按批内逆序执行。
+
+
+@dataclass(frozen=True)
+class RollbackItem:
+    """回滚算法需要的一条提案事实（从库里读）。proposed_hash 为 None 表示 delete。"""
+
+    change_id: str
+    file_path: str
+    kind: str
+    original_hash: str
+    proposed_hash: str | None
+    backup_path: str | None
+
+
+#: 单条回滚的规划结果
+_ROLLBACK_SKIP = "skip"
+_ROLLBACK_RESTORE = "restore"
+_ROLLBACK_DELETE = "delete"
+
+
+def rollback_batch_on_disk(
+    root: Path,
+    items: Sequence[RollbackItem],
+    *,
+    backup_rel_root: str = BACKUP_RELATIVE_ROOT.as_posix(),
+) -> list[ChangeRecovery]:
+    """把一批已落盘的改动整体撤销（P1-2）：先全量预检，再按逆序回滚。
+
+    预检不通过（文件被外部改动 / 备份缺失）时抛 ConflictError，**一个字节都不写**。
+    已恢复（当前内容已是 original）的条目幂等跳过，因此部分失败后可重复执行。
+    执行阶段单条失败则停止并抛 ApplyFailedError，`details["processed"]` 记录已恢复的条目。
+    """
+    backups = BackupService(workspace_root=root)
+    with _APPLY_LOCK:
+        plans = [_plan_rollback(root, item, backup_rel_root) for item in items]
+        results: list[ChangeRecovery] = []
+        for item, plan in zip(items, plans, strict=True):
+            if plan == _ROLLBACK_SKIP:
+                results.append(
+                    ChangeRecovery(
+                        item.change_id,
+                        item.file_path,
+                        OUTCOME_SKIPPED,
+                        "文件已是改动前的内容",
+                        item.backup_path,
+                    )
+                )
+        for item, plan in reversed(list(zip(items, plans, strict=True))):
+            if plan == _ROLLBACK_SKIP:
+                continue
+            try:
+                _apply_rollback(root, backups, item, plan, backup_rel_root)
+            except Exception as exc:  # noqa: BLE001 - 回滚失败必须留痕
+                raise ApplyFailedError(
+                    f"回滚失败：{item.file_path}（{exc}）",
+                    details={
+                        "change_id": item.change_id,
+                        "file_path": item.file_path,
+                        "processed": [r.change_id for r in results],
+                    },
+                ) from exc
+            outcome = OUTCOME_DELETED if plan == _ROLLBACK_DELETE else OUTCOME_RESTORED
+            detail = (
+                "已删除新建的文件" if plan == _ROLLBACK_DELETE else "已从备份还原为改动前的内容"
+            )
+            results.append(
+                ChangeRecovery(item.change_id, item.file_path, outcome, detail, item.backup_path)
+            )
+        return results
+
+
+def _plan_rollback(root: Path, item: RollbackItem, backup_rel_root: str) -> str:
+    """规划一条回滚动作，并在预检阶段拒绝一切不安全情形（不写盘）。"""
+    relative = safe_relative_path(item.file_path)
+    target = resolve_within_root(root, relative)
+    kind = item.kind or ChangeKind.MODIFY.value
+    exists = target.exists()
+    is_file = target.is_file()
+    current = content_hash(target.read_text(encoding="utf-8")) if is_file else None
+    backup = _resolve_backup(root, item, relative, backup_rel_root)
+
+    if kind == ChangeKind.DELETE.value:
+        if backup is None:
+            raise ConflictError(
+                f"备份不存在，无法回滚删除：{item.file_path}",
+                details={"change_id": item.change_id, "file_path": item.file_path},
+            )
+        if not exists:
+            # 删除类的应用态就是"文件不存在"：需要还原
+            return _ROLLBACK_RESTORE
+        if is_file and current == item.original_hash:
+            return _ROLLBACK_SKIP
+        raise ConflictError(
+            f"文件已变化，拒绝覆盖回滚：{item.file_path}",
+            details={"change_id": item.change_id, "file_path": item.file_path},
+        )
+
+    if kind == ChangeKind.CREATE.value:
+        if not exists:
+            return _ROLLBACK_SKIP
+        if is_file and current == item.proposed_hash:
+            return _ROLLBACK_DELETE
+        raise ConflictError(
+            f"文件已变化，拒绝删除回滚：{item.file_path}",
+            details={"change_id": item.change_id, "file_path": item.file_path},
+        )
+
+    # modify
+    if backup is None:
+        raise ConflictError(
+            f"备份不存在，无法回滚：{item.file_path}",
+            details={"change_id": item.change_id, "file_path": item.file_path},
+        )
+    if not exists:
+        raise ConflictError(
+            f"文件已不存在，无法回滚：{item.file_path}",
+            details={"change_id": item.change_id, "file_path": item.file_path},
+        )
+    if not is_file:
+        raise ConflictError(
+            f"路径不是普通文件，拒绝回滚：{item.file_path}",
+            details={"change_id": item.change_id, "file_path": item.file_path},
+        )
+    if current == item.original_hash:
+        return _ROLLBACK_SKIP
+    if current == item.proposed_hash:
+        return _ROLLBACK_RESTORE
+    raise ConflictError(
+        f"文件已变化，拒绝覆盖回滚：{item.file_path}",
+        details={"change_id": item.change_id, "file_path": item.file_path},
+    )
+
+
+def _resolve_backup(
+    root: Path, item: RollbackItem, relative: Path, backup_rel_root: str
+) -> Path | None:
+    """定位一条 change 的备份文件；不存在返回 None（预检据此拒绝）。"""
+    if item.backup_path:
+        candidate = Path(item.backup_path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            candidate = resolve_within_root(root, candidate.relative_to(root))
+        except (ValueError, ValidationError):
+            return None
+    else:
+        candidate = resolve_within_root(root, Path(backup_rel_root) / item.change_id / relative)
+    return candidate if candidate.is_file() else None
+
+
+def _apply_rollback(
+    root: Path,
+    backups: BackupService,
+    item: RollbackItem,
+    plan: str,
+    backup_rel_root: str,
+) -> None:
+    """执行一条回滚并复核结果。"""
+    relative = safe_relative_path(item.file_path)
+    target = resolve_within_root(root, relative)
+    if plan == _ROLLBACK_DELETE:
+        target.unlink()
+        if target.exists():
+            raise ApplyFailedError(
+                f"回滚后文件仍存在：{item.file_path}", details={"file_path": item.file_path}
+            )
+        return
+    backup = _resolve_backup(root, item, relative, backup_rel_root)
+    if backup is None:
+        raise ApplyFailedError(
+            f"备份缺失，无法还原：{item.file_path}", details={"file_path": item.file_path}
+        )
+    backups.restore(backup_path=backup, relative_target=relative)
+    if (
+        not target.is_file()
+        or content_hash(target.read_text(encoding="utf-8")) != item.original_hash
+    ):
+        raise ApplyFailedError(
+            f"回滚后内容与备份不一致：{item.file_path}", details={"file_path": item.file_path}
+        )
+
+
+def _restore_from_backup(
+    root: Path,
+    backups: BackupService,
+    entry: RecoveryEntry,
+    relative: Path,
+    backup_path: Path,
+) -> ChangeRecovery:
+    """从备份还原为改动前原文，并复核结果（修改/删除类崩溃恢复的收尾）。"""
+    target = resolve_within_root(root, relative)
+    try:
+        backups.restore(backup_path=backup_path, relative_target=relative)
+    except Exception as exc:  # noqa: BLE001 - 单条还原失败转成显式状态
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_NEEDS_ATTENTION,
+            f"从备份还原失败：{exc}",
+            str(backup_path),
+        )
+    if (
+        not target.is_file()
+        or content_hash(target.read_text(encoding="utf-8")) != entry.original_hash
+    ):
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_NEEDS_ATTENTION,
+            "还原后内容与备份不一致",
+            str(backup_path),
+        )
+    return ChangeRecovery(
+        entry.change_id,
+        entry.file_path,
+        OUTCOME_RESTORED,
+        "已从备份还原为改动前的内容",
+        str(backup_path),
     )

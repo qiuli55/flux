@@ -55,6 +55,31 @@ class FileDiff:
         }
 
 
+def compute_delete_diff(file_path: str, original: str) -> FileDiff:
+    """删除类提案的整文件移除 diff（P1-1）。
+
+    与"把 proposed 当空串"的普通 diff 不同：这里 tofile 用 `/dev/null`（git 的删除写法），
+    且即使原文为空也强制 `changed=True`——删除一个空文件仍然是一次真实的文件变更。
+    removed_lines 为原文行数、added_lines 恒为 0。
+    """
+    lines = original.splitlines(keepends=True)
+    unified = "".join(
+        difflib.unified_diff(lines, [], fromfile=f"a/{file_path}", tofile="/dev/null")
+    )
+    if not unified:
+        # 空文件：difflib 认为没有差异，补一个只含文件头的删除标记
+        unified = f"--- a/{file_path}\n+++ /dev/null\n"
+    hunks = sum(1 for line in unified.splitlines() if line.startswith("@@"))
+    return FileDiff(
+        file_path=file_path,
+        unified=unified,
+        added_lines=0,
+        removed_lines=len(lines),
+        hunks=hunks,
+        changed=True,
+    )
+
+
 def compute_file_diff(file_path: str, original: str, proposed: str) -> FileDiff:
     unified = build_unified_diff(file_path, original, proposed)
     added = removed = hunks = 0

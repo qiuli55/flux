@@ -187,8 +187,22 @@ function changeBadge(change: Change): { label: string; cls: string } {
   if (change.status === "pending") return { label: "待审核", cls: "b-run" };
   if (change.status === "applied") return { label: "已落盘", cls: "b-ok" };
   if (change.status === "accepted") return { label: "已批准", cls: "b-ok" };
+  if (change.status === "rolled_back") return { label: "已回滚", cls: "" };
   if (change.status === "failed") return { label: "落盘失败", cls: "" };
   return { label: "已拒绝", cls: "" };
+}
+
+/** 变更语义（P1-1）→ git 风格的字母与中文说明 */
+function kindLetter(kind: Change["kind"]): string {
+  if (kind === "create") return "A";
+  if (kind === "delete") return "D";
+  return "M";
+}
+
+function kindLabel(kind: Change["kind"]): string {
+  if (kind === "create") return "新建";
+  if (kind === "delete") return "删除";
+  return "修改";
 }
 
 /** 落盘失败日志 → 一行结论（优先 pytest 的 FAILED 行与计数行，见 F-01） */
@@ -249,6 +263,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
 
   const [changes, setChanges] = useState<Change[]>([]);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [rollbackBusy, setRollbackBusy] = useState(false);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
@@ -550,6 +565,56 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     [loadChanges, loadGit],
   );
 
+  /* ---------- P1-2 回滚（单条 / 最近一次 Apply） ---------- */
+
+  /** 落盘/回滚都改了磁盘内容：丢掉编辑器缓存里的旧内容，避免显示过期文本 */
+  const dropFileCache = useCallback((path: string) => {
+    setFiles((prev) => {
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+  }, []);
+
+  const runRollback = useCallback(
+    async (change: Change) => {
+      setActionBusyId(change.id);
+      try {
+        await api.rollbackChange(change.id);
+        toast(`已回滚 ${change.file_path} · 工作区恢复为落盘前内容（Flux 不自动提交 git）`);
+        dropFileCache(change.file_path);
+        setReviewId(null);
+        await loadChanges();
+        await loadGit();
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+      setActionBusyId(null);
+    },
+    [dropFileCache, loadChanges, loadGit],
+  );
+
+  const rollbackLast = useCallback(async () => {
+    setRollbackBusy(true);
+    try {
+      const batches = await api.listRollbackableBatches();
+      const batch = batches[0];
+      if (!batch) {
+        toast("没有可回滚的落盘记录：最近一次 Apply 已回滚，或还没有落盘过", "error");
+        return;
+      }
+      await api.rollbackBatch(batch.id);
+      toast(`已回滚最近一次落盘（${batch.change_ids.length} 个文件）· Flux 不自动提交 git`);
+      setFiles({}); // 多个文件可能都被改回，直接清空编辑器缓存
+      await loadChanges();
+      await loadGit();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setRollbackBusy(false);
+    }
+  }, [loadChanges, loadGit]);
+
   /* ---------- 崩溃恢复的人工决策（P0-1） ---------- */
 
   const recoveryItem = useMemo(
@@ -844,7 +909,8 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                       <div className="diff-banner">
                         <b>{change.file_path}</b>
                         <span>
-                          M · +{change.added_lines} −{change.removed_lines}
+                          {kindLetter(change.kind)} · {kindLabel(change.kind)} · +{change.added_lines} −
+                          {change.removed_lines}
                         </span>
                         <span className={`tl-badge ${badge.cls}`}>{badge.label}</span>
                         <div className="diff-actions">
@@ -868,13 +934,25 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                               </button>
                             </>
                           ) : (
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-xs"
-                              onClick={() => openFile(change.file_path)}
-                            >
-                              打开文件
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs"
+                                onClick={() => openFile(change.file_path)}
+                              >
+                                打开文件
+                              </button>
+                              {change.status === "applied" ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs"
+                                  disabled={actionBusyId === change.id}
+                                  onClick={() => void runRollback(change)}
+                                >
+                                  回滚
+                                </button>
+                              ) : null}
+                            </>
                           )}
                         </div>
                       </div>
@@ -1040,7 +1118,9 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               const badge = changeBadge(change);
               return (
                 <div className="bp-row" key={change.id}>
-                  <span className="bp-who t-dim">{badge.label}</span>
+                  <span className="bp-who t-dim">
+                    {kindLetter(change.kind)} · {badge.label}
+                  </span>
                   <span className="bp-tx">{change.file_path}</span>
                   <span className="t-ok">
                     +{change.added_lines} −{change.removed_lines}
@@ -1055,6 +1135,16 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   >
                     {change.status === "pending" ? "审核" : "打开"}
                   </button>
+                  {change.status === "applied" ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      disabled={actionBusyId === change.id}
+                      onClick={() => void runRollback(change)}
+                    >
+                      回滚
+                    </button>
+                  ) : null}
                 </div>
               );
             })
@@ -1750,6 +1840,15 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           <span className="bp-shell">
             待审 {pendingChanges.length} · 失败 {failedChanges.length}
           </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            disabled={rollbackBusy}
+            title="把最近一次落盘（Apply 批）整体回滚到落盘前内容；Flux 不自动产生 git 提交"
+            onClick={() => void rollbackLast()}
+          >
+            {rollbackBusy ? "回滚中…" : "回滚上一次"}
+          </button>
           <button
             type="button"
             className="icon-btn sm"

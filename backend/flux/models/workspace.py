@@ -36,10 +36,15 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Uuid(as_uuid=True), index=True, nullable=True
     )
     file_path: Mapped[str] = mapped_column(String(512), index=True)
+    # 动作类型（取值见 flux.enums.ChangeKind）：create / modify / delete（P1-1）
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="modify", default="modify"
+    )
     # 生成提案时该文件的 sha256（十六进制）；Apply 前必须与磁盘现状复验（实施计划 §5）
     original_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     original_content: Mapped[str] = mapped_column(Text)
-    proposed_content: Mapped[str] = mapped_column(Text)
+    # delete 类提案没有"改动后内容"，为 NULL；create / modify 必为完整文件内容
+    proposed_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     diff: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Diff 概览，供 UI 列表直接展示，避免每次列表都重算 diff
     added_lines: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -73,6 +78,7 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "task_id": str(self.task_id) if self.task_id is not None else None,
             "group_id": str(self.group_id) if self.group_id is not None else None,
             "file_path": self.file_path,
+            "kind": self.kind,
             "original_hash": self.original_hash,
             "original_content": self.original_content,
             "proposed_content": self.proposed_content,

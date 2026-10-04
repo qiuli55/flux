@@ -137,6 +137,38 @@ async def expire_stale(container: Container = Depends(get_container)) -> dict[st
     return ok(expired, metadata={"count": len(expired)})
 
 
+@router.get("/apply-batches")
+async def list_apply_batches(
+    recent: int = 0,
+    limit: int = 20,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """列出最近的 Apply 批（最新在前）；`recent=1` 只返回可回滚的 applied 批。
+
+    `recent=1` 驱动前端"回滚上一次"按钮：取第一项即最近一次成功 Apply。
+    """
+    batches = await container.workspace.list_recent_batches(recent=bool(recent), limit=limit)
+    return ok([b.to_dict() for b in batches], metadata={"count": len(batches)})
+
+
+@router.post("/apply-batches/{batch_id}/rollback")
+async def rollback_batch(
+    batch_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """整批回滚一次 Apply（P1-2）：先全量预检，再按批内逆序还原；不产生任何 git 提交。"""
+    batch = await container.workspace.rollback_batch(batch_id)
+    return ok(batch.to_dict(), metadata={"batch_id": str(batch.id)})
+
+
+@router.post("/changes/{change_id}/rollback")
+async def rollback_change(
+    change_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """单条回滚：撤销一条已落盘提案对文件的改动。"""
+    change = await container.workspace.rollback_change(change_id)
+    return ok(change.to_dict(), metadata={"change_id": str(change.id)})
+
+
 @router.get("/recovery")
 async def list_recovery(container: Container = Depends(get_container)) -> dict[str, object]:
     """列出所有待人工决策的崩溃恢复项（P0-1 §2.2）：只读，不改任何状态。

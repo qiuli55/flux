@@ -19,6 +19,7 @@ from flux.container import Container
 from flux.core.agent_runtime.adapters import CliAgentAdapter, CliAgentProbe
 from flux.core.agent_runtime.manager import AgentSpec
 from flux.core.mcp.tools import CORE_TOOL_NAMES
+from flux.core.virtual_workspace.proposal_parser import CodeChangeSet, FileChange
 from flux.enums import (
     AgentInstallStatus,
     AgentRole,
@@ -312,6 +313,99 @@ def test_proposal_list_and_show(
     assert code == 0
     assert shown["data"]["id"] == str(change_id)
     assert shown["data"]["status"] == "pending"
+
+
+def _seed_delete_proposal(settings: Settings) -> uuid.UUID:
+    """造一条 delete 类提案，验证 `proposal diff` 的动作标记输出。"""
+    change_id = uuid.uuid4()
+
+    async def _seed() -> None:
+        container = Container(settings)
+        try:
+            await container.proposal_repo.create(
+                change_id=change_id,
+                file_path="src/legacy.py",
+                kind="delete",
+                original_content="旧模块内容\n第二行\n",
+                proposed_content=None,
+                original_hash="0" * 64,
+                diff="--- a/src/legacy.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-旧模块内容\n-第二行\n",
+                added_lines=0,
+                removed_lines=2,
+                hunks=1,
+            )
+        finally:
+            await container.dispose()
+
+    asyncio.run(_seed())
+    return change_id
+
+
+def _seed_applied_modify(settings: Settings, workspace_root: Path) -> uuid.UUID:
+    """经真实 propose → apply 造一条已落盘的修改提案（供 rollback 用例）。"""
+
+    async def _seed() -> uuid.UUID:
+        container = Container(settings)
+        try:
+            change_set = CodeChangeSet(
+                summary="改 login",
+                changes=(FileChange(path="auth/login.py", content=PROPOSED, op="modify"),),
+            )
+            change = (
+                await container.workspace.propose_changes(
+                    change_set, original_files={"auth/login.py": ORIGINAL}
+                )
+            )[0]
+            await container.workspace.apply(str(change.id))
+            return change.id
+        finally:
+            await container.dispose()
+
+    return asyncio.run(_seed())
+
+
+ORIGINAL = "def login(user):\n    return False\n"
+PROPOSED = "def login(user):\n    return check_password(user)\n"
+
+
+def test_proposal_diff_reports_kind_header(
+    settings: Settings, db_schema: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    change_id = _seed_delete_proposal(settings)
+
+    code, payload = run_cli(settings, ["proposal", "diff", str(change_id)], capsys)
+
+    assert code == 0
+    data = payload["data"]
+    assert data["kind"] == "delete"
+    assert data["header"] == "D src/legacy.py"
+    assert data["added_lines"] == 0
+    assert "+++ /dev/null" in data["diff"]
+
+
+def test_cli_rollback_last(
+    settings: Settings,
+    db_schema: None,
+    workspace_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    scoped = settings.model_copy(update={"workspace_root": str(workspace_root)})
+    root = workspace_root / "auth"
+    root.mkdir()
+    (root / "login.py").write_text(ORIGINAL, encoding="utf-8")
+    change_id = _seed_applied_modify(scoped, workspace_root)
+    assert (root / "login.py").read_text(encoding="utf-8") == PROPOSED
+
+    code, rolled = run_cli(scoped, ["proposal", "rollback", "--last"], capsys)
+
+    assert code == 0
+    assert rolled["data"]["status"] == ApplyBatchStatus.ROLLED_BACK.value
+    assert (root / "login.py").read_text(encoding="utf-8") == ORIGINAL
+
+    # 单条入口：回滚后再次回滚同一 change 因批已 rolled_back 而 409
+    code, conflict = run_cli(scoped, ["proposal", "rollback", str(change_id)], capsys)
+    assert code == 1
+    assert conflict["error"]["code"] == "conflict"
 
 
 def test_logs_without_config_is_actionable(

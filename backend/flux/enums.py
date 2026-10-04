@@ -85,6 +85,21 @@ class VirtualChangeStatus(StrEnum):
     APPLIED = "applied"
     FAILED = "failed"
     EXPIRED = "expired"
+    #: ROLLED_BACK 是 P1-2 正式回滚写入的终态：已落盘的提案被整体撤销、文件还原为改动前。
+    #: 与 APPLIED 一样不可再被批准/落盘——要再改同一文件必须重新提交提案。
+    ROLLED_BACK = "rolled_back"
+
+
+class ChangeKind(StrEnum):
+    """virtual_changes.kind：一条提案对文件的动作类型（P1-1）。
+
+    CREATE 新建、MODIFY 修改、DELETE 删除。缺省由 parser 留空、服务层按"原文件是否存在"
+    自动判定；DELETE 的 proposed_content 为 NULL（没有"改动后内容"这回事）。
+    """
+
+    CREATE = "create"
+    MODIFY = "modify"
+    DELETE = "delete"
 
 
 class ApplyBatchStatus(StrEnum):

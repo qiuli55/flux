@@ -104,9 +104,10 @@ export const CHANGE_STATUS_LABELS: Record<ChangeStatus, string> = {
   applied: "已落盘",
   failed: "落盘失败",
   expired: "已失效",
+  rolled_back: "已回滚",
 };
 
-/** 变更状态徽章（主规格 §7.2 状态机；expired 为 P0-02 的失效终态） */
+/** 变更状态徽章（主规格 §7.2 状态机；expired 为 P0-02 的失效终态，rolled_back 为 P1-2 回滚终态） */
 const CHANGE_STATUS_META: Record<ChangeStatus, { label: string; className: string }> = {
   pending: { label: CHANGE_STATUS_LABELS.pending, className: "text-warn border-warn/40 bg-warn/10" },
   accepted: { label: CHANGE_STATUS_LABELS.accepted, className: "text-info border-info/40 bg-info/10" },
@@ -114,6 +115,7 @@ const CHANGE_STATUS_META: Record<ChangeStatus, { label: string; className: strin
   applied: { label: CHANGE_STATUS_LABELS.applied, className: "text-add border-add/40 bg-add/10" },
   failed: { label: CHANGE_STATUS_LABELS.failed, className: "text-danger border-danger/40 bg-danger/10" },
   expired: { label: CHANGE_STATUS_LABELS.expired, className: "text-faint border-line bg-surface-2" },
+  rolled_back: { label: CHANGE_STATUS_LABELS.rolled_back, className: "text-faint border-line bg-surface-2" },
 };
 
 export function ChangeStatusBadge({ status }: { status: ChangeStatus }): JSX.Element {

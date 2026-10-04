@@ -16,6 +16,7 @@ from typing import Any
 
 from flux.core.virtual_workspace.path_guard import (
     ensure_not_flux_internal,
+    ensure_not_git_internal,
     ensure_not_secret_path,
 )
 from flux.errors import ValidationError
@@ -23,17 +24,33 @@ from flux.errors import ValidationError
 _FENCED_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _PREVIEW_CHARS = 300
 
+#: 一条改动的动作类型（缺省时由服务层按"原文件是否存在"自动判定）
+_OPERATIONS = ("create", "modify", "delete")
+
 
 @dataclass(frozen=True)
 class FileChange:
-    """一个文件的改动提案：path 为相对项目根的 POSIX 路径，content 为改动后的完整内容。"""
+    """一个文件的改动提案：path 为相对项目根的 POSIX 路径。
+
+    `op` 是 create / modify / delete，缺省为 None（自动判定）；`content` 为改动后的完整
+    内容，delete 时必须是 None。
+    """
 
     path: str
-    content: str
+    content: str | None
     reason: str = ""
+    op: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": self.path, "content": self.content, "reason": self.reason}
+        # 不带 op 的既有形态保持原样（历史契约）；显式 op 才附上
+        payload: dict[str, Any] = {
+            "path": self.path,
+            "content": self.content,
+            "reason": self.reason,
+        }
+        if self.op is not None:
+            payload["op"] = self.op
+        return payload
 
 
 @dataclass(frozen=True)
@@ -77,13 +94,26 @@ def parse_code_change_set(raw: str, *, source: str = "proposal") -> CodeChangeSe
         if path in seen:
             raise _invalid(source, f"changes 中出现重复路径：{path}", raw)
         seen.add(path)
-        content = item.get("content")
-        if not isinstance(content, str):
-            raise _invalid(source, f"changes[{index}].content 必须是字符串", raw)
+        op = item.get("op")
+        if op is not None and (not isinstance(op, str) or op not in _OPERATIONS):
+            raise _invalid(
+                source,
+                f"changes[{index}].op 必须是 {'/'.join(_OPERATIONS)} 之一",
+                raw,
+            )
         reason = item.get("reason", "")
         if not isinstance(reason, str):
             raise _invalid(source, f"changes[{index}].reason 必须是字符串", raw)
-        changes.append(FileChange(path=path, content=content, reason=reason.strip()))
+        if op == "delete":
+            # 删除语义下没有"改动后内容"：带了 content 的输入是自相矛盾的，直接拒绝
+            if "content" in item:
+                raise _invalid(source, f"changes[{index}].op=delete 时禁止携带 content", raw)
+            content: str | None = None
+        else:
+            content = item.get("content")
+            if not isinstance(content, str):
+                raise _invalid(source, f"changes[{index}].content 必须是字符串", raw)
+        changes.append(FileChange(path=path, content=content, reason=reason.strip(), op=op))
 
     return CodeChangeSet(summary=summary.strip(), changes=tuple(changes))
 
@@ -135,6 +165,7 @@ def _require_path(raw: Any, index: int, source: str, full: str) -> str:
     # 后者一旦被改就等于抽掉 Apply Engine 的回滚依据
     ensure_not_secret_path(normalized)
     ensure_not_flux_internal(pure)
+    ensure_not_git_internal(pure)
     return normalized
 
 

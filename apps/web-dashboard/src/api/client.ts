@@ -9,6 +9,7 @@
 import type {
   AgentCreateRequest,
   AgentHandle,
+  ApplyBatch,
   Change,
   ConfirmationItem,
   DecisionMode,
@@ -155,6 +156,21 @@ export const api = {
   /** 拒绝（可带理由） */
   reject: (changeIds: string[], reason: string | null) =>
     getData<Change[]>("POST", "/workspace/reject", { change_ids: changeIds, reason }),
+
+  /* ---------- P1-2 正式 Rollback ---------- */
+
+  /**
+   * 取最近一次可回滚（status=applied）的 Apply 批，驱动「回滚上一次」按钮。
+   * 没有可回滚的批时返回空数组。
+   */
+  listRollbackableBatches: () =>
+    getData<ApplyBatch[]>("GET", "/workspace/apply-batches?recent=1"),
+  /** 单条回滚：撤销一条已落盘提案对文件的改动（回滚后状态 rolled_back，不产生 git 提交） */
+  rollbackChange: (changeId: string) =>
+    getData<Change>("POST", `/workspace/changes/${changeId}/rollback`),
+  /** 整批回滚：按批内逆序还原，批状态 rolled_back */
+  rollbackBatch: (batchId: string) =>
+    getData<ApplyBatch>("POST", `/workspace/apply-batches/${batchId}/rollback`),
 
   /** 待人工决策的崩溃恢复项（P0-1）：含备份原文 / 磁盘现状 / 提案内容三版本 */
   listRecovery: () => getData<RecoveryItem[]>("GET", "/workspace/recovery"),

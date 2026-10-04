@@ -27,16 +27,27 @@ from flux.core.virtual_workspace.apply_engine import (
     ApplyEngine,
     ChangeRecovery,
     RecoveryEntry,
+    RollbackItem,
     recover_batch_on_disk,
+    rollback_batch_on_disk,
     safe_relative_path,
 )
 from flux.core.virtual_workspace.backup import BACKUP_RELATIVE_ROOT, BackupService
 from flux.core.virtual_workspace.batch_repository import ApplyBatchRepository
-from flux.core.virtual_workspace.diff_engine import compute_file_diff, content_hash
+from flux.core.virtual_workspace.diff_engine import (
+    compute_delete_diff,
+    compute_file_diff,
+    content_hash,
+)
 from flux.core.virtual_workspace.path_guard import resolve_within_root
-from flux.core.virtual_workspace.proposal_parser import CodeChangeSet
+from flux.core.virtual_workspace.proposal_parser import CodeChangeSet, FileChange
 from flux.core.virtual_workspace.repository import ProposalRepository
-from flux.enums import ApplyBatchStatus, RecoveryResolution, VirtualChangeStatus
+from flux.enums import (
+    ApplyBatchStatus,
+    ChangeKind,
+    RecoveryResolution,
+    VirtualChangeStatus,
+)
 from flux.errors import (
     ConflictError,
     InvalidTransitionError,
@@ -88,9 +99,12 @@ ALLOWED: dict[VirtualChangeStatus, frozenset[VirtualChangeStatus]] = {
     ),
     VirtualChangeStatus.APPLYING: frozenset(),
     VirtualChangeStatus.REJECTED: frozenset(),
-    VirtualChangeStatus.APPLIED: frozenset(),
+    # APPLIED 只能被 P1-2 正式回滚推进到 ROLLED_BACK（由 rollback_* 直接写库，不经 _transition）；
+    # 其余人工动作（reject/expire 等）一律不可再碰它。
+    VirtualChangeStatus.APPLIED: frozenset({VirtualChangeStatus.ROLLED_BACK}),
     VirtualChangeStatus.FAILED: frozenset(),
     VirtualChangeStatus.EXPIRED: frozenset(),
+    VirtualChangeStatus.ROLLED_BACK: frozenset(),
 }
 
 #: 提案失效原因（写入 expired_reason，供 UI 解释"为什么这条不能再审"）
@@ -173,7 +187,8 @@ class VirtualWorkspaceService:
         *,
         file_path: str,
         original_content: str,
-        proposed_content: str,
+        proposed_content: str | None,
+        kind: ChangeKind | str | None = None,
         project_id: str | uuid.UUID | None = None,
         task_id: str | uuid.UUID | None = None,
         group_id: str | uuid.UUID | None = None,
@@ -184,19 +199,37 @@ class VirtualWorkspaceService:
     ) -> VirtualChange:
         """落一条提案。内容与原文一致时拒绝——没有可审阅的改动就不该占用审核队列。
 
+        `kind` 缺省时按 proposed_content 推断：为 None 即 delete，否则 modify（create 由
+        propose_changes 依据"原文件是否存在"判定后显式传入）。delete 没有改动后内容，
+        其 diff 是整文件移除（P1-1）。
+
         新提案落地后，同一文件在相同项目/任务范围内的旧 pending 提案会被置为 expired：
         审核队列里不该同时挂着两条改同一文件、谁也不该被落盘的提案（P0-02 状态一致性）。
         """
-        diff = compute_file_diff(file_path, original_content, proposed_content)
-        if not diff.changed:
-            raise ValidationError(
-                f"文件 {file_path} 的提案内容与原文一致，没有可审阅的改动",
-                details={"file_path": file_path},
-            )
+        resolved_kind = _resolve_kind(kind, proposed_content)
+        if resolved_kind is ChangeKind.DELETE:
+            if proposed_content is not None:
+                raise ValidationError(
+                    f"删除提案不得携带 content：{file_path}", details={"file_path": file_path}
+                )
+            diff = compute_delete_diff(file_path, original_content)
+        else:
+            if proposed_content is None:
+                raise ValidationError(
+                    f"{resolved_kind.value} 提案必须给出完整 content：{file_path}",
+                    details={"file_path": file_path},
+                )
+            diff = compute_file_diff(file_path, original_content, proposed_content)
+            if not diff.changed:
+                raise ValidationError(
+                    f"文件 {file_path} 的提案内容与原文一致，没有可审阅的改动",
+                    details={"file_path": file_path},
+                )
         project_key = _as_uuid(project_id)
         task_key = _as_uuid(task_id)
         change = await self._repo.create(
             file_path=file_path,
+            kind=resolved_kind.value,
             original_content=original_content,
             proposed_content=proposed_content,
             original_hash=content_hash(original_content),
@@ -223,35 +256,45 @@ class VirtualWorkspaceService:
         project_id: str | uuid.UUID | None = None,
         task_id: str | uuid.UUID | None = None,
         agent_source: str | None = None,
-        original_files: Mapping[str, str] | None = None,
+        original_files: Mapping[str, str | None] | None = None,
     ) -> list[VirtualChange]:
         """把一个 CodeChangeSet 落成多条 Proposal（每个文件一条）。
 
-        `original_files` 是各文件当前内容；不在其中或内容为空的路径视为新建文件，
-        original_content 记为空串（Apply 时据此判断"文件本不该存在"）。
+        `original_files` 是各文件当前内容的**二元**事实：键不存在或值为 None 表示文件不存在，
+        空串表示"存在但是空文件"（P1-1 起必须能区分二者，否则删空文件会被当成新建）。
+        kind 缺省自动判定：原文件存在 → modify，不存在 → create；显式 `op` 优先。
+        op=delete 的目标必须存在，且其 proposed_content 记 NULL。
 
         同一次提交的所有提案共享一个 group_id，可整组批准 / 拒绝 / 落盘（P0-02）。
         """
         originals = dict(original_files or {})
-        # 先算出真正有改动的文件，避免"全部文件都没改动"时留下一个空 group_id
-        effective = [
-            change
-            for change in change_set.changes
-            if compute_file_diff(
-                change.path, originals.get(change.path, ""), change.content
-            ).changed
-        ]
-        if not effective:
+        planned: list[tuple[FileChange, str, ChangeKind]] = []
+        for change in change_set.changes:
+            value = originals.get(change.path)
+            exists = value is not None
+            original = value or ""
+            kind = _auto_kind(change.op, exists)
+            if kind is ChangeKind.DELETE:
+                if not exists:
+                    raise ValidationError(
+                        f"删除目标不存在，无法提交删除提案：{change.path}",
+                        details={"file_path": change.path},
+                    )
+            elif not compute_file_diff(change.path, original, change.content or "").changed:
+                # 没有可审阅改动的 create / modify 直接跳过（不占用审核队列）
+                continue
+            planned.append((change, original, kind))
+        if not planned:
             raise ValidationError("提案没有任何有效改动", details={"files": list(change_set.paths)})
         group_id = uuid.uuid4()
         created: list[VirtualChange] = []
-        for change in effective:
-            original = originals.get(change.path, "")
+        for change, original, kind in planned:
             created.append(
                 await self.propose(
                     file_path=change.path,
                     original_content=original,
-                    proposed_content=change.content,
+                    proposed_content=None if kind is ChangeKind.DELETE else change.content,
+                    kind=kind,
                     project_id=project_id,
                     task_id=task_id,
                     group_id=group_id,
@@ -494,13 +537,16 @@ class VirtualWorkspaceService:
                 notes.append(f"{raw_id}：状态为 {status.value}，无需恢复")
                 continue
             previous[str(change.id)] = status
+            proposed = change.proposed_content
             entries.append(
                 RecoveryEntry(
                     change_id=str(change.id),
                     file_path=change.file_path,
+                    kind=change.kind or ChangeKind.MODIFY.value,
                     original_hash=change.original_hash,
                     original_content=change.original_content,
-                    proposed_hash=content_hash(change.proposed_content),
+                    # delete 类没有"改动后内容"：proposed_hash 为 None 表示"应用后文件应不存在"
+                    proposed_hash=content_hash(proposed) if proposed is not None else None,
                 )
             )
 
@@ -809,6 +855,133 @@ class VirtualWorkspaceService:
             run_tests=run_tests,
         )
 
+    # --- 正式回滚（P1-2 §5.2）---
+
+    async def list_recent_batches(
+        self, *, recent: bool = False, limit: int = 20
+    ) -> list[ApplyBatch]:
+        """最近若干 Apply 批（最新在前）；recent=True 时只返回可回滚的 applied 批。"""
+        if self._batches is None:
+            return []
+        batches = await self._batches.list_recent(limit=limit)
+        if recent:
+            batches = [b for b in batches if b.status == ApplyBatchStatus.APPLIED.value]
+        return batches
+
+    async def rollback_batch(
+        self, batch_id: str | uuid.UUID, *, workspace_root: str | Path | None = None
+    ) -> ApplyBatch:
+        """整批回滚一次 Apply：先全量预检、再按逆序还原（P1-2）。
+
+        只允许 applied 批；recovered/failed/needs_attention 不可回滚，二次回滚（已 rolled_back）
+        一律 409 且不产生任何写入。
+        """
+        if self._batches is None:
+            raise ConflictError("未装配批日志，无法执行回滚", details={"batch_id": str(batch_id)})
+        batch = await self._batches.get(batch_id)
+        changes = await self._load_many(batch.change_ids, action="rollback")
+        await self._execute_rollback(batch, changes, workspace_root=workspace_root)
+        return await self._batches.get(batch_id)
+
+    async def rollback_change(
+        self, change_id: str | uuid.UUID, *, workspace_root: str | Path | None = None
+    ) -> VirtualChange:
+        """单条回滚：撤销一条已落盘提案对文件的改动。"""
+        change = await self._repo.get(change_id)
+        batch = (
+            await self._batches.find_for_change(change.id) if self._batches is not None else None
+        )
+        if batch is None:
+            raise ConflictError(
+                "该提案没有关联的 Apply 批次，无法回滚",
+                details={"change_id": str(change.id)},
+            )
+        await self._execute_rollback(batch, [change], workspace_root=workspace_root)
+        return await self._repo.get(change_id)
+
+    async def _execute_rollback(
+        self,
+        batch: ApplyBatch,
+        changes: Sequence[VirtualChange],
+        *,
+        workspace_root: str | Path | None,
+    ) -> list[VirtualChange]:
+        """执行回滚：批状态 + 逐条状态先全量校验，再交给引擎按磁盘事实还原。
+
+        引擎在动盘前会对整组做一次磁盘预检，任一不满足即抛 ConflictError（未写盘）。
+        """
+        if ApplyBatchStatus(batch.status) is not ApplyBatchStatus.APPLIED:
+            raise ConflictError(
+                f"Apply 批次当前状态为 {batch.status}，不可回滚",
+                details={"batch_id": str(batch.id), "status": batch.status},
+            )
+        for change in changes:
+            current = VirtualChangeStatus(change.status)
+            if current in (VirtualChangeStatus.APPLIED, VirtualChangeStatus.ROLLED_BACK):
+                continue
+            raise ConflictError(
+                f"提案 {change.id} 当前状态为 {change.status}，不可回滚",
+                details={"change_id": str(change.id), "status": change.status},
+            )
+
+        items = [
+            RollbackItem(
+                change_id=str(change.id),
+                file_path=change.file_path,
+                kind=change.kind or ChangeKind.MODIFY.value,
+                original_hash=change.original_hash,
+                proposed_hash=(
+                    content_hash(change.proposed_content)
+                    if change.proposed_content is not None
+                    else None
+                ),
+                backup_path=change.backup_path,
+            )
+            for change in changes
+            if VirtualChangeStatus(change.status) is VirtualChangeStatus.APPLIED
+        ]
+        if items:
+            root = self._engine.current_root()
+            await asyncio.to_thread(rollback_batch_on_disk, root, items)
+
+        rolled: list[VirtualChange] = []
+        for change in changes:
+            if VirtualChangeStatus(change.status) is VirtualChangeStatus.APPLIED:
+                updated = await self._repo.set_status(change.id, VirtualChangeStatus.ROLLED_BACK)
+                await self._publish(
+                    updated,
+                    previous=VirtualChangeStatus.APPLIED,
+                    extra={"rolled_back": True, "batch_id": str(batch.id)},
+                )
+                rolled.append(updated)
+            else:
+                rolled.append(change)
+
+        finished = await self._finish_batch_if_all_rolled_back(batch)
+        if self._bus is not None:
+            await self._bus.publish(
+                Events.APPLY_ROLLED_BACK,
+                {
+                    "batch_id": str(batch.id),
+                    "status": (finished or batch).status,
+                    "change_ids": [str(change.id) for change in rolled],
+                },
+            )
+        return rolled
+
+    async def _finish_batch_if_all_rolled_back(self, batch: ApplyBatch) -> ApplyBatch | None:
+        """批内所有 change 都已 rolled_back → 把批收为 rolled_back（落 finished_at）。"""
+        if self._batches is None:
+            return None
+        for raw_id in batch.change_ids:
+            try:
+                other = await self._repo.get(raw_id)
+            except NotFoundError:
+                return None
+            if VirtualChangeStatus(other.status) is not VirtualChangeStatus.ROLLED_BACK:
+                return None
+        return await self._finish_batch(batch.id, ApplyBatchStatus.ROLLED_BACK)
+
     # --- 失效（P0-02：提案过期 / 被取代）---
 
     async def expire(self, change_id: str | uuid.UUID, reason: str | None = None) -> VirtualChange:
@@ -1034,6 +1207,20 @@ def _failure_reason(exc: Exception) -> str:
     if not isinstance(output, str) or not output.strip():
         return message
     return f"{message}\n\n{output.strip()[-APPLY_ERROR_OUTPUT_CHARS:]}"
+
+
+def _resolve_kind(kind: ChangeKind | str | None, proposed_content: str | None) -> ChangeKind:
+    """确定一条提案的动作类型：显式 kind 优先，否则按有无改动后内容推断。"""
+    if kind is None:
+        return ChangeKind.DELETE if proposed_content is None else ChangeKind.MODIFY
+    return kind if isinstance(kind, ChangeKind) else ChangeKind(kind)
+
+
+def _auto_kind(op: str | None, exists: bool) -> ChangeKind:
+    """parser 缺省 op 时的自动判定：原文件存在 → modify，不存在 → create。"""
+    if op:
+        return ChangeKind(op)
+    return ChangeKind.MODIFY if exists else ChangeKind.CREATE
 
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:

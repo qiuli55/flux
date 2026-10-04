@@ -104,8 +104,18 @@ export interface FileContent {
   truncated: boolean;
 }
 
-/** 提案状态机（主规格 §7.2；expired 为文档 P0-02 的失效终态） */
-export type ChangeStatus = "pending" | "accepted" | "rejected" | "applied" | "failed" | "expired";
+/** 提案状态机（主规格 §7.2；expired 为文档 P0-02 的失效终态；rolled_back 为 P1-2 回滚终态） */
+export type ChangeStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "applied"
+  | "failed"
+  | "expired"
+  | "rolled_back";
+
+/** 变更语义（P1-1）：create 新建 / modify 修改 / delete 删除 */
+export type ChangeKind = "create" | "modify" | "delete";
 
 /** Virtual Workspace 提案（GET /api/v1/workspace/changes） */
 export interface Change {
@@ -114,6 +124,8 @@ export interface Change {
   task_id: string | null;
   group_id: string | null;
   file_path: string;
+  /** 变更语义：delete 时 proposed_content 为 null，diff 为整文件移除 */
+  kind: ChangeKind;
   original_hash: string;
   original_content: string;
   proposed_content: string;
@@ -156,6 +168,29 @@ export interface RecoveryItem {
   /** 触发挂起的原因说明 */
   note: string;
   detected_at: string | null;
+}
+
+/** Apply 批状态（P0-1 事务日志 / P1-2 回滚） */
+export type ApplyBatchStatus =
+  | "in_progress"
+  | "applied"
+  | "failed"
+  | "recovered"
+  | "needs_attention"
+  | "rolled_back";
+
+/** 一次 Apply（apply_many 调用）的事务日志（GET /api/v1/workspace/apply-batches） */
+export interface ApplyBatch {
+  id: string;
+  status: ApplyBatchStatus;
+  /** 本批包含的 change id（有序），回滚按逆序执行 */
+  change_ids: string[];
+  phase: string;
+  backup_root: string | null;
+  error: string | null;
+  recovery_note: string | null;
+  created_at: string | null;
+  finished_at: string | null;
 }
 
 /** 单个文件的 Git 状态（git status --porcelain 的一行） */

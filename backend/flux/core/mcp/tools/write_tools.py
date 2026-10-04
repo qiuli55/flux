@@ -30,8 +30,10 @@ PROPOSAL_CREATE_SCHEMA: dict[str, Any] = {
     "properties": {
         "payload": {
             "description": (
-                "提案内容：形如 {summary, changes:[{path, content, reason}]} 的 JSON 对象"
-                "或其 JSON 文本（也接受 ```json 围栏）。content 必须是改动后的完整文件内容。"
+                "提案内容：形如 {summary, changes:[{path, op, content, reason}]} 的 JSON 对象"
+                "或其 JSON 文本（也接受 ```json 围栏）。op 可选 create/modify/delete，缺省按"
+                "原文件是否存在自动判定；delete 时禁止携带 content，其余 op 必须给出改动后的"
+                "完整内容。"
             ),
             "anyOf": [{"type": "object"}, {"type": "string"}],
         },
@@ -52,7 +54,7 @@ async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str,
     _reject_impersonation(ctx, optional_str(params, "agent_id"))
     change_set = parse_code_change_set(_as_text(params.get("payload")), source="proposal.create")
 
-    originals: dict[str, str] = {}
+    originals: dict[str, str | None] = {}
     for change in change_set.changes:
         originals[change.path] = await _original_content(ctx, change.path)
 
@@ -71,6 +73,7 @@ async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str,
             {
                 "change_id": str(change.id),
                 "file_path": change.file_path,
+                "kind": change.kind,
                 "status": change.status,
                 "added_lines": change.added_lines,
                 "removed_lines": change.removed_lines,
@@ -108,12 +111,12 @@ def _as_text(payload: Any) -> str:
     raise ValidationError("参数 payload 必须是提案对象或其 JSON 文本", details={"param": "payload"})
 
 
-async def _original_content(ctx: ToolContext, path: str) -> str:
-    """取提案所依据的原文件内容；文件不存在即视为新建（空串）。"""
+async def _original_content(ctx: ToolContext, path: str) -> str | None:
+    """取提案所依据的原文件内容；文件不存在返回 None（与"存在但为空文件"区分开）。"""
     try:
         content = await asyncio.to_thread(ctx.container.files.read, path=path)
     except NotFoundError:
-        return ""
+        return None
     if content.truncated:
         # 读到的只是前 256KB，用它当 original 会生成一份错误的 diff，
         # 人审时看到的"改动"就是假的——宁可明确拒绝。

@@ -16,6 +16,7 @@ function change(filePath: string, status: ChangeStatus): Change {
     task_id: null,
     group_id: null,
     file_path: filePath,
+    kind: "modify",
     original_hash: "hash",
     original_content: "old",
     proposed_content: "new",

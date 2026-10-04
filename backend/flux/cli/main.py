@@ -82,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     proposal_list.add_argument("--task", default=None, help="按任务 UUID 过滤")
     proposal_show = proposal_sub.add_parser("show", help="查看单条提案（含 diff）")
     proposal_show.add_argument("id", help="提案 UUID")
+    proposal_diff = proposal_sub.add_parser("diff", help="查看单条提案的差异（头部带动作标记）")
+    proposal_diff.add_argument("id", help="提案 UUID")
+    rollback = proposal_sub.add_parser("rollback", help="回滚已落盘的改动（P1-2）")
+    rollback.add_argument("change_id", nargs="?", default=None, help="单条回滚的提案 UUID")
+    rollback.add_argument("--batch", default=None, help="整批回滚的 Apply 批次 UUID")
+    rollback.add_argument("--last", action="store_true", help="回滚最近一次成功 Apply")
     recovery = proposal_sub.add_parser("recovery", help="崩溃恢复挂起项的人工决策")
     recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
     recovery_sub.add_parser("list", help="列出待人工决策的崩溃恢复项（三版本对照）")
@@ -175,6 +181,10 @@ async def _run(args: argparse.Namespace, settings: Settings) -> tuple[dict[str, 
                 if args.recovery_command == "list":
                     return await _cmd_proposal_recovery_list(container), 0
                 return await _cmd_proposal_recovery_resolve(container, args), 0
+            if args.proposal_command == "diff":
+                return await _cmd_proposal_diff(container, args), 0
+            if args.proposal_command == "rollback":
+                return await _cmd_proposal_rollback(container, args), 0
             return await _cmd_proposal_show(container, args), 0
         if args.command == "agents":
             if args.agents_command == "scan":
@@ -416,6 +426,57 @@ async def _cmd_proposal_show(container: Container, args: argparse.Namespace) -> 
     return detail
 
 
+#: 动作标记：git 风格的 A/M/D，delete 头部即 `D <path>`（P1-1）
+_KIND_LETTERS = {"create": "A", "modify": "M", "delete": "D"}
+
+
+async def _cmd_proposal_diff(container: Container, args: argparse.Namespace) -> dict[str, Any]:
+    """输出单条提案的差异；头部带一行动作标记（新增 A / 修改 M / 删除 D + 路径）。"""
+    change = await container.workspace.get(args.id)
+    kind = change.kind or "modify"
+    return {
+        "id": str(change.id),
+        "file_path": change.file_path,
+        "kind": kind,
+        "status": change.status,
+        "header": f"{_KIND_LETTERS.get(kind, 'M')} {change.file_path}",
+        "diff": change.diff or "",
+        "added_lines": change.added_lines,
+        "removed_lines": change.removed_lines,
+        "hunks": change.hunks,
+    }
+
+
+async def _cmd_proposal_rollback(container: Container, args: argparse.Namespace) -> dict[str, Any]:
+    """回滚已落盘的改动：单条（change_id）/ 整批（--batch）/ 最近一次（--last）。"""
+    if args.batch:
+        batch = await container.workspace.rollback_batch(args.batch)
+        return {
+            "batch_id": str(batch.id),
+            "status": batch.status,
+            "change_ids": list(batch.change_ids),
+        }
+    if args.last:
+        candidates = await container.workspace.list_recent_batches(recent=True, limit=1)
+        if not candidates:
+            raise NotFoundError("没有可回滚的 Apply 批次（最近没有 applied 批）")
+        batch = await container.workspace.rollback_batch(candidates[0].id)
+        return {
+            "batch_id": str(batch.id),
+            "status": batch.status,
+            "change_ids": list(batch.change_ids),
+        }
+    if not args.change_id:
+        raise BadRequestError("请给出 change_id，或用 --batch <id> / --last 指定要回滚的批次")
+    change = await container.workspace.rollback_change(args.change_id)
+    return {
+        "change_id": str(change.id),
+        "file_path": change.file_path,
+        "kind": change.kind,
+        "status": change.status,
+    }
+
+
 async def _cmd_proposal_recovery_list(container: Container) -> dict[str, Any]:
     """列出待人工决策的崩溃恢复项：每项含三版本（备份原文 / 磁盘现状 / 提案内容）。"""
     items = await container.workspace.list_pending_recovery_items()
@@ -442,6 +503,7 @@ def _proposal_summary(change: VirtualChange) -> dict[str, Any]:
     summary = {
         "id": str(change.id),
         "file_path": change.file_path,
+        "kind": change.kind,
         "status": change.status,
         "task_id": str(change.task_id) if change.task_id else None,
         "group_id": str(change.group_id) if change.group_id else None,

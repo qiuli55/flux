@@ -20,6 +20,10 @@ from flux.errors import PermissionDeniedError, ValidationError
 #: Apply Engine 的回滚依据（备份），等于绕过"改动必须可回退"这条底线。
 FLUX_INTERNAL_DIRNAME = ".flux"
 
+#: Git 元数据目录。提案不得触碰 `.git/` 内部——改配置/引用等于绕过版本控制，
+#: 删除或改坏它更可能直接毁掉用户仓库（P1-1 路径守卫）。
+GIT_INTERNAL_DIRNAME = ".git"
+
 #: 密钥/凭证类文件名（小写精确匹配）。Secret 读取是 MCP 面的硬禁令（目标架构 §3.5），
 #: 这里不是配置项，是一份固定名单。
 _SECRET_FILENAMES = frozenset(
@@ -75,6 +79,15 @@ def ensure_not_flux_internal(relative: Path) -> None:
         )
 
 
+def ensure_not_git_internal(relative: Path) -> None:
+    """拒绝触碰 `.git/` 内部（P1-1）：提案永远不该改用户的版本控制元数据。"""
+    if relative.parts and relative.parts[0] == GIT_INTERNAL_DIRNAME:
+        raise ValidationError(
+            f"路径落在 Git 元数据目录 {GIT_INTERNAL_DIRNAME}/ 内，已拒绝：{relative.as_posix()}",
+            details={"path": relative.as_posix()},
+        )
+
+
 def within_root(root: Path, candidate: Path) -> bool:
     """`candidate` 的真实路径（realpath，解析全部软链）是否落在 `root` 之内。"""
     root_real = Path(os.path.realpath(root))
@@ -113,7 +126,9 @@ def resolve_within_root(root: Path, relative: Path) -> Path:
 
 __all__ = [
     "FLUX_INTERNAL_DIRNAME",
+    "GIT_INTERNAL_DIRNAME",
     "ensure_not_flux_internal",
+    "ensure_not_git_internal",
     "ensure_not_secret_path",
     "is_secret_path",
     "resolve_within_root",

@@ -84,6 +84,16 @@ class ApplyBatchRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
+    async def find_for_change(self, change_id: str | uuid.UUID) -> ApplyBatch | None:
+        """找出包含某条 change 的最近一批（单条回滚需要定位它的批日志）。"""
+        key = str(change_id)
+        statement = select(ApplyBatch).order_by(ApplyBatch.created_at.desc(), ApplyBatch.id.desc())
+        async with self._session_factory() as session:
+            for batch in await session.scalars(statement):
+                if key in (batch.change_ids or []):
+                    return batch
+        return None
+
     async def set_phase(self, batch_id: str | uuid.UUID, phase: str) -> ApplyBatch:
         key = self._as_uuid(batch_id)
         async with self._session_factory() as session:
