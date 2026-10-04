@@ -30,6 +30,7 @@ from flux.core.agent_runtime.dsh_client import (
 )
 from flux.core.agent_runtime.dsh_events import to_flux_event
 from flux.core.agent_runtime.manager import AgentManager
+from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP, compose_instruction
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.event.bus import EventBus, Events
 from flux.core.mcp.auth import AgentTokenService
@@ -117,17 +118,20 @@ async def test_start_run_completes_and_maps_events(tmp_path: Path) -> None:
     assert run.status is DshRunStatus.PENDING
     assert run.session_id == "s-1"
     assert run.started_at is not None
+    # 批次①：Run 快照里的 instruction 保持用户原文，Bootstrap 只加在交给 harness 的那份上
+    assert run.instruction == "写一个加法函数"
 
     finished = await _wait_terminal(client, run.run_id)
     assert finished.status is DshRunStatus.COMPLETED
-    assert finished.final_response == "echo: 写一个加法函数"
+    # 替身回显的是 harness 实际收到的输入：Bootstrap + 原文（注入发生在 harness 边界）
+    assert finished.final_response == f"echo: {compose_instruction('写一个加法函数')}"
     assert finished.finish_reason == "completed"
     assert finished.finished_at is not None
     assert finished.duration_seconds is not None and finished.duration_seconds >= 0
 
     # 通知被压扁成 Flux 事件体，并带上 run_id 关联
     assert finished.events[0]["event_type"] == "assistant/message"
-    assert finished.events[0]["text"] == "echo: 写一个加法函数"
+    assert finished.events[0]["text"] == f"echo: {compose_instruction('写一个加法函数')}"
     assert finished.events[0]["run_id"] == run.run_id
     assert finished.events[1]["event_type"] == "turn/end"
     assert finished.events[1]["finish_reason"] == "completed"
@@ -147,6 +151,35 @@ async def test_start_run_defaults_session_id_from_run_id(tmp_path: Path) -> None
     run = await client.start_run("hi")
     assert run.session_id == f"flux-{run.run_id}"
     await _wait_terminal(client, run.run_id)
+    client.close()
+
+
+async def test_managed_run_prompt_starts_with_bootstrap(tmp_path: Path) -> None:
+    """批次①验收：交给 harness 的第一份上下文以 Bootstrap 起始，Run 快照保持用户原文。
+
+    收口点在 `_execute` → `harness.run` 边界，任务路径（tasks.py）与 DSH API 路径
+    （dsh.py）共用同一次注入，因此这里的 prompt 形态即两条链路共同的形态。
+    """
+    captured: list[str] = []
+
+    def behavior(
+        harness: FakeDshHarness,
+        instruction: str,
+        session_id: str | None,
+        on_notification: Callable[[Notification], None] | None,
+    ) -> RunResult:
+        captured.append(instruction)
+        return default_dsh_behavior(harness, instruction, session_id, on_notification)
+
+    client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory(behavior))
+    run = await client.start_run("修好登录页", session_id="s-b")
+    finished = await _wait_terminal(client, run.run_id)
+
+    assert finished.status is DshRunStatus.COMPLETED
+    assert captured == [f"{RUNTIME_BOOTSTRAP}\n\n修好登录页"]
+    # run.instruction 保持用户原文：快照与 API 响应都不被 Bootstrap 污染
+    assert finished.instruction == "修好登录页"
+    assert finished.to_dict()["instruction"] == "修好登录页"
     client.close()
 
 

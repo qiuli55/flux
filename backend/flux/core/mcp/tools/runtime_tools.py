@@ -16,7 +16,12 @@ import uuid
 from typing import Any
 
 from flux.config import Settings
-from flux.core.agent_runtime.protocol import FLUX_AGENT_PROTOCOL, FLUX_AGENT_PROTOCOL_VERSION
+from flux.core.agent_runtime.protocol import (
+    FLUX_AGENT_PROTOCOL,
+    FLUX_AGENT_PROTOCOL_VERSION,
+    RUNTIME_ENTRY,
+    RUNTIME_RULES,
+)
 from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
 from flux.core.task_engine.repository import TaskRepository
 from flux.enums import Capability, FluxCapability
@@ -71,6 +76,10 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
             "direct_apply": False,
         },
         "capabilities": _capabilities(settings),
+        # §4.1 契约 rules / entry：与 Runtime Bootstrap（protocol.py）同一份真源——
+        # Agent 无论从 prompt 还是从 flux_context 拿到的行为规则必须完全一致。
+        "rules": list(RUNTIME_RULES),
+        "entry": list(RUNTIME_ENTRY),
     }
 
 
@@ -158,8 +167,9 @@ def runtime_tools() -> tuple[ToolSpec, ...]:
             title="获取 Flux 运行时上下文",
             description=(
                 "返回当前 Runtime 身份与能力：platform / run / task / workspace / agent / "
-                "policy / capabilities，并回执握手协议（flux-agent v1）。开工时先调它确认"
-                "自己在哪里、能做哪些事；能力缺失时应降级，不要假设 Runtime 全能力。"
+                "policy / capabilities / rules / entry，并回执握手协议（flux-agent v1）。"
+                "开工时先调它确认自己在哪里、能做哪些事；"
+                "能力缺失时应降级，不要假设 Runtime 全能力。"
             ),
             input_schema=FLUX_CONTEXT_SCHEMA,
             capability=Capability.FILE_READ,

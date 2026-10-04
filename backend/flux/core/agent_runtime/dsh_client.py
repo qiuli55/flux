@@ -29,7 +29,7 @@ from deepseek_harness.client import HarnessClient
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_events import to_flux_event
-from flux.core.agent_runtime.protocol import build_runtime_env
+from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
 from flux.core.agent_runtime.supervisor import RunSupervisor
 from flux.core.event.bus import EventBus
@@ -433,9 +433,12 @@ class FluxDshClient:
                 # 返回 False 表示取消/超时抢先把 Run 落成终态：不要再跑指令，finally 会清理进程。
                 if not await self._register_process_group(run_id, harness):
                     return
+                # 单一收口点（批次①实现点 1）：任务路径（tasks.py）与 DSH API 路径（dsh.py）
+                # 都从这里进 harness——统一在交给 harness 前拼上 Runtime Bootstrap，作为 Agent
+                # 的第一份强制上下文；run.instruction 存库 / API / UI 仍保持用户原文。
                 result = await asyncio.to_thread(
                     harness.run,
-                    run.instruction,
+                    compose_instruction(run.instruction),
                     session_id=run.session_id,
                     on_notification=_on_notification,
                 )

@@ -108,6 +108,8 @@ class FakeDshHarness:
         self.closed = False
         self.started = False
         self.notifications: list[tuple[str, dict[str, Any]]] = []
+        #: 每次 run() 收到的输入原文（批次①起用于断言 Bootstrap 注入与原文保真）
+        self.prompts: list[str] = []
         self.cancel_event = Event()
         self.client = FakeDshHarnessClient(self)
 
@@ -122,6 +124,7 @@ class FakeDshHarness:
         session_id: str | None = None,
         on_notification: Callable[[Notification], None] | None = None,
     ) -> RunResult:
+        self.prompts.append(input)
         return self.behavior(self, input, session_id, on_notification)
 
     def close(self) -> None:

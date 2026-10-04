@@ -14,17 +14,32 @@ from flux.version import VERSION
 FLUX_AGENT_PROTOCOL = "flux-agent"
 FLUX_AGENT_PROTOCOL_VERSION = "1"
 
-#: Runtime Bootstrap：Flux 托管启动 Agent 时注入的最小 System Context。
-#: 只说明"我在 Flux 里、改动该走哪条路"，不塞完整产品文档；真实状态一律以
+#: §4.1 契约 rules 真源：Bootstrap 文案与 `flux_context.rules` 共用，防止两处各写各的。
+RUNTIME_RULES: tuple[str, ...] = (
+    "Submit every change through proposal.create; Flux handles validation, approval and apply.",
+    "Do not assume direct workspace writes are the Flux completion path.",
+    "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
+    "flux tools call <tool> --params '<json>'.",
+)
+
+#: §4.1 契约 entry 真源：Bootstrap 文案与 `flux_context.entry` 共用，防止两处各写各的。
+RUNTIME_ENTRY: tuple[str, ...] = (
+    "Call flux_context first to confirm where you are and what capabilities you have.",
+    "Get project facts with context.get (read-only).",
+)
+
+#: Runtime Bootstrap：Flux 托管启动 Agent 时注入的**第一份强制上下文**（批次① §5）。
+#: 只说明"我在 Flux 里、开工先做什么、改动该走哪条路"，不塞完整产品文档；真实状态一律以
 #: `FLUX_*` / `flux_context` / `tools/list` 为准（收口方案 §8.2）。
-RUNTIME_BOOTSTRAP = """You are running inside Flux.
-
-Flux manages task lifecycle, workspace, proposal validation,
-approval, apply, test and git.
-
-Use Flux MCP tools to inspect runtime context and capabilities.
-When proposal_required is enabled, submit changes through proposal.create.
-Do not assume direct workspace writes are the Flux completion path."""
+RUNTIME_BOOTSTRAP = (
+    "You are running inside Flux. This is your first mandatory context for this run.\n\n"
+    "Flux owns the task lifecycle, workspace, proposal validation, approval, apply, "
+    "testing and git.\n\n"
+    "Entry:\n"
+    + "\n".join(f"- {item}" for item in RUNTIME_ENTRY)
+    + "\n\nRules:\n"
+    + "\n".join(f"- {rule}" for rule in RUNTIME_RULES)
+)
 
 
 def compose_instruction(instruction: str) -> str:

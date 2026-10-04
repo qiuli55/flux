@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from flux.config import Settings
 from flux.container import Container
 from flux.core.agent_runtime.dsh_client import FluxDshClient
+from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP
 from flux.core.event.bus import Events
 from flux.core.task_engine.assistant import CONFIRMATION_DIMENSIONS
 from flux.enums import DecisionMode, TaskStatus
@@ -308,6 +309,9 @@ def test_start_runs_the_agent_and_settles_the_task(settings: Settings, tmp_path:
         settled = _wait_status(client, task["id"], "completed")
         assert settled["run_id"] == run_id
         assert len(factory.created) == 1
+        # 批次①：任务路径（tasks.py → start_run）交给 harness 的 prompt 以 Bootstrap 起始，
+        # 而 run / 消息里存的仍是用户原文（上面的 instruction 取样即存库原文）
+        assert factory.created[0].prompts == [f"{RUNTIME_BOOTSTRAP}\n\n{instruction}"]
         assert _wait_last_message(client, task["id"], "run_finished")["content"].startswith("echo:")
 
 

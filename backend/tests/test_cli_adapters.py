@@ -119,8 +119,11 @@ def test_opencode_adapter_config() -> None:
     # 默认带上 Runtime Bootstrap：Flux 托管启动的 Agent 要知道改动走 proposal（§8.2）
     argv = adapter.build_run_argv("修一下")
     assert argv[:2] == ("/usr/local/bin/opencode", "run")
-    assert RUNTIME_BOOTSTRAP in argv[2]
+    assert argv[2].startswith(RUNTIME_BOOTSTRAP)
     assert argv[2].endswith("修一下")
+    # 批次①验收：Bootstrap 是"第一份强制上下文"，四条硬规则必须在文案里
+    for marker in ("flux_context", "context.get", "proposal.create", "flux tools call"):
+        assert marker in RUNTIME_BOOTSTRAP, marker
     # 显式关掉时保持纯指令，便于需要原文的调用方
     assert adapter.build_run_argv("修一下", bootstrap=False) == (
         "/usr/local/bin/opencode",

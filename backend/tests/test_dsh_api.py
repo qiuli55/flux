@@ -6,14 +6,16 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
-from deepseek_harness import RunResult
+from deepseek_harness import Notification, RunResult
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_client import FluxDshClient
+from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP
 from flux.main import create_app
-from tests.fakes import FakeDshHarness, FakeDshHarnessFactory
+from tests.fakes import FakeDshHarness, FakeDshHarnessFactory, default_dsh_behavior
 
 PREFIX = "/api/v1"
 
@@ -117,6 +119,59 @@ def test_dsh_run_api_chain(settings: Settings, tmp_path, db_schema: None) -> Non
     assert final["status"] == "cancelled"
     assert final["finished_at"] is not None
     assert final["duration_seconds"] is not None
+
+
+def test_dsh_api_run_prompt_includes_bootstrap(
+    settings: Settings, tmp_path, db_schema: None
+) -> None:
+    """批次①验收（DSH API 路径）：dsh.py → start_run 交给 harness 的 prompt 以 Bootstrap 起始。"""
+    enabled = settings.model_copy(
+        update={
+            "dsh_enabled": True,
+            "dsh_home": str(tmp_path / "dsh-home"),
+            "dsh_workspace": str(tmp_path / "dsh-ws"),
+        }
+    )
+    app = create_app(enabled)
+    captured: list[str] = []
+
+    def behavior(
+        harness: FakeDshHarness,
+        instruction: str,
+        session_id: str | None,
+        on_notification: Callable[[Notification], None] | None,
+    ) -> RunResult:
+        captured.append(instruction)
+        return default_dsh_behavior(harness, instruction, session_id, on_notification)
+
+    factory = FakeDshHarnessFactory(behavior)
+    with TestClient(app) as client:
+        container = app.state.container
+        container.dsh = FluxDshClient(
+            enabled,
+            bus=container.bus,
+            harness_factory=factory,
+            token_service=container.agent_tokens,
+        )
+        created = client.post(
+            f"{PREFIX}/dsh/runs", json={"instruction": "帮我修登录接口", "session_id": "api-b"}
+        )
+        assert created.status_code == 200
+        run = created.json()["data"]
+        # API 快照保持用户原文：Bootstrap 不落进接口响应
+        assert run["instruction"] == "帮我修登录接口"
+
+        final = None
+        for _ in range(300):
+            final = client.get(f"{PREFIX}/dsh/runs/{run['run_id']}").json()["data"]
+            if final["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+    assert final is not None
+    assert final["status"] == "completed"
+    assert final["instruction"] == "帮我修登录接口"
+    assert captured == [f"{RUNTIME_BOOTSTRAP}\n\n帮我修登录接口"]
 
 
 def test_get_missing_run_returns_404(settings: Settings, tmp_path, db_schema: None) -> None:

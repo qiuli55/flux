@@ -15,6 +15,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from flux.core.agent_runtime.protocol import RUNTIME_ENTRY, RUNTIME_RULES
 from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
 from flux.enums import Capability
@@ -568,6 +569,9 @@ def test_flux_context_reports_runtime_and_capabilities(mcp_client: TestClient) -
     assert {"context", "workspace", "proposal", "apply", "git"} <= capabilities
     assert "rollback" not in capabilities  # 未实现的能力不虚报
     assert data["workspace"]["path"]
+    # 批次①：rules / entry 与 Runtime Bootstrap 同一份真源（§4.1 契约），不是各写各的
+    assert data["rules"] == list(RUNTIME_RULES)
+    assert data["entry"] == list(RUNTIME_ENTRY)
 
 
 def test_flux_context_without_run_returns_null_run_and_task(mcp_client: TestClient) -> None:
