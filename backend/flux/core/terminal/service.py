@@ -7,30 +7,26 @@ Flux 自己执行命令，因此命令、输出、退出码都拿得到（不再
 - Stop 走 SIGTERM → grace → SIGKILL → **确认进程组消失**，确认之后才落 stopped，
   杜绝 §10 禁止的"UI 已停止而后台仍在跑"。
 
-平台：当前实现是 POSIX（`start_new_session` + `killpg`）；Windows 适配归 W-1（设计 §11）。
+平台：进程组隔离与终止走 platforms 原语（W-1：POSIX `setsid`/`killpg`，Windows
+`CREATE_NEW_PROCESS_GROUP`/`taskkill /T /F`），本模块不再直接触碰平台 API。
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
 import subprocess
-import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from flux.core.agent_runtime import platforms
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
 from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError, ValidationError
-from flux.logging import get_logger
 from flux.models.terminal import TerminalEvent, TerminalSession
-
-logger = get_logger(__name__)
 
 #: Stop 的宽限期：SIGTERM 后等这么久，仍不退出就升级 SIGKILL
 STOP_GRACE_SECONDS = 5.0
@@ -202,7 +198,7 @@ class TerminalService:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            start_new_session=True,  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
+            **platforms.popen_kwargs(),  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
         )
         self._processes[str(session.id)] = process
         try:
@@ -256,26 +252,14 @@ class TerminalService:
         return await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
 
     @staticmethod
-    def _terminate_tree(process: subprocess.Popen[str], *, force: bool) -> None:
-        """SIGTERM → grace → SIGKILL → 确认进程组消失。"""
-        pgid = os.getpgid(process.pid)
-        if force:
-            os.killpg(pgid, signal.SIGKILL)
-        else:
-            os.killpg(pgid, signal.SIGTERM)
-            deadline = time.monotonic() + STOP_GRACE_SECONDS
-            while time.monotonic() < deadline and process.poll() is None:
-                time.sleep(0.1)
-            if process.poll() is None:
-                os.killpg(pgid, signal.SIGKILL)
-        deadline = time.monotonic() + KILL_CONFIRM_SECONDS
-        while time.monotonic() < deadline:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                return
-            time.sleep(0.1)
-        logger.warning("terminal.stop 未能确认进程组退出 pgid=%s", pgid)
+    def _terminate_tree(process: subprocess.Popen[str], *, force: bool) -> bool:
+        """优雅信号 → grace → 强杀 → 确认进程树消失（平台原语，见 platforms）。"""
+        return platforms.terminate_process_tree(
+            process,
+            force=force,
+            grace=STOP_GRACE_SECONDS,
+            confirm=KILL_CONFIRM_SECONDS,
+        )
 
     async def shutdown(self) -> None:
         """进程退出前清理仍在跑的终端进程树（与 DSH supervisor 同一取舍）。"""

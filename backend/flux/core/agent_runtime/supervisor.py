@@ -25,13 +25,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import signal
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from flux.config import Settings
+from flux.core.agent_runtime.platforms import (
+    is_alive,
+    is_group_alive,
+    is_self_group,
+    kill_group,
+    kill_process,
+    signal_group_graceful,
+    signal_process_graceful,
+)
 from flux.core.agent_runtime.run_repository import (
     TERMINAL_RUN_STATUSES,
     AgentRunRepository,
@@ -638,7 +646,7 @@ class RunSupervisor:
             if pid is None:
                 return True  # 没有可清理的进程（未启动 / 纯内存替身）
             return await self._kill_pid(pid)
-        if pgid == os.getpgrp():
+        if is_self_group(pgid):
             # 绝不对自己所在的进程组动手：那会把 Flux 自己一起杀掉
             logger.error("拒绝清理与 Flux 同组的 pgid=%s run 进程", pgid)
             return False
@@ -648,51 +656,41 @@ class RunSupervisor:
         return await self._ensure_process_gone(None, row)
 
     async def _kill_pgid(self, pgid: int) -> bool:
-        if _pgid_gone(pgid):
+        if not is_group_alive(pgid):
             return True
-        self._signal_pgid(pgid, signal.SIGTERM)
+        signal_group_graceful(pgid)
         grace = max(self._settings.dsh_cancel_grace_seconds, 0.0)
         if await self._wait_gone(pgid, grace):
             return True
-        self._signal_pgid(pgid, signal.SIGKILL)
+        kill_group(pgid)
         return await self._wait_gone(pgid, _KILL_CONFIRM_SECONDS)
 
     async def _kill_pid(self, pid: int) -> bool:
-        if not _pid_alive(pid):
+        if not is_alive(pid):
             return True
-        self._signal_pid(pid, signal.SIGTERM)
+        signal_process_graceful(pid)
         grace = max(self._settings.dsh_cancel_grace_seconds, 0.0)
         deadline = self._clock() + grace
         while self._clock() < deadline:
-            if not _pid_alive(pid):
+            if not is_alive(pid):
                 return True
             await asyncio.sleep(_POLL_STEP)
-        self._signal_pid(pid, signal.SIGKILL)
+        kill_process(pid)
         deadline = self._clock() + _KILL_CONFIRM_SECONDS
         while self._clock() < deadline:
-            if not _pid_alive(pid):
+            if not is_alive(pid):
                 return True
             await asyncio.sleep(_POLL_STEP)
-        return not _pid_alive(pid)
+        return not is_alive(pid)
 
     async def _wait_gone(self, pgid: int, timeout: float) -> bool:
         deadline = self._clock() + max(timeout, 0.0)
         while True:
-            if _pgid_gone(pgid):
+            if not is_group_alive(pgid):
                 return True
             if self._clock() >= deadline:
                 return False
             await asyncio.sleep(_POLL_STEP)
-
-    @staticmethod
-    def _signal_pgid(pgid: int, sig: signal.Signals) -> None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, sig)
-
-    @staticmethod
-    def _signal_pid(pid: int, sig: signal.Signals) -> None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, sig)
 
     @staticmethod
     def _safe_call(callback: Callable[[], None], run_id: str) -> None:
@@ -771,27 +769,12 @@ def _monotonic() -> float:
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """只读探活（平台原语）：Windows 上绝不退化成终止进程。"""
+    return is_alive(pid)
 
 
 def _pgid_gone(pgid: int) -> bool:
-    if pgid <= 0:
-        return True
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    return False
+    return not is_group_alive(pgid)
 
 
 __all__ = ["EVENT_BY_STATUS", "RunSupervisor", "TERMINAL_RUN_STATUSES"]

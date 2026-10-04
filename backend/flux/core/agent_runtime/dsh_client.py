@@ -13,9 +13,7 @@ P0-01 起这里还负责**把 Flux 的 MCP 能力面注入 DSH**：起 Run 前�
 from __future__ import annotations
 
 import asyncio
-import os
 import re
-import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -28,6 +26,7 @@ from deepseek_harness import DeepSeekHarness, Notification
 from deepseek_harness.client import HarnessClient
 
 from flux.config import Settings
+from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.dsh_events import to_flux_event
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
@@ -43,22 +42,12 @@ logger = get_logger(__name__)
 #: 终止态：进入后不再接受 cancel（含超时/重启接管等 P2-15 新增终态）
 TERMINAL_STATUSES = frozenset(DshRunStatus(s) for s in TERMINAL_RUN_STATUSES)
 
-#: P2-15：把 DSH 子进程变成"独立会话 + 独立进程组组长"的启动垫片。
-#: 直接 Popen 的进程与 Flux 同组，`killpg` 会连 uvicorn 一起杀；垫片先 setsid() 再 execv，
-#: 于是 pid == pgid == sid，取消时能精准清理整棵进程树而不误伤 Flux 自身。
-_SETSID_SHIM = (
-    "import os,sys\n"
-    "try:\n"
-    "    os.setsid()\n"
-    "except OSError:\n"
-    "    pass\n"
-    "os.execv(sys.argv[1], sys.argv[1:])\n"
-)
 
-
+#: P2-15：把 DSH 子进程变成"独立会话 + 独立进程组组长"的启动参数。
+#: 具体平台实现收敛在 platforms（POSIX 用 setsid 垫片保证 pid == pgid == sid；
+#: Windows 用 CREATE_NEW_PROCESS_GROUP），取消时才能精准清理整棵进程树而不误伤 Flux 自身。
 def _supervised_launch_args(base: tuple[str, ...]) -> tuple[str, ...]:
-    """把 SDK 拼好的启动命令包一层 setsid 垫片（见 _SETSID_SHIM）。"""
-    return (sys.executable, "-c", _SETSID_SHIM, *base)
+    return platforms.launch_argv(base)
 
 
 class _SupervisedHarnessClient(HarnessClient):
@@ -265,7 +254,9 @@ class FluxDshClient:
         path = (Path(self._settings.dsh_home) / MCP_PATCH_DIRNAME / MCP_PATCH_FILENAME).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render_patch(entries), encoding="utf-8")
-        os.chmod(path, 0o600)
+        # 平台原语：POSIX chmod 0600 / Windows icacls 收权；失败如实记 warning，不静默降级
+        if not platforms.secure_file(path):
+            logger.warning("dsh.mcp patch 文件权限弱化（未能收紧到仅属主可访问）path=%s", path)
         logger.info(
             "dsh.mcp patch 已就绪 path=%s server=%s agent=%s",
             path,

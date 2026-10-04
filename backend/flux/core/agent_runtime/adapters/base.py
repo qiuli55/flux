@@ -4,23 +4,21 @@ Adapter 只抹平不同 CLI Agent 的差异——怎么发现、怎么问版本�
 怎么把一行输出解析成事件——**不承载 Flux 核心业务**：Proposal / Apply / Task / Git
 都不在这里，具体 Agent 也不得反向污染它们。
 
-生命周期方法（start / stop / cancel）以独立进程组承载：CLI 进程 `start_new_session=True`
-后成为会话与进程组组长，取消时按 pgid 清理整棵进程树，绝不误伤 Flux 自身。
+生命周期方法（start / stop / cancel）以独立进程组承载：进程以"自成进程组"的方式启动
+（平台差异收敛在 platforms），取消时按进程组清理整棵进程树，绝不误伤 Flux 自身。
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import shutil
-import signal
 import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.protocol import FLUX_AGENT_PROTOCOL, FLUX_AGENT_PROTOCOL_VERSION
 from flux.enums import AgentInstallStatus
 
@@ -127,26 +125,27 @@ class CliAgentAdapter(ABC):
         """以独立进程组启动 CLI，返回可取消的进程句柄。"""
         process = subprocess.Popen(  # noqa: S603 - argv 由 Adapter 决定，不经 shell
             list(argv),
-            start_new_session=True,
+            **platforms.popen_kwargs(),
             env=env,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        # start_new_session=True ⇒ 子进程自成会话，pid == pgid
-        return CliProcess(pid=process.pid, pgid=process.pid, popen=process)
+        # 独立进程组：POSIX 下 pid == pgid；Windows 以组长 pid 作为组标识
+        pid, pgid = platforms.process_group_of(process)
+        return CliProcess(pid=pid, pgid=pgid, popen=process)
 
     def stop(self, process: CliProcess) -> None:
-        """终止整棵进程树：SIGTERM → 优雅期 → SIGKILL。已退出则幂等返回。"""
+        """终止整棵进程树：优雅信号 → 优雅期 → 强杀。已退出则幂等返回。"""
         if process.popen.poll() is not None:
             return
-        self._signal_group(process.pgid, signal.SIGTERM)
+        platforms.signal_group_graceful(process.pgid)
         try:
             process.popen.wait(timeout=STOP_GRACE_SECONDS)
             return
         except subprocess.TimeoutExpired:
-            self._signal_group(process.pgid, signal.SIGKILL)
+            platforms.kill_group(process.pgid)
         process.popen.wait()
 
     def cancel(self, process: CliProcess) -> None:
@@ -165,12 +164,6 @@ class CliAgentAdapter(ABC):
         if isinstance(data, dict):
             return data
         return {"type": "data", "data": data}
-
-    @staticmethod
-    def _signal_group(pgid: int, sig: signal.Signals) -> None:
-        # 进程树已经自己退了 / 无权限（非本会话组）：无从清理，如实放过
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, sig)
 
 
 def default_which(executable: str) -> str | None:
