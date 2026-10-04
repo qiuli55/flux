@@ -14,6 +14,7 @@ from flux.core.agent_runtime.adapters import (
     OpenCodeAdapter,
     build_default_adapters,
 )
+from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP
 from flux.enums import AgentInstallStatus
 
 
@@ -115,7 +116,13 @@ def test_opencode_adapter_config() -> None:
     assert probe.status is AgentInstallStatus.CONNECTED
     assert probe.version == "1.18.29"
     assert probe.capabilities == ("mcp", "stream")
-    assert adapter.build_run_argv("修一下") == (
+    # 默认带上 Runtime Bootstrap：Flux 托管启动的 Agent 要知道改动走 proposal（§8.2）
+    argv = adapter.build_run_argv("修一下")
+    assert argv[:2] == ("/usr/local/bin/opencode", "run")
+    assert RUNTIME_BOOTSTRAP in argv[2]
+    assert argv[2].endswith("修一下")
+    # 显式关掉时保持纯指令，便于需要原文的调用方
+    assert adapter.build_run_argv("修一下", bootstrap=False) == (
         "/usr/local/bin/opencode",
         "run",
         "修一下",

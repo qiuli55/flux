@@ -218,6 +218,31 @@ def test_workspace_apply_conflict_when_file_changed(
     assert (workspace_root / "a.py").read_text(encoding="utf-8") == "user 自己改的\n"
 
 
+def test_workspace_apply_precheck_conflict_keeps_status_accepted(
+    apply_client: TestClient, workspace_root: Path
+) -> None:
+    """收口方案 §3（任务 40）：目标路径被目录占位 → 预检冲突 409，提案留在 accepted。
+
+    预检阶段还没落盘、且问题可修复（用户挪走目录后可重新 Apply），所以不能标 failed——
+    failed 只该表示"已进入落盘阶段才失败"。benchmark 按这个契约判定。
+    """
+    change_id = _seed_proposal(apply_client, file_path="pkg/target.py")
+    blocker = workspace_root / "pkg" / "target.py"
+    blocker.mkdir(parents=True)
+    (blocker / "占位").write_text("x", encoding="utf-8")
+
+    response = apply_client.post(f"{PREFIX}/workspace/apply", json={"change_ids": [change_id]})
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conflict"
+    detail = apply_client.get(f"{PREFIX}/workspace/changes/{change_id}").json()["data"]
+    assert detail["status"] == "accepted"
+    assert detail["apply_error"] is None
+    # 无半应用：占位目录原样保留，没有被当成文件覆盖掉
+    assert blocker.is_dir()
+    assert (blocker / "占位").read_text(encoding="utf-8") == "x"
+
+
 def test_workspace_apply_rejects_symlink_escape(
     apply_client: TestClient, workspace_root: Path
 ) -> None:

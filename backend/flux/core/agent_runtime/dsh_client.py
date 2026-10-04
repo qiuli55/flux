@@ -29,6 +29,7 @@ from deepseek_harness.client import HarnessClient
 
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_events import to_flux_event
+from flux.core.agent_runtime.protocol import build_runtime_env
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
 from flux.core.agent_runtime.supervisor import RunSupervisor
 from flux.core.event.bus import EventBus
@@ -36,7 +37,6 @@ from flux.core.mcp.auth import AgentTokenService
 from flux.enums import Capability, DshRunStatus
 from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
 from flux.logging import get_logger
-from flux.version import VERSION
 
 logger = get_logger(__name__)
 
@@ -536,23 +536,16 @@ class FluxDshClient:
     def _agent_env(self, run: DshRun) -> dict[str, str]:
         """启动时注入机器可读的 Runtime Identity（最终方案 §5）。
 
-        这些变量只说明"我在 Flux 里、属于哪个 Run / Task / Workspace"，
-        **不是安全凭证**：鉴权仍以令牌 → canonical id 为准，伪造 `FLUX_*`
-        不会带来任何额外权限（真正的判权在 MCP / Apply 层，§5 / §13）。
+        真源在 `agent_runtime.protocol.build_runtime_env`，与 CLI Adapter 共用同一份，
+        避免两套 `FLUX_*` 注入各写各的（收口方案 §8.2）。
         """
-        env = {
-            "FLUX_RUNTIME": "1",
-            "FLUX_VERSION": VERSION,
-            "FLUX_RUN_ID": run.run_id,
-            "FLUX_WORKSPACE": self._settings.workspace_root or self._settings.dsh_workspace,
-        }
-        if run.task_id:
-            env["FLUX_TASK_ID"] = run.task_id
-        if run.agent_id:
-            env["FLUX_AGENT_ID"] = run.agent_id
-        if self._settings.dsh_mcp_enabled:
-            env["FLUX_MCP_ENDPOINT"] = self._settings.dsh_mcp_url
-        return env
+        return build_runtime_env(
+            run_id=run.run_id,
+            workspace=self._settings.workspace_root or self._settings.dsh_workspace,
+            task_id=run.task_id,
+            agent_id=run.agent_id,
+            mcp_endpoint=self._settings.dsh_mcp_url if self._settings.dsh_mcp_enabled else None,
+        )
 
     async def cancel(self, run_id: str) -> DshRun:
         """取消一次 Run：CANCELLING → 优雅通知 → 清理整个进程树 → CANCELLED。

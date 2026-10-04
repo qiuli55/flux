@@ -33,6 +33,7 @@ from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.event.bus import EventBus, Events
 from flux.core.mcp.auth import AgentTokenService
+from flux.core.mcp.tools import CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
 from flux.db.session import create_engine, create_session_factory
 from flux.enums import Capability, DshRunStatus
 from flux.errors import AuthenticationError, ConfigurationError, NotFoundError
@@ -600,14 +601,11 @@ def test_generated_patch_token_is_accepted_by_the_real_mcp_endpoint(tmp_path: Pa
             "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers
         )
         assert listed.status_code == 200, listed.text
-        names = sorted(tool["name"] for tool in listed.json()["result"]["tools"])
-        assert names == [
-            "context.get",
-            "flux_context",
-            "proposal.create",
-            "workspace.diff",
-            "workspace.read",
-        ]
+        # 核心工具必须都在（required ⊆ advertised），但不要求精确相等：
+        # 新增 MCP 工具不该把这条授权链路测试判死（§5）。
+        names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+        assert names >= CORE_TOOL_NAMES
+        assert names & FORBIDDEN_TOOL_NAMES == set()
 
         created = client.post(
             "/mcp",

@@ -18,6 +18,7 @@ from flux.config import Settings
 from flux.container import Container
 from flux.core.agent_runtime.adapters import CliAgentAdapter, CliAgentProbe
 from flux.core.agent_runtime.manager import AgentSpec
+from flux.core.mcp.tools import CORE_TOOL_NAMES
 from flux.enums import AgentInstallStatus, AgentRole, Capability
 
 
@@ -156,15 +157,10 @@ def test_tools_list_exposes_registry(
     code, payload = run_cli(settings, ["tools", "list"], capsys)
     assert code == 0
     data = payload["data"]
-    assert data["count"] == 5
+    # 核心工具必须齐全（required ⊆ advertised），不要求精确相等：新增工具不该被误杀（§5）。
     names = {tool["name"] for tool in data["tools"]}
-    assert names == {
-        "context.get",
-        "flux_context",
-        "workspace.read",
-        "workspace.diff",
-        "proposal.create",
-    }
+    assert names >= CORE_TOOL_NAMES
+    assert data["count"] == len(data["tools"])
     assert "shell.exec" in data["forbidden"]
 
 

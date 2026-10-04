@@ -16,6 +16,7 @@ from flux.core.agent_runtime.adapters.base import (
     default_which,
     run_probe,
 )
+from flux.core.agent_runtime.protocol import compose_instruction
 from flux.enums import AgentInstallStatus
 
 #: 从版本输出里抽取语义化版本号（"codex-cli 0.157.1" → "0.157.1"）
@@ -124,7 +125,14 @@ class GenericCliAdapter(CliAgentAdapter):
 
     # --- 起一轮 ---
 
-    def build_run_argv(self, instruction: str) -> tuple[str, ...]:
-        """拼出"跑一条指令"的命令；具体 Agent 的子命令由 run_args 配置。"""
+    def build_run_argv(self, instruction: str, *, bootstrap: bool = True) -> tuple[str, ...]:
+        """拼出"跑一条指令"的命令；具体 Agent 的子命令由 run_args 配置。
+
+        `bootstrap=True`（默认）时把 Flux Runtime Bootstrap 拼在指令前（收口方案 §8.2）：
+        被 Flux 托管启动的 CLI Agent 需要知道自己在 Flux 里、改动要走 proposal，
+        而不是把 workspace 直写当成完成路径。Runtime Identity 由调用方经
+        `build_runtime_env` 注入 `env`，与 DSH 侧同一份真源。
+        """
         executable = self._path or self._executable
-        return (executable, *self._run_args, instruction)
+        prompt = compose_instruction(instruction) if bootstrap else instruction
+        return (executable, *self._run_args, prompt)

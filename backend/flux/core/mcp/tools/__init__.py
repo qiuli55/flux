@@ -16,6 +16,19 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (*read_tools(), *write_tools(), *runtime_tools
 
 TOOLS: dict[str, ToolSpec] = {tool.name: tool for tool in ALL_TOOLS}
 
+#: 任何 Flux 版本都必须存在的核心工具。测试断言它必须"是面上工具的子集"，
+#: 而不是与面上工具精确相等——新增工具（如 flux_context）不该被误杀，
+#: 但删掉核心工具仍会被发现（§5：required_tools ⊆ advertised_tools）。
+CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "context.get",
+        "flux_context",
+        "proposal.create",
+        "workspace.diff",
+        "workspace.read",
+    }
+)
+
 #: 面上一律不暴露的硬禁令（§3.5）。写在这里是为了让测试能断言"确实没有"。
 FORBIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -28,4 +41,11 @@ FORBIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-__all__ = ["ALL_TOOLS", "FORBIDDEN_TOOL_NAMES", "TOOLS", "ToolContext", "ToolSpec"]
+__all__ = [
+    "ALL_TOOLS",
+    "CORE_TOOL_NAMES",
+    "FORBIDDEN_TOOL_NAMES",
+    "TOOLS",
+    "ToolContext",
+    "ToolSpec",
+]

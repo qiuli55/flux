@@ -1,7 +1,7 @@
 """Flux MCP 能力面测试（目标架构 §3.2 / §3.3 / §3.5）。
 
 覆盖三条硬判据：
-1. `tools/list` 恰好 5 个工具，且硬禁令工具（apply / git.push / secret / shell）不在面上；
+1. `tools/list` 核心工具齐全（required ⊆ advertised），硬禁令工具不在面上；
 2. 鉴权 fail-closed——无令牌、坏令牌、已撤销令牌一律 401，连 initialize 都进不来；
 3. 越权不静默降级——能力不足是显式失败（isError），并留下 mcp.tool_denied 事件。
 
@@ -16,7 +16,7 @@ import json
 from fastapi.testclient import TestClient
 
 from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION
-from flux.core.mcp.tools import ALL_TOOLS, FORBIDDEN_TOOL_NAMES
+from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
 from flux.enums import Capability
 from flux.errors import AuthenticationError
 
@@ -56,17 +56,13 @@ def payload(result: dict) -> dict:
 # --- 1. 工具面 ---
 
 
-def test_tools_list_exposes_exactly_the_phase2_tools(mcp_client: TestClient) -> None:
+def test_tools_list_exposes_the_core_tools(mcp_client: TestClient) -> None:
+    """核心工具必须齐全（required ⊆ advertised），但不要求精确相等：新增工具不该被误杀（§5）。"""
     token = issue_token(mcp_client)
     result = rpc(mcp_client, token, "tools/list").json()["result"]
-    names = sorted(tool["name"] for tool in result["tools"])
-    assert names == [
-        "context.get",
-        "flux_context",
-        "proposal.create",
-        "workspace.diff",
-        "workspace.read",
-    ]
+    names = {tool["name"] for tool in result["tools"]}
+    assert names >= CORE_TOOL_NAMES
+    assert names & FORBIDDEN_TOOL_NAMES == set()
     for tool in result["tools"]:
         assert tool["description"] and tool["inputSchema"]["type"] == "object"
 
