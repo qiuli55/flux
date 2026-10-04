@@ -108,6 +108,51 @@
         "title": "Capability",
         "type": "string"
       },
+      "CapabilityImportRequest": {
+        "description": "导入一个扫描到的能力（批次③ §5）。\n\n- kind + name 定位候选；候选必须来自服务端扫描，调用方不能注入 spec；\n- 重复导入且内容有变化时，decision 必须显式给出 keep（保留现有）或\n  replace（替换）；缺省时接口返回 409 冲突，details 里带字段级差异。",
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "enum": [
+                  "keep",
+                  "replace"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CapabilityKind"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "CapabilityImportRequest",
+        "type": "object"
+      },
+      "CapabilityKind": {
+        "description": "可导入能力的种类（批次③ §5）：本机 Agent / Skill / Connector。",
+        "enum": [
+          "agent",
+          "skill",
+          "connector"
+        ],
+        "title": "CapabilityKind",
+        "type": "string"
+      },
       "ChangeIdsRequest": {
         "properties": {
           "change_ids": {
@@ -1155,6 +1200,128 @@
         "summary": "Revoke Agent Token",
         "tags": [
           "agents"
+        ]
+      }
+    },
+    "/api/v1/capabilities": {
+      "get": {
+        "description": "已导入能力的注册表（同一 kind+name 只有一条）。",
+        "operationId": "list_capabilities_api_v1_capabilities_get",
+        "parameters": [
+          {
+            "description": "按种类过滤：agent / skill / connector；缺省返回全部",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CapabilityKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按种类过滤：agent / skill / connector；缺省返回全部",
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Capabilities Api V1 Capabilities Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Capabilities",
+        "tags": [
+          "capabilities"
+        ]
+      }
+    },
+    "/api/v1/capabilities/import": {
+      "post": {
+        "description": "导入一个扫描候选。outcome ∈ imported / unchanged / kept / replaced。",
+        "operationId": "import_capability_api_v1_capabilities_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Capability Api V1 Capabilities Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Capability",
+        "tags": [
+          "capabilities"
+        ]
+      }
+    },
+    "/api/v1/capabilities/scan": {
+      "post": {
+        "description": "扫描默认源并返回标准对象与安全结论；blocked 候选只能看、不能导入。",
+        "operationId": "scan_capabilities_api_v1_capabilities_scan_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scan Capabilities Api V1 Capabilities Scan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Scan Capabilities",
+        "tags": [
+          "capabilities"
         ]
       }
     },

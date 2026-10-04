@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from flux.api.v1 import (
     agents,
+    capabilities,
     connectors,
     dsh,
     git,
@@ -26,5 +27,6 @@ api_v1_router.include_router(memory.router)
 api_v1_router.include_router(models.router)
 api_v1_router.include_router(connectors.router)
 api_v1_router.include_router(dsh.router)
+api_v1_router.include_router(capabilities.router)
 
 __all__ = ["api_v1_router"]

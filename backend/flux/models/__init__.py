@@ -9,6 +9,7 @@ from flux.models.agent_run import AgentRun
 from flux.models.agent_token import AgentToken
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
+from flux.models.imported_capability import ImportedCapability
 from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
 from flux.models.task import Task, TaskMessage
@@ -26,6 +27,7 @@ __all__ = [
     "Base",
     "ConnectorConfig",
     "ConnectorLog",
+    "ImportedCapability",
     "MemoryEntry",
     "Organization",
     "OrganizationMember",

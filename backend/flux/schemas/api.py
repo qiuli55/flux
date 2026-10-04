@@ -6,7 +6,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from flux.enums import AgentRole, BrainSection, Capability, DecisionMode, ModelProvider
+from flux.enums import (
+    AgentRole,
+    BrainSection,
+    Capability,
+    CapabilityKind,
+    DecisionMode,
+    ModelProvider,
+)
 
 
 class AgentCreateRequest(BaseModel):
@@ -209,3 +216,16 @@ class ScanRequest(BaseModel):
 
     workspace_root: str | None = None
     record: bool = True
+
+
+class CapabilityImportRequest(BaseModel):
+    """导入一个扫描到的能力（批次③ §5）。
+
+    - kind + name 定位候选；候选必须来自服务端扫描，调用方不能注入 spec；
+    - 重复导入且内容有变化时，decision 必须显式给出 keep（保留现有）或
+      replace（替换）；缺省时接口返回 409 冲突，details 里带字段级差异。
+    """
+
+    kind: CapabilityKind
+    name: str = Field(min_length=1, max_length=128)
+    decision: Literal["keep", "replace"] | None = None

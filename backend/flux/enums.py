@@ -165,6 +165,14 @@ class Capability(StrEnum):
     DEVICE_COMMAND = "device.command"
 
 
+class CapabilityKind(StrEnum):
+    """可导入能力的种类（批次③ §5）：本机 Agent / Skill / Connector。"""
+
+    AGENT = "agent"
+    SKILL = "skill"
+    CONNECTOR = "connector"
+
+
 class AgentInstallStatus(StrEnum):
     """本机 Agent 的可接入状态机（最终方案 §3.2 / §4.1）。
 

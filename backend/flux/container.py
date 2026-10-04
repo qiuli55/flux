@@ -17,6 +17,9 @@ from flux.core.agent_runtime.installation import InstallationRepository, Install
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.agent_runtime.run_repository import AgentRunRepository
+from flux.core.capability_import.repository import ImportedCapabilityRepository
+from flux.core.capability_import.scanners import AgentScanner
+from flux.core.capability_import.service import CapabilityImportService
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
@@ -70,6 +73,7 @@ class Container:
     agent_repo: AgentRepository = field(init=False)
     run_repo: AgentRunRepository = field(init=False)
     installations: InstallationService = field(init=False)
+    capability_import: CapabilityImportService = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -87,6 +91,14 @@ class Container:
             InstallationRepository(self.session_factory),  # type: ignore[attr-defined]
             bus=self.bus,
             adapters=build_default_adapters(),
+        )
+        # 能力导入（批次③ §5）：扫描本机 Agent / Skill / Connector → Flux 标准对象 → 注册表。
+        # 扫描源是代码常量（不给设置项、REST 不收路径）；Agent 事实从 installations
+        # 只读投影（AgentScanner 扫描时先刷新 installation 事实），运行时执行仍归各自组件。
+        self.capability_import = CapabilityImportService(
+            ImportedCapabilityRepository(self.session_factory),  # type: ignore[attr-defined]
+            agents=AgentScanner(self.installations),
+            bus=self.bus,
         )
         # 模型路由仅供平台内部使用（T2 压缩、摘要等），不是任何 agent loop 的模型通道
         self.router = ModelRouter(

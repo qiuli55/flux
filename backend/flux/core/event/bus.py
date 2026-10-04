@@ -46,6 +46,10 @@ class Events:
     # MCP 能力面的工具调用（目标架构 §3.2：越权不静默降级，必须留痕）
     MCP_TOOL_CALLED = "mcp.tool_called"
     MCP_TOOL_DENIED = "mcp.tool_denied"
+    #: 能力导入（批次③ §5）：首次导入与带 replace 决策的替换各发一次；
+    #: 重复导入判定为 unchanged / keep 时不发事件（没有发生变化就不该有"已变更"信号）。
+    CAPABILITY_IMPORTED = "capability.imported"
+    CAPABILITY_REPLACED = "capability.replaced"
 
 
 class EventBus:

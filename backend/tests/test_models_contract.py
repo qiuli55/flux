@@ -46,6 +46,9 @@ SPEC_TABLES = {
     # §11.2 之外的新增表：三层记忆的 User / Environment 层（批次② §4.2）。
     # Project 层复用 project_memory（Project Brain）；本表同样受本文件全部约束。
     "memories",
+    # §11.2 之外的新增表：能力导入注册表（批次③ §5）。
+    # 同一 (kind, name) 唯一，fingerprint 判定 unchanged / keep / replace。
+    "imported_capabilities",
 }
 
 
