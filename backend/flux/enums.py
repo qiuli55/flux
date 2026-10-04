@@ -73,14 +73,46 @@ class VirtualChangeStatus(StrEnum):
 
     EXPIRED 用于提案过期/失效（P0-02）：超过 TTL 仍未审核，或同文件被更新的提案取代时，
     提案进入 EXPIRED 终态，不允许再被批准或落盘——审核队列里不该长期挂着改不动的旧提案。
+
+    APPLYING 是 Apply 进行中的中间态（P0-1）：进入它之前 apply_batches 已落 in_progress 行，
+    服务被杀后由崩溃恢复把提案退回 ACCEPTED（附 recovery_note），磁盘按批日志对账还原。
     """
 
     PENDING = "pending"
     ACCEPTED = "accepted"
+    APPLYING = "applying"
     REJECTED = "rejected"
     APPLIED = "applied"
     FAILED = "failed"
     EXPIRED = "expired"
+
+
+class ApplyBatchStatus(StrEnum):
+    """apply_batches.status（P0-1 的 Apply 事务日志）。
+
+    取值即终态集合：in_progress 只在"批正在跑或崩溃后尚未对账"时出现；
+    recovered 表示崩溃恢复已按磁盘事实处理完；needs_attention 表示恢复时发现外部修改、
+    无法安全还原，等人处理。ROLLED_BACK 由 P1-2 的正式回滚写入。
+    """
+
+    IN_PROGRESS = "in_progress"
+    APPLIED = "applied"
+    FAILED = "failed"
+    RECOVERED = "recovered"
+    NEEDS_ATTENTION = "needs_attention"
+    ROLLED_BACK = "rolled_back"
+
+
+class RecoveryResolution(StrEnum):
+    """virtual_changes.recovery_resolution：崩溃恢复挂起项的人工决策结果（P0-1 §2.2）。
+
+    为空表示"尚未决策"。COVER = 用备份覆盖当前内容（还原为改动前原文，提案回 accepted）；
+    KEEP = 保持磁盘现状、不覆盖用户改动（提案留 failed 作废）。写下即为终态，不可反复。
+    备份缺失时只能 KEEP。
+    """
+
+    COVER = "cover"
+    KEEP = "keep"
 
 
 class BrainSection(StrEnum):

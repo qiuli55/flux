@@ -19,7 +19,13 @@ from flux.container import Container
 from flux.core.agent_runtime.adapters import CliAgentAdapter, CliAgentProbe
 from flux.core.agent_runtime.manager import AgentSpec
 from flux.core.mcp.tools import CORE_TOOL_NAMES
-from flux.enums import AgentInstallStatus, AgentRole, Capability
+from flux.enums import (
+    AgentInstallStatus,
+    AgentRole,
+    ApplyBatchStatus,
+    Capability,
+    VirtualChangeStatus,
+)
 
 
 def run_cli(
@@ -97,6 +103,67 @@ def _seed_proposal(settings: Settings) -> uuid.UUID:
 
     asyncio.run(_seed())
     return change_id
+
+
+def _seed_pending_recovery(settings: Settings) -> uuid.UUID:
+    """造一条待决策的崩溃恢复项：提案 failed + apply_error 带恢复前缀 + needs_attention 批。"""
+    change_id = uuid.uuid4()
+    batch_id = uuid.uuid4()
+
+    async def _seed() -> None:
+        container = Container(settings)
+        try:
+            await container.proposal_repo.create(
+                change_id=change_id,
+                file_path="app/auth.py",
+                original_content="    return False\n",
+                proposed_content="    return check_password(user)\n",
+                original_hash="0" * 64,
+                diff="--- a\n+++ b\n",
+                added_lines=1,
+                removed_lines=1,
+                hunks=1,
+            )
+            await container.proposal_repo.set_apply_result(
+                change_id,
+                status=VirtualChangeStatus.FAILED,
+                apply_error="崩溃恢复：崩溃后检测到外部修改，未覆盖当前内容",
+            )
+            await container.batch_repo.create(
+                batch_id=batch_id, change_ids=[str(change_id)], phase="testing"
+            )
+            await container.batch_repo.finish(batch_id, status=ApplyBatchStatus.NEEDS_ATTENTION)
+        finally:
+            await container.dispose()
+
+    asyncio.run(_seed())
+    return change_id
+
+
+def test_proposal_recovery_list_and_keep_decision(
+    settings: Settings, db_schema: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI 闭环：list 看到挂起项（三版本）→ resolve --keep → 待决策清空。"""
+    change_id = _seed_pending_recovery(settings)
+
+    code, listing = run_cli(settings, ["proposal", "recovery", "list"], capsys)
+    assert code == 0
+    assert listing["data"]["count"] == 1
+    item = listing["data"]["items"][0]
+    assert item["change_id"] == str(change_id)
+    assert item["backup_available"] is False
+    assert "外部修改" in item["note"]
+
+    code, resolved = run_cli(
+        settings, ["proposal", "recovery", "resolve", str(change_id), "--keep"], capsys
+    )
+    assert code == 0
+    assert resolved["data"]["resolution"] == "keep"
+    assert resolved["data"]["status"] == VirtualChangeStatus.FAILED.value
+
+    code, after = run_cli(settings, ["proposal", "recovery", "list"], capsys)
+    assert code == 0
+    assert after["data"]["count"] == 0
 
 
 # --- doctor / status ---

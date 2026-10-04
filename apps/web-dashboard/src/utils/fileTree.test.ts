@@ -31,6 +31,7 @@ function change(filePath: string, status: ChangeStatus): Change {
     apply_error: null,
     expires_at: null,
     expired_reason: null,
+    recovery_resolution: null,
   };
 }
 

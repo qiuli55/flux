@@ -49,6 +49,9 @@ SPEC_TABLES = {
     # §11.2 之外的新增表：能力导入注册表（批次③ §5）。
     # 同一 (kind, name) 唯一，fingerprint 判定 unchanged / keep / replace。
     "imported_capabilities",
+    # §11.2 之外的新增表：Apply 事务日志（P0-1 崩溃恢复；P1-2 整批回滚的分组依据）。
+    # 一行 = 一次 apply_many，必须在任何磁盘操作之前落库，重启后据此对账。
+    "apply_batches",
 }
 
 

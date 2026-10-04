@@ -29,6 +29,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 并把历史"自由字符串"令牌迁移到 canonical id 上。
         await container.agents.load_from_db()
         await container.agent_tokens.migrate_legacy_tokens()
+        # P0-1：对账上一轮进程被杀时中断的 Apply（按磁盘事实恢复，幂等），
+        # 与 Run 的 startup_recovery 并列——崩在落盘中途的提案不能永远停在 applying。
+        await container.workspace.recover_interrupted_applies()
         if app_settings.dsh_enabled:
             # P2-15 §2.7：对账上一轮遗留的非终态 Run（属主已死的孤儿进程一并清理），
             # 再拉起心跳/对账循环——否则重启后卡死的 Run 永远停在 running。

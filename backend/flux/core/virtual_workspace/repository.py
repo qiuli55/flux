@@ -14,8 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import VirtualChangeStatus
-from flux.errors import BadRequestError, NotFoundError
+from flux.enums import RecoveryResolution, VirtualChangeStatus
+from flux.errors import BadRequestError, ConflictError, NotFoundError
 from flux.logging import get_logger
 from flux.models.project import Project
 from flux.models.workspace import VirtualChange
@@ -212,6 +212,43 @@ class ProposalRepository:
             change.status = status.value
             change.backup_path = backup_path
             change.apply_error = apply_error
+            await self._commit(session)
+            return change
+
+    async def set_recovery_resolution(
+        self, change_id: str | uuid.UUID, resolution: RecoveryResolution
+    ) -> VirtualChange:
+        """写下崩溃恢复挂起项的人工决策结果（cover / keep）。一旦写下即为终态。"""
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            change.recovery_resolution = resolution.value
+            await self._commit(session)
+            return change
+
+    async def claim_applying(self, change_id: str | uuid.UUID) -> VirtualChange:
+        """原子地抢占一条 accepted 提案（P0-1）：只有当前状态确实是 accepted 才置 applying。
+
+        两个并发 Apply 都读到 accepted 时，先写库的那个赢；后到的在这里被拒，
+        不会出现"同一提案被两批同时落盘"。抢占失败的错误是冲突语义（409）。
+        """
+        key = self._as_uuid(change_id)
+        async with self._session_factory() as session:
+            change = await session.get(VirtualChange, key)
+            if change is None:
+                raise NotFoundError(
+                    f"虚拟改动 {change_id} 不存在", details={"change_id": str(change_id)}
+                )
+            if change.status != VirtualChangeStatus.ACCEPTED.value:
+                raise ConflictError(
+                    f"提案 {change_id} 当前状态为 {change.status}，不能开始 Apply",
+                    details={"change_id": str(change_id), "status": change.status},
+                )
+            change.status = VirtualChangeStatus.APPLYING.value
             await self._commit(session)
             return change
 

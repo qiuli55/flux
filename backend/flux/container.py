@@ -38,6 +38,7 @@ from flux.core.task_engine.dsh_bridge import TaskRunBridge
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.virtual_workspace.apply_engine import ApplyEngine
+from flux.core.virtual_workspace.batch_repository import ApplyBatchRepository
 from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.core.virtual_workspace.service import VirtualWorkspaceService
 from flux.db.session import create_engine, create_session_factory
@@ -68,6 +69,7 @@ class Container:
     task_runs: TaskRunBridge = field(init=False)
     assistant: TaskAssistant = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
+    batch_repo: ApplyBatchRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
     agent_tokens: AgentTokenService = field(init=False)
     agent_repo: AgentRepository = field(init=False)
@@ -81,6 +83,9 @@ class Container:
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
         # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
+        # Apply 批日志（P0-1）：每次 apply_many 一行，先于磁盘操作落库；
+        # 崩溃恢复（启动全量扫 + Apply 入口懒检查）按它找出未对账的批
+        self.batch_repo = ApplyBatchRepository(self.session_factory)  # type: ignore[attr-defined]
         # Agent 档案注册表：Flux 不执行 Agent，只维护档案与权限边界（目标架构 §1）。
         # P3-16 起档案落 agents 表，canonical UUID 是身份的唯一权威（重启后 load_from_db 重建）。
         self.agent_repo = AgentRepository(self.session_factory)  # type: ignore[attr-defined]
@@ -120,6 +125,7 @@ class Container:
             self.bus,
             self.apply_engine,
             proposal_ttl_seconds=self.settings.proposal_ttl_seconds,
+            batch_repository=self.batch_repo,
         )
         # Git 集成（⑨）：与 Apply 共用同一个工作区根；按 change_ids 提交时
         # 由 GitService 复验提案是否已 applied，未落盘/未过测试的改动进不了 Git 历史

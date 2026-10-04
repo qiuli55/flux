@@ -20,6 +20,13 @@ logger = get_logger(__name__)
 
 BACKUP_DIRNAME = ".flux"
 
+#: 备份根相对工作区的路径：apply_batches.backup_root 记的就是它，
+#: 崩溃恢复据此推出"每条 change 的备份应该在哪"。
+BACKUP_RELATIVE_ROOT = Path(BACKUP_DIRNAME) / "backups"
+
+#: 覆盖旧备份前留档的后缀（`.flux/backups/<change_id>/a.py.prev`）
+BACKUP_PREV_SUFFIX = ".prev"
+
 
 class BackupService:
     def __init__(self, *, workspace_root: Path, dirname: str = BACKUP_DIRNAME) -> None:
@@ -35,6 +42,9 @@ class BackupService:
 
         待改文件与备份落点都先过 `resolve_within_root`：文件本身、沿途目录或
         `.flux/` 是软链时一律拒绝——绝不把用户文件复制到工作区之外。
+
+        同一 change 重复 Apply（崩溃恢复后的重试）会命中同一备份路径：覆盖前先留一份
+        `.prev` 快照，上一轮备份仍可追踪（P0-1 §2.2 的重试语义）。
         """
         source = resolve_within_root(self._root, relative_target)
         if not source.is_file():
@@ -44,6 +54,10 @@ class BackupService:
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_git_ignored()
+        if destination.is_file():
+            previous = destination.with_name(destination.name + BACKUP_PREV_SUFFIX)
+            shutil.copy2(destination, previous)
+            logger.info("apply.backup 覆盖前留档 change=%s prev=%s", change_id, previous)
         shutil.copy2(source, destination)
         logger.info("apply.backup change=%s file=%s → %s", change_id, file_path, destination)
         return destination

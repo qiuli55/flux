@@ -23,6 +23,7 @@ import type {
   GitFileStatus,
   GitStatus,
   Project,
+  RecoveryItem,
   Task,
   TaskMessage,
 } from "../api/types";
@@ -268,6 +269,11 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
 
+  // 崩溃恢复挂起项（P0-1）：崩溃后被外部改动的内容不自动覆盖，挂在这里等用户决策
+  const [recoveryItems, setRecoveryItems] = useState<RecoveryItem[]>([]);
+  const [recoveryOpenId, setRecoveryOpenId] = useState<string | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+
   /* ---------- 加载 ---------- */
 
   const loadProjects = useCallback(async () => {
@@ -304,6 +310,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const loadChanges = useCallback(async () => {
     try {
       setChanges(await api.listChanges());
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }, []);
+
+  const loadRecovery = useCallback(async () => {
+    try {
+      setRecoveryItems(await api.listRecovery());
     } catch (error) {
       toast(errorMessage(error), "error");
     }
@@ -348,9 +362,10 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   useEffect(() => {
     void loadProjects();
     void loadChanges();
+    void loadRecovery();
     void loadGit();
     void loadAgents();
-  }, [loadProjects, loadChanges, loadGit, loadAgents]);
+  }, [loadProjects, loadChanges, loadRecovery, loadGit, loadAgents]);
 
   useEffect(() => {
     void loadTree(projectId);
@@ -532,6 +547,43 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       }
     },
     [loadChanges, loadGit],
+  );
+
+  /* ---------- 崩溃恢复的人工决策（P0-1） ---------- */
+
+  const recoveryItem = useMemo(
+    () => recoveryItems.find((item) => item.change_id === recoveryOpenId) ?? null,
+    [recoveryItems, recoveryOpenId],
+  );
+
+  const resolveRecovery = useCallback(
+    async (item: RecoveryItem, action: "cover" | "keep") => {
+      setRecoveryBusy(true);
+      try {
+        await api.resolveRecovery(item.change_id, action);
+        toast(
+          action === "cover"
+            ? `已用备份覆盖还原 ${item.file_path}`
+            : `已保持现状 ${item.file_path} · 该提案作废`,
+        );
+        setRecoveryOpenId(null);
+        if (action === "cover") {
+          // 覆盖改了磁盘内容，编辑器缓存里的旧内容要丢掉
+          setFiles((prev) => {
+            const next = { ...prev };
+            delete next[item.file_path];
+            return next;
+          });
+        }
+        await loadRecovery();
+        await loadChanges();
+        await loadGit();
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+      setRecoveryBusy(false);
+    },
+    [loadChanges, loadGit, loadRecovery],
   );
 
   /* ---------- Git ---------- */
@@ -965,6 +1017,21 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     if (bottomTab === "changes") {
       return (
         <div className="bp-rows">
+          {recoveryItems.length > 0 ? (
+            <div className="bp-row rec-banner">
+              <span className="bp-who t-err">需确认</span>
+              <span className="bp-tx">
+                有 {recoveryItems.length} 项改动在崩溃恢复时发现被外部修改过，Flux 没有覆盖，等你决定
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => setRecoveryOpenId(recoveryItems[0]?.change_id ?? null)}
+              >
+                查看详情
+              </button>
+            </div>
+          ) : null}
           {openChanges.length === 0 ? (
             <span className="bp-empty">暂无变更提案：Agent 产出改动后会出现在这里，需人工批准才落盘。</span>
           ) : (
@@ -1802,6 +1869,67 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 }}
               >
                 {reviewBusy ? "处理中…" : "批准并落盘"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {recoveryItem ? (
+        <div
+          className="review-mask"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setRecoveryOpenId(null);
+          }}
+        >
+          <div className="review-dialog">
+            <div className="rv-head">
+              <b>崩溃恢复 · 需要你确认</b>
+              <button type="button" className="icon-btn sm" onClick={() => setRecoveryOpenId(null)}>
+                ×
+              </button>
+            </div>
+            <div className="rv-sub">
+              {recoveryItem.file_path} —— {recoveryItem.note}
+              {recoveryItem.disk_state === "deleted" ? "（文件已被外部删除）" : ""}
+              {recoveryItem.backup_available ? "" : "（备份缺失，只能保持现状）"}
+            </div>
+            <div className="rv-diff">
+              <div className="rec-3col">
+                <div className="rec-col">
+                  <h4>改动前原文（备份）</h4>
+                  <pre>{recoveryItem.original_content || "（空文件）"}</pre>
+                </div>
+                <div className="rec-col">
+                  <h4>当前磁盘内容</h4>
+                  <pre>{recoveryItem.disk_content ?? "（文件不存在或非文本）"}</pre>
+                </div>
+                <div className="rec-col">
+                  <h4>Flux 提案内容（未生效）</h4>
+                  <pre>{recoveryItem.proposed_content || "（空文件）"}</pre>
+                </div>
+              </div>
+            </div>
+            <div className="rv-foot">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={recoveryBusy}
+                onClick={() => {
+                  void resolveRecovery(recoveryItem, "keep");
+                }}
+              >
+                {recoveryBusy ? "处理中…" : "保持现状"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={recoveryBusy || !recoveryItem.backup_available}
+                onClick={() => {
+                  void resolveRecovery(recoveryItem, "cover");
+                }}
+              >
+                覆盖备份
               </button>
             </div>
           </div>

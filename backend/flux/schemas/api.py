@@ -135,6 +135,17 @@ class GroupRequest(BaseModel):
     reason: str | None = None
 
 
+class RecoveryResolveRequest(BaseModel):
+    """对一条崩溃恢复挂起项做人工决策（P0-1 §2.2，2026-10-05 定案）。
+
+    cover = 用备份覆盖当前内容（还原为改动前原文，提案回 accepted，可重试）；
+    keep = 保持磁盘现状、绝不覆盖用户改动（提案留 failed 作废）。
+    """
+
+    change_id: str = Field(min_length=1)
+    action: Literal["cover", "keep"]
+
+
 class ChatMessageIn(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
     content: str

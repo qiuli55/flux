@@ -62,6 +62,9 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # 失效原因（超时 / 被新提案取代），供 UI 与审计解释"为什么这条不能再审"
     expired_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 崩溃恢复挂起项的人工决策结果（取值见 flux.enums.RecoveryResolution）；为空 = 待决策。
+    # 恢复遇到"内容既非原文也非提案内容 / 文件被外部删除"时不再自动处理，改为挂起等人选择
+    recovery_resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,4 +88,5 @@ class VirtualChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "apply_error": self.apply_error,
             "expires_at": self.expires_at.isoformat() if self.expires_at is not None else None,
             "expired_reason": self.expired_reason,
+            "recovery_resolution": self.recovery_resolution,
         }

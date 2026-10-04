@@ -20,12 +20,12 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from flux.core.virtual_workspace.backup import BackupService
+from flux.core.virtual_workspace.backup import BACKUP_RELATIVE_ROOT, BackupService
 from flux.core.virtual_workspace.diff_engine import content_hash
 from flux.core.virtual_workspace.path_guard import resolve_within_root
 from flux.core.virtual_workspace.test_runner import TestOutcome, TestRunner
@@ -45,6 +45,22 @@ _APPLY_LOCK = threading.Lock()
 
 #: 一条提案在批量回滚里的失败记录（回滚失败必须被报出来，不能静默）。
 RollbackError = dict[str, str]
+
+# --- apply_batches.phase 的进度标记（P0-1）---
+#
+# 服务层建批记录时写 prepared；引擎每进入下一个阶段写一次，交服务层落库。
+# 崩溃时"盘上做到的"最多领先日志一步，恢复算法按磁盘事实对账（不依赖 phase 猜测）。
+PHASE_PREPARED = "prepared"
+PHASE_BACKED_UP = "backed_up"
+PHASE_WRITING = "writing"
+PHASE_VERIFYING = "verifying"
+PHASE_TESTING = "testing"
+
+# --- 崩溃恢复的单条结论 ---
+OUTCOME_SKIPPED = "skipped"
+OUTCOME_RESTORED = "restored"
+OUTCOME_DELETED = "deleted"
+OUTCOME_NEEDS_ATTENTION = "needs_attention"
 
 
 @dataclass(frozen=True)
@@ -133,19 +149,25 @@ class ApplyEngine:
         *,
         workspace_root: str | Path | None = None,
         run_tests: bool = True,
+        on_phase: Callable[[str], None] | None = None,
     ) -> list[ApplyOutcome]:
         """原子批量落盘：要么全部成功，要么全部恢复原样（P0-03）。
 
         顺序固定：全量预检（路径 + 重复 + original_hash）→ 全量备份 → 全量写入 →
         全量校验 → 只跑一次测试。写入阶段开始后任何一步失败，已经碰过的文件全部回滚，
         并把回滚失败逐条报在错误的 `details["rollback_errors"]` 里。
+
+        `on_phase` 是批日志的阶段回调（P0-1）：每进入下一个阶段调用一次，回调失败
+        视同 Apply 失败并走回滚——日志写不进去就不该继续碰盘。
         """
         items = list(changes)
         if not items:
             raise ValidationError("批量 Apply 至少需要一条提案")
         # 整段持锁：并发批次拿到的盘上快照必须是一致的
         with _APPLY_LOCK:
-            return self._apply_batch(items, workspace_root=workspace_root, run_tests=run_tests)
+            return self._apply_batch(
+                items, workspace_root=workspace_root, run_tests=run_tests, on_phase=on_phase
+            )
 
     # --- 批量主流程（调用方已持锁）---
 
@@ -155,6 +177,7 @@ class ApplyEngine:
         *,
         workspace_root: str | Path | None,
         run_tests: bool,
+        on_phase: Callable[[str], None] | None = None,
     ) -> list[ApplyOutcome]:
         root = self._resolve_root(workspace_root)
         backups = BackupService(workspace_root=root)
@@ -178,17 +201,25 @@ class ApplyEngine:
                 details={"files": [c.file_path for c, _, _ in prepared]},
             ) from exc
 
+        # 备份完成：推进批日志（批记录自身在服务层已先落 prepared）
+        _journal(on_phase, PHASE_BACKED_UP)
+
         # 3) 全量写入（记录"写到第几条"，失败时把已经碰过的都回滚，含写了一半的那条）
         attempted = 0
         try:
+            _journal(on_phase, PHASE_WRITING)
             for change, _, target in prepared:
                 attempted += 1
                 self._write(target, change.proposed_content)
+            _journal(on_phase, PHASE_VERIFYING)
             # 4) 全量校验
             for change, _, target in prepared:
                 self._verify(target, change)
             # 5) 跑项目自己配置的测试（整批只跑一次）
-            test = self._run_tests(root) if run_tests else None
+            test: TestOutcome | None = None
+            if run_tests:
+                _journal(on_phase, PHASE_TESTING)
+                test = self._run_tests(root)
             if test is not None and not test.passed:
                 raise ApplyFailedError(
                     f"Apply 后测试未通过（exit={test.exit_code}，{test.command}）",
@@ -245,6 +276,10 @@ class ApplyEngine:
 
     def _resolve_root(self, override: str | Path | None) -> Path:
         return resolve_workspace_root(override if override is not None else self._configured_root)
+
+    def current_root(self) -> Path:
+        """当前配置的工作区根（崩溃恢复等运维路径使用）；未配置时明确拒绝。"""
+        return self._resolve_root(None)
 
     def _prepare_all(
         self, changes: Sequence[VirtualChange], root: Path
@@ -387,3 +422,208 @@ class ApplyEngine:
         if wrote and target.is_file():
             target.unlink()
             logger.warning("apply.rollback 删除新建文件 %s", target)
+
+
+def _journal(on_phase: Callable[[str], None] | None, phase: str) -> None:
+    """推进批日志阶段；写不进去就抛（继续碰盘会留下没有记录的操作）。"""
+    if on_phase is not None:
+        on_phase(phase)
+
+
+# --- 崩溃恢复（P0-1 §2.2）---
+#
+# 服务被杀时批日志停在 in_progress，磁盘可能停在任意一步。恢复算法只认磁盘事实、
+# 逐条幂等处理，绝不按 phase 猜进度：同一算法重复跑的结果必须与跑一次相同。
+
+
+@dataclass(frozen=True)
+class RecoveryEntry:
+    """恢复算法需要的提案事实（从库里读，不信内存/磁盘里的副本）。"""
+
+    change_id: str
+    file_path: str
+    original_hash: str
+    original_content: str
+    proposed_hash: str
+
+
+@dataclass(frozen=True)
+class ChangeRecovery:
+    """一条 change 的恢复结论（写入批日志的 recovery_note 与事件）。"""
+
+    change_id: str
+    file_path: str
+    outcome: str
+    detail: str
+    backup_path: str | None
+
+
+def recover_batch_on_disk(
+    root: Path,
+    entries: Sequence[RecoveryEntry],
+    *,
+    backup_rel_root: str = BACKUP_RELATIVE_ROOT.as_posix(),
+) -> list[ChangeRecovery]:
+    """把一批中断的 Apply 恢复到"可以安全重试"的状态（幂等）。
+
+    单条处理失败不打断其它条（各自记成 needs_attention），且整段与正常 Apply
+    共用同一把进程内锁——恢复不会插进正在执行的批次中间。
+    """
+    backups = BackupService(workspace_root=root)
+    results: list[ChangeRecovery] = []
+    with _APPLY_LOCK:
+        for entry in entries:
+            try:
+                results.append(_recover_one(root, backups, entry, backup_rel_root))
+            except Exception as exc:  # noqa: BLE001 - 恢复失败必须留痕，转成显式状态
+                logger.exception("apply.recovery 单条恢复失败 change=%s", entry.change_id)
+                results.append(
+                    ChangeRecovery(
+                        entry.change_id,
+                        entry.file_path,
+                        OUTCOME_NEEDS_ATTENTION,
+                        f"恢复过程出错：{exc}",
+                        None,
+                    )
+                )
+    return results
+
+
+def _recover_one(
+    root: Path,
+    backups: BackupService,
+    entry: RecoveryEntry,
+    backup_rel_root: str,
+) -> ChangeRecovery:
+    """单条恢复：只认磁盘事实，且只在"内容确是原文或提案内容"时才由 Flux 自行收拾。
+
+    内容既非原文也非提案内容 = 崩溃后被外部改动：**无论有无备份一律不覆盖**，转
+    needs_attention 交人工决策（2026-10-05 定案，见设计 §2.2）。有备份的"修改类"
+    同样适用——有备份就写回，等于拿旧内容盖掉用户在崩溃窗口里的手动修改。
+    """
+    try:
+        relative = safe_relative_path(entry.file_path)
+        target = resolve_within_root(root, relative)
+        backup_path = resolve_within_root(root, Path(backup_rel_root) / entry.change_id / relative)
+    except ValidationError as exc:
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_NEEDS_ATTENTION,
+            f"路径校验失败：{exc.message}",
+            None,
+        )
+
+    backup_is_file = backup_path.is_file()
+    target_exists = target.exists()
+    target_is_file = target.is_file()
+    current_hash = content_hash(target.read_text(encoding="utf-8")) if target_is_file else None
+
+    if backup_is_file:
+        # 修改/删除类：备份就是"改动前的事实"
+        if target_is_file and current_hash == entry.original_hash:
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_SKIPPED,
+                "文件已是改动前的内容",
+                str(backup_path),
+            )
+        if target_is_file and current_hash != entry.proposed_hash:
+            # 既非原文也非 Flux 写入的内容 → 崩溃后被外部改动，不许拿备份覆盖
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_NEEDS_ATTENTION,
+                "崩溃后检测到外部修改，未覆盖当前内容",
+                str(backup_path),
+            )
+        if not target_exists:
+            # 备份在、文件却没了 → 崩溃后被外部删除。绝不自动复活（2026-10-05 定案）
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_NEEDS_ATTENTION,
+                "崩溃后检测到文件被删除，未自动恢复（备份已保留）",
+                str(backup_path),
+            )
+        if not target_is_file:
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_NEEDS_ATTENTION,
+                "目标路径不是普通文件",
+                str(backup_path),
+            )
+        try:
+            backups.restore(backup_path=backup_path, relative_target=relative)
+        except Exception as exc:  # noqa: BLE001 - 单条还原失败转成显式状态
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_NEEDS_ATTENTION,
+                f"从备份还原失败：{exc}",
+                str(backup_path),
+            )
+        if (
+            not target.is_file()
+            or content_hash(target.read_text(encoding="utf-8")) != entry.original_hash
+        ):
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_NEEDS_ATTENTION,
+                "还原后内容与备份不一致",
+                str(backup_path),
+            )
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_RESTORED,
+            "已从备份还原为改动前的内容",
+            str(backup_path),
+        )
+
+    # 无备份：要么是新建类，要么崩溃发生在备份完成之前（文件还没被动过）
+    if not target_exists:
+        return ChangeRecovery(
+            entry.change_id, entry.file_path, OUTCOME_SKIPPED, "目标文件不存在，无需处理", None
+        )
+    if not target_is_file:
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_NEEDS_ATTENTION,
+            "目标路径不是普通文件",
+            None,
+        )
+    if current_hash == entry.original_hash:
+        return ChangeRecovery(
+            entry.change_id, entry.file_path, OUTCOME_SKIPPED, "文件仍是改动前的内容", None
+        )
+    if current_hash == entry.proposed_hash:
+        if entry.original_content == "":
+            target.unlink()
+            logger.warning("apply.recovery 删除崩溃遗留的新建文件 %s", target)
+            return ChangeRecovery(
+                entry.change_id,
+                entry.file_path,
+                OUTCOME_DELETED,
+                "已删除崩溃遗留的新建文件",
+                None,
+            )
+        # 文件原本存在（所以本应有备份）：写入已完成但备份缺失，删除等于毁数据
+        return ChangeRecovery(
+            entry.change_id,
+            entry.file_path,
+            OUTCOME_NEEDS_ATTENTION,
+            "备份缺失，无法还原改动前的内容",
+            None,
+        )
+    return ChangeRecovery(
+        entry.change_id,
+        entry.file_path,
+        OUTCOME_NEEDS_ATTENTION,
+        "崩溃后检测到外部修改，未覆盖当前内容",
+        None,
+    )

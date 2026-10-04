@@ -29,7 +29,7 @@ from flux.config import REPO_ROOT, Settings, get_settings
 from flux.container import Container
 from flux.core.mcp.tools import ALL_TOOLS, FORBIDDEN_TOOL_NAMES, TOOLS, ToolContext
 from flux.db.session import check_database
-from flux.enums import TaskStatus, VirtualChangeStatus
+from flux.enums import RecoveryResolution, TaskStatus, VirtualChangeStatus
 from flux.errors import (
     AIOSError,
     BadRequestError,
@@ -82,6 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
     proposal_list.add_argument("--task", default=None, help="按任务 UUID 过滤")
     proposal_show = proposal_sub.add_parser("show", help="查看单条提案（含 diff）")
     proposal_show.add_argument("id", help="提案 UUID")
+    recovery = proposal_sub.add_parser("recovery", help="崩溃恢复挂起项的人工决策")
+    recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
+    recovery_sub.add_parser("list", help="列出待人工决策的崩溃恢复项（三版本对照）")
+    recovery_resolve = recovery_sub.add_parser("resolve", help="对一条挂起项做决策")
+    recovery_resolve.add_argument("change_id", help="提案 UUID")
+    decision = recovery_resolve.add_mutually_exclusive_group(required=True)
+    decision.add_argument("--cover", action="store_true", help="用备份覆盖，还原为改动前原文")
+    decision.add_argument("--keep", action="store_true", help="保持磁盘现状，提案作废")
 
     agents = sub.add_parser("agents", help="本机 CLI Agent 的发现与接入")
     agents_sub = agents.add_subparsers(dest="agents_command", required=True)
@@ -163,6 +171,10 @@ async def _run(args: argparse.Namespace, settings: Settings) -> tuple[dict[str, 
         if args.command == "proposal":
             if args.proposal_command == "list":
                 return await _cmd_proposal_list(container, args), 0
+            if args.proposal_command == "recovery":
+                if args.recovery_command == "list":
+                    return await _cmd_proposal_recovery_list(container), 0
+                return await _cmd_proposal_recovery_resolve(container, args), 0
             return await _cmd_proposal_show(container, args), 0
         if args.command == "agents":
             if args.agents_command == "scan":
@@ -398,11 +410,36 @@ async def _cmd_proposal_list(container: Container, args: argparse.Namespace) -> 
 
 async def _cmd_proposal_show(container: Container, args: argparse.Namespace) -> dict[str, Any]:
     change = await container.workspace.get(args.id)
-    return change.to_dict()
+    detail = change.to_dict()
+    if change.status == VirtualChangeStatus.APPLYING.value:
+        detail["hint"] = APPLYING_HINT
+    return detail
+
+
+async def _cmd_proposal_recovery_list(container: Container) -> dict[str, Any]:
+    """列出待人工决策的崩溃恢复项：每项含三版本（备份原文 / 磁盘现状 / 提案内容）。"""
+    items = await container.workspace.list_pending_recovery_items()
+    return {"count": len(items), "items": [item.to_dict() for item in items]}
+
+
+async def _cmd_proposal_recovery_resolve(
+    container: Container, args: argparse.Namespace
+) -> dict[str, Any]:
+    """对一条挂起项做决策：--cover 用备份覆盖还原；--keep 保持现状、提案作废。"""
+    resolution = RecoveryResolution.COVER if args.cover else RecoveryResolution.KEEP
+    change = await container.workspace.resolve_recovery(args.change_id, resolution)
+    return {"change_id": str(change.id), "status": change.status, "resolution": resolution.value}
+
+
+#: P0-1：applying 意味着上一轮 Apply 中断（进程被杀），恢复会在服务启动或下次 Apply 时自动发生
+APPLYING_HINT = (
+    "该提案的上一轮 Apply 被中断：服务启动或下次 Apply 时会自动对账"
+    "（文件回改动前、提案回 accepted），无需人工处理"
+)
 
 
 def _proposal_summary(change: VirtualChange) -> dict[str, Any]:
-    return {
+    summary = {
         "id": str(change.id),
         "file_path": change.file_path,
         "status": change.status,
@@ -415,6 +452,9 @@ def _proposal_summary(change: VirtualChange) -> dict[str, Any]:
         "summary": change.summary,
         "created_at": change.created_at.isoformat() if change.created_at else None,
     }
+    if change.status == VirtualChangeStatus.APPLYING.value:
+        summary["hint"] = APPLYING_HINT
+    return summary
 
 
 # --- agents（发现 / 接入）---

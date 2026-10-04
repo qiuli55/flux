@@ -783,6 +783,24 @@ POST /api/v1/workspace/reject                  拒绝，可带 reason
 
 错误码：未知提案 `not_found`；未配置工作区根目录 / 路径非法 `validation_error`；文件已被用户改过 `conflict`；落盘或测试失败 `apply_failed`；对终态提案重复操作 `invalid_state_transition`。请求体分别为 `{"change_ids": [...]}` 与 `{"change_ids": [...], "reason": "..."}`。
 
+**【P0-1 崩溃恢复的人工决策，2026-10-05 落地】**
+
+```
+GET  /api/v1/workspace/recovery          列出待人工决策的崩溃恢复项（只读）
+POST /api/v1/workspace/recovery/resolve  对一条挂起项做决策：cover / keep
+```
+
+Apply 过程中进程被杀后，恢复算法**只认磁盘事实**：文件内容与改动前原文一致 → 跳过；与 Flux 写入的提案内容一致 → 由 Flux 自行收拾（从备份还原或删除新建文件）；**既非原文也非提案内容（含文件被外部删除）→ 一律不覆盖**，批置 `needs_attention`、提案置 `failed` 并写明原因，转人工决策（算法全文见 `doc/PERSONAL_MVP_RELEASE_DESIGN.md` §2.2）。
+
+`GET /workspace/recovery`：响应 `data` 为数组，每项含**三版本**与决策依据——`change_id`、`batch_id`、`file_path`、`original_content`（备份里的改动前原文）、`disk_content`（当前磁盘真实内容）、`proposed_content`（Flux 原本要写入的内容）、`backup_available`（决定能否选 cover）、`disk_state`（`modified` / `deleted` / `not_file` / `unknown`）、`note`、`detected_at`。单份内容按 200,000 字符截断。
+
+`POST /workspace/recovery/resolve`：请求体 `{"change_id": "...", "action": "cover" | "keep"}`。
+
+- `cover`：用备份覆盖当前内容（还原为改动前原文）→ 提案回 `accepted`（可重试）；**备份缺失时返回 `conflict`**，不静默降级为 keep；
+- `keep`：保持磁盘现状、绝不覆盖用户改动 → 提案留 `failed`（作废），`apply_error` 追加"（人工选择：保持现状）"。
+
+决策结果写入 `virtual_changes.recovery_resolution`（取值 `cover` / `keep`，为空即待决策）；重复决策返回 `conflict`。批内所有挂起项都决策完后，批由 `needs_attention` 收为 `recovered`。CLI 对应 `flux proposal recovery list` 与 `flux proposal recovery resolve <change_id> --cover|--keep`。
+
 **【实施计划 ⑫ 落地，2026-09-30】** 最小 IDE 的"让 AI 改"需要一个真正的写入口：`POST /api/v1/workspace/generate`。请求体 `{"instruction": "...", "paths": ["auth/login.py"], "task_id": null, "project_id": null}`，语义固定为：
 
 1. 按 `paths`（相对工作区根）读取文件**现状**作为上下文，一次最多 `5` 个文件、单文件最多 `60_000` 字节，越界即 `validation_error`；`paths` 为空表示不携带上下文；

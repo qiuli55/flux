@@ -7,6 +7,7 @@ from flux.models.agent import Agent, AgentExecutionLog, AgentSkill
 from flux.models.agent_installation import AgentInstallation
 from flux.models.agent_run import AgentRun
 from flux.models.agent_token import AgentToken
+from flux.models.apply_batch import ApplyBatch
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
 from flux.models.imported_capability import ImportedCapability
@@ -24,6 +25,7 @@ __all__ = [
     "AgentRun",
     "AgentSkill",
     "AgentToken",
+    "ApplyBatch",
     "Base",
     "ConnectorConfig",
     "ConnectorLog",

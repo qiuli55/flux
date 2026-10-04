@@ -837,3 +837,42 @@ body.bottom-closed .ide-bottom { display: none; }
   .view-ide .ide-status { height: 24px; gap: 10px; font-size: 10.5px; }
   .view-ide .st-left { gap: 10px; overflow: hidden; }
 }
+
+/* ---------- 崩溃恢复的人工决策（P0-1 §2.2）---------- */
+/* 变更区横幅：崩溃恢复发现文件被外部改动过，Flux 不覆盖，提示人来决策 */
+.rec-banner {
+  background: color-mix(in srgb, var(--orange) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--orange) 34%, transparent);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+/* 三版本并列对照：备份原文 / 当前磁盘内容 / Flux 提案内容 */
+.rec-3col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.rec-col { min-width: 0; }
+.rec-col h4 {
+  margin: 0 0 6px;
+  font: 500 12px/1.3 var(--ui);
+  color: var(--text-3);
+}
+.rec-col pre {
+  margin: 0;
+  padding: 10px;
+  max-height: 46vh;
+  overflow: auto;
+  background: var(--panel-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 12px/1.6 var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 860px) {
+  .rec-3col { grid-template-columns: minmax(0, 1fr); }
+  .rec-col pre { max-height: 26vh; }
+}

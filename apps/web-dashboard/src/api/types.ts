@@ -129,6 +129,33 @@ export interface Change {
   apply_error: string | null;
   expires_at: string | null;
   expired_reason: string | null;
+  /** 崩溃恢复挂起项的人工决策结果：null = 待决策，cover / keep = 已处理 */
+  recovery_resolution: string | null;
+}
+
+/** 挂起项的磁盘状态：modified 内容被外部改动 / deleted 文件被外部删除 / not_file 路径不是普通文件 / unknown 看不了盘 */
+export type RecoveryDiskState = "modified" | "deleted" | "not_file" | "unknown";
+
+/**
+ * 待人工决策的崩溃恢复项（P0-1 §2.2）：
+ * 崩溃后目标内容既非原文也非提案内容（或文件被外部删除）时不再自动处理，转为人工决策。
+ */
+export interface RecoveryItem {
+  change_id: string;
+  batch_id: string;
+  file_path: string;
+  /** 备份里的改动前原文 */
+  original_content: string;
+  /** 当前磁盘真实内容；文件不存在或非文本时为 null */
+  disk_content: string | null;
+  /** Flux 原本要写入的提案内容 */
+  proposed_content: string;
+  /** 备份是否可用：false 时不能选「覆盖备份」 */
+  backup_available: boolean;
+  disk_state: RecoveryDiskState;
+  /** 触发挂起的原因说明 */
+  note: string;
+  detected_at: string | null;
 }
 
 /** 单个文件的 Git 状态（git status --porcelain 的一行） */

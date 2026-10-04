@@ -31,6 +31,9 @@ class Events:
     TASK_FAILED = "task.failed"
     CONNECTOR_EXECUTED = "connector.executed"
     WORKSPACE_CHANGED = "workspace.changed"
+    #: Apply 崩溃恢复（P0-1）：进程重启/入口懒检查对账完一批中断的 Apply 后发出，
+    #: 载荷含 batch_id、终态（recovered / needs_attention）与逐条处理结论。
+    APPLY_RECOVERED = "apply.recovered"
     GIT_COMMITTED = "git.committed"
     PROJECT_SCANNED = "project.scanned"
     BRAIN_UPDATED = "project.brain_updated"

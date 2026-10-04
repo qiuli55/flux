@@ -734,6 +734,30 @@
         "title": "ProjectCreateRequest",
         "type": "object"
       },
+      "RecoveryResolveRequest": {
+        "description": "对一条崩溃恢复挂起项做人工决策（P0-1 §2.2，2026-10-05 定案）。\n\ncover = 用备份覆盖当前内容（还原为改动前原文，提案回 accepted，可重试）；\nkeep = 保持磁盘现状、绝不覆盖用户改动（提案留 failed 作废）。",
+        "properties": {
+          "action": {
+            "enum": [
+              "cover",
+              "keep"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "change_id": {
+            "minLength": 1,
+            "title": "Change Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "change_id",
+          "action"
+        ],
+        "title": "RecoveryResolveRequest",
+        "type": "object"
+      },
       "RejectRequest": {
         "properties": {
           "change_ids": {
@@ -3473,7 +3497,7 @@
     },
     "/api/v1/workspace/expire-stale": {
       "post": {
-        "description": "清理所有已超过审核有效期的提案（幂等，可被定时任务或人工调用）。",
+        "description": "清理所有已超过审核有效期的提案（幂等，可被定时任务/人工调用）。",
         "operationId": "expire_stale_api_v1_workspace_expire_stale_post",
         "responses": {
           "200": {
@@ -3490,6 +3514,74 @@
           }
         },
         "summary": "Expire Stale",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/recovery": {
+      "get": {
+        "description": "列出所有待人工决策的崩溃恢复项（P0-1 §2.2）：只读，不改任何状态。\n\n每项含三个版本——备份里的改动前原文 / 当前磁盘真实内容 / Flux 原本要写入的提案内容，\n以及 `backup_available`（决定能否选\"覆盖备份\"）与 `disk_state`。",
+        "operationId": "list_recovery_api_v1_workspace_recovery_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Recovery Api V1 Workspace Recovery Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Recovery",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/recovery/resolve": {
+      "post": {
+        "description": "人工决策一条挂起的恢复项：cover = 覆盖备份（还原原文）；keep = 保持现状（提案作废）。",
+        "operationId": "resolve_recovery_api_v1_workspace_recovery_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resolve Recovery Api V1 Workspace Recovery Resolve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Recovery",
         "tags": [
           "workspace"
         ]

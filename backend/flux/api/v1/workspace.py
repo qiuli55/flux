@@ -14,7 +14,14 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.schemas.api import ChangeIdsRequest, ExpireRequest, GroupRequest, RejectRequest
+from flux.enums import RecoveryResolution
+from flux.schemas.api import (
+    ChangeIdsRequest,
+    ExpireRequest,
+    GroupRequest,
+    RecoveryResolveRequest,
+    RejectRequest,
+)
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -125,6 +132,28 @@ async def expire_changes(
 
 @router.post("/expire-stale")
 async def expire_stale(container: Container = Depends(get_container)) -> dict[str, object]:
-    """清理所有已超过审核有效期的提案（幂等，可被定时任务或人工调用）。"""
+    """清理所有已超过审核有效期的提案（幂等，可被定时任务/人工调用）。"""
     expired = [c.to_dict() for c in await container.workspace.expire_stale()]
     return ok(expired, metadata={"count": len(expired)})
+
+
+@router.get("/recovery")
+async def list_recovery(container: Container = Depends(get_container)) -> dict[str, object]:
+    """列出所有待人工决策的崩溃恢复项（P0-1 §2.2）：只读，不改任何状态。
+
+    每项含三个版本——备份里的改动前原文 / 当前磁盘真实内容 / Flux 原本要写入的提案内容，
+    以及 `backup_available`（决定能否选"覆盖备份"）与 `disk_state`。
+    """
+    items = await container.workspace.list_pending_recovery_items()
+    return ok([item.to_dict() for item in items], metadata={"count": len(items)})
+
+
+@router.post("/recovery/resolve")
+async def resolve_recovery(
+    payload: RecoveryResolveRequest, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """人工决策一条挂起的恢复项：cover = 覆盖备份（还原原文）；keep = 保持现状（提案作废）。"""
+    change = await container.workspace.resolve_recovery(
+        payload.change_id, RecoveryResolution(payload.action)
+    )
+    return ok(change.to_dict(), metadata={"action": payload.action})

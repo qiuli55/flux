@@ -4,7 +4,9 @@
 - 把 agent 经 MCP `proposal.create` 提交的 `CodeChangeSet` 落成一条条 Proposal
   （含 original_hash 与 unified diff）；
 - 人工审查动作（accept / reject）与状态跃迁；
-- Apply：把落盘交给 Apply Engine（⑦），自己只负责状态与审计字段。
+- Apply：把落盘交给 Apply Engine（⑦），自己只负责状态与审计字段；
+- 批日志（P0-1）：每次 Apply 先落一条 apply_batches 记录（先于任何磁盘操作）、
+  逐阶段推进，崩溃由 recover_interrupted_applies 按磁盘事实对账。
 
 **落盘的唯一入口是 ApplyEngine**，API / Agent / UI 都不允许自己写用户文件。
 """
@@ -13,16 +15,28 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flux.core.event.bus import EventBus, Events
-from flux.core.virtual_workspace.apply_engine import ApplyEngine
+from flux.core.virtual_workspace.apply_engine import (
+    OUTCOME_NEEDS_ATTENTION,
+    PHASE_PREPARED,
+    ApplyEngine,
+    ChangeRecovery,
+    RecoveryEntry,
+    recover_batch_on_disk,
+    safe_relative_path,
+)
+from flux.core.virtual_workspace.backup import BACKUP_RELATIVE_ROOT, BackupService
+from flux.core.virtual_workspace.batch_repository import ApplyBatchRepository
 from flux.core.virtual_workspace.diff_engine import compute_file_diff, content_hash
+from flux.core.virtual_workspace.path_guard import resolve_within_root
 from flux.core.virtual_workspace.proposal_parser import CodeChangeSet
 from flux.core.virtual_workspace.repository import ProposalRepository
-from flux.enums import VirtualChangeStatus
+from flux.enums import ApplyBatchStatus, RecoveryResolution, VirtualChangeStatus
 from flux.errors import (
     ConflictError,
     InvalidTransitionError,
@@ -31,6 +45,7 @@ from flux.errors import (
     ValidationError,
 )
 from flux.logging import get_logger
+from flux.models.apply_batch import ApplyBatch
 from flux.models.workspace import VirtualChange
 
 logger = get_logger(__name__)
@@ -39,8 +54,21 @@ logger = get_logger(__name__)
 # 这些都在 pytest 输出的尾部；全文可能上千行，截太长反而读不出重点。
 APPLY_ERROR_OUTPUT_CHARS = 4000
 
+#: 批日志 recovery_note 的上限：恢复说明是给人看的摘要，不是逐字日志。
+RECOVERY_NOTE_CHARS = 4000
+
+#: 恢复挂起项在 apply_error 上的前缀：据此识别"待人工决策"的提案（配合 recovery_resolution 为空）。
+RECOVERY_ERROR_PREFIX = "崩溃恢复："
+
+#: 三版本对比（备份原文 / 磁盘现状 / 提案内容）单份内容的展示上限，超出截断。
+RECOVERY_CONTENT_CHARS = 200_000
+
 #: 允许的审查状态跃迁（§7.2 文件状态机 + 实施计划 §5 的 FAILED + P0-02 的 EXPIRED）。
 #: EXPIRED 是终态：过期/被取代的提案不能再被批准或落盘，只能重新生成提案。
+#:
+#: APPLYING（P0-1）是在批日志保护下的中间态：推进到 APPLIED/FAILED、或崩溃恢复退回
+#: ACCEPTED，都由 apply_many / recover_interrupted_applies 直接写库（附 recovery_note），
+#: 人工触发的 transition 一律不许碰它——apply 进行中被人改状态会让批日志与磁盘对不上账。
 ALLOWED: dict[VirtualChangeStatus, frozenset[VirtualChangeStatus]] = {
     VirtualChangeStatus.PENDING: frozenset(
         {
@@ -51,12 +79,14 @@ ALLOWED: dict[VirtualChangeStatus, frozenset[VirtualChangeStatus]] = {
     ),
     VirtualChangeStatus.ACCEPTED: frozenset(
         {
+            VirtualChangeStatus.APPLYING,
             VirtualChangeStatus.APPLIED,
             VirtualChangeStatus.REJECTED,
             VirtualChangeStatus.FAILED,
             VirtualChangeStatus.EXPIRED,
         }
     ),
+    VirtualChangeStatus.APPLYING: frozenset(),
     VirtualChangeStatus.REJECTED: frozenset(),
     VirtualChangeStatus.APPLIED: frozenset(),
     VirtualChangeStatus.FAILED: frozenset(),
@@ -81,6 +111,40 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
+@dataclass(frozen=True)
+class RecoveryItem:
+    """一条待人工决策的崩溃恢复项（三版本并列，供 UI / CLI 展示与决策）。
+
+    `disk_state`：modified（内容被外部改动）/ deleted（文件被外部删除）/ not_file（路径不是
+    普通文件）/ unknown（工作区根未配置，无法看盘）。只有 backup_available 为真时才能选"覆盖备份"。
+    """
+
+    change_id: str
+    batch_id: str
+    file_path: str
+    original_content: str
+    disk_content: str | None
+    proposed_content: str
+    backup_available: bool
+    disk_state: str
+    note: str
+    detected_at: datetime | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "change_id": self.change_id,
+            "batch_id": self.batch_id,
+            "file_path": self.file_path,
+            "original_content": self.original_content,
+            "disk_content": self.disk_content,
+            "proposed_content": self.proposed_content,
+            "backup_available": self.backup_available,
+            "disk_state": self.disk_state,
+            "note": self.note,
+            "detected_at": self.detected_at.isoformat() if self.detected_at else None,
+        }
+
+
 class VirtualWorkspaceService:
     def __init__(
         self,
@@ -88,6 +152,7 @@ class VirtualWorkspaceService:
         bus: EventBus | None = None,
         apply_engine: ApplyEngine | None = None,
         proposal_ttl_seconds: int = 0,
+        batch_repository: ApplyBatchRepository | None = None,
     ) -> None:
         self._repo = repository
         self._bus = bus
@@ -95,6 +160,11 @@ class VirtualWorkspaceService:
         self._engine = apply_engine or ApplyEngine()
         # 审核有效期（秒）；<= 0 表示不启用超时失效
         self._ttl_seconds = proposal_ttl_seconds
+        # 批日志（P0-1）：未注入时 Apply 照常可用，只是崩溃后无人对账（轻量单测装配）
+        self._batches = batch_repository
+        #: 本进程正在跑的批 ID——懒检查绝不能把"正在执行的批"当成崩溃现场去恢复
+        self._active_batches: set[str] = set()
+        self._recovery_lock = asyncio.Lock()
 
     # --- 提案 ---
 
@@ -267,14 +337,28 @@ class VirtualWorkspaceService:
 
         pending 自动先转 accepted（调用即人工批准，§7.5）；状态预检在动任何一条之前
         对整批做完。落盘是同步 IO + 子进程，放进线程执行，避免阻塞事件循环。
-        失败时状态落 failed 并保留原因，异常继续上抛——不静默兜底（fail-closed）。
+
+        P0-1：整段由批日志护航——批记录先于任何磁盘操作落库、逐阶段推进，提案状态走
+        ACCEPTED → APPLYING → APPLIED/FAILED。进程被杀后由 recover_interrupted_applies
+        按磁盘事实对账；失败时状态落 failed 并保留原因，异常继续上抛——不静默兜底。
         """
+        # 懒检查：上一次进程被杀（或异常退出）留下的中断批先对账。CLI 等一次性进程
+        # 没有 lifespan 兜底，只有把检查放在每次 Apply 入口，崩溃现场才一定会被处理。
+        await self.recover_interrupted_applies()
+
         changes = await self._load_many(change_ids, action="apply")
         # 过期预检：已过期的整批先落 expired 终态再报错，不允许落盘旧提案
         await self._guard_expired(changes)
-        # 状态预检：整批都在可批准状态才继续（避免"前两条已批准、第三条才发现非法"）
+        # 状态预检：整批都在可批准状态才继续（避免"前两条已批准、第三条才发现非法"）。
+        # applying 说明另一条路径（并发 Apply / 尚未对账的中断批）正在动它，直接冲突退出
         for change in changes:
-            if VirtualChangeStatus(change.status) is VirtualChangeStatus.ACCEPTED:
+            current = VirtualChangeStatus(change.status)
+            if current is VirtualChangeStatus.APPLYING:
+                raise ConflictError(
+                    f"提案正在应用（applying），不允许并发 Apply：{change.id}",
+                    details={"change_id": str(change.id), "status": current.value},
+                )
+            if current is VirtualChangeStatus.ACCEPTED:
                 continue
             self._assert_transition(change, VirtualChangeStatus.ACCEPTED)
         accepted: list[VirtualChange] = []
@@ -283,42 +367,421 @@ class VirtualWorkspaceService:
                 change = await self._transition(change.id, VirtualChangeStatus.ACCEPTED)
             accepted.append(change)
 
+        # 批 id 先登记进活跃集合、再落库：识别"本进程正在跑的批"与批记录之间不留窗口，
+        # 否则并发入口的懒检查可能刚建好批就把它当成崩溃现场去恢复
+        batch_uuid = uuid.uuid4()
+        batch_id = str(batch_uuid)
+        self._active_batches.add(batch_id)
         try:
-            outcomes = await asyncio.to_thread(
-                self._engine.apply_many,
-                accepted,
-                workspace_root=workspace_root,
-                run_tests=run_tests,
-            )
-        except (ConflictError, ValidationError):
-            # 预检未通过（文件被用户改过 / 路径非法 / 未配置工作区根目录）：
-            # 改动本身没错，是当前环境或提案已过期，状态留在 accepted 等人工重新决策
-            raise
-        except Exception as exc:
-            reason = _failure_reason(exc)
-            for change in accepted:
-                failed = await self._repo.set_apply_result(
-                    change.id,
-                    status=VirtualChangeStatus.FAILED,
-                    apply_error=reason,
+            if self._batches is not None:
+                await self._batches.create(
+                    batch_id=batch_uuid,
+                    change_ids=[str(change.id) for change in accepted],
+                    backup_root=BACKUP_RELATIVE_ROOT.as_posix(),
+                    phase=PHASE_PREPARED,
                 )
-                await self._publish(
-                    failed,
-                    previous=VirtualChangeStatus.ACCEPTED,
-                    extra={"error": str(exc)},
+            # 抢占：只有当前确实是 accepted 才能置 applying（并发第二方在这里被拒）
+            claimed: list[VirtualChange] = []
+            try:
+                for change in accepted:
+                    claimed.append(await self._repo.claim_applying(change.id))
+            except ConflictError:
+                await self._release_applying(claimed)
+                await self._finish_batch(
+                    batch_id,
+                    ApplyBatchStatus.FAILED,
+                    error="状态抢占失败：提案已被其它 Apply 占用或已不在 accepted",
                 )
-            raise
+                raise
+            for change in claimed:
+                await self._publish(change, previous=VirtualChangeStatus.ACCEPTED)
 
-        applied: list[VirtualChange] = []
-        for change, outcome in zip(accepted, outcomes, strict=True):
+            loop = asyncio.get_running_loop()
+            try:
+                outcomes = await asyncio.to_thread(
+                    self._engine.apply_many,
+                    claimed,
+                    workspace_root=workspace_root,
+                    run_tests=run_tests,
+                    on_phase=self._phase_journal(batch_id, loop),
+                )
+            except (ConflictError, ValidationError) as exc:
+                # 预检未通过（文件被用户改过 / 路径非法 / 未配置工作区根目录）：还没碰盘，
+                # 回退 applying 让提案留在 accepted 等人工重新决策（apply_error 保持空）
+                await self._release_applying(claimed)
+                await self._finish_batch(
+                    batch_id, ApplyBatchStatus.FAILED, error=f"预检未通过，未落盘：{exc}"
+                )
+                raise
+            except Exception as exc:
+                reason = _failure_reason(exc)
+                for change in claimed:
+                    failed = await self._repo.set_apply_result(
+                        change.id,
+                        status=VirtualChangeStatus.FAILED,
+                        apply_error=reason,
+                    )
+                    await self._publish(
+                        failed,
+                        previous=VirtualChangeStatus.APPLYING,
+                        extra={"error": str(exc)},
+                    )
+                await self._finish_batch(batch_id, ApplyBatchStatus.FAILED, error=reason)
+                raise
+
+            applied: list[VirtualChange] = []
+            for change, outcome in zip(claimed, outcomes, strict=True):
+                updated = await self._repo.set_apply_result(
+                    change.id,
+                    status=VirtualChangeStatus.APPLIED,
+                    backup_path=outcome.backup_path,
+                )
+                await self._publish(updated, previous=VirtualChangeStatus.APPLYING)
+                applied.append(updated)
+            await self._finish_batch(batch_id, ApplyBatchStatus.APPLIED)
+            return applied
+        finally:
+            self._active_batches.discard(batch_id)
+
+    async def _release_applying(self, changes: Sequence[VirtualChange]) -> None:
+        """把已抢占（applying）的提案回退到 accepted，等人工重新决策。
+
+        预检失败不是"落盘失败"：提案本身没有错（文件被改 / 根未配置都可修复），
+        所以不写 apply_error（test_workspace_apply_precheck_conflict_keeps_status_accepted
+        的契约）。事件必须补发：UI 已经看到 applying，不回退就会一直显示"应用中"。
+        """
+        for change in changes:
+            released = await self._repo.set_status(change.id, VirtualChangeStatus.ACCEPTED)
+            await self._publish(
+                released, previous=VirtualChangeStatus.APPLYING, extra={"released": True}
+            )
+
+    # --- 崩溃恢复（P0-1）---
+
+    async def recover_interrupted_applies(self) -> list[ApplyBatch]:
+        """对账所有中断的 Apply 批（幂等）：启动全量扫与 Apply 入口懒检查共用。
+
+        只处理"不属于本进程活跃集合"的 in_progress 批：正在执行的批绝不能当成
+        崩溃现场恢复。单批恢复失败只记日志、不拖死调用方——残留批留给下一次扫描。
+        """
+        if self._batches is None:
+            return []
+        async with self._recovery_lock:
+            batches = await self._batches.list_in_progress()
+            interrupted = [b for b in batches if str(b.id) not in self._active_batches]
+            recovered: list[ApplyBatch] = []
+            for batch in interrupted:
+                try:
+                    recovered.append(await self._recover_batch(batch))
+                except Exception:  # noqa: BLE001 - 单批失败不能拖住其它批与启动流程
+                    logger.exception("apply.recovery 批次恢复失败 batch=%s", batch.id)
+            return recovered
+
+    async def _recover_batch(self, batch: ApplyBatch) -> ApplyBatch:
+        """恢复一批：写对了的不动、能还原的还原、动不了的显式告警（幂等，见 apply_engine）。"""
+        entries: list[RecoveryEntry] = []
+        previous: dict[str, VirtualChangeStatus] = {}
+        notes: list[str] = []
+        for raw_id in batch.change_ids:
+            try:
+                change = await self._repo.get(raw_id)
+            except NotFoundError:
+                notes.append(f"{raw_id}：提案已不存在，跳过")
+                continue
+            status = VirtualChangeStatus(change.status)
+            if status not in (VirtualChangeStatus.APPLYING, VirtualChangeStatus.ACCEPTED):
+                # 状态已是终态（或已被人工处理）：磁盘结论以状态为准，不再碰盘
+                notes.append(f"{raw_id}：状态为 {status.value}，无需恢复")
+                continue
+            previous[str(change.id)] = status
+            entries.append(
+                RecoveryEntry(
+                    change_id=str(change.id),
+                    file_path=change.file_path,
+                    original_hash=change.original_hash,
+                    original_content=change.original_content,
+                    proposed_hash=content_hash(change.proposed_content),
+                )
+            )
+
+        results: list[ChangeRecovery] = []
+        if entries:
+            try:
+                root = self._engine.current_root()
+            except ValidationError as exc:
+                note = f"工作区根未配置，无法对账磁盘：{exc.message}"
+                notes.append(note)
+                finished = await self._finish_batch(
+                    batch.id,
+                    ApplyBatchStatus.NEEDS_ATTENTION,
+                    error=note,
+                    recovery_note=_clip("；".join(notes), RECOVERY_NOTE_CHARS),
+                )
+                return finished or batch
+            results = await asyncio.to_thread(
+                recover_batch_on_disk,
+                root,
+                entries,
+                backup_rel_root=batch.backup_root or BACKUP_RELATIVE_ROOT.as_posix(),
+            )
+
+        flagged = False
+        for result in results:
+            if result.outcome == OUTCOME_NEEDS_ATTENTION:
+                flagged = True
+                updated = await self._repo.set_apply_result(
+                    result.change_id,
+                    status=VirtualChangeStatus.FAILED,
+                    apply_error=f"崩溃恢复：{result.detail}",
+                )
+            else:
+                updated = await self._repo.set_apply_result(
+                    result.change_id,
+                    status=VirtualChangeStatus.ACCEPTED,
+                    backup_path=result.backup_path,
+                )
+            await self._publish(
+                updated,
+                previous=previous.get(result.change_id),
+                extra={
+                    "recovered": True,
+                    "batch_id": str(batch.id),
+                    "outcome": result.outcome,
+                    "detail": result.detail,
+                },
+            )
+            notes.append(f"{result.file_path}：{result.outcome}（{result.detail}）")
+
+        status = ApplyBatchStatus.NEEDS_ATTENTION if flagged else ApplyBatchStatus.RECOVERED
+        finished = await self._finish_batch(
+            batch.id, status, recovery_note=_clip("；".join(notes), RECOVERY_NOTE_CHARS)
+        )
+        recovered_batch = finished or batch
+        if self._bus is not None:
+            await self._bus.publish(
+                Events.APPLY_RECOVERED,
+                {
+                    "batch_id": str(batch.id),
+                    "status": recovered_batch.status,
+                    "change_ids": list(batch.change_ids),
+                    "outcomes": [result.outcome for result in results],
+                },
+            )
+        return recovered_batch
+
+    async def _finish_batch(
+        self,
+        batch_id: str,
+        status: ApplyBatchStatus,
+        *,
+        error: str | None = None,
+        recovery_note: str | None = None,
+    ) -> ApplyBatch | None:
+        if self._batches is None:
+            return None
+        return await self._batches.finish(
+            batch_id, status=status, error=error, recovery_note=recovery_note
+        )
+
+    def _phase_journal(
+        self, batch_id: str, loop: asyncio.AbstractEventLoop
+    ) -> Callable[[str], None] | None:
+        """引擎（工作线程）→ 事件循环的批日志回调：同步等阶段写库落定才返回。
+
+        阶段记录必须先于对应磁盘操作持久化；日志写不进去就抛，引擎按失败回滚——
+        绝不能留下"盘上动过、批日志没记"的批。
+        """
+        if self._batches is None:
+            return None
+        repository = self._batches
+
+        def journal(phase: str) -> None:
+            future = asyncio.run_coroutine_threadsafe(repository.set_phase(batch_id, phase), loop)
+            future.result()
+
+        return journal
+
+    # --- 崩溃恢复的人工决策（P0-1 §2.2，2026-10-05 定案）---
+
+    async def list_pending_recovery_items(self) -> list[RecoveryItem]:
+        """列出所有待人工决策的崩溃恢复项（只读、幂等，不改任何状态）。
+
+        判定显式查列：批为 needs_attention、提案 failed 且 apply_error 带恢复前缀、
+        且 recovery_resolution 仍为空。三版本内容一并返回，供 UI / CLI 直接展示与决策。
+        """
+        if self._batches is None:
+            return []
+        root = self._current_root_or_none()
+        items: list[RecoveryItem] = []
+        for batch in await self._batches.list_by_status(ApplyBatchStatus.NEEDS_ATTENTION):
+            for raw_id in batch.change_ids:
+                try:
+                    change = await self._repo.get(raw_id)
+                except NotFoundError:
+                    continue
+                if not self._is_pending_recovery(change):
+                    continue
+                items.append(self._build_recovery_item(batch, change, root))
+        return items
+
+    async def resolve_recovery(
+        self, change_id: str | uuid.UUID, resolution: RecoveryResolution
+    ) -> VirtualChange:
+        """人工决策一条挂起的恢复项。
+
+        - COVER：用备份覆盖当前内容（还原为改动前原文）→ 提案回 accepted，可重试；
+        - KEEP：保持磁盘现状、绝不覆盖用户改动 → 提案留 failed（作废）并记下决策。
+
+        备份缺失时 COVER 明确拒绝（409），不会静默降级成 KEEP。
+        """
+        change = await self._repo.get(change_id)
+        if change.recovery_resolution is not None:
+            raise ConflictError(
+                f"该恢复项已处理过（{change.recovery_resolution}），不能重复决策",
+                details={"change_id": str(change.id), "resolution": change.recovery_resolution},
+            )
+        if not self._is_pending_recovery(change):
+            raise ValidationError(
+                "该提案不是待决策的崩溃恢复项，不能用恢复决策处理",
+                details={"change_id": str(change.id), "status": change.status},
+            )
+        previous = VirtualChangeStatus(change.status)
+        if resolution is RecoveryResolution.COVER:
+            await self._cover_from_backup(change)
             updated = await self._repo.set_apply_result(
                 change.id,
-                status=VirtualChangeStatus.APPLIED,
-                backup_path=outcome.backup_path,
+                status=VirtualChangeStatus.ACCEPTED,
+                backup_path=change.backup_path,
+                apply_error=None,
             )
-            await self._publish(updated, previous=VirtualChangeStatus.ACCEPTED)
-            applied.append(updated)
-        return applied
+        else:
+            updated = await self._repo.set_apply_result(
+                change.id,
+                status=VirtualChangeStatus.FAILED,
+                backup_path=change.backup_path,
+                apply_error=f"{change.apply_error}（人工选择：保持现状）",
+            )
+        updated = await self._repo.set_recovery_resolution(change.id, resolution)
+        await self._publish(
+            updated, previous=previous, extra={"recovery_resolved": resolution.value}
+        )
+        await self._close_batch_if_resolved(change.id)
+        return updated
+
+    def _is_pending_recovery(self, change: VirtualChange) -> bool:
+        """待决策判定：未决策 + 提案已 failed + 失败原因是崩溃恢复写下的。"""
+        return (
+            change.recovery_resolution is None
+            and VirtualChangeStatus(change.status) is VirtualChangeStatus.FAILED
+            and (change.apply_error or "").startswith(RECOVERY_ERROR_PREFIX)
+        )
+
+    def _current_root_or_none(self) -> Path | None:
+        """看盘需要工作区根；未配置时返回 None（列表仍可给出提案侧的两个版本）。"""
+        try:
+            return self._engine.current_root()
+        except ValidationError:
+            return None
+
+    @staticmethod
+    def _backup_file_for(root: Path, change: VirtualChange) -> Path | None:
+        try:
+            relative = safe_relative_path(change.file_path)
+            return resolve_within_root(root, BACKUP_RELATIVE_ROOT / str(change.id) / relative)
+        except ValidationError:
+            return None
+
+    def _build_recovery_item(
+        self, batch: ApplyBatch, change: VirtualChange, root: Path | None
+    ) -> RecoveryItem:
+        """组装一条待决策项：备份原文 / 磁盘现状 / 提案内容三版本 + 备份是否可用。"""
+        backup = self._backup_file_for(root, change) if root is not None else None
+        disk_content: str | None = None
+        disk_state = "unknown"
+        if root is not None:
+            try:
+                target = resolve_within_root(root, safe_relative_path(change.file_path))
+            except ValidationError:
+                target = None
+            if target is not None:
+                if not target.exists():
+                    disk_state = "deleted"
+                elif not target.is_file():
+                    disk_state = "not_file"
+                else:
+                    disk_state = "modified"
+                    try:
+                        disk_content = _clip(
+                            target.read_text(encoding="utf-8"), RECOVERY_CONTENT_CHARS
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        disk_content = None
+        return RecoveryItem(
+            change_id=str(change.id),
+            batch_id=str(batch.id),
+            file_path=change.file_path,
+            original_content=_clip(change.original_content, RECOVERY_CONTENT_CHARS),
+            disk_content=disk_content,
+            proposed_content=_clip(change.proposed_content, RECOVERY_CONTENT_CHARS),
+            backup_available=bool(backup is not None and backup.is_file()),
+            disk_state=disk_state,
+            note=change.apply_error or "",
+            detected_at=batch.finished_at,
+        )
+
+    async def _cover_from_backup(self, change: VirtualChange) -> None:
+        """用备份覆盖当前内容（还原为改动前原文）；备份缺失或根未配置时明确拒绝。"""
+        root = self._current_root_or_none()
+        if root is None:
+            raise ValidationError(
+                "未配置工作区根目录，无法执行覆盖",
+                details={"hint": "设置 FLUX_WORKSPACE_ROOT 后重试"},
+            )
+        backup = self._backup_file_for(root, change)
+        if backup is None or not backup.is_file():
+            raise ConflictError(
+                "备份不存在，无法执行『覆盖备份』；只能保持现状或人工处理",
+                details={"change_id": str(change.id), "file_path": change.file_path},
+            )
+        await asyncio.to_thread(
+            BackupService(workspace_root=root).restore,
+            backup_path=backup,
+            relative_target=safe_relative_path(change.file_path),
+        )
+
+    async def _close_batch_if_resolved(self, change_id: uuid.UUID) -> None:
+        """批内所有挂起项都决策完 → 批从 needs_attention 收为 recovered。"""
+        if self._batches is None:
+            return
+        for batch in await self._batches.list_by_status(ApplyBatchStatus.NEEDS_ATTENTION):
+            if str(change_id) not in batch.change_ids:
+                continue
+            for raw_id in batch.change_ids:
+                try:
+                    other = await self._repo.get(raw_id)
+                except NotFoundError:
+                    continue
+                if other.recovery_resolution is None:
+                    return
+            finished = await self._finish_batch(
+                batch.id,
+                ApplyBatchStatus.RECOVERED,
+                recovery_note=_clip(
+                    f"{batch.recovery_note or ''}；人工决策完成（全部挂起项已处理）",
+                    RECOVERY_NOTE_CHARS,
+                ),
+            )
+            if self._bus is not None and finished is not None:
+                await self._bus.publish(
+                    Events.APPLY_RECOVERED,
+                    {
+                        "batch_id": str(batch.id),
+                        "status": finished.status,
+                        "change_ids": list(batch.change_ids),
+                        "outcomes": ["manually_resolved"],
+                    },
+                )
+            return
 
     # --- 整组审核（P0-02：一次提交的多文件一起批准/拒绝/落盘）---
 
@@ -551,6 +1014,11 @@ class VirtualWorkspaceService:
         if extra:
             payload.update(extra)
         await self._bus.publish(Events.WORKSPACE_CHANGED, payload)
+
+
+def _clip(text: str, limit: int) -> str:
+    """日志字段截断：批日志是给人看的摘要，不保留无限长文本。"""
+    return text if len(text) <= limit else text[:limit]
 
 
 def _failure_reason(exc: Exception) -> str:

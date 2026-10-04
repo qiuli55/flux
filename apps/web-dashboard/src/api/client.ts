@@ -21,6 +21,7 @@ import type {
   HealthData,
   Project,
   ReadyData,
+  RecoveryItem,
   ScanOutcome,
   Task,
   TaskConfirmationOutcome,
@@ -152,6 +153,15 @@ export const api = {
   /** 拒绝（可带理由） */
   reject: (changeIds: string[], reason: string | null) =>
     getData<Change[]>("POST", "/workspace/reject", { change_ids: changeIds, reason }),
+
+  /** 待人工决策的崩溃恢复项（P0-1）：含备份原文 / 磁盘现状 / 提案内容三版本 */
+  listRecovery: () => getData<RecoveryItem[]>("GET", "/workspace/recovery"),
+  /**
+   * 决策一条挂起项：cover = 用备份覆盖还原为改动前原文；keep = 保持现状、提案作废。
+   * 备份缺失时 cover 会被后端 409 拒绝。
+   */
+  resolveRecovery: (changeId: string, action: "cover" | "keep") =>
+    getData<Change>("POST", "/workspace/recovery/resolve", { change_id: changeId, action }),
 
   /** Git 状态：分支 + 改动文件 */
   gitStatus: () => getData<GitStatus>("GET", "/git/status"),
