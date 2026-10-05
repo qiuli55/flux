@@ -18,8 +18,8 @@ import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 private val Context.fluxSettingsStore: DataStore<Preferences> by preferencesDataStore(
     name = "flux_settings",
@@ -90,11 +90,11 @@ class SettingsStore(context: Context) {
         return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
     }
 
-    private fun getOrCreateKey(): SecretKeySpec {
+    private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         val existing = keyStore.getKey(KEY_ALIAS, null)
         if (existing != null) {
-            return SecretKeySpec(existing.encoded, KeyProperties.KEY_ALGORITHM_AES)
+            return existing as SecretKey
         }
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
@@ -109,7 +109,7 @@ class SettingsStore(context: Context) {
                 .build(),
         )
         val generated = generator.generateKey()
-        return SecretKeySpec(generated.encoded, KeyProperties.KEY_ALGORITHM_AES)
+        return generated
     }
 
     companion object {
