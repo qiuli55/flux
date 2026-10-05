@@ -24,6 +24,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import top.qiuli55.flux.mobile.ui.theme.FluxColors
 
 /**
@@ -245,14 +248,10 @@ fun terminalStatusStyle(status: String): Pair<String, Color> = when (status) {
 /** 时间戳：服务端给的是 ISO8601（UTC），界面只显示到分钟并转成可读形态。 */
 fun shortTime(iso: String?): String {
     if (iso.isNullOrBlank()) return "—"
-    return try {
-        // 2026-10-05T07:19:00.038962+00:00 → 10-05 15:19（+8 小时）
-        val date = iso.substring(5, 10)
-        val hour = iso.substring(11, 13).toInt()
-        val minute = iso.substring(14, 16)
-        val localHour = (hour + 8) % 24
-        "$date ${localHour.toString().padStart(2, '0')}:$minute"
-    } catch (_: Exception) {
-        iso
-    }
+    return runCatching {
+        OffsetDateTime.parse(iso)
+            .toInstant()
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+    }.getOrElse { iso }
 }
