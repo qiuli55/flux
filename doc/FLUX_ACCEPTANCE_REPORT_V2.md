@@ -86,16 +86,39 @@
 
 | 项 | 为什么需要你 | 怎么做 |
 |---|---|---|
-| Windows 真机验收 | 需要真实 Windows 电脑；Linux 无 wine 构建不了 NSIS | 按 `apps/desktop/README.md` 的「Windows 真机验收清单」11 步执行；安装包由 CI `desktop-windows`（打 tag `v*` 或手动触发）产出 |
-| CI Windows job 首跑 | 需要 GitHub Actions 运行 | 推送后查看 `backend-windows` 是否绿；红了把日志给我，我来修 |
+| Windows 真机验收 | 需要真实 Windows 电脑；Linux 无 wine 构建不了 NSIS | 按 `apps/desktop/README.md` 的「Windows 真机验收清单」11 步执行；安装包从 GitHub Releases 下载（见下节） |
 | 手机真机验收 | 需要真实手机 | 用手机浏览器打开 Web Dashboard，按移动视图清单逐项验收（Solo / IDE 断点行为） |
 | 50 任务 Benchmark | 真实模型长跑、消耗额度 | 按 `doc/FLUX_50_TASK_REGRESSION_BENCHMARK.md` 执行，证据落 `/tmp/flux-50task/` |
+
+## Windows 平台适配与发行包（2026-10-05 晚补充）
+
+`backend-windows` job 首次真实运行后暴露 25 个失败，逐类定位并修复；修完 CI 在
+windows-latest 上全绿（run `37263234115`，`603 passed`，11m18s），随后用同一份代码重建
+安装包发行。两处修复是**真实产品缺陷**，不只是让 CI 变绿：
+
+| # | 根因 | 影响 | 修复 |
+|---|---|---|---|
+| 1 | `ApplyEngine` 写盘用 `write_text`（`newline=None`） | Windows 上 `\n` 被翻成 `os.linesep`，落盘文件整体变 CRLF，与提案内容、备份的字节口径不一致，污染 hash 比对与 git 差异 | 改 `write_bytes`（字节级写入）；`backup` 写 `.git/info/exclude` 补 `newline="\n"` |
+| 2 | Windows 上对**非自有**进程组发 `CTRL_BREAK_EVENT` | `GenerateConsoleCtrlEvent` 要求组由本进程用 `CREATE_NEW_PROCESS_GROUP` 创建；否则 Ctrl+Break 波及共享控制台——CI 里把运行 pytest 的 pwsh 打进交互调试器，真实场景会把运行 Flux 的终端一起打断（正是设计 §11 要避免的"误伤自身"） | `platforms.signal_group_graceful` 增加 `owns_group`（默认 False，Windows 上默认不发信号、交由 `taskkill` 收尾）；`terminate_process_tree` 与 `CliAgentAdapter.stop` 显式声明 `owns_group=True`；`supervisor._kill_pgid` 保持保守 |
+| 3 | 测试用 `shlex.quote` 拼测试命令 | Windows 路径含反斜杠 → 被整体加单引号 → cmd.exe 不认，14 个落盘类用例失败 | 新增 `tests/conftest.py` 的 `python_command` / `python_script`（两平台各自安全的引用方式），用例里的 `echo` / `sleep` / `printf` 重定向换成 python 等价物 |
+| 4 | 测试 fixture 写文件未指定换行 | Windows 上 fixture 是 CRLF、断言按 LF 计算（8 个失败，含"空提案未被拒绝"的真实根因：CRLF 让提案与原文不等而被当合法提案） | fixture 写入补 `newline="\n"` |
+| 5 | 假 CLI 脚本无扩展名 | Windows 上不是有效可执行文件（`WinError 193`）；npm 安装的真实 CLI 在 Windows 上也是 `.cmd` 包装 | 新增 `platforms.executable_argv`（`.cmd/.bat` 经 `cmd.exe /c` 启动，POSIX 原样），`adapters` 的 `start` 与 `run_probe` 统一使用 |
+| 6 | POSIX-only 权限断言（`st_mode == 0o600`） | Windows 的 stat 不反映 chmod | 断言平台化：POSIX 校验 0600，Windows 校验 `platforms.secure_file`（icacls）成功 |
+
+**安装包发行**：`v0.1.1`（应用版本 0.1.0）由 CI `desktop-windows` 在 windows-latest 真实构建，
+链路为 前端 `tsc + vite build` → PyInstaller onedir 打后端 sidecar → electron-builder NSIS。
+产物与 SHA256 见 Releases 页面；Windows 真机验收清单仍待执行（上表第 1 行）。
+
+**仍未解决的已知不一致（如实记录）**：`apply_engine` 读用户文件走 `read_text`（通用换行会把
+CRLF 归一成 LF），与 `explorer.read` / 写盘 / 备份的字节口径不一致。在真实 CRLF 仓库上
+`original_hash` 有被误判为"已被改动"的风险。本轮未改（涉及读写口径统一与大量 fixture），
+留作下一轮。
 
 ## 已知限制（如实列出）
 
 1. **Codex 由 Flux 拉起未跑通**：本机 `codex-minimax` 包装强制覆盖 `CODEX_HOME`，破坏 run 目录配置隔离；且 `codex exec` 的审批策略 `never` 使所有 MCP 调用被拒。未把 `--dangerously-bypass-*` 类参数放进生产 argv（那会削弱安全边界）。OpenCode 与内置 DSH 不受影响。
 2. **令牌 TTL 24h 未落库**：`agent_tokens` 表无 `expires_at` 列（改表超出本项文件域），当前以"Run 结束即撤销令牌"兜底；如需严格 TTL 需补一次迁移。
-3. **Windows 平台原语未经真机运行**：`platforms.py` 的 Windows 分支（`taskkill /T /F`、`OpenProcess` 探活、`icacls`）本机无法执行，只能由 `backend-windows` CI 或 Windows 真机验证。
+3. **Windows 平台原语的 GUI/安装闭环仍待真机**：`platforms.py` 的 Windows 分支已由 `backend-windows` CI 在 windows-latest 上实际执行（603 passed，含 `taskkill /T /F`、`OpenProcess` 探活、`icacls` 收权、`.cmd` 启动），但安装包在真实 Windows 电脑上的图形界面与卸载/重装行为仍需按清单人工验收。
 4. **macOS 未做**（设计已明确不在范围）。
 5. **回滚部分失败时批保持 `applied`**：已恢复项幂等跳过、可重试，直到全部完成才置 `rolled_back`（设计 §5.2 允许）。
 6. **终端历史有上限**：后端单次续读 2000 条、前端保留 3000 条，超出丢最早（设计 §12 不要求无限历史）。

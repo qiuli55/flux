@@ -20,6 +20,22 @@ apps/desktop/
 → 轮询 `/api/v1/health` 就绪 → 起静态服务器并把 `/api` 反代到后端 → 打开窗口。
 前端保持同源相对路径 `/api/v1`，无需任何改动。
 
+## 下载安装包（现成产物）
+
+三个平台产物都在 GitHub Releases：<https://github.com/qiuli55/flux/releases>
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows | `Flux-Setup-0.1.0-x64.exe` | NSIS 安装程序，由 CI 的 `windows-latest` runner 构建；双击安装，向导可选目录 |
+| Linux | `Flux-0.1.0-x86_64.AppImage` | `chmod +x` 后直接运行 |
+| Linux | `Flux-0.1.0-amd64.deb` | `sudo apt install ./Flux-0.1.0-amd64.deb` |
+
+应用版本为 `0.1.0`；Release 的 tag（如 `v0.1.1`）表示构建批次，用于区分用了哪一版源码。
+安装后数据落在 `~/.flux`（见下节），**卸载不删数据**。
+
+Windows 安装包目前**尚未做真机验收**——装完请按「Windows 真机验收清单」逐步确认；
+每个 Release 的说明里都写了该批次的 SHA256 与已知限制。
+
 ## 依赖版本（快照日期 2026-10-05）
 
 | 组件 | 版本 | 说明 |
