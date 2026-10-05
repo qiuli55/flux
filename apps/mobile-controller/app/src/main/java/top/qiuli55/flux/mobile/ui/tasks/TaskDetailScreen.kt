@@ -88,7 +88,14 @@ fun TaskDetailScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh(quiet = true)
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.startPolling()
+                    viewModel.refresh(quiet = true)
+                }
+                Lifecycle.Event.ON_PAUSE -> viewModel.stopPolling()
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
