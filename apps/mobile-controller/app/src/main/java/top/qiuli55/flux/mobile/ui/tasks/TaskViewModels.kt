@@ -1,6 +1,7 @@
 package top.qiuli55.flux.mobile.ui.tasks
 
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,7 @@ data class TaskListUiState(
 /** 任务列表：打开即拉、下拉刷新、新建任务。 */
 class TaskListViewModel : FluxViewModel() {
 
+    private var refreshJob: Job? = null
     private val _state = MutableStateFlow(TaskListUiState())
     val state = _state.asStateFlow()
 
@@ -36,7 +38,8 @@ class TaskListViewModel : FluxViewModel() {
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             _state.value = _state.value.copy(refreshing = true, error = null)
             try {
                 val api = api()
@@ -102,13 +105,20 @@ data class TaskDetailUiState(
  */
 class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
 
+    private var refreshJob: Job? = null
+    private var pollingJob: Job? = null
     private val _state = MutableStateFlow(TaskDetailUiState())
     val state = _state.asStateFlow()
 
     init {
         refresh()
-        viewModelScope.launch {
-            while (true) {
+        startPolling()
+    }
+
+    fun startPolling() {
+        if (pollingJob?.isActive == true) return
+        pollingJob = viewModelScope.launch {
+            while (kotlinx.coroutines.currentCoroutineContext().isActive) {
                 delay(POLL_INTERVAL_MS)
                 val status = _state.value.task?.status ?: continue
                 if (status == "running" || status == "waiting_for_user_decision") {
@@ -127,7 +137,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     fun refresh(quiet: Boolean = false) {
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             if (!quiet) _state.value = _state.value.copy(loading = _state.value.task == null)
             try {
                 val api = api()
@@ -151,6 +162,11 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 _state.value = _state.value.copy(loading = false, error = e.message ?: "加载失败")
             }
         }
+    }
+
+    fun stopPolling() {
+        pollingJob?.cancel()
+        pollingJob = null
     }
 
     fun send() {
@@ -268,6 +284,13 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 _state.value = _state.value.copy(busyAction = null, error = e.message ?: "操作失败")
             }
         }
+    }
+
+    override fun onCleared() {
+        stopPolling()
+        refreshJob?.cancel()
+        refreshJob = null
+        super.onCleared()
     }
 
     companion object {
