@@ -53,6 +53,7 @@ class ChangeViewModel(private val changeId: String) : FluxViewModel() {
     fun rollback() = action("已回滚") { api -> api.rollbackChange(changeId) }
 
     private fun action(hint: String, block: suspend (FluxApi) -> Change) {
+        if (_state.value.busy) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true, error = null, notice = null)
             try {
