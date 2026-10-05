@@ -1,6 +1,6 @@
 package top.qiuli55.flux.mobile.data
 
-import kotlinx.serialization.JsonElement
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.JsonObject
