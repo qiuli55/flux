@@ -16,7 +16,7 @@ adb install -r flux-mobile-0.1.0-debug.apk
 # 或者把 APK 复制到手机文件管理器里点开安装
 ```
 
-应用版本 `0.1.0`（versionName / versionCode 1），最低 Android 8.0（API 26），target API 34。
+应用版本 `0.1.1`（versionName / versionCode 2），最低 Android 8.0（API 26），target API 34。
 
 ## 首次配置
 
@@ -89,7 +89,8 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug
 
 ## 已知限制
 
-- **debug 包，无正式签名**：个人使用没问题；上架/长期分发需要签名密钥（红线：密钥不入库）。
+- **当前构建目标为 debug 包**：个人内测可用；正式分发需要 release 签名与进一步加固（红线：密钥不入库）。
+- **v0.1.1 稳定性修复**：启动配置读取失败不再直接崩溃；Terminal SSE 断线支持退避重连与最近事件补偿；事件去重集合有上限；Terminal Stop 在非 active 会话中禁用；防止重复创建终端会话。
 - **明文 HTTP 已禁用**（`AndroidManifest` 的 `usesCleartextTraffic="false"`）：连局域网 `http://` 实例需要改这一行（下一批的家庭 Windows 场景大概率要改）。
 - **模型凭据依赖**：`/opt/ops/.env` 的 `DEEPSEEK_API_KEY` 被复用；缺它会以 `MISSING_CREDENTIAL` 失败。
 - **移动端不能编辑需求确认**：设计选择，避免在小屏上做"会真正落到文件里"的修改；改确认走桌面端。
