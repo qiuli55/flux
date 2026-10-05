@@ -114,7 +114,7 @@ data class Task(
     @SerialName("agent_id") val agentId: String? = null,
     @SerialName("project_id") val projectId: String? = null,
     val result: JsonElement? = null,
-    val createdAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
     @SerialName("decision_mode") val decisionMode: String = "auto",
     val confirmation: Confirmation? = null,
     val decisions: List<Decision> = emptyList(),
@@ -126,8 +126,8 @@ data class Task(
 data class Run(
     val runId: String = "",
     @SerialName("session_id") val sessionId: String = "",
-    val taskId: String? = null,
-    val agentId: String? = null,
+    @SerialName("task_id") val taskId: String? = null,
+    @SerialName("agent_id") val agentId: String? = null,
     val instruction: String = "",
     val status: String = "",
     val pid: Int? = null,
@@ -149,9 +149,9 @@ data class Run(
 @Serializable
 data class Change(
     val id: String = "",
-    val projectId: String? = null,
+    @SerialName("project_id") val projectId: String? = null,
     val taskId: String? = null,
-    val groupId: String? = null,
+    @SerialName("group_id") val groupId: String? = null,
     @SerialName("file_path") val filePath: String = "",
     val kind: String = "modify",
     @SerialName("original_hash") val originalHash: String = "",
@@ -196,18 +196,18 @@ data class TaskStartOutcome(
 @Serializable
 data class TerminalSession(
     val id: String = "",
-    val runId: String? = null,
+    @SerialName("run_id") val runId: String? = null,
     @SerialName("workspace_root") val workspaceRoot: String? = null,
     val status: String = "active",
     @SerialName("next_seq") val nextSeq: Int = 1,
     val createdAt: String? = null,
-    val finishedAt: String? = null,
+    @SerialName("finished_at") val finishedAt: String? = null,
 )
 
 @Serializable
 data class TerminalEvent(
     val id: String = "",
-    val sessionId: String = "",
+    @SerialName("session_id") val sessionId: String = "",
     val seq: Int = 0,
     val kind: String = "",
     val source: String = "",
