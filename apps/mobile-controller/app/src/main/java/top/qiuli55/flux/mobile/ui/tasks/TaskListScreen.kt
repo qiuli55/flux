@@ -115,10 +115,7 @@ fun TaskListScreen(
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        top = 10.dp,
-                        bottom = 96.dp,
-                    ),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 10.dp, bottom = 96.dp),
                 ) {
                     items(state.tasks, key = { it.id }) { task ->
                         TaskCard(task = task, onClick = { onOpenTask(task.id) })
@@ -130,10 +127,14 @@ fun TaskListScreen(
 
     if (showCreate) {
         NewTaskDialog(
-            onDismiss = { showCreate = false },
+            creating = state.creating,
+            error = state.error,
+            onDismiss = { if (!state.creating) showCreate = false },
             onCreate = { description, mode ->
-                showCreate = false
-                viewModel.createTask(description, mode) { taskId -> onOpenTask(taskId) }
+                viewModel.createTask(description, mode) { taskId ->
+                    showCreate = false
+                    onOpenTask(taskId)
+                }
             },
         )
     }
@@ -144,23 +145,12 @@ private fun TaskCard(task: Task, onClick: () -> Unit) {
     val (label, color) = taskStatusStyle(task.status)
     FluxCard(modifier = Modifier.clickable(onClick = onClick)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = task.description,
-                style = MaterialTheme.typography.bodyLarge,
-                color = FluxColors.text,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            Text(text = task.description, style = MaterialTheme.typography.bodyLarge, color = FluxColors.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             StatusChip(label, color, Modifier.padding(start = 10.dp))
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            MonoText(
-                text = task.id.take(8),
-                color = FluxColors.text3,
-                modifier = Modifier.weight(1f),
-            )
+            MonoText(text = task.id.take(8), color = FluxColors.text3, modifier = Modifier.weight(1f))
             MonoText(text = shortTime(task.createdAt), color = FluxColors.text3)
         }
         if (task.runId != null) {
@@ -172,7 +162,12 @@ private fun TaskCard(task: Task, onClick: () -> Unit) {
 
 /** 新建任务：只收"要做什么"与决策方式，不在这里配置 Agent（服务端按档案选默认 runtime）。 */
 @Composable
-private fun NewTaskDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
+private fun NewTaskDialog(
+    creating: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onCreate: (String, String) -> Unit,
+) {
     var description by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("auto") }
 
@@ -188,34 +183,27 @@ private fun NewTaskDialog(onDismiss: () -> Unit, onCreate: (String, String) -> U
                     label = { Text("要做什么") },
                     minLines = 3,
                     colors = fluxFieldColors(),
+                    enabled = !creating,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "遇到可选方案时",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = FluxColors.text3,
-                )
+                Text(text = "遇到可选方案时", style = MaterialTheme.typography.labelSmall, color = FluxColors.text3)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = mode == "auto",
-                        onClick = { mode = "auto" },
-                        label = { Text("AI 自己定") },
-                    )
-                    FilterChip(
-                        selected = mode == "manual",
-                        onClick = { mode = "manual" },
-                        label = { Text("停下来问我") },
-                    )
+                    FilterChip(selected = mode == "auto", onClick = { mode = "auto" }, enabled = !creating, label = { Text("AI 自己定") })
+                    FilterChip(selected = mode == "manual", onClick = { mode = "manual" }, enabled = !creating, label = { Text("停下来问我") })
+                }
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    ErrorBanner(error)
                 }
             }
         },
         confirmButton = {
             TextButton(
                 onClick = { onCreate(description, mode) },
-                enabled = description.isNotBlank(),
-            ) { Text("创建") }
+                enabled = description.isNotBlank() && !creating,
+            ) { Text(if (creating) "创建中…" else "创建") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !creating) { Text("取消") } },
     )
 }
