@@ -23,9 +23,7 @@ class ChangeViewModel(private val changeId: String) : FluxViewModel() {
     private val _state = MutableStateFlow(ChangeUiState())
     val state = _state.asStateFlow()
 
-    init {
-        refresh()
-    }
+    init { refresh() }
 
     fun dismissNotice() {
         _state.value = _state.value.copy(notice = null, error = null)
@@ -43,12 +41,21 @@ class ChangeViewModel(private val changeId: String) : FluxViewModel() {
         }
     }
 
-    fun accept() = action("已批准") { api -> api.acceptChanges(listOf(changeId)).first() }
+    fun accept() = action("已批准") { api ->
+        api.acceptChanges(listOf(changeId)).firstOrNull()
+            ?: throw FluxApiException("empty_response", "服务端没有返回已批准的变更")
+    }
 
     /** 应用 = 真正落盘（会跑测试并按结果决定是否回滚，失败原因在 apply_error 里）。 */
-    fun apply() = action("已提交落盘") { api -> api.applyChanges(listOf(changeId)).first() }
+    fun apply() = action("已提交落盘") { api ->
+        api.applyChanges(listOf(changeId)).firstOrNull()
+            ?: throw FluxApiException("empty_response", "服务端没有返回应用结果")
+    }
 
-    fun reject() = action("已拒绝") { api -> api.rejectChanges(listOf(changeId), reason = null).first() }
+    fun reject() = action("已拒绝") { api ->
+        api.rejectChanges(listOf(changeId), reason = null).firstOrNull()
+            ?: throw FluxApiException("empty_response", "服务端没有返回拒绝结果")
+    }
 
     fun rollback() = action("已回滚") { api -> api.rollbackChange(changeId) }
 
