@@ -41,9 +41,17 @@ class SetupViewModel : FluxViewModel() {
 
     init {
         viewModelScope.launch {
-            val config = config()
-            _state.value = _state.value.copy(baseUrl = config.baseUrl, token = config.token)
-            if (config.isComplete) test()
+            try {
+                val config = config()
+                _state.value = _state.value.copy(baseUrl = config.baseUrl, token = config.token)
+                if (config.isComplete) test()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = "读取已保存配置失败：${e.message ?: e::class.simpleName ?: "未知错误"}",
+                )
+            }
         }
     }
 
