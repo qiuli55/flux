@@ -1,6 +1,7 @@
 package top.qiuli55.flux.mobile.ui.setup
 
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -88,16 +89,35 @@ class SetupViewModel : FluxViewModel() {
             return
         }
         viewModelScope.launch {
-            _state.value = _state.value.copy(saving = true, error = null)
-            // 地址归一化（补协议头、去尾斜杠）后再存：避免把 "flux.qiuli55.top/mobile/" 这种写法带进请求拼接
-            val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
-            FluxEnv.settings.save(normalized, current.token)
-            _state.value = _state.value.copy(
-                saving = false,
-                baseUrl = normalized,
-                savedHint = "已保存，后续请求都走 $normalized",
-            )
-            onSaved()
+            _state.value = _state.value.copy(saving = true, error = null, savedHint = null)
+            try {
+                // 地址归一化（补协议头、去尾斜杠）后再存：避免把 "flux.qiuli55.top/mobile/" 这种写法带进请求拼接。
+                val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
+                FluxEnv.settings.save(normalized, current.token)
+                _state.value = _state.value.copy(
+                    saving = false,
+                    baseUrl = normalized,
+                    savedHint = "已保存，后续请求都走 $normalized",
+                )
+
+                // 导航属于 UI 回调；即使导航本身发生异常，也不能让保存配置的协程把整个 App 带崩。
+                try {
+                    onSaved()
+                } catch (e: Exception) {
+                    _state.value = _state.value.copy(
+                        error = "配置已保存，但页面跳转失败：${e.message ?: "未知错误"}",
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 之前这里没有异常边界：DataStore、URL 归一化或其他保存异常会直接从
+                // viewModelScope 冒泡，导致 Android 进程崩溃。保存失败应该留在设置页展示错误。
+                _state.value = _state.value.copy(
+                    saving = false,
+                    error = "保存配置失败：${e.message ?: e::class.simpleName ?: "未知错误"}",
+                )
+            }
         }
     }
 
