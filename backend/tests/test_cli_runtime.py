@@ -30,9 +30,10 @@ from flux.core.agent_runtime.runtimes.base import (
     RUNTIME_CODEX,
     RuntimeProcess,
 )
+from flux.core.agent_runtime.runtimes.cli import _codex_config, _normalize_codex_event
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.enums import AgentInstallStatus, AgentRole
-from flux.errors import ValidationError
+from flux.errors import ConfigurationError, ValidationError
 from flux.main import create_app
 
 PREFIX = "/api/v1"
@@ -60,6 +61,22 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 print(json.dumps({"type": "message", "text": "holding"}), flush=True)
 while True:
     time.sleep(0.1)
+"""
+
+#: 仿真实 codex：stdout 是 --json 协议流，stderr 是日志噪声（Info/提示）
+_NOISY_CODEX_SCRIPT = """#!/usr/bin/env python3
+import json, sys
+print("2026-10-06T00:00:00Z  INFO codex_otel: noisy log line", file=sys.stderr, flush=True)
+print("Reading additional input from stdin...", file=sys.stderr, flush=True)
+print(json.dumps({"type": "thread.started", "thread_id": "t1"}), flush=True)
+print(json.dumps({"type": "turn.started"}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {"id": "i1", "type": "reasoning"}}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {
+    "id": "i2", "type": "mcp_tool_call", "tool": "context_get"}}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {
+    "id": "i3", "type": "agent_message", "text": "报告：只读完成，未改动任何文件。"}}), flush=True)
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}), flush=True)
+sys.exit(0)
 """
 
 
@@ -216,6 +233,134 @@ def test_cli_run_completes_and_emits_unified_events(
         else:
             assert oct(config.stat().st_mode & 0o777) == "0o600"
         assert "mcp_servers.flux" in config.read_text(encoding="utf-8")
+
+
+def test_codex_config_openai_uses_builtin_provider(settings: Settings) -> None:
+    """默认（openai）：不写供应商块，只注入 MCP——与改造前的行为一致。"""
+    text = _codex_config("http://127.0.0.1:8801/mcp", "tok", settings=settings)
+    assert "model_providers" not in text
+    assert "[mcp_servers.flux]" in text
+    # 不放行 MCP 工具审批的话，codex 会判定「MCP 不可用」而退回自己读文件
+    assert 'default_tools_approval_mode = "approve"' in text
+
+
+def test_codex_event_normalisation_maps_items() -> None:
+    """codex `--json` 是 item / turn 两级结构：只有 agent_message 进答复，其余归类。"""
+    run_id = "r1"
+
+    def _type(payload: dict) -> str:
+        return _normalize_codex_event(payload, run_id, RUNTIME_CODEX).type
+
+    assert _type({"type": "thread.started"}) == "status"
+    assert _type({"type": "turn.completed", "usage": {}}) == "final"
+    assert _type({"type": "turn.failed", "error": {"message": "boom"}}) == "error"
+    assert (
+        _type({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}})
+        == "message"
+    )
+    assert _type({"type": "item.completed", "item": {"type": "reasoning"}}) == "status"
+    assert (
+        _type({"type": "item.completed", "item": {"type": "error", "message": "warn"}}) == "error"
+    )
+    assert (
+        _type({"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "context_get"}})
+        == "tool_call"
+    )
+    assert (
+        _type({"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}})
+        == "tool_call"
+    )
+    # 非 JSON 行（parse_event 带 non_json 标记）不进答复：CLI 的日志噪声不许冒充 Agent 输出
+    assert (
+        _type({"type": "text", "text": "Reading additional input from stdin...", "non_json": True})
+        == "status"
+    )
+    message_event = _normalize_codex_event(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "结论"}},
+        run_id,
+        "codex",
+    )
+    assert message_event.data["text"] == "结论"
+
+
+def test_codex_config_writes_deepseek_provider_block(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """隔离 CODEX_HOME 里没有登录态：第三方供应商必须自带凭据来源（env_key，密钥不落盘）。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-probe-not-a-real-key")
+    codex_settings = settings.model_copy(
+        update={
+            "codex_provider": "deepseek",
+            "codex_model": "deepseek-flash",
+            "codex_model_catalog": "/opt/codex/models.json",
+            "deepseek_base_url": "https://api.deepseek.com",
+        }
+    )
+    text = _codex_config("http://127.0.0.1:8801/mcp", "tok", settings=codex_settings)
+    assert 'model = "deepseek-flash"' in text
+    assert 'model_provider = "deepseek"' in text
+    assert "[model_providers.deepseek]" in text
+    assert 'base_url = "https://api.deepseek.com"' in text
+    assert 'wire_api = "responses"' in text
+    assert 'env_key = "DEEPSEEK_API_KEY"' in text
+    assert 'model_catalog_json = "/opt/codex/models.json"' in text
+    assert "[mcp_servers.flux]" in text
+    # 密钥只以变量名出现：明文绝不写进这次性配置文件
+    assert "sk-probe-not-a-real-key" not in text
+
+
+def test_codex_config_requires_env_key_for_third_party(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """凭据来源缺失时提前报错：不能让 Run 起来才在 codex 日志里发现「未登录」。"""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    codex_settings = settings.model_copy(
+        update={"codex_provider": "deepseek", "codex_model": "deepseek-flash"}
+    )
+    with pytest.raises(ConfigurationError):
+        _codex_config("http://127.0.0.1:8801/mcp", "tok", settings=codex_settings)
+
+
+def test_codex_config_rejects_unknown_provider(settings: Settings) -> None:
+    codex_settings = settings.model_copy(update={"codex_provider": "gemini", "codex_model": "x"})
+    with pytest.raises(ConfigurationError):
+        _codex_config("http://127.0.0.1:8801/mcp", "tok", settings=codex_settings)
+
+
+def test_cli_run_keeps_stderr_out_of_reply(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """真实 codex 的形态：stdout 是 --json 协议流，stderr 是日志。
+
+    答复只取 agent_message；stderr 的噪声单独落 run 目录，绝不冒充 Agent 输出。
+    """
+    binary = _write_script(tmp_path / "fake-codex-noisy", _NOISY_CODEX_SCRIPT)
+    with _cli_app(settings, tmp_path, binary) as client:
+        container = client.app.state.container
+        _mark_ready(container, RUNTIME_CODEX)
+        agent_id = _create_cli_agent(client, RUNTIME_CODEX)
+        started = _start_task(client, agent_id)
+        task_id = started["task"]["id"]
+        run_id = started["task"]["run_id"]
+
+        settled = _wait_status(client, task_id, "completed")
+        assert settled["status"] == "completed"
+        message = _wait_last_message(client, task_id, "run_finished")
+        assert message["content"] == "报告：只读完成，未改动任何文件。"
+        assert "INFO" not in message["content"]
+
+        # MCP 工具调用进了事件总线（统一词表），供 UI/排障消费
+        types = [
+            payload.get("event_type")
+            for event, payload in container.bus.history
+            if event == "dsh.event" and payload.get("run_id") == run_id
+        ]
+        assert "tool_call" in types and "message" in types and "final" in types
+
+        # 噪声留在 run 目录，不丢证据
+        stderr_log = Path(container.settings.dsh_home) / "runs" / run_id / "stderr.log"
+        assert stderr_log.is_file()
+        assert "noisy log line" in stderr_log.read_text(encoding="utf-8")
 
 
 def test_cli_run_nonzero_exit_is_failed(

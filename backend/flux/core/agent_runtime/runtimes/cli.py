@@ -132,6 +132,8 @@ class CliRuntime:
         self._queues: dict[str, asyncio.Queue[Any]] = {}
         self._tokens: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        #: run_id → stderr 文件句柄（进程退出、Run 落终态后关闭）
+        self._stderr_files: dict[str, Any] = {}
 
     # --- AgentRuntime ---
 
@@ -191,6 +193,9 @@ class CliRuntime:
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
+        stderr_handle = self._open_stderr(launch)
+        if stderr_handle is not None:
+            self._stderr_files[launch.run_id] = stderr_handle
         try:
             await self._supervisor.create_run(
                 run_id=launch.run_id,
@@ -201,9 +206,14 @@ class CliRuntime:
             )
             await self._supervisor.mark_starting(launch.run_id)
             process = await asyncio.to_thread(
-                self._adapter.start, launch.argv, env=launch.env, cwd=launch.cwd
+                self._adapter.start,
+                launch.argv,
+                env=launch.env,
+                cwd=launch.cwd,
+                stderr=stderr_handle,
             )
         except Exception:
+            self._close_stderr(launch.run_id)
             await self._revoke(launch.token_id)
             raise
 
@@ -211,6 +221,7 @@ class CliRuntime:
             # 取消/超时抢先落定：不要再跑，直接清理
             await asyncio.to_thread(self._adapter.stop, process)
             await self._revoke(launch.token_id)
+            self._close_stderr(launch.run_id)
             return self._process(launch, process)
 
         await self._supervisor.mark_running(launch.run_id, pid=process.pid, pgid=process.pgid)
@@ -284,7 +295,9 @@ class CliRuntime:
             home = run_dir / "codex-home"
             home.mkdir(parents=True, exist_ok=True)
             config = home / "config.toml"
-            config.write_text(_codex_config(url, token_raw), encoding="utf-8")
+            config.write_text(
+                _codex_config(url, token_raw, settings=self._settings), encoding="utf-8"
+            )
             self._secure(config)
             return {"CODEX_HOME": str(home)}
         config = run_dir / "opencode.json"
@@ -328,7 +341,7 @@ class CliRuntime:
                 parsed = self._adapter.parse_event(line)
                 if parsed is None:
                     continue
-                event = _normalize_event(parsed, launch.run_id, self.runtime_id)
+                event = self._normalize(parsed, launch.run_id)
                 if event.type == EVENT_MESSAGE:
                     text = _text_of(event.data)
                     if text:
@@ -355,6 +368,28 @@ class CliRuntime:
                 event.run_id, {"event_type": event.type, "runtime_id": self.runtime_id}
             )
 
+    def _normalize(self, parsed: dict[str, Any], run_id: str) -> RuntimeEvent:
+        """按 runtime 归一化事件：codex 的 `--json` 是 item / turn 两级结构，与统一词表不同源。"""
+        if self.runtime_id == RUNTIME_CODEX:
+            return _normalize_codex_event(parsed, run_id, self.runtime_id)
+        return _normalize_event(parsed, run_id, self.runtime_id)
+
+    def _open_stderr(self, launch: RuntimeLaunch) -> Any:
+        """stderr 单独收进 run 目录：CLI 的 INFO 日志/提示不许混进事件流与 Agent 答复。"""
+        try:
+            return (Path(launch.run_dir) / "stderr.log").open("ab")
+        except OSError:
+            logger.warning(
+                "cli.run 打不开 stderr 日志，本次 Run 的 CLI 噪声将被丢弃 run=%s", launch.run_id
+            )
+            return None
+
+    def _close_stderr(self, run_id: str) -> None:
+        handle = self._stderr_files.pop(run_id, None)
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+
     async def _finalize(
         self,
         launch: RuntimeLaunch,
@@ -378,6 +413,7 @@ class CliRuntime:
             )
         finally:
             await self._revoke(self._tokens.pop(launch.run_id, launch.token_id))
+            self._close_stderr(launch.run_id)
         if final is not status:
             # 看护器改写了终态（取消/超时先落定）：本线程算出的失败原因不串进结果
             error = None
@@ -450,6 +486,51 @@ def _normalize_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> Ru
     return RuntimeEvent(event_type, run_id, {**parsed, "runtime_id": runtime_id})
 
 
+#: codex `exec --json` 真实事件（codex-cli 0.157.1 实测，2026-10-06）：
+#:   {"type":"thread.started","thread_id":...} / {"type":"turn.started"}
+#:   {"type":"turn.completed","usage":{...}}
+#:   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+#:   {"type":"item.completed","item":{"type":"error","message":"..."}}
+#:   {"type":"item.completed","item":{"type":"mcp_tool_call"|"command_execution", ...}}
+#: 只有 agent_message 进答复；其余按工具/状态/错误归类——答复里绝不掺 CLI 的日志噪声。
+def _normalize_codex_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> RuntimeEvent:
+    raw_type = str(parsed.get("type") or "").strip().lower()
+    item = parsed.get("item")
+    item = item if isinstance(item, dict) else {}
+    item_type = str(item.get("type") or "").strip().lower()
+    data = {**parsed, "runtime_id": runtime_id}
+
+    if parsed.get("non_json"):
+        # parse_event 的兜底标记：CLI 的裸日志/提示只当状态，绝不冒充答复
+        return RuntimeEvent(EVENT_STATUS, run_id, data)
+    if raw_type in ("turn.failed", "thread.failed", "error"):
+        return RuntimeEvent(EVENT_ERROR, run_id, {**data, "message": _text_of(parsed) or raw_type})
+    if raw_type in ("turn.completed", "thread.completed"):
+        return RuntimeEvent(EVENT_FINAL, run_id, {**data, "status": "completed"})
+    if raw_type.startswith("item."):
+        if item_type == "agent_message":
+            return RuntimeEvent(
+                EVENT_MESSAGE, run_id, {**data, "text": str(item.get("text") or "")}
+            )
+        if item_type == "error":
+            return RuntimeEvent(
+                EVENT_ERROR, run_id, {**data, "message": str(item.get("message") or "")}
+            )
+        if "tool_call" in item_type or item_type == "command_execution":
+            name = item.get("tool") or item.get("name") or item.get("command") or item_type
+            return RuntimeEvent(EVENT_TOOL_CALL, run_id, {**data, "name": str(name)})
+        if "tool" in item_type:
+            return RuntimeEvent(EVENT_TOOL_RESULT, run_id, data)
+        # reasoning / 其它 item：只记状态，不进答复
+        return RuntimeEvent(EVENT_STATUS, run_id, {**data, "phase": item_type or raw_type})
+    mapped = _EVENT_TYPE_MAP.get(raw_type)
+    if mapped is not None:
+        # 兜底认通用词表（包装脚本/其它 CLI 可能直接吐统一词表的行）
+        return RuntimeEvent(mapped, run_id, data)
+    # 前后未识别的一律 status（codex 的 INFO 日志与提示走 stderr，不该出现在这里）
+    return RuntimeEvent(EVENT_STATUS, run_id, data)
+
+
 def _text_of(data: dict[str, Any]) -> str:
     for key in ("text", "content", "message"):
         value = data.get(key)
@@ -458,17 +539,69 @@ def _text_of(data: dict[str, Any]) -> str:
     return ""
 
 
-def _codex_config(url: str, token: str | None) -> str:
-    """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。"""
+def _codex_config(url: str, token: str | None, *, settings: Settings) -> str:
+    """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
+
+    隔离 CODEX_HOME 里没有用户的 auth.json，codex 会判定「未登录」；所以模型通道必须自带
+    凭据来源：第三方供应商写 [model_providers.<name>]（只写 env_key 环境变量名，密钥不落盘）。
+    """
     lines = ["# Flux 自动生成：为本次 Run 注入 Flux MCP（含一次性令牌，权限 0600）。"]
+    lines += _codex_provider_lines(settings)
     if token is not None:
         lines += [
             "[mcp_servers.flux]",
             f'url = "{url}"',
             f'http_headers = {{ Authorization = "Bearer {token}" }}',
+            # codex exec 的审批策略是 never，MCP 工具调用默认仍要审批——不显式放行，
+            # Agent 会判定「MCP 不可用」退回自己读文件（2026-10-06 真实 Run 记录）。
+            # 取值实测只有 auto / prompt / writes / approve（codex 0.157.1 解析报错原文）。
+            'default_tools_approval_mode = "approve"',
             "",
         ]
     return "\n".join(lines)
+
+
+def _codex_provider_lines(settings: Settings) -> list[str]:
+    """codex 的模型通道：openai（内置供应商）不写，第三方供应商写一块 model_providers。"""
+    provider = (settings.codex_provider or "").strip().lower()
+    model = (settings.codex_model or "").strip()
+    catalog = (settings.codex_model_catalog or "").strip()
+    if provider in ("", "openai"):
+        # 空 model = 用 codex 自带默认模型
+        return [f'model = "{model}"', ""] if model else []
+    if provider != "deepseek":
+        raise ConfigurationError(
+            f"codex 不支持该模型供应商：{provider}（已知：openai / deepseek）",
+            details={"provider": provider, "hint": "FLUX_CODEX_PROVIDER"},
+        )
+    if not model:
+        raise ConfigurationError(
+            "codex 走第三方供应商必须显式指定模型（FLUX_CODEX_MODEL）",
+            details={"provider": provider},
+        )
+    env_key = "DEEPSEEK_API_KEY"
+    if not os.environ.get(env_key):
+        # 提前拦：等 codex 自己报「未登录」时，排查要从 Run 日志里翻，不如这里说清楚
+        raise ConfigurationError(
+            f"codex 走 {provider} 需要环境变量 {env_key}（Flux 只写变量名，不下发密钥）",
+            details={"provider": provider, "env_key": env_key},
+        )
+    lines = [f'model = "{model}"', f'model_provider = "{provider}"']
+    # DeepSeek 没有 codex 内置的联网搜索工具，留着会把请求打回 400
+    lines += ['web_search = "disabled"']
+    if catalog:
+        lines += [f'model_catalog_json = "{catalog}"']
+    lines += [
+        "",
+        f"[model_providers.{provider}]",
+        'name = "DeepSeek"',
+        f'base_url = "{settings.deepseek_base_url.strip()}"',
+        # DeepSeek 原生支持 Responses API，不需要 chat 兼容层
+        'wire_api = "responses"',
+        f'env_key = "{env_key}"',
+        "",
+    ]
+    return lines
 
 
 def _opencode_config(url: str, token: str | None) -> str:

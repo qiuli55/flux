@@ -157,7 +157,12 @@ def test_parse_event_normalizes_lines() -> None:
         "type": "delta",
         "text": "hi",
     }
-    assert adapter.parse_event("plain log line") == {"type": "text", "text": "plain log line"}
+    # 非 JSON 行带 non_json 标记：runtime 据此决定去向（codex 侧只当状态，不进答复）
+    assert adapter.parse_event("plain log line") == {
+        "type": "text",
+        "text": "plain log line",
+        "non_json": True,
+    }
 
 
 def test_handshake_carries_protocol_and_capabilities() -> None:

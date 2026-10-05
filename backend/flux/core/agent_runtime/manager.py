@@ -41,7 +41,9 @@ class AgentSpec:
     tools: tuple[str, ...] = ()
     permissions: frozenset[Capability] = frozenset()
     #: 执行该 Agent 的 runtime（P2-1 §6.2）：dsh（内置，默认）/ codex / opencode。
-    #: 落库在 agents.config["runtime"]；不进 to_dict（档案公开形态保持 M0 冻结字段）。
+    #: 落库在 agents.config["runtime"]；曾经不进 to_dict，2026-10-06 起随 to_dict 输出
+    #: （UI 需要看到"这个 Agent 由谁执行"，否则接入 CLI 后无法确认任务会走哪条路）——
+    #: 属向后兼容的加字段，M0 冻结的既有字段语义不变。
     runtime: str = DEFAULT_RUNTIME
 
     def to_dict(self) -> dict[str, object]:
@@ -52,6 +54,7 @@ class AgentSpec:
             "skills": list(self.skills),
             "tools": list(self.tools),
             "permissions": sorted(str(p) for p in self.permissions),
+            "runtime": self.runtime,
         }
 
 

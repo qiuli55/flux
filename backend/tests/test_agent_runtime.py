@@ -43,7 +43,7 @@ def test_create_publishes_state_change_events(container: Container) -> None:
 
 
 def test_spec_serialises_without_model_fields(container: Container) -> None:
-    """档案只含身份与权限边界：模型与 system prompt 是 Agent 自己的事。"""
+    """档案只含身份、权限边界与执行引擎（runtime）：模型与 system prompt 是 Agent 自己的事。"""
     handle = asyncio.run(container.agents.create(_spec(description="负责实现代码改动")))
     assert handle.to_dict() == {
         "id": handle.id_str,
@@ -55,6 +55,8 @@ def test_spec_serialises_without_model_fields(container: Container) -> None:
             "skills": [],
             "tools": [],
             "permissions": ["file.write"],
+            # UI 要显示"这个 Agent 由谁执行"（2026-10-06 起随 to_dict 输出）
+            "runtime": "dsh",
         },
     }
 

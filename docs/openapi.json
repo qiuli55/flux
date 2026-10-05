@@ -666,6 +666,30 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InstallationConnectRequest": {
+        "description": "接入一个本机 CLI Agent（或全部已安装的）。\n\n- `agent`：adapter 名（codex / opencode），必须是服务端内置 adapter 之一；\n- `all=true`：接入全部**已安装**的 Agent（未安装的跳过，不导致整体失败）；\n- 两者要么给一个，要么给 all，都不给按 422 拒绝（避免\"接入什么\"含糊不清）。",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "all": {
+            "default": false,
+            "title": "All",
+            "type": "boolean"
+          }
+        },
+        "title": "InstallationConnectRequest",
+        "type": "object"
+      },
       "MemoryLayer": {
         "description": "三层记忆边界（批次② §4.2）。\n\n- USER：跨 Workspace 的偏好与约定，用户确认后才写，可查可删；\n- PROJECT：每个 Workspace / Project 自动沉淀（底座是 Project Brain）；\n- ENVIRONMENT：Flux 运行规则，全局、由平台代码维护，优先于普通项目上下文。",
         "enum": [
@@ -1957,6 +1981,163 @@
         "summary": "Ready",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/api/v1/installations": {
+      "get": {
+        "description": "已登记的接入记录（含未安装的：NOT_INSTALLED 也是事实）。",
+        "operationId": "list_installations_api_v1_installations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Installations Api V1 Installations Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Installations",
+        "tags": [
+          "installations"
+        ]
+      }
+    },
+    "/api/v1/installations/connect": {
+      "post": {
+        "description": "接入 Agent：指定 `agent` 接入单个，`all=true` 接入全部已安装的。\n\n未安装的 Agent 会被跳过（all 模式）或 422 拒绝（单个模式）——\n不允许\"假装接入成功\"。",
+        "operationId": "connect_installation_api_v1_installations_connect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallationConnectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Connect Installation Api V1 Installations Connect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connect Installation",
+        "tags": [
+          "installations"
+        ]
+      }
+    },
+    "/api/v1/installations/scan": {
+      "post": {
+        "description": "扫描全部内置 Adapter，刷新安装事实并落库。\n\n重扫不会把已接入的 Agent 降级（卸载除外）——状态机单向收敛，见 InstallationService。",
+        "operationId": "scan_installations_api_v1_installations_scan_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scan Installations Api V1 Installations Scan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Scan Installations",
+        "tags": [
+          "installations"
+        ]
+      }
+    },
+    "/api/v1/installations/{name}": {
+      "delete": {
+        "description": "移除接入记录（不卸载本机 CLI，只删 Flux 这边的登记）。",
+        "operationId": "remove_installation_api_v1_installations__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Installation Api V1 Installations  Name  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove Installation",
+        "tags": [
+          "installations"
         ]
       }
     },

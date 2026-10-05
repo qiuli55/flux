@@ -261,3 +261,15 @@ class CapabilityImportRequest(BaseModel):
     kind: CapabilityKind
     name: str = Field(min_length=1, max_length=128)
     decision: Literal["keep", "replace"] | None = None
+
+
+class InstallationConnectRequest(BaseModel):
+    """接入一个本机 CLI Agent（或全部已安装的）。
+
+    - `agent`：adapter 名（codex / opencode），必须是服务端内置 adapter 之一；
+    - `all=true`：接入全部**已安装**的 Agent（未安装的跳过，不导致整体失败）；
+    - 两者要么给一个，要么给 all，都不给按 422 拒绝（避免"接入什么"含糊不清）。
+    """
+
+    agent: str | None = Field(default=None, max_length=64)
+    all: bool = False

@@ -126,8 +126,13 @@ class CliAgentAdapter(ABC):
         *,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        stderr: Any | None = None,
     ) -> CliProcess:
-        """以独立进程组启动 CLI，返回可取消的进程句柄。"""
+        """以独立进程组启动 CLI，返回可取消的进程句柄。
+
+        `stderr` 给文件句柄时，stderr 单独落文件——CLI 的日志与提示不许混进事件流
+        （Agent 的答复只认 stdout 上的协议输出）；不给则与旧行为一致（并入 stdout）。
+        """
         process = subprocess.Popen(  # noqa: S603 - argv 由 Adapter 决定，不经 shell
             # Windows 上 CLI 常是 *.cmd 包装脚本，CreateProcess 不能直接执行（WinError 193），
             # 由平台原语规整成 cmd.exe /c 启动；POSIX 原样返回。
@@ -136,7 +141,7 @@ class CliAgentAdapter(ABC):
             env=env,
             cwd=cwd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=stderr if stderr is not None else subprocess.STDOUT,
             text=True,
         )
         # 独立进程组：POSIX 下 pid == pgid；Windows 以组长 pid 作为组标识
@@ -168,7 +173,9 @@ class CliAgentAdapter(ABC):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return {"type": "text", "text": text}
+            # 非 JSON 行：带 non_json 标记交给 runtime 决定去向（codex 侧只当状态，
+            # 不让 CLI 的裸日志/提示冒充 Agent 的答复）
+            return {"type": "text", "text": text, "non_json": True}
         if isinstance(data, dict):
             return data
         return {"type": "data", "data": data}

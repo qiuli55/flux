@@ -130,6 +130,19 @@ class Settings(BaseSettings):
     # 单次工具调用超时（毫秒）
     dsh_mcp_tool_timeout_ms: int = 60000
 
+    # --- 外部 CLI Agent：Codex 的模型通道（P2-1 §6.2 续，2026-10-06）---
+    # codex 把「鉴权方式」当全局状态，Flux 只能给它一个隔离的 CODEX_HOME（顺便注入 MCP），
+    # 而隔离目录里没有用户的登录态——不写这几项，codex 在 Run 里就是「未登录」直接失败。
+    # 密钥不落盘：第三方供应商块只写 env_key（环境变量名），值由服务进程环境提供。
+    # "openai" = 用 codex 内置供应商（ChatGPT 登录 / OPENAI_API_KEY），不写供应商块；
+    # 其他值按第三方供应商写 [model_providers.<name>]（当前支持 deepseek）。
+    codex_provider: str = "openai"
+    # 空 = 用 codex 自带默认模型；非 openai 供应商必须显式给（codex 默认模型 id 是 OpenAI 的）
+    codex_model: str = ""
+    # 第三方模型的元数据目录（codex 的 model_catalog_json）：缺了 codex 会退化成 fallback
+    # 元数据（实测警告「Model metadata not found…can degrade performance」）；空 = 不写
+    codex_model_catalog: str = ""
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
