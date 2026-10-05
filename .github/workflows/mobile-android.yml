@@ -1,0 +1,41 @@
+name: Mobile Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile-controller/**"
+      - ".github/workflows/mobile-android.yml"
+  pull_request:
+    paths:
+      - "apps/mobile-controller/**"
+      - ".github/workflows/mobile-android.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile-controller
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Run JVM tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --no-daemon
