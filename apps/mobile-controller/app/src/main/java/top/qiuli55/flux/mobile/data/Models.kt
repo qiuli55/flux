@@ -143,14 +143,14 @@ data class Run(
     @SerialName("last_output_at") val lastOutputAt: String? = null,
     @SerialName("last_mcp_activity_at") val lastMcpActivityAt: String? = null,
     @SerialName("last_event") val lastEvent: JsonElement? = null,
-    val createdAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
 )
 
 @Serializable
 data class Change(
     val id: String = "",
     @SerialName("project_id") val projectId: String? = null,
-    val taskId: String? = null,
+    @SerialName("task_id") val taskId: String? = null,
     @SerialName("group_id") val groupId: String? = null,
     @SerialName("file_path") val filePath: String = "",
     val kind: String = "modify",
