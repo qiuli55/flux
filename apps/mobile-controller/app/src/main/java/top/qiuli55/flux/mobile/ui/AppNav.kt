@@ -2,7 +2,9 @@ package top.qiuli55.flux.mobile.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -16,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import top.qiuli55.flux.mobile.data.ConnectionConfig
 import top.qiuli55.flux.mobile.data.FluxEnv
@@ -52,19 +55,46 @@ private object Routes {
  *
  * 首次安装（没有令牌）不该先看到一个 401 的错误页——直接进设置页，一步到位。
  */
+private sealed interface ConfigLoadState {
+    data object Loading : ConfigLoadState
+    data class Ready(val config: ConnectionConfig) : ConfigLoadState
+    data class Failed(val message: String) : ConfigLoadState
+}
+
 @Composable
 fun FluxRoot() {
-    val config by produceState<ConnectionConfig?>(initialValue = null) {
-        value = FluxEnv.settings.config.first()
+    var reloadKey by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val loadState by produceState<ConfigLoadState>(
+        initialValue = ConfigLoadState.Loading,
+        key1 = reloadKey,
+    ) {
+        value = try {
+            ConfigLoadState.Ready(FluxEnv.settings.config.first())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ConfigLoadState.Failed(e.message ?: e::class.simpleName ?: "读取本地配置失败")
+        }
     }
-    val loaded = config
-    if (loaded == null) {
-        Surface(color = FluxColors.bg, modifier = Modifier.fillMaxSize()) {
+
+    when (val current = loadState) {
+        ConfigLoadState.Loading -> Surface(color = FluxColors.bg, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingRow("启动中…") }
         }
-        return
+        is ConfigLoadState.Failed -> Surface(color = FluxColors.bg, modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("读取本地配置失败", color = FluxColors.text)
+                    Text(current.message, color = FluxColors.text3)
+                    Button(onClick = { reloadKey++ }) { Text("重试") }
+                }
+            }
+        }
+        is ConfigLoadState.Ready -> {
+            val loaded = current.config
+            FluxNavHost(startDestination = if (loaded.isComplete) Routes.TASKS else Routes.SETUP)
+        }
     }
-    FluxNavHost(startDestination = if (loaded.isComplete) Routes.TASKS else Routes.SETUP)
 }
 
 @Composable
