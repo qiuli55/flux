@@ -1,0 +1,24 @@
+[Unit]
+Description=Flux 服务端实例（手机端远控后端；nginx /mobile/ 的反代目标）
+Documentation=https://github.com/qiuli55/flux/blob/main/apps/mobile-controller/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# backend/ 下有 alembic.ini，ExecStartPre / ExecStart 都按这个工作目录解析
+WorkingDirectory=/root/workspace/flux/backend
+# 真实令牌与全部 FLUX_* 配置都在这个文件里（0600，不入库）；见 deploy/flux-server.env.example
+EnvironmentFile=/opt/flux/server/flux-server.env
+# 先迁到 head 再起服务：不然新代码撞上老库结构，接口会在运行期才炸
+ExecStartPre=/root/workspace/flux/.venv/bin/python -m alembic -x db_url=sqlite+aiosqlite:////opt/flux/server/flux.db upgrade head
+ExecStart=/root/workspace/flux/.venv/bin/python -m uvicorn flux.main:create_app --factory --host 127.0.0.1 --port 8801
+Restart=on-failure
+RestartSec=3
+# Agent / 终端会 fork 出子进程树，统一收进自己的 cgroup，停服务时一并清理
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
