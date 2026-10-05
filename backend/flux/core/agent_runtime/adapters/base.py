@@ -147,7 +147,8 @@ class CliAgentAdapter(ABC):
         """终止整棵进程树：优雅信号 → 优雅期 → 强杀。已退出则幂等返回。"""
         if process.popen.poll() is not None:
             return
-        platforms.signal_group_graceful(process.pgid)
+        # 该进程由本类的 start 经 platforms.popen_kwargs() 启动，组归属明确
+        platforms.signal_group_graceful(process.pgid, owns_group=True)
         try:
             process.popen.wait(timeout=STOP_GRACE_SECONDS)
             return

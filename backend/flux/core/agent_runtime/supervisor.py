@@ -658,6 +658,10 @@ class RunSupervisor:
     async def _kill_pgid(self, pgid: int) -> bool:
         if not is_group_alive(pgid):
             return True
+        # 这里刻意不声明 owns_group：pgid 来自监视器/数据库（重启接管、SDK 自建的进程都可能
+        # 落在里面），无法保证该组是本进程用 CREATE_NEW_PROCESS_GROUP 创建的。Windows 上
+        # 对不属于自己的组发 CTRL_BREAK 会波及共享控制台（把运行 Flux 的终端一起打断），
+        # 因此优雅信号只在 POSIX 生效，Windows 交由 kill_group 的 taskkill 收尾。
         signal_group_graceful(pgid)
         grace = max(self._settings.dsh_cancel_grace_seconds, 0.0)
         if await self._wait_gone(pgid, grace):

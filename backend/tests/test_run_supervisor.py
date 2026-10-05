@@ -26,6 +26,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings
+from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.run_repository import AgentRunRepository, utcnow
 from flux.core.agent_runtime.supervisor import RunSupervisor
 from flux.core.event.bus import EventBus, Events
@@ -157,27 +158,22 @@ async def test_hard_timeout_terminates_long_run(tmp_path: Path) -> None:
     await engine.dispose()
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 async def test_cancel_cleans_the_whole_process_group(tmp_path: Path) -> None:
-    """TC-15D：取消后主进程（进程组组长）确实退出，终态为 CANCELLED。"""
+    """TC-15D：取消后主进程（进程组组长）确实退出，终态为 CANCELLED。
+
+    进程用平台原语启动：POSIX 下自成会话（pid == pgid），Windows 下 CREATE_NEW_PROCESS_GROUP
+    （组标识同样是组长 pid）。探活用 `platforms.is_alive`——Windows 的 `os.kill(pid, 0)`
+    会抛 ValueError（只支持 SIGTERM 与 CTRL_* 事件），旧写法在 Windows 上根本跑不了。
+    """
     settings = _settings(tmp_path, dsh_cancel_grace_seconds=0.3)
     repo, engine = await _repo(settings)
     sup = RunSupervisor(settings=settings, repository=repo)
 
-    # start_new_session=True 等价于 setsid 垫片：子进程自成进程组（pid == pgid）
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        **platforms.popen_kwargs(),
     )
-    # 后台线程立即回收，避免僵尸进程让 killpg 仍"看得到"进程组
+    # 后台线程立即回收，避免僵尸进程让进程组探活仍"看得到"它
     threading.Thread(target=proc.wait, daemon=True).start()
     try:
         await sup.create_run(run_id="r-d", session_id="s-d", instruction="干很久")
@@ -186,11 +182,12 @@ async def test_cancel_cleans_the_whole_process_group(tmp_path: Path) -> None:
 
         status = await sup.cancel("r-d")
         assert status is DshRunStatus.CANCELLED
-        for _ in range(200):
-            if not _pid_alive(proc.pid):
+        for _ in range(300):
+            if not platforms.is_alive(proc.pid):
                 break
             await asyncio.sleep(0.01)
-        assert not _pid_alive(proc.pid)
+        assert not platforms.is_alive(proc.pid)
+        assert not platforms.is_group_alive(proc.pid)
         row = await repo.get("r-d")
         assert row is not None and row.status == DshRunStatus.CANCELLED.value
     finally:

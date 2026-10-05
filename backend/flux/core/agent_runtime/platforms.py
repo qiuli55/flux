@@ -137,12 +137,21 @@ def is_self_group(pgid: int) -> bool:
         return True
 
 
-def signal_group_graceful(pgid: int) -> None:
-    """请求进程组优雅退出：POSIX SIGTERM；Windows CTRL_BREAK_EVENT（只达本进程组）。"""
+def signal_group_graceful(pgid: int, *, owns_group: bool = False) -> None:
+    """请求进程组优雅退出：POSIX SIGTERM；Windows CTRL_BREAK_EVENT。
+
+    Windows 的 `CTRL_BREAK_EVENT` 只对**本进程用 CREATE_NEW_PROCESS_GROUP 创建的组**安全：
+    GenerateConsoleCtrlEvent 要求 dwProcessGroupId 是本进程创建的组，否则行为不可预期——
+    实测（CI）会把 Ctrl+Break 波及到共享控制台的宿主进程，把运行 Flux 的终端/pwsh 一起
+    打断，正是设计 §11 要求避免的"误伤自身"。故 Windows 上默认**什么都不发**
+    （owns_group=False，交由 kill_group 用 taskkill 强杀）；只有调用方确认该组确由本进程
+    经 `popen_kwargs()` 创建时才传 owns_group=True。POSIX 侧 killpg(SIGTERM) 无此限制。
+    """
     if pgid <= 0:
         return
     if IS_WINDOWS:
-        # CTRL_BREAK_EVENT 只存在于 Windows；CREATE_NEW_PROCESS_GROUP 保证只达本组
+        if not owns_group:
+            return
         with contextlib.suppress(OSError, ValueError, AttributeError):
             os.kill(pgid, signal.CTRL_BREAK_EVENT)
         return
@@ -200,7 +209,8 @@ def terminate_process_tree(
         return True
     pid, pgid = process_group_of(process)
     if not force:
-        signal_group_graceful(pgid)
+        # process 由本进程经 popen_kwargs() 启动，组归属明确，Windows 上可安全用 CTRL_BREAK
+        signal_group_graceful(pgid, owns_group=True)
         if _wait_process_gone(process, pid, pgid, grace, poll):
             return True
     kill_group(pgid)
