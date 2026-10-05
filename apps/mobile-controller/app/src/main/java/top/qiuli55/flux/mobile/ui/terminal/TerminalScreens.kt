@@ -90,6 +90,7 @@ fun TerminalListScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { viewModel.createSession(onOpenSession) },
+                enabled = !state.creating,
                 containerColor = FluxColors.accent,
                 contentColor = FluxColors.text,
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
