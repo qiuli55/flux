@@ -30,9 +30,6 @@ data class SetupUiState(
 
 /**
  * 连接设置：保存服务器地址与令牌，并用一次真实请求验证配置是否可用。
- *
- * "测试连接"不是只打一次 /health 就完事——顺便取回 Agent Runtime 状态与 Agent 数量：
- * 手机上要能一眼看出"连的是哪个实例、能不能真的跑 Agent"。
  */
 class SetupViewModel : FluxViewModel() {
 
@@ -56,11 +53,25 @@ class SetupViewModel : FluxViewModel() {
     }
 
     fun onBaseUrlChange(value: String) {
-        _state.value = _state.value.copy(baseUrl = value, error = null, savedHint = null)
+        _state.value = _state.value.copy(
+            baseUrl = value,
+            error = null,
+            savedHint = null,
+            health = null,
+            dsh = null,
+            agentCount = null,
+        )
     }
 
     fun onTokenChange(value: String) {
-        _state.value = _state.value.copy(token = value, error = null, savedHint = null)
+        _state.value = _state.value.copy(
+            token = value,
+            error = null,
+            savedHint = null,
+            health = null,
+            dsh = null,
+            agentCount = null,
+        )
     }
 
     fun test() {
@@ -70,7 +81,7 @@ class SetupViewModel : FluxViewModel() {
             return
         }
         viewModelScope.launch {
-            _state.value = _state.value.copy(testing = true, error = null, health = null, dsh = null)
+            _state.value = _state.value.copy(testing = true, error = null, health = null, dsh = null, agentCount = null)
             try {
                 val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
                 val currentConfig = ConnectionConfig(normalized, current.token.trim())
@@ -78,13 +89,16 @@ class SetupViewModel : FluxViewModel() {
                 val health = api.health()
                 val dsh = runCatching { api.dshStatus() }.getOrNull()
                 val agents = runCatching { api.listAgents().size }.getOrNull()
-                _state.value = _state.value.copy(baseUrl = normalized, token = currentConfig.token)
                 _state.value = _state.value.copy(
                     testing = false,
+                    baseUrl = normalized,
+                    token = currentConfig.token,
                     health = health,
                     dsh = dsh,
                     agentCount = agents,
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(testing = false, error = describe(e))
             } catch (e: Exception) {
@@ -102,7 +116,6 @@ class SetupViewModel : FluxViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(saving = true, error = null, savedHint = null)
             try {
-                // 地址归一化（补协议头、去尾斜杠）后再存：避免把 "flux.qiuli55.top/mobile/" 这种写法带进请求拼接。
                 val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
                 val normalizedToken = current.token.trim()
                 require(normalizedToken.isNotEmpty()) { "访问令牌不能为空" }
@@ -110,10 +123,9 @@ class SetupViewModel : FluxViewModel() {
                 _state.value = _state.value.copy(
                     saving = false,
                     baseUrl = normalized,
+                    token = normalizedToken,
                     savedHint = "已保存，后续请求都走 $normalized",
                 )
-
-                // 导航属于 UI 回调；即使导航本身发生异常，也不能让保存配置的协程把整个 App 带崩。
                 try {
                     onSaved()
                 } catch (e: Exception) {
@@ -124,8 +136,6 @@ class SetupViewModel : FluxViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // 之前这里没有异常边界：DataStore、URL 归一化或其他保存异常会直接从
-                // viewModelScope 冒泡，导致 Android 进程崩溃。保存失败应该留在设置页展示错误。
                 _state.value = _state.value.copy(
                     saving = false,
                     error = "保存配置失败：${e.message ?: e::class.simpleName ?: "未知错误"}",
