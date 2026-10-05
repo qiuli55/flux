@@ -47,6 +47,7 @@ class TerminalListViewModel : FluxViewModel() {
 
     /** 新建会话：工作区根由服务端配置决定（客户端不能指定目录），成功后直接进会话页。 */
     fun createSession(onCreated: (String) -> Unit) {
+        if (_state.value.creating) return
         viewModelScope.launch {
             _state.value = _state.value.copy(creating = true, error = null)
             try {
