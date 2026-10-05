@@ -72,10 +72,13 @@ class SetupViewModel : FluxViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(testing = true, error = null, health = null, dsh = null)
             try {
-                val api = api()
+                val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
+                val currentConfig = ConnectionConfig(normalized, current.token.trim())
+                val api = FluxEnv.api(currentConfig)
                 val health = api.health()
                 val dsh = runCatching { api.dshStatus() }.getOrNull()
                 val agents = runCatching { api.listAgents().size }.getOrNull()
+                _state.value = _state.value.copy(baseUrl = normalized, token = currentConfig.token)
                 _state.value = _state.value.copy(
                     testing = false,
                     health = health,
@@ -101,7 +104,9 @@ class SetupViewModel : FluxViewModel() {
             try {
                 // 地址归一化（补协议头、去尾斜杠）后再存：避免把 "flux.qiuli55.top/mobile/" 这种写法带进请求拼接。
                 val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
-                FluxEnv.settings.save(normalized, current.token)
+                val normalizedToken = current.token.trim()
+                require(normalizedToken.isNotEmpty()) { "访问令牌不能为空" }
+                FluxEnv.settings.save(normalized, normalizedToken)
                 _state.value = _state.value.copy(
                     saving = false,
                     baseUrl = normalized,
