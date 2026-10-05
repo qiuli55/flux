@@ -309,22 +309,53 @@ class AgentRuntime(Protocol):
 
 ---
 
-## 9. 移动端方向（先设计 demo，再实现）
+## 9. 移动端方向
 
-- **定位**（Scope §5）：离开电脑后的远程查看与控制，不是移动 IDE。能力：查看任务 / Run 状态与进展 / Proposal 与 Diff / Accept / Reject / Cancel / 错误 / 最终结果 / 重新进入运行中的任务。
-- **技术方向**：在现有 web-dashboard（React+Vite+Tailwind，已有 860px 断点 hook）上新增移动视图，手机浏览器直接访问，不另起项目、不引小程序。
-- **网络可达（硬需求：异地 / 公网，已确认）**：手机在任意网络（4G/5G/外部 WiFi）下都必须能访问 Flux，不接受"仅局域网可用"。两种部署形态分别处理：
-  - **Flux 在 Linux 服务器**：已有公网入口，补齐认证 + TLS 后手机直连；
-  - **Flux 在家庭 Windows（NAT 后、无公网 IP）**：需内网穿透 / 组网。已确认**允许把组网工具内置进 Flux**，候选路线（选型在移动端设计阶段联网核实后定稿）：
-    1. **反向隧道（自托管优先）**：以服务器为中转、家庭机主动外连，无需路由器端口映射；可把隧道客户端做成 Flux 的可选内置组件（设置里一键开关）；
-    2. **组网工具**：将手机与家庭机纳入同一虚拟局域网（自建或托管）；
-    3. **托管隧道**：免公网 IP，但依赖第三方服务。
-  - 选择标准：自托管优先（不依赖第三方账号）、手机端零/低配置、断线自愈、链路状态可诊断（Flux 里能看到隧道 / 连接状态）。
-- **安全前置（硬约束）**：任何公网可达之前，必须先完成单用户认证 + TLS，不允许无认证裸奔；开工时先核对 REST API 现有鉴权现状，缺则与移动端同批补齐。
-- **PWA 与实时性**：实时性方案（候选：快照轮询 vs SSE，须满足"后台回前台状态一致、刷新及时"）与是否 PWA（桌面图标 / 全屏 / 通知）在移动端设计阶段定稿；PWA 依赖 HTTPS，与安全前置的 TLS 要求同向。
-- **交付流程**（遵循既有约定）：先出**可交互 demo**（公网可直接打开的地址）→ 真机验收（先用手机、先用 4G/5G 验证异地链路，而非只连家里 WiFi）→ 再实现 → 真机全面复验。
+> **2026-10-05 修订**：原 §9 路线（路线 B = B 机云端 + 反向隧道）已暂停。用户实际诉求是「任意电脑系统都能像 Trae 那样远程」，且交付节奏要求立刻可用，因此把**第一批交付**收敛为「**原生 Android → HTTPS + 令牌 → 公网服务器上的 Flux 实例**」（本期：commit `f3525c0` → `v0.2.0`，APK 挂在 GitHub Releases）。路线 B（云端多用户 + 隧道）留作下一批的分期，重点解决"家庭 Windows（NAT 后）也需要被远程"的问题。本节末尾列出修订后的完整分期与 ADR。
 
-### 9.1 定案（2026-10-05，决策见 §13）
+### 9.1 本期交付（v0.2.0）
+
+- **形态**：原生 Android 应用，Kotlin + Jetpack Compose，包名 `top.qiuli55.flux.mobile`，工程在 `apps/mobile-controller/`（独立 Gradle module，wrapper 指向 Gradle 8.9 + AGP 8.7.2 + Kotlin 2.0.21 + Compose BOM 2024.02.01）。
+- **能力边界**（移动端定位：审核与停止，不是移动 IDE）：
+  - 任务列表 / 详情 / 对话（Solo 真实模型回复）
+  - 需求确认卡只读展示（修改走桌面端）
+  - 提案 + Diff（红/绿着色的统一 diff，可切"改动后 / 改动前"）
+  - 批准 → 应用（落盘）/ 拒绝 / 回滚；落盘失败原因在卡片上显示
+  - 取消任务 / 停止 Agent Run（终态以服务端"进程组确认清理"为准，不谎报）
+  - Agent Terminal：实时输出 + Stop（SIGTERM → grace → SIGKILL）+ Force Stop；关页面只断开观察、不停命令
+- **不在手机上做的**：编辑需求确认、Apply 时跑完整测试流水线、新建/编辑 Agent、代码搜索/导航——小屏做"会真正落到文件里"的修改风险大，桌面端才是编辑面。
+- **网络与安全**：
+  - 复用现有域名 `flux.qiuli55.top`，加 `location /mobile/` 反代到本地 8801 端口（不解析新子域名、不动现有 TLS 证书）
+  - **REST 面单用户 Bearer 令牌鉴权**（环境变量 `FLUX_AUTH_TOKEN`，非空即启用；`backend/flux/api/auth.py` + `tests/test_rest_auth.py` 新增 16 条用例，全量 `make verify` 619 passed）
+  - 关键约束：回环 + 无转发头免认证（保护桌面端 Electron 反代与本地浏览器）；nginx 必须转发 `X-Forwarded-For`，否则公网请求会以"回环 + 无转发头"绕过鉴权——`test_loopback_with_forward_headers_must_authenticate` 把这条约束钉在代码层
+  - App 端 `usesCleartextTraffic="false"`：明文 HTTP 禁了，连局域网 http 实例需要改这一行（下一批的家庭 Windows 场景大概率要改）
+- **公网入口**：`https://flux.qiuli55.top/mobile`（HTTPS + Let's Encrypt，证书 2026-12-29 到期）
+- **服务端部署**：systemd 常驻实例 `flux-server`（端口 8801、数据库 `/opt/flux/server/flux.db`、Agent 工作区 `/root/workspace/flux-login-app`、配置 `/opt/flux/server/flux-server.env` 0600）；仓库内参考 `deploy/flux-server.service` / `deploy/flux-server.env.example` / `deploy/nginx-flux-mobile.conf`
+- **真机验收**：华为平板（`tablet-control` 技能远程操控），12 项验收清单在 `apps/mobile-controller/README.md`；本期已逐项 PASS，包括真实跑通任务 `9d49f717`（Agent 真实产出 3 条提案 → App 端批准 / 应用 / 回滚全链路）
+
+### 9.2 ADR-002：为什么这一批选"原生 Android"而不是"web-dashboard 移动视图 / PWA"
+
+| 候选 | 这一批不选的理由 |
+|---|---|
+| 在 web-dashboard 加 860px 移动视图 | 终端实时输出要 SSE + 横向滚动的等宽代码视图 + 终端 chunk 按行重组，浏览器里要么引入终端库（xterm.js 包体 + 与桌面端共用代码的成本反而高），要么用 `<pre>` 简单渲染（实际体验不行）；并且 PWA 装到桌面后用户记不住"Flux"的名字——桌面图标即应用才是真正的"像 Trae 那样" |
+| Flutter / KMP | 团队只有 Kotlin 经验；Flutter 引入 Dart 工具链不在本批接受范围 |
+| Tauri Mobile | 同样引入新工具链（Rust），且桌面端的 Tauri 方案已被 Electron 选定（ADR-001），移动端再选 Tauri 工具链分裂 |
+
+**正面理由**：① 真正的桌面图标与原生启动体验，与 Trae 同档；② OkHttp + okhttp-sse 直连后端，断线重连策略成熟；③ 现有 web-dashboard 样式令牌（`design-v2.css` 的 `:root`）被直接复刻到 Compose 的 `FluxColors`，保持视觉一致；④ Kotlin 是项目本身的语言，零新依赖。
+
+### 9.3 完整分期（修订后）
+
+| 批次 | 目标 | 网络前提 | 状态 |
+|---|---|---|---|
+| **v0.2.0（本批）** | 原生 Android App + 公网服务器 Flux 实例 + 单用户 Bearer 鉴权 | 服务器本身有公网 IP（`159.75.222.60`）；HTTPS + 复用 `flux.qiuli55.top` | ✅ |
+| v0.3.x（下一批） | 家庭 Windows（NAT 后）的穿透：让 App 也能连家里那台 Flux | 沿用 v0.2.0 的 REST 客户端，只换"在哪台 Flux 上" | 待做 |
+| 后续（路线 B） | 路线 B = B 机 Flux Cloud 多用户 + 反向隧道 | 手机可同时连多台设备；鉴权从单用户 Bearer 升级为多用户 OAuth | 待做 |
+
+> **诚实的范围声明**：本批（v0.2.0）的 App 只能连**公网可达**的 Flux 实例。"我家里那台没有公网 IP 的 Flux"是下一批要解决的问题——这是用户原话「像 Trae 那样」的另一半，但作为独立批次做，避免把多用户 OAuth、隧道协商、设备注册这一整套云端设计塞进一个"先把 APK 做出来"的批。
+
+### 9.4 旧路线（路线 B）原文存档
+
+> 以下为修订前的路线 B 设计，未做删除只做存档——v0.3.x 的"家庭 Windows 穿透"批次会复用其中的反代隧道思路；多用户 OAuth 的部分要看是否仍有需求再决定是否做。
 
 - **云端形态（路线 B）**：B 机（`115.159.125.254`）新建**独立的 Flux Cloud 服务**（独立 systemd 单元 + 独立端口 + 独立 SQLite），只做账号 / 设备注册 / 中继转发 / 心跳，**不碰业务数据**；**不动现有 `relay-b.service` 与 NOVA/Lexi/Maestro 生产服务**。
 - **鉴权**：GitHub OAuth 多用户登录；每个用户只能看到并控制**自己账号名下**的设备，跨账号一律拒绝。

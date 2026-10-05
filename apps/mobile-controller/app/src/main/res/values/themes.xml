@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纯深色主题：色值与桌面端 apps/web-dashboard/src/styles/design-v2.css 的 :root 令牌一致，
+         用 XML 主题只为把状态栏/导航栏背景钉死，避免启动瞬间闪白。 -->
+    <style name="Theme.FluxMobile" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#08090f</item>
+        <item name="android:statusBarColor">#08090f</item>
+        <item name="android:navigationBarColor">#08090f</item>
+        <item name="android:colorBackground">#08090f</item>
+    </style>
+</resources>
