@@ -1,8 +1,11 @@
 package top.qiuli55.flux.mobile.ui.terminal
 
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.sse.EventSource
 import top.qiuli55.flux.mobile.data.FluxApiException
@@ -97,7 +100,11 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
     val state = _state.asStateFlow()
 
     private var streamSource: EventSource? = null
-    private val seenSeqs = mutableSetOf<Int>()
+    private var reconnectJob: Job? = null
+    private var suppressReconnect = false
+
+    private val eventLock = Any()
+    private val seenSeqs = LinkedHashSet<Int>()
     private val lines = mutableListOf<TranscriptLine>()
     private var partialText = ""
     private var partialSeq = 0
@@ -126,7 +133,7 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
                     session = session,
                     streamState = "connecting",
                 )
-                openStream(history.lastOrNull()?.seq ?: 0)
+                openStream(lastSeenSeq())
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(loading = false, error = e.message, streamState = "error")
             } catch (e: Exception) {
@@ -141,48 +148,108 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
 
     private fun openStream(afterSeq: Int) {
         viewModelScope.launch {
-            val api = api()
-            streamSource?.cancel()
-            streamSource = api.openTerminalStream(
-                sessionId = sessionId,
-                afterSeq = afterSeq,
-                onEvent = { event ->
-                    ingest(event)
-                    _state.value = _state.value.copy(streamState = "live", streamError = null)
-                },
-                onFailure = { message ->
-                    _state.value = _state.value.copy(streamState = "error", streamError = message)
-                },
-                onClosed = {
-                    _state.value = _state.value.copy(streamState = "closed")
-                },
-            )
+            try {
+                val api = api()
+                streamSource?.cancel()
+                streamSource = api.openTerminalStream(
+                    sessionId = sessionId,
+                    afterSeq = afterSeq,
+                    onEvent = { event ->
+                        ingest(event)
+                        _state.value = _state.value.copy(streamState = "live", streamError = null)
+                    },
+                    onFailure = { message ->
+                        _state.value = _state.value.copy(streamState = "error", streamError = message)
+                        scheduleReconnect()
+                    },
+                    onClosed = {
+                        _state.value = _state.value.copy(streamState = "closed")
+                        if (!suppressReconnect && isSessionActive()) scheduleReconnect()
+                    },
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(streamState = "error", streamError = e.message ?: "实时流连接失败")
+                scheduleReconnect()
+            }
         }
     }
 
+    private fun scheduleReconnect() {
+        if (suppressReconnect || !isSessionActive() || reconnectJob?.isActive == true) return
+        reconnectJob = viewModelScope.launch {
+            var backoffMs = 1_000L
+            while (isActive && !suppressReconnect && isSessionActive()) {
+                delay(backoffMs)
+                _state.value = _state.value.copy(streamState = "connecting", streamError = null)
+                try {
+                    val api = api()
+                    val replayFrom = maxOf(0, lastSeenSeq() - REPLAY_WINDOW)
+                    api.listTerminalEvents(sessionId, afterSeq = replayFrom).forEach(::ingest)
+                    streamSource?.cancel()
+                    streamSource = api.openTerminalStream(
+                        sessionId = sessionId,
+                        afterSeq = lastSeenSeq(),
+                        onEvent = { event ->
+                            ingest(event)
+                            _state.value = _state.value.copy(streamState = "live", streamError = null)
+                        },
+                        onFailure = { message ->
+                            _state.value = _state.value.copy(streamState = "error", streamError = message)
+                            scheduleReconnect()
+                        },
+                        onClosed = {
+                            _state.value = _state.value.copy(streamState = "closed")
+                            if (!suppressReconnect && isSessionActive()) scheduleReconnect()
+                        },
+                    )
+                    return@launch
+                } catch (e: Exception) {
+                    _state.value = _state.value.copy(streamState = "error", streamError = e.message ?: "重连失败")
+                    backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
+                }
+            }
+        }
+    }
+
+    private fun isSessionActive(): Boolean = _state.value.session?.status == "active"
     // --- 事件 → 转录行 ---
 
     private fun ingest(event: TerminalEvent) {
-        if (!seenSeqs.add(event.seq)) return   // 历史与实时流可能有重叠帧
-        when (event.kind) {
-            "terminal.command.started" -> {
-                flushPartial()
-                push(event.seq, "[${sourceTag(event.source)}] $ ${event.command.orEmpty()}", LineKind.ECHO)
+        synchronized(eventLock) {
+            if (!rememberSeq(event.seq)) return
+            when (event.kind) {
+                "terminal.command.started" -> {
+                    flushPartial()
+                    push(event.seq, "[${sourceTag(event.source)}] $ ${event.command.orEmpty()}", LineKind.ECHO)
+                }
+                "terminal.output" -> appendOutput(event.seq, event.chunk.orEmpty())
+                "terminal.command.finished", "terminal.command.failed" -> {
+                    flushPartial()
+                    val code = event.exitCode?.toString() ?: "?"
+                    push(event.seq, "[exit $code]", LineKind.EXIT)
+                }
+                "terminal.stop.requested" -> push(event.seq, "· 收到停止请求", LineKind.SYSTEM)
+                "terminal.process.terminated" -> push(event.seq, "· 进程已终止", LineKind.SYSTEM)
+                "terminal.session.closed" -> push(event.seq, "· 会话已关闭", LineKind.SYSTEM)
+                "terminal.session.created" -> push(event.seq, "· 会话已创建", LineKind.SYSTEM)
+                else -> Unit
             }
-            "terminal.output" -> appendOutput(event.seq, event.chunk.orEmpty())
-            "terminal.command.finished", "terminal.command.failed" -> {
-                flushPartial()
-                val code = event.exitCode?.toString() ?: "?"
-                push(event.seq, "[exit $code]", LineKind.EXIT)
-            }
-            "terminal.stop.requested" -> push(event.seq, "· 收到停止请求", LineKind.SYSTEM)
-            "terminal.process.terminated" -> push(event.seq, "· 进程已终止", LineKind.SYSTEM)
-            "terminal.session.closed" -> push(event.seq, "· 会话已关闭", LineKind.SYSTEM)
-            "terminal.session.created" -> push(event.seq, "· 会话已创建", LineKind.SYSTEM)
-            else -> Unit
         }
     }
 
+    private fun rememberSeq(seq: Int): Boolean {
+        if (!seenSeqs.add(seq)) return false
+        while (seenSeqs.size > MAX_SEEN_SEQS) {
+            seenSeqs.remove(seenSeqs.first())
+        }
+        return true
+    }
+
+    private fun lastSeenSeq(): Int {
+        synchronized(eventLock) {
+            return seenSeqs.maxOrNull() ?: 0
+        }
+    }
     /** 输出片段按 `\n` 断行：新行开新条，未结束的部分留在 [partialText] 里等后续 chunk。 */
     private fun appendOutput(seq: Int, chunk: String) {
         if (chunk.isEmpty()) return
@@ -223,6 +290,8 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
             _state.value = _state.value.copy(running = true, error = null, command = "")
             try {
                 val finished = api().runTerminalCommand(sessionId, command)
+                val replayFrom = maxOf(0, finished.seq - REPLAY_WINDOW)
+                api().listTerminalEvents(sessionId, afterSeq = replayFrom).forEach(::ingest)
                 ingest(finished)
                 _state.value = _state.value.copy(running = false)
                 refreshSession()
@@ -236,6 +305,12 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
 
     /** 停止会话：force=false 走 SIGTERM → grace → SIGKILL；force=true 直接 SIGKILL。 */
     fun stop(force: Boolean) {
+        if (!isSessionActive()) return
+        suppressReconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        streamSource?.cancel()
+        streamSource = null
         viewModelScope.launch {
             _state.value = _state.value.copy(error = null, notice = if (force) "正在强制停止…" else "正在停止…")
             try {
@@ -246,8 +321,10 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
                     running = false,
                 )
             } catch (e: FluxApiException) {
+                suppressReconnect = false
                 _state.value = _state.value.copy(error = e.message, notice = null)
             } catch (e: Exception) {
+                suppressReconnect = false
                 _state.value = _state.value.copy(error = e.message ?: "停止失败", notice = null)
             }
         }
@@ -261,12 +338,18 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
     }
 
     override fun onCleared() {
-        // 只断开观察，不停命令（§11）：用户关页面 ≠ 停 Agent
+        suppressReconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         streamSource?.cancel()
         streamSource = null
+        // 只断开观察，不停命令（§11）：用户关页面 ≠ 停 Agent
     }
 
     companion object {
         private const val MAX_LINES = 3000
+        private const val MAX_SEEN_SEQS = 4096
+        private const val REPLAY_WINDOW = 200
+        private const val MAX_BACKOFF_MS = 15_000L
     }
 }
