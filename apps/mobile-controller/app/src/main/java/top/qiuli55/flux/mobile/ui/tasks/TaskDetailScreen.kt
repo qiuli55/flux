@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.Change
 import top.qiuli55.flux.mobile.data.ConfirmationItem
 import top.qiuli55.flux.mobile.data.DecisionOption
@@ -243,10 +244,11 @@ private fun TaskHeaderCard(task: Task?, onStart: () -> Unit, onCancel: () -> Uni
         KeyValueRow("决策方式", if (task.decisionMode == "manual") "停下来问我" else "AI 自己定")
         KeyValueRow("创建时间", shortTime(task.createdAt), mono = true)
         task.runId?.let { KeyValueRow("Run", it, mono = true) }
-        task.result?.takeIf { !it.toString().isNullOrBlank() && it.toString() != "null" }?.let { result ->
+        task.result?.takeIf { it.toString() != "null" }?.let { result ->
             ThinDivider(Modifier.padding(vertical = 8.dp))
             SectionTitle("最终结果")
-            Text(result.toString(), style = MaterialTheme.typography.bodySmall, color = FluxColors.text2)
+            val displayResult = (result as? JsonPrimitive)?.contentOrNull ?: result.toString()
+            Text(displayResult, style = MaterialTheme.typography.bodySmall, color = FluxColors.text2)
         }
 
         // 动作：未开始 → 开始执行；执行中/待决策 → 取消
