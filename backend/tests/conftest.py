@@ -167,4 +167,8 @@ if sys.platform == "win32":
         不会被吞掉；仅 Windows 生效，不影响本地输出。
         """
         if report.failed and report.when in ("setup", "call"):
-            print(f"\n### FAILED {report.nodeid}\n{report.longrepr}\n", flush=True)
+            text = f"\n### FAILED {report.nodeid}\n{report.longrepr}\n"
+            # Windows 控制台默认 cp1252：直接打印中文（用例 docstring 里有）会抛
+            # UnicodeEncodeError 并让 pytest 以 INTERNALERROR 崩掉，反而看不到清单。
+            # 降级成 ascii 可读字符——用例名与断言都是英文，信息不丢。
+            print(text.encode("ascii", "replace").decode("ascii"), flush=True)
