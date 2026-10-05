@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     env: str = "local"
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
+    # REST 面单用户令牌（公网暴露前置，见 flux.api.auth）。留空 = 关闭鉴权，
+    # 本地开发与桌面端（同机直连）零配置可用；公网部署必须显式设置。
+    auth_token: str | None = None
 
     # --- 存储（主规格 §11.1）---
     database_url: str = "sqlite+aiosqlite:///./flux.db"

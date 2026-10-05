@@ -1014,6 +1014,13 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "Flux 访问令牌（服务端 FLUX_AUTH_TOKEN）",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -1040,6 +1047,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Agents",
         "tags": [
           "agents"
@@ -1081,6 +1093,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Agent",
         "tags": [
           "agents"
@@ -1125,6 +1142,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Agent",
         "tags": [
           "agents"
@@ -1170,6 +1192,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Agent Tokens",
         "tags": [
           "agents"
@@ -1223,6 +1250,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Issue Agent Token",
         "tags": [
           "agents"
@@ -1277,6 +1309,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Revoke Agent Token",
         "tags": [
           "agents"
@@ -1331,6 +1368,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Capabilities",
         "tags": [
           "capabilities"
@@ -1375,6 +1417,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Import Capability",
         "tags": [
           "capabilities"
@@ -1399,6 +1446,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Scan Capabilities",
         "tags": [
           "capabilities"
@@ -1442,6 +1494,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Execute Connector",
         "tags": [
           "connectors"
@@ -1465,6 +1522,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Runs",
         "tags": [
           "dsh"
@@ -1506,6 +1568,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Start Run",
         "tags": [
           "dsh"
@@ -1550,6 +1617,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Run",
         "tags": [
           "dsh"
@@ -1595,6 +1667,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Interrupt Run",
         "tags": [
           "dsh"
@@ -1618,6 +1695,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Status",
         "tags": [
           "dsh"
@@ -1641,6 +1723,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Git Branches",
         "tags": [
           "git"
@@ -1684,6 +1771,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Git Checkout",
         "tags": [
           "git"
@@ -1727,6 +1819,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Git Commit",
         "tags": [
           "git"
@@ -1770,6 +1867,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Git Diff",
         "tags": [
           "git"
@@ -1793,6 +1895,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Git Status",
         "tags": [
           "git"
@@ -1817,6 +1924,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Health",
         "tags": [
           "health"
@@ -1837,6 +1949,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Ready",
         "tags": [
           "health"
@@ -1892,6 +2009,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Recall Memory",
         "tags": [
           "memory"
@@ -1946,6 +2068,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Memory Entries",
         "tags": [
           "memory"
@@ -1988,6 +2115,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Write Memory Entry",
         "tags": [
           "memory"
@@ -2034,6 +2166,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Delete Memory Entry",
         "tags": [
           "memory"
@@ -2077,6 +2214,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Chat",
         "tags": [
           "models"
@@ -2100,6 +2242,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Projects",
         "tags": [
           "projects"
@@ -2141,6 +2288,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Project",
         "tags": [
           "projects"
@@ -2186,6 +2338,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Project",
         "tags": [
           "projects"
@@ -2282,6 +2439,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Project Files",
         "tags": [
           "projects"
@@ -2357,6 +2519,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Project File",
         "tags": [
           "projects"
@@ -2403,6 +2570,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Memory",
         "tags": [
           "projects"
@@ -2457,6 +2629,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Write Memory",
         "tags": [
           "projects"
@@ -2503,6 +2680,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Context",
         "tags": [
           "projects"
@@ -2559,6 +2741,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Scan Project",
         "tags": [
           "projects"
@@ -2637,6 +2824,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Tasks",
         "tags": [
           "tasks"
@@ -2678,6 +2870,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Task",
         "tags": [
           "tasks"
@@ -2722,6 +2919,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Task",
         "tags": [
           "tasks"
@@ -2766,6 +2968,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Cancel Task",
         "tags": [
           "tasks"
@@ -2821,6 +3028,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Update Confirmation",
         "tags": [
           "tasks"
@@ -2876,6 +3088,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Set Decision Mode",
         "tags": [
           "tasks"
@@ -2931,6 +3148,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Raise Decision",
         "tags": [
           "tasks"
@@ -2986,6 +3208,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Choose Decision",
         "tags": [
           "tasks"
@@ -3057,6 +3284,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Task Messages",
         "tags": [
           "tasks"
@@ -3110,6 +3342,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Task Message",
         "tags": [
           "tasks"
@@ -3165,6 +3402,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Start Task",
         "tags": [
           "tasks"
@@ -3189,6 +3431,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Sessions",
         "tags": [
           "terminal"
@@ -3238,6 +3485,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Session",
         "tags": [
           "terminal"
@@ -3283,6 +3535,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Session",
         "tags": [
           "terminal"
@@ -3338,6 +3595,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Run Command",
         "tags": [
           "terminal"
@@ -3403,6 +3665,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Events",
         "tags": [
           "terminal"
@@ -3465,6 +3732,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stop Session",
         "tags": [
           "terminal"
@@ -3532,6 +3804,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Stream Events",
         "tags": [
           "terminal"
@@ -3576,6 +3853,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Accept Changes",
         "tags": [
           "workspace"
@@ -3620,6 +3902,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Accept Group",
         "tags": [
           "workspace"
@@ -3664,6 +3951,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Apply Changes",
         "tags": [
           "workspace"
@@ -3720,6 +4012,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Apply Batches",
         "tags": [
           "workspace"
@@ -3765,6 +4062,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Rollback Batch",
         "tags": [
           "workspace"
@@ -3809,6 +4111,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Apply Group",
         "tags": [
           "workspace"
@@ -3925,6 +4232,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Changes",
         "tags": [
           "workspace"
@@ -3969,6 +4281,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Change",
         "tags": [
           "workspace"
@@ -4014,6 +4331,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Rollback Change",
         "tags": [
           "workspace"
@@ -4058,6 +4380,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Expire Changes",
         "tags": [
           "workspace"
@@ -4082,6 +4409,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Expire Stale",
         "tags": [
           "workspace"
@@ -4106,6 +4438,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Recovery",
         "tags": [
           "workspace"
@@ -4150,6 +4487,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Resolve Recovery",
         "tags": [
           "workspace"
@@ -4193,6 +4535,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Reject Changes",
         "tags": [
           "workspace"
@@ -4236,6 +4583,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Reject Group",
         "tags": [
           "workspace"

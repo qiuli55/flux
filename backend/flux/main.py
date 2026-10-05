@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from flux.api.auth import require_rest_auth
 from flux.api.errors import register_exception_handlers
 from flux.api.v1 import api_v1_router
 from flux.config import Settings, get_settings
@@ -53,7 +54,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.container = container
     register_exception_handlers(app)
-    app.include_router(api_v1_router, prefix=app_settings.api_v1_prefix)
+    # 鉴权挂在整棵 /api/v1 上（见 flux.api.auth）：REST 面能执行命令、落盘、提交 git，
+    # 公网暴露必须整体设防，不能靠"记得给每个新路由加依赖"。MCP 面走自己的 Agent 令牌。
+    app.include_router(
+        api_v1_router,
+        prefix=app_settings.api_v1_prefix,
+        dependencies=[Depends(require_rest_auth)],
+    )
     # MCP 能力面（目标架构 §3.1）：与 REST 同进程同生命周期，但不挂在 /api/v1 下——
     # 它是给 agent 用的协议端点，不是给前端用的业务接口。
     app.include_router(mcp_router)
