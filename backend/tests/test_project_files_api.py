@@ -25,7 +25,9 @@ def _new_project(client: TestClient, *, name: str = "文件浏览项目") -> str
 def _write(root: Path, relative: str, content: str = "") -> Path:
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    # 固定 LF：Windows 默认会把 \n 翻成 CRLF；接口返回的是按字节解码的真实内容（不折行），
+    # fixture 必须两平台字节一致，否则 size/content 断言会漂移。
+    target.write_text(content, encoding="utf-8", newline="\n")
     return target
 
 

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shlex
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +20,7 @@ from flux.core.virtual_workspace.proposal_parser import (
 )
 from flux.enums import ChangeKind, VirtualChangeStatus
 from flux.errors import ApplyFailedError, ConflictError, ValidationError
+from tests.conftest import python_command, python_script
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
@@ -37,7 +36,8 @@ def _write(root: Path, relative: str, content: str) -> Path:
 
 
 def _passing_command() -> str:
-    return f"{shlex.quote(sys.executable)} -c \"print('ok')\""
+    # 跨平台：Windows 的 cmd.exe 不认 shlex.quote 生成的单引号路径
+    return python_command("print('ok')")
 
 
 def _propose_delete(container: Container, path: str, original: str):
@@ -224,9 +224,7 @@ def test_mixed_batch_failure_rolls_back_all(
     _write(workspace_root, "app/gone.py", LEGACY)
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
-    settings = apply_settings.model_copy(
-        update={"test_command": f"{shlex.quote(sys.executable)} {shlex.quote(str(failing))}"}
-    )
+    settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
     container = Container(settings)
     changes = _mixed_batch(container)
 

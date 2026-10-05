@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shlex
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +20,7 @@ from flux.core.virtual_workspace.proposal_parser import CodeChangeSet, FileChang
 from flux.enums import VirtualChangeStatus
 from flux.errors import ConflictError
 from flux.main import create_app
+from tests.conftest import python_command
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
@@ -37,7 +36,8 @@ def _write(root: Path, relative: str, content: str) -> Path:
 
 
 def _passing_command() -> str:
-    return f"{shlex.quote(sys.executable)} -c \"print('ok')\""
+    # 跨平台：Windows 的 cmd.exe 不认 shlex.quote 生成的单引号路径
+    return python_command("print('ok')")
 
 
 def _container(apply_settings, test_command: str | None = None) -> Container:

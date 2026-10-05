@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import shlex
-import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -30,6 +28,7 @@ from flux.errors import (
     ProposalExpiredError,
     ValidationError,
 )
+from tests.conftest import python_script
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
@@ -162,9 +161,7 @@ def test_apply_failure_records_test_output(apply_settings, db_schema: None, work
     (workspace_root / "auth" / "login.py").write_text(ORIGINAL, encoding="utf-8")
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8")
-    settings = apply_settings.model_copy(
-        update={"test_command": f"{shlex.quote(sys.executable)} {shlex.quote(str(failing))}"}
-    )
+    settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
     container = Container(settings)
     proposal = _propose(container)
 
@@ -222,9 +219,7 @@ def test_apply_many_failure_marks_all_failed_and_restores_files(
     (workspace_root / "b.py").write_text(ORIGINAL, encoding="utf-8")
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8")
-    settings = apply_settings.model_copy(
-        update={"test_command": f"{shlex.quote(sys.executable)} {shlex.quote(str(failing))}"}
-    )
+    settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
     container = Container(settings)
     first = _propose(container, file_path="a.py")
     second = _propose(container, file_path="b.py")

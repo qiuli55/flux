@@ -65,6 +65,27 @@ def popen_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def executable_argv(argv: Sequence[str]) -> tuple[str, ...]:
+    """把 argv 规整成宿主能直接启动的形式（shell=False 前提）。
+
+    Windows 上 CreateProcess 不能直接执行 .bat/.cmd（`WinError 193`），而 npm 全局安装的
+    CLI（codex / opencode 等）在 Windows 上正是 `*.cmd` 包装脚本——被测/真实调用都会踩到。
+    按系统 shell 的做法用 `cmd.exe /c <脚本> <原参数...>` 启动；进程组隔离仍由
+    `popen_kwargs()` 的 CREATE_NEW_PROCESS_GROUP 提供，取消时 taskkill /T 能清整棵子树。
+    POSIX 原样返回（脚本靠 shebang + 可执行位）。
+    """
+    if not IS_WINDOWS or not argv:
+        return tuple(argv)
+    executable = str(argv[0])
+    if executable.lower().endswith((".cmd", ".bat")):
+        # Windows 上 os.environ 的键不区分大小写；COMSPEC/SYSTEMROOT 是 cmd.exe 的定位依据
+        comspec = os.environ.get("COMSPEC") or os.path.join(
+            os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "cmd.exe"
+        )
+        return (comspec, "/c", *argv)
+    return tuple(argv)
+
+
 def process_group_of(process: subprocess.Popen[Any]) -> tuple[int, int]:
     """取 (pid, pgid)。Windows 无进程组查询，组长 pid 即组标识。"""
     pid = int(process.pid)
@@ -263,6 +284,7 @@ def _windows_taskkill(pid: int) -> None:
 
 __all__ = [
     "IS_WINDOWS",
+    "executable_argv",
     "is_alive",
     "is_group_alive",
     "is_self_group",

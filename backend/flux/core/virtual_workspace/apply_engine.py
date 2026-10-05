@@ -417,7 +417,10 @@ class ApplyEngine:
             target.unlink()
             return
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(change.proposed_content or "", encoding="utf-8")
+        # 必须以字节落盘：Path.write_text 在 newline=None 时会把 \n 翻成 os.linesep，
+        # Windows 上会把提案的 LF 变成 CRLF，写出的文件与提案/备份字节不一致，污染后续
+        # hash 比对与 git 差异。提案内容与备份都是字节级事实，这里保持字节级写入。
+        target.write_bytes((change.proposed_content or "").encode("utf-8"))
 
     @staticmethod
     def _verify(change: VirtualChange, target: Path) -> None:

@@ -30,8 +30,13 @@ STOP_GRACE_SECONDS = 5.0
 
 def run_probe(argv: Sequence[str], *, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[int, str]:
     """执行一条探测命令，返回 (returncode, stdout+stderr)。命令不存在抛 FileNotFoundError。"""
+    # 与 start 同一口径：Windows 上探测目标也可能是 *.cmd（见 executable_argv）
     completed = subprocess.run(
-        list(argv), capture_output=True, text=True, timeout=timeout, check=False
+        list(platforms.executable_argv(argv)),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
     merged = f"{completed.stdout or ''}{completed.stderr or ''}".strip()
     return completed.returncode, merged
@@ -124,7 +129,9 @@ class CliAgentAdapter(ABC):
     ) -> CliProcess:
         """以独立进程组启动 CLI，返回可取消的进程句柄。"""
         process = subprocess.Popen(  # noqa: S603 - argv 由 Adapter 决定，不经 shell
-            list(argv),
+            # Windows 上 CLI 常是 *.cmd 包装脚本，CreateProcess 不能直接执行（WinError 193），
+            # 由平台原语规整成 cmd.exe /c 启动；POSIX 原样返回。
+            list(platforms.executable_argv(argv)),
             **platforms.popen_kwargs(),
             env=env,
             cwd=cwd,

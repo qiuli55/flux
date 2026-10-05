@@ -7,9 +7,7 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
-import sys
 import threading
 import uuid
 from pathlib import Path
@@ -22,6 +20,7 @@ from flux.core.virtual_workspace.diff_engine import content_hash
 from flux.core.virtual_workspace.test_runner import TestRunner
 from flux.errors import ApplyFailedError, ConflictError, ValidationError
 from flux.models.workspace import VirtualChange
+from tests.conftest import python_command
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
@@ -217,22 +216,25 @@ def test_apply_skips_tests_when_run_tests_is_false(workspace_root: Path) -> None
 
 def test_apply_runs_configured_test_command(workspace_root: Path) -> None:
     _write(workspace_root, "auth/login.py", ORIGINAL)
-    engine = ApplyEngine(workspace_root=workspace_root, test_command="echo 测试通过 && exit 0")
+    # 用 python 调用替代 `echo ... && exit 0`：cmd.exe 下 echo/&&/exit 语义与编码都不同
+    command = python_command("print('apply-test-ok')")
+    engine = ApplyEngine(workspace_root=workspace_root, test_command=command)
 
     outcome = engine.apply(_change("auth/login.py"))
 
     assert outcome.test is not None
     assert outcome.test.passed is True
     assert outcome.test.exit_code == 0
-    assert "测试通过" in outcome.test.output
-    assert outcome.test.command == "echo 测试通过 && exit 0"
+    assert "apply-test-ok" in outcome.test.output
+    assert outcome.test.command == command
 
 
 def test_apply_rolls_back_when_test_times_out(workspace_root: Path) -> None:
     target = _write(workspace_root, "auth/login.py", ORIGINAL)
     engine = ApplyEngine(
         workspace_root=workspace_root,
-        test_command="sleep 5",
+        # Windows 无 `sleep`：改用跨平台的 python 长跑命令，超时语义不变
+        test_command=python_command("import time; time.sleep(30)"),
         test_timeout_seconds=0.2,
     )
 
@@ -247,14 +249,15 @@ def test_test_runner_reports_failure_and_truncates_output(tmp_path: Path) -> Non
     runner = TestRunner(timeout_seconds=10)
     assert runner.run("exit 0", cwd=tmp_path).passed is True
 
-    failed = runner.run("echo 炸了 && exit 7", cwd=tmp_path)
+    # 失败命令用 python 输出（ASCII，避开 Windows 控制台编码差异），exit code 语义相同
+    failed = runner.run(
+        python_command("import sys; print('apply-failure-marker'); sys.exit(7)"), cwd=tmp_path
+    )
     assert failed.passed is False
     assert failed.exit_code == 7
-    assert "炸了" in failed.output
+    assert "apply-failure-marker" in failed.output
 
-    long_output = runner.run(
-        f"{shlex.quote(sys.executable)} -c 'print(\"x\" * 30000)'", cwd=tmp_path
-    )
+    long_output = runner.run(python_command("print('x' * 30000)"), cwd=tmp_path)
     assert len(long_output.output) < 30000
     assert "输出已截断" in long_output.output
 
@@ -452,7 +455,8 @@ def test_apply_many_runs_the_test_command_only_once(workspace_root: Path) -> Non
     counter = workspace_root / "runs.txt"
     engine = ApplyEngine(
         workspace_root=workspace_root,
-        test_command=f"printf x >> {shlex.quote(str(counter))} && exit 0",
+        # 用 python 追加代替 `printf x >> <路径>`：cmd.exe 无 printf，且重定向/路径引号语义不同
+        test_command=python_command("open('runs.txt', 'a').write('x')"),
     )
 
     engine.apply_many(changes)

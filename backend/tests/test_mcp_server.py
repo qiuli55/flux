@@ -246,7 +246,7 @@ def test_unknown_argument_is_rejected_instead_of_ignored(mcp_client: TestClient)
 
 
 def test_workspace_read_returns_content_and_hash(mcp_client: TestClient, workspace_root) -> None:
-    (workspace_root / "hello.py").write_text("print('hi')\n", encoding="utf-8")
+    (workspace_root / "hello.py").write_text("print('hi')\n", encoding="utf-8", newline="\n")
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     data = payload(call(mcp_client, token, "workspace.read", {"path": "hello.py"}))
     assert data["content"] == "print('hi')\n"
@@ -315,7 +315,7 @@ def test_proposal_create_enqueues_for_review_and_stamps_the_agent(
 ) -> None:
     (workspace_root / "todo_service").mkdir()
     (workspace_root / "todo_service" / "store.py").write_text(
-        "def list_todos():\n    return None\n", encoding="utf-8"
+        "def list_todos():\n    return None\n", encoding="utf-8", newline="\n"
     )
     codex_id = create_agent(mcp_client, name="codex-minimax")
     token = issue_token(
@@ -409,7 +409,7 @@ def test_proposal_create_rejects_path_escape(mcp_client: TestClient) -> None:
 def test_proposal_create_without_change_is_reported_not_silently_accepted(
     mcp_client: TestClient, workspace_root
 ) -> None:
-    (workspace_root / "same.py").write_text("x = 1\n", encoding="utf-8")
+    (workspace_root / "same.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ, Capability.FILE_WRITE])
     same = {"summary": "无改动", "changes": [{"path": "same.py", "content": "x = 1\n"}]}
     result = call(mcp_client, token, "proposal.create", {"payload": same})
@@ -460,7 +460,9 @@ def test_workspace_read_never_returns_secret_files(mcp_client: TestClient, works
 
 def test_workspace_read_allows_secret_templates(mcp_client: TestClient, workspace_root) -> None:
     """`.env.example` 这类模板没有真实密钥，读得到（否则新人没法照着填）。"""
-    (workspace_root / ".env.example").write_text("DEEPSEEK_API_KEY=\n", encoding="utf-8")
+    (workspace_root / ".env.example").write_text(
+        "DEEPSEEK_API_KEY=\n", encoding="utf-8", newline="\n"
+    )
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     data = payload(call(mcp_client, token, "workspace.read", {"path": ".env.example"}))
     assert data["content"] == "DEEPSEEK_API_KEY=\n"

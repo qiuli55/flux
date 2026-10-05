@@ -84,6 +84,8 @@ class BackupService:
                 f"{text}{separator}# Flux 改动备份目录（Apply 自动添加，可安全删除）\n"
                 f"{self._dirname}/\n",
                 encoding="utf-8",
+                # git 的 exclude 用 LF 更稳妥（Windows 默认会把 \n 翻成 CRLF）
+                newline="\n",
             )
         except OSError as exc:  # 忽略失败：备份本身比"是否被 git 忽略"重要
             logger.warning("写入 .git/info/exclude 失败，备份不受影响：%s", exc)

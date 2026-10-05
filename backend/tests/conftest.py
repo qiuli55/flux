@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +18,26 @@ from flux.db.session import create_engine
 from flux.enums import Capability
 from flux.main import create_app
 from flux.models import Base
+
+
+def python_command(code: str) -> str:
+    """一条跨平台可执行的 `python -c <code>` 命令。
+
+    测试命令在 Windows 上由 cmd.exe 执行：它不认 POSIX 的单引号，而 `shlex.quote`
+    因反斜杠不在安全字符集里，会把 `C:\\...\\python.exe` 整个包进单引号，命令直接失败
+    （CI 实测 exit=1）。两个平台各选各自安全的引用方式，命令语义保持一致。
+    `code` 在 Windows 分支被双引号包裹，因此其中不要再用双引号（用单引号）。
+    """
+    exe = f'"{sys.executable}"' if os.name == "nt" else shlex.quote(sys.executable)
+    body = f'"{code}"' if os.name == "nt" else shlex.quote(code)
+    return f"{exe} -c {body}"
+
+
+def python_script(path: str | Path) -> str:
+    """跨平台可执行的 `python <script>` 命令（脚本文件靠解释器直跑，不依赖 shebang）。"""
+    exe = f'"{sys.executable}"' if os.name == "nt" else shlex.quote(sys.executable)
+    arg = f'"{path}"' if os.name == "nt" else shlex.quote(str(path))
+    return f"{exe} {arg}"
 
 
 @pytest.fixture()

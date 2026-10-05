@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -20,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
+from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.adapters import OpenCodeAdapter
 from flux.core.agent_runtime.adapters.base import CliAgentProbe
 from flux.core.agent_runtime.manager import AgentSpec
@@ -62,6 +64,22 @@ while True:
 
 
 def _write_script(path: Path, body: str) -> str:
+    """造一个两平台都能被直接启动的假 CLI。
+
+    POSIX 靠 shebang + 可执行位；Windows 上无扩展名脚本不是有效可执行文件
+    （CreateProcess 报 WinError 193），因此写一份 `.py` 脚本 + 一份 `.cmd` 包装，返回
+    `.cmd` 路径——被测的 adapter 会经 `platforms.executable_argv` 用 `cmd.exe /c` 启动它。
+    """
+    if os.name == "nt":
+        script = path.with_suffix(".py")
+        script.write_text(body, encoding="utf-8", newline="\n")
+        wrapper = path.with_suffix(".cmd")
+        wrapper.write_text(
+            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
+            encoding="utf-8",
+            newline="",
+        )
+        return str(wrapper)
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return str(path)
@@ -191,7 +209,12 @@ def test_cli_run_completes_and_emits_unified_events(
         assert run_dir.is_dir()
         config = run_dir / "codex-home" / "config.toml"
         assert config.is_file()
-        assert oct(config.stat().st_mode & 0o777) == "0o600"
+        # 收敛到仅属主可访问：POSIX 直接用 st_mode；Windows 的 stat 不反映 chmod，
+        # 校验平台原语 secure_file（icacls）确实成功，而不是删掉这条断言。
+        if platforms.IS_WINDOWS:
+            assert platforms.secure_file(config) is True
+        else:
+            assert oct(config.stat().st_mode & 0o777) == "0o600"
         assert "mcp_servers.flux" in config.read_text(encoding="utf-8")
 
 
@@ -211,6 +234,10 @@ def test_cli_run_nonzero_exit_is_failed(
         assert "退出码 2" in message["content"]
 
 
+@pytest.mark.skipif(
+    platforms.IS_WINDOWS,
+    reason="依赖 POSIX 进程组信号语义（SIGTERM 可被忽略）；Windows 取消链路另由 platforms 用例覆盖",
+)
 def test_cli_run_cancel_kills_process_group(
     settings: Settings, tmp_path: Path, db_schema: None
 ) -> None:

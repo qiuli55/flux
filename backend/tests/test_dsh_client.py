@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings
+from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.dsh_client import (
     MCP_PLUGIN_NAME,
     MCP_TOKEN_SCOPES,
@@ -472,8 +473,13 @@ async def test_prepare_mcp_patch_writes_dsh_patch_with_a_working_token(tmp_path:
 
     assert path == Path(settings.dsh_home) / "patches" / "flux-mcp.patch.yml"
     assert path is not None and path.is_file()
-    # 内含令牌明文 → 权限必须收紧到 0600
-    assert (path.stat().st_mode & 0o777) == 0o600
+    # 内含令牌明文 → 权限必须收紧到仅属主可访问。
+    # POSIX 直接用 st_mode 校验 0600；Windows 的 stat 不反映 chmod（实测 0666），
+    # 改为校验平台原语 secure_file（封装 icacls）确实收权成功，而不是删掉这条断言。
+    if platforms.IS_WINDOWS:
+        assert platforms.secure_file(path) is True
+    else:
+        assert (path.stat().st_mode & 0o777) == 0o600
 
     entry = _patch_payload(path)
     assert entry["id"] == "flux-mcp-flux"
