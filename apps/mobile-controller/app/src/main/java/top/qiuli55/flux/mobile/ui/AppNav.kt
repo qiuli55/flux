@@ -36,7 +36,6 @@ import top.qiuli55.flux.mobile.ui.terminal.TerminalScreen
 import top.qiuli55.flux.mobile.ui.terminal.TerminalViewModel
 import top.qiuli55.flux.mobile.ui.theme.FluxColors
 
-/** 路由名（避免在多个地方写裸字符串）。 */
 private object Routes {
     const val SETUP = "setup"
     const val TASKS = "tasks"
@@ -50,11 +49,6 @@ private object Routes {
     fun session(id: String) = "session/$id"
 }
 
-/**
- * 应用根：先读一次本地配置，决定落到"连接设置"还是"任务列表"。
- *
- * 首次安装（没有令牌）不该先看到一个 401 的错误页——直接进设置页，一步到位。
- */
 private sealed interface ConfigLoadState {
     data object Loading : ConfigLoadState
     data class Ready(val config: ConnectionConfig) : ConfigLoadState
@@ -101,7 +95,6 @@ fun FluxRoot() {
 private fun FluxNavHost(startDestination: String) {
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = startDestination) {
-
         composable(Routes.SETUP) {
             val vm: SetupViewModel = viewModel()
             val firstRun = startDestination == Routes.SETUP
@@ -109,7 +102,6 @@ private fun FluxNavHost(startDestination: String) {
                 viewModel = vm,
                 onBack = if (firstRun) null else ({ navController.popBackStack() }),
                 onSaved = {
-                    // 首次配置保存后直接进任务列表，并把设置页从回退栈里去掉
                     if (firstRun) {
                         navController.navigate(Routes.TASKS) {
                             popUpTo(Routes.SETUP) { inclusive = true }
@@ -118,7 +110,6 @@ private fun FluxNavHost(startDestination: String) {
                 },
             )
         }
-
         composable(Routes.TASKS) {
             val vm: TaskListViewModel = viewModel()
             TaskListScreen(
@@ -128,7 +119,6 @@ private fun FluxNavHost(startDestination: String) {
                 onOpenTerminal = { navController.navigate(Routes.TERMINAL) },
             )
         }
-
         composable(
             route = Routes.TASK,
             arguments = listOf(navArgument("taskId") { type = NavType.StringType }),
@@ -143,7 +133,6 @@ private fun FluxNavHost(startDestination: String) {
                 onOpenChange = { changeId -> navController.navigate(Routes.change(changeId)) },
             )
         }
-
         composable(
             route = Routes.CHANGE,
             arguments = listOf(navArgument("changeId") { type = NavType.StringType }),
@@ -154,7 +143,6 @@ private fun FluxNavHost(startDestination: String) {
             )
             ChangeDetailScreen(viewModel = vm, onBack = { navController.popBackStack() })
         }
-
         composable(Routes.TERMINAL) {
             val vm: TerminalListViewModel = viewModel()
             TerminalListScreen(
@@ -163,7 +151,6 @@ private fun FluxNavHost(startDestination: String) {
                 onOpenSession = { sessionId -> navController.navigate(Routes.session(sessionId)) },
             )
         }
-
         composable(
             route = Routes.SESSION,
             arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
