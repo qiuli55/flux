@@ -20,6 +20,7 @@ import type {
   GitCommit,
   GitStatus,
   HealthData,
+  Installation,
   Project,
   ReadyData,
   RecoveryItem,
@@ -192,6 +193,19 @@ export const api = {
   /** 创建 Agent */
   createAgent: (body: AgentCreateRequest) => getData<AgentHandle>("POST", "/agents", body),
 
+  // --- 本机 CLI Agent 的接入（UI「外部 Agent」区块）---
+
+  /** 已登记的接入记录（含未安装的：NOT_INSTALLED 也是事实） */
+  listInstallations: () => getData<Installation[]>("GET", "/installations"),
+  /** 扫描本机，刷新安装事实 */
+  scanInstallations: () => getData<Installation[]>("POST", "/installations/scan"),
+  /** 接入：单个（agent）或全部已安装的（all=true） */
+  connectInstallation: (body: { agent?: string; all?: boolean }) =>
+    getData<Installation | Installation[]>("POST", "/installations/connect", body),
+  /** 移除接入记录（不卸载本机 CLI） */
+  removeInstallation: (name: string) =>
+    getData<{ agent: string; removed: boolean }>("DELETE", `/installations/${name}`),
+
   /** 任务列表（任务执行中心左列/任务切换用），默认按创建时间倒序 */
   listTasks: (options?: { projectId?: string; status?: string; limit?: number }) =>
     getData<Task[]>(
@@ -207,6 +221,8 @@ export const api = {
     description: string;
     project_id: string | null;
     decision_mode?: DecisionMode;
+    /** 执行该任务的 Agent 档案 id；不给则由内置 DSH 执行（后端按 agent.runtime 分发） */
+    agent_id?: string | null;
   }) => getData<Task>("POST", "/tasks", body),
   /** 任务详情 */
   getTask: (taskId: string) => getData<Task>("GET", `/tasks/${taskId}`),

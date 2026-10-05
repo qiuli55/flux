@@ -14,6 +14,7 @@ import type {
   AgentHandle,
   Change,
   ConfirmationItem,
+  Installation,
   Project,
   Task,
   TaskMessage,
@@ -161,15 +162,143 @@ const BUILTIN_MODELS: { name: string; desc: string; cls: string }[] = [
   { name: "风险判断 · 决策建议", desc: "评估改动风险、给出候选方案与 AI 建议，无需单独装配", cls: "a4" },
 ];
 
+/** 外部 Agent（CLI）接入状态 → 徽标文案与配色（与后端 AgentInstallStatus 对齐） */
+const INSTALL_STATUS_META: Record<string, { label: string; cls: string }> = {
+  READY: { label: "已接入", cls: "b-ok" },
+  CONNECTED: { label: "已发现", cls: "b-run" },
+  VERIFIED: { label: "已发现", cls: "b-run" },
+  DISCOVERED: { label: "已发现", cls: "b-run" },
+  NOT_INSTALLED: { label: "未安装", cls: "" },
+};
+
+/** runtime → 显示名：执行该 Agent 的引擎（档案响应体现在带 runtime 字段） */
+const RUNTIME_LABELS: Record<string, string> = {
+  dsh: "内置 DSH",
+  codex: "Codex CLI",
+  opencode: "OpenCode CLI",
+};
+
+/**
+ * 外部 Agent（CLI）接入区块：扫描本机 → 接入 → 为它建一个对应 runtime 的 Agent 档案。
+ *
+ * 数据是真实的本机安装事实（GET /installations），不是预设清单：
+ * 未安装的显示"未安装"且不给接入按钮；已接入的可以"建 Agent"（runtime 指向该 CLI）。
+ */
+function ExternalAgentsSection({
+  installations,
+  busy,
+  onScan,
+  onConnect,
+  onRemove,
+  onCreateAgent,
+}: {
+  installations: Installation[];
+  busy: string | null;
+  onScan: () => void;
+  onConnect: (name: string) => void;
+  onRemove: (name: string) => void;
+  onCreateAgent: (runtime: string) => void;
+}) {
+  return (
+    <>
+      <div className="m-sec-head" style={{ marginTop: 14 }}>
+        <b>外部 Agent（CLI）</b>
+        <button type="button" className="link" disabled={busy === "scan"} onClick={onScan}>
+          {busy === "scan" ? "扫描中…" : "扫描本机"}
+        </button>
+      </div>
+      {installations.length === 0 ? (
+        <div className="card m-agent-empty">
+          <p>还没扫描过本机 CLI Agent。点「扫描本机」会发现 codex / opencode 的安装与凭据状态。</p>
+        </div>
+      ) : (
+        <div className="m-agent-list">
+          {installations.map((item) => {
+            const meta = INSTALL_STATUS_META[item.status] ?? { label: item.status, cls: "" };
+            const rowBusy = busy === item.name;
+            const ready = item.status === "READY";
+            const installed = item.status !== "NOT_INSTALLED";
+            return (
+              <div className="card m-agent" key={item.id}>
+                <span className="tm-ava a3">{item.name.slice(0, 2).toUpperCase()}</span>
+                <div className="m-agent-main">
+                  <b>
+                    {item.name} <span className="chip chip-dim">CLI</span>
+                  </b>
+                  <i>
+                    {item.version ? `v${item.version} · ` : ""}
+                    {item.path ?? "未找到可执行文件"}
+                    {item.auth_status === "ok"
+                      ? " · 凭据 OK"
+                      : item.auth_status === "missing"
+                        ? " · 凭据缺失"
+                        : ""}
+                  </i>
+                </div>
+                <span className={`tl-badge ${meta.cls}`}>{meta.label}</span>
+                {ready ? (
+                  <span className="ext-agent-actions">
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-primary"
+                      disabled={busy === `agent:${item.name}`}
+                      onClick={() => onCreateAgent(item.name)}
+                      title={`创建一个 runtime=${item.name} 的 Agent 档案`}
+                    >
+                      {busy === `agent:${item.name}` ? "创建中…" : "建 Agent"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost"
+                      disabled={rowBusy}
+                      onClick={() => onRemove(item.name)}
+                    >
+                      移除
+                    </button>
+                  </span>
+                ) : installed ? (
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-primary"
+                    disabled={rowBusy}
+                    onClick={() => onConnect(item.name)}
+                  >
+                    {rowBusy ? "接入中…" : "接入"}
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <p className="ext-agent-note">
+        接入 = 本机具备该 CLI 且验证通过；任务要真正走它，还需建一个该 runtime 的 Agent，并在新建任务时绑定。
+      </p>
+    </>
+  );
+}
+
 /** Agent 管理内容（桌面弹层与移动端「Agent」屏共用同一组件与真实数据） */
 function AgentRoster({
   agents,
   assembling,
   onAssemble,
+  installations,
+  installBusy,
+  onScanInstallations,
+  onConnectInstallation,
+  onRemoveInstallation,
+  onCreateAgentForRuntime,
 }: {
   agents: AgentHandle[];
   assembling: boolean;
   onAssemble: () => void;
+  installations: Installation[];
+  installBusy: string | null;
+  onScanInstallations: () => void;
+  onConnectInstallation: (name: string) => void;
+  onRemoveInstallation: (name: string) => void;
+  onCreateAgentForRuntime: (runtime: string) => void;
 }) {
   const [tab, setTab] = useState<"all" | "mine">("all");
   return (
@@ -237,7 +366,8 @@ function AgentRoster({
               <div className="m-agent-main">
                 <b>{agent.spec.name}</b>
                 <i>
-                  {ROLE_LABELS[agent.spec.role] ?? agent.spec.role} · {agent.spec.model_name} · 已执行{" "}
+                  {ROLE_LABELS[agent.spec.role] ?? agent.spec.role} ·{" "}
+                  {RUNTIME_LABELS[agent.spec.runtime ?? "dsh"] ?? agent.spec.runtime ?? "dsh"} · 已执行{" "}
                   {agent.execution_count} 次
                 </i>
               </div>
@@ -250,6 +380,16 @@ function AgentRoster({
           ))}
         </div>
       )}
+      {tab === "mine" ? (
+        <ExternalAgentsSection
+          installations={installations}
+          busy={installBusy}
+          onScan={onScanInstallations}
+          onConnect={onConnectInstallation}
+          onRemove={onRemoveInstallation}
+          onCreateAgent={onCreateAgentForRuntime}
+        />
+      ) : null}
     </>
   );
 }
@@ -267,6 +407,9 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [msgError, setMsgError] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<AgentHandle[]>([]);
+  const [installations, setInstallations] = useState<Installation[]>([]);
+  // 外部 Agent 区块的忙碌态：null / "scan" / 安装名 / "agent:<安装名>"（建档案）
+  const [installBusy, setInstallBusy] = useState<string | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
   const [assembling, setAssembling] = useState(false);
 
@@ -278,6 +421,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   );
   const [stratOpen, setStratOpen] = useState(false);
   const [stratDown, setStratDown] = useState(false);
+  // 新任务的执行 Agent（null = 内置 DSH）；已建任务不可改，只在"新任务"态露出
+  const [taskAgentId, setTaskAgentId] = useState<string | null>(null);
+  const [engineOpen, setEngineOpen] = useState(false);
+  const [engineDown, setEngineDown] = useState(false);
 
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
@@ -301,6 +448,8 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const stratRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<HTMLDivElement>(null);
+  const enginePopRef = useRef<HTMLDivElement>(null);
 
   const task = useMemo(() => tasks.find((item) => item.id === taskId) ?? null, [tasks, taskId]);
   const pendingChanges = useMemo(() => changes.filter((c) => c.status === "pending"), [changes]);
@@ -314,6 +463,19 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const taskStarted = Boolean(task?.run_id);
   const taskFinal =
     task?.status === "completed" || task?.status === "failed" || task?.status === "cancelled";
+
+  /** 新任务执行 Agent 的显示名（null = 内置 DSH） */
+  const engineLabel = useMemo(() => {
+    if (!taskAgentId) return "内置 DSH（默认）";
+    const picked = agents.find((agent) => agent.id === taskAgentId);
+    if (!picked) return "内置 DSH（默认）";
+    const runtime = picked.spec.runtime ?? "dsh";
+    return `${picked.spec.name} · ${RUNTIME_LABELS[runtime] ?? runtime}`;
+  }, [taskAgentId, agents]);
+  /** CLI runtime 是否已接入（内置 DSH 恒可用；未接入的选了也会在起 Run 时被拒） */
+  const runtimeReady = (runtime: string) =>
+    runtime === "dsh" ||
+    installations.some((item) => item.name === runtime && item.status === "READY");
 
   // --- 加载 ---
 
@@ -330,6 +492,14 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const loadAgents = useCallback(async () => {
     try {
       setAgents(await api.listAgents());
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }, []);
+
+  const loadInstallations = useCallback(async () => {
+    try {
+      setInstallations(await api.listInstallations());
     } catch (error) {
       toast(errorMessage(error), "error");
     }
@@ -358,9 +528,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   useEffect(() => {
     void loadProjects();
     void loadAgents();
+    void loadInstallations();
     void loadChanges();
     void loadTasks();
-  }, [loadProjects, loadAgents, loadChanges, loadTasks]);
+  }, [loadProjects, loadAgents, loadInstallations, loadChanges, loadTasks]);
 
   // 切换任务：拉取最近 30 条消息（向上再翻用 seq 游标）
   useEffect(() => {
@@ -409,17 +580,25 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     }
   }, [messages, taskId, loadingOlder, hasMore]);
 
-  // 点弹层外部关闭决策策略
+  // 点弹层外部关闭决策策略 / 执行 Agent
   useEffect(() => {
-    if (!stratOpen) return;
+    if (!stratOpen && !engineOpen) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (popRef.current?.contains(target) || stratRef.current?.contains(target)) return;
-      setStratOpen(false);
+      if (stratOpen && !popRef.current?.contains(target) && !stratRef.current?.contains(target)) {
+        setStratOpen(false);
+      }
+      if (
+        engineOpen &&
+        !enginePopRef.current?.contains(target) &&
+        !engineRef.current?.contains(target)
+      ) {
+        setEngineOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [stratOpen]);
+  }, [stratOpen, engineOpen]);
 
   // 重新拉取当前任务的消息（执行开始/阶段变化后把新消息显示出来）
   const reloadMessages = useCallback(async () => {
@@ -490,6 +669,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           description: content,
           project_id: projectId,
           decision_mode: strategy,
+          agent_id: taskAgentId,
         });
         setTasks((prev) => [created, ...prev]);
         setTaskId(created.id);
@@ -506,7 +686,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [draft, quote, sending, taskId, projectId, strategy]);
+  }, [draft, quote, sending, taskId, projectId, strategy, taskAgentId]);
 
   const runReview = useCallback(
     async (approved: boolean) => {
@@ -548,6 +728,83 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     }
   }, [agents]);
 
+  // --- 外部 Agent（CLI）接入：扫描 → 接入 → 建对应 runtime 的档案 ---
+
+  const scanInstallations = useCallback(async () => {
+    setInstallBusy("scan");
+    try {
+      const rows = await api.scanInstallations();
+      setInstallations(rows);
+      const ready = rows.filter((row) => row.status === "READY").length;
+      toast(`扫描完成 · 发现 ${rows.length} 个 CLI Agent，已接入 ${ready} 个`);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setInstallBusy(null);
+    }
+  }, []);
+
+  const connectInstallation = useCallback(
+    async (name: string) => {
+      setInstallBusy(name);
+      try {
+        await api.connectInstallation({ agent: name });
+        await loadInstallations();
+        toast(`已接入 ${name} · 可在下方为它建一个 Agent 档案`);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      } finally {
+        setInstallBusy(null);
+      }
+    },
+    [loadInstallations],
+  );
+
+  const removeInstallation = useCallback(
+    async (name: string) => {
+      setInstallBusy(name);
+      try {
+        await api.removeInstallation(name);
+        await loadInstallations();
+        toast(`已移除 ${name} 的接入记录（本机 CLI 本身不受影响）`);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      } finally {
+        setInstallBusy(null);
+      }
+    },
+    [loadInstallations],
+  );
+
+  /** 为某个已接入的 CLI 建一个 runtime 指向它的 Agent 档案（重名自动加序号） */
+  const createAgentForRuntime = useCallback(
+    async (runtime: string) => {
+      setInstallBusy(`agent:${runtime}`);
+      try {
+        const taken = new Set(agents.map((agent) => agent.spec.name));
+        let name = `${runtime}-agent`;
+        for (let seq = 2; taken.has(name); seq += 1) name = `${runtime}-agent-${seq}`;
+        const engine = RUNTIME_LABELS[runtime] ?? runtime;
+        await api.createAgent({
+          name,
+          role: "developer",
+          model_provider: "local",
+          model_name: "local-echo",
+          description: `由 ${engine} 执行（外部 CLI 接入）`,
+          permissions: ["file.read", "file.write", "terminal.execute"],
+          runtime,
+        });
+        setAgents(await api.listAgents());
+        toast(`已创建 Agent「${name}」· 执行引擎 ${engine}；新建任务时选它即可`);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      } finally {
+        setInstallBusy(null);
+      }
+    },
+    [agents],
+  );
+
   const pickStrategy = async (next: "auto" | "manual") => {
     setStrategy(next);
     window.localStorage.setItem("flux.solo.strategy", next);
@@ -565,6 +822,19 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       setStrategy(task.decision_mode);
       toast(errorMessage(error), "error");
     }
+  };
+
+  /** 选择新任务的执行 Agent（只在"新任务"态可选；已建任务的执行者由建档时的 agent_id 决定） */
+  const pickEngine = (agentId: string | null) => {
+    setTaskAgentId(agentId);
+    setEngineOpen(false);
+    if (!agentId) {
+      toast("新任务的执行者：内置 DSH（默认）");
+      return;
+    }
+    const picked = agents.find((agent) => agent.id === agentId);
+    const runtime = picked?.spec.runtime ?? "dsh";
+    toast(`新任务的执行者：${picked?.spec.name ?? agentId}（${RUNTIME_LABELS[runtime] ?? runtime}）`);
   };
 
   /** 保存用户改后的需求确认（P0-06）：六维度必须都有内容，服务端会再校验一次 */
@@ -1070,7 +1340,17 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
 
       {isMobile && mScreen === "agents" ? (
         <div className="m-body">
-          <AgentRoster agents={agents} assembling={assembling} onAssemble={() => void assembleTeam()} />
+          <AgentRoster
+            agents={agents}
+            assembling={assembling}
+            onAssemble={() => void assembleTeam()}
+            installations={installations}
+            installBusy={installBusy}
+            onScanInstallations={() => void scanInstallations()}
+            onConnectInstallation={(name) => void connectInstallation(name)}
+            onRemoveInstallation={(name) => void removeInstallation(name)}
+            onCreateAgentForRuntime={(runtime) => void createAgentForRuntime(runtime)}
+          />
         </div>
       ) : null}
 
@@ -1579,6 +1859,80 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 </div>
               </div>
             </div>
+            {!task ? (
+              <div className="strat-wrap" ref={engineRef}>
+                <button
+                  type="button"
+                  className={`strat-pill${engineOpen ? " is-open" : ""}`}
+                  aria-haspopup="true"
+                  aria-expanded={engineOpen}
+                  onClick={() => {
+                    const next = !engineOpen;
+                    setEngineOpen(next);
+                    if (next && engineRef.current) {
+                      const anchorTop = engineRef.current.getBoundingClientRect().top;
+                      const popMaxH = Math.min(320, window.innerHeight * 0.46);
+                      setEngineDown(anchorTop < popMaxH + 16);
+                    }
+                  }}
+                >
+                  <span>执行 Agent · {engineLabel}</span>
+                  <i className="sp-caret">⌄</i>
+                </button>
+                <div
+                  className={`strategy-pop${engineOpen ? "" : " is-hidden"}${engineDown ? " is-down" : ""}`}
+                  ref={enginePopRef}
+                  role="menu"
+                >
+                  <div className="sp-head">这个新任务由谁执行（建档时定，之后不可改）</div>
+                  <div className="strategy">
+                    <button
+                      type="button"
+                      className={`st-opt${taskAgentId === null ? " is-active" : ""}`}
+                      onClick={() => pickEngine(null)}
+                    >
+                      <span className="st-ic">◉</span>
+                      <div>
+                        <b>内置 DSH（默认）</b>
+                        <i>Flux 自带的执行引擎，不需要接入任何 CLI。</i>
+                      </div>
+                      <span className="st-badge">当前选择</span>
+                    </button>
+                    {agents.map((agent) => {
+                      const runtime = agent.spec.runtime ?? "dsh";
+                      const ready = runtimeReady(runtime);
+                      const active = taskAgentId === agent.id;
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          className={`st-opt${active ? " is-active" : ""}`}
+                          disabled={!ready}
+                          title={ready ? undefined : `${RUNTIME_LABELS[runtime] ?? runtime} 尚未接入：先在「Agent · 我的」里接入后再选`}
+                          onClick={() => pickEngine(agent.id)}
+                        >
+                          <span className="st-ic">{active ? "◉" : "◯"}</span>
+                          <div>
+                            <b>{agent.spec.name}</b>
+                            <i>
+                              {RUNTIME_LABELS[runtime] ?? runtime} ·{" "}
+                              {ROLE_LABELS[agent.spec.role] ?? agent.spec.role}
+                              {ready ? "" : " · 引擎未接入"}
+                            </i>
+                          </div>
+                          <span className="st-badge">当前选择</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {agents.length === 0 ? (
+                    <p className="ext-agent-note">
+                      还没有 Agent 档案：到「Agent · 我的」为已接入的 CLI 建一个，或一键装配内置团队。
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <input
               ref={inputRef}
               value={draft}
@@ -1949,7 +2303,17 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               内置角色档案与已装配 Agent；运行时状态来自 GET /agents，装配走 POST /agents
             </div>
             <div className="dialog-body">
-              <AgentRoster agents={agents} assembling={assembling} onAssemble={() => void assembleTeam()} />
+              <AgentRoster
+                agents={agents}
+                assembling={assembling}
+                onAssemble={() => void assembleTeam()}
+                installations={installations}
+                installBusy={installBusy}
+                onScanInstallations={() => void scanInstallations()}
+                onConnectInstallation={(name) => void connectInstallation(name)}
+                onRemoveInstallation={(name) => void removeInstallation(name)}
+                onCreateAgentForRuntime={(runtime) => void createAgentForRuntime(runtime)}
+              />
             </div>
           </div>
         </div>

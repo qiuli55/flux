@@ -278,6 +278,8 @@ kbd {
 .st-opt.is-active { border-color: rgba(124,92,255,.55); background: rgba(124,92,255,.08); }
 .st-opt.is-active .st-ic { color: var(--accent); }
 .st-opt.is-active .st-badge { display: inline-block; }
+/* 执行 Agent 弹层里"引擎未接入"的选项：看得见、点不动 */
+.st-opt:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ===== 决策策略胶囊 + 弹层（原大卡片压缩成输入框左侧的胶囊按钮） ===== */
 .strat-wrap { position: relative; flex: 0 0 auto; }
@@ -696,6 +698,9 @@ body.bottom-closed .ide-bottom { display: none; }
 .m-agent .chip-dim { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m-agent-empty { padding: 16px; }
 .m-agent-empty p { margin: 0 0 12px; color: var(--text-2); font-size: 12.5px; line-height: 1.6; }
+/* 外部 Agent（CLI）接入行：右侧操作按钮组 + 区块底部说明 */
+.ext-agent-actions { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.ext-agent-note { margin: 10px 0 0; color: var(--text-3); font-size: 11px; line-height: 1.6; }
 .m-soon { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-3); font-size: 10.5px; }
 .m-soon.is-now { color: var(--green); border-color: rgba(61,220,151,.4); background: rgba(61,220,151,.08); }
 .m-chev { color: var(--text-3); font-size: 16px; }

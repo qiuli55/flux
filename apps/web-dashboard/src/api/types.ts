@@ -219,7 +219,7 @@ export interface GitCommit {
   files: string[];
 }
 
-/** Agent 规格（§5.1 三组字段） */
+/** Agent 规格（§5.1 三组字段 + 执行它的 runtime） */
 export interface AgentSpec {
   name: string;
   role: string;
@@ -229,6 +229,8 @@ export interface AgentSpec {
   skills: string[];
   tools: string[];
   permissions: string[];
+  /** 执行该 Agent 的 runtime：dsh（内置，缺省）/ codex / opencode（P2-1 §6.2） */
+  runtime?: string;
 }
 
 /** GET /api/v1/agents 返回的 Agent 句柄 */
@@ -252,6 +254,31 @@ export interface AgentCreateRequest {
   model_name: string;
   description: string;
   permissions: Capability[];
+  /** 缺省 dsh；接入 codex/opencode 后可用它让该 Agent 走对应 CLI（P2-1 §6.2） */
+  runtime?: string;
+}
+
+/**
+ * 本机 CLI Agent 的安装与接入事实（GET /api/v1/installations）。
+ *
+ * 与 Agent 档案分离：这里是"这台机器上装了什么、接没接进来"，
+ * 档案（AgentHandle）是"是谁、能做什么"。
+ */
+export interface Installation {
+  id: string;
+  /** adapter 名（codex / opencode） */
+  name: string;
+  adapter: string;
+  /** NOT_INSTALLED / DISCOVERED / VERIFIED / CONNECTED / READY */
+  status: string;
+  executable: string | null;
+  path: string | null;
+  version: string | null;
+  source: string;
+  /** ok / missing / unknown */
+  auth_status: string;
+  capabilities: string[];
+  detail: Record<string, unknown>;
 }
 
 /**
