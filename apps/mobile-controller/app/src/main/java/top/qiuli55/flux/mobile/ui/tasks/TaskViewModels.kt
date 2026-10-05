@@ -21,6 +21,7 @@ import top.qiuli55.flux.mobile.ui.FluxViewModel
 data class TaskListUiState(
     val loading: Boolean = true,
     val refreshing: Boolean = false,
+    val creating: Boolean = false,
     val tasks: List<Task> = emptyList(),
     val agents: List<Agent> = emptyList(),
     val error: String? = null,
@@ -68,21 +69,25 @@ class TaskListViewModel : FluxViewModel() {
 
     fun createTask(description: String, decisionMode: String, onCreated: (String) -> Unit) {
         val cleanDescription = description.trim()
-        if (cleanDescription.isEmpty()) {
-            _state.value = _state.value.copy(error = "任务描述不能为空")
+        if (cleanDescription.isEmpty() || _state.value.creating) {
+            if (cleanDescription.isEmpty()) {
+                _state.value = _state.value.copy(error = "任务描述不能为空")
+            }
             return
         }
         viewModelScope.launch {
+            _state.value = _state.value.copy(creating = true, error = null)
             try {
                 val agentId = _state.value.agents.firstOrNull { it.spec?.name == "flux-builtin" }?.id
                     ?: _state.value.agents.firstOrNull()?.id
                 val task = api().createTask(cleanDescription, agentId, decisionMode)
+                _state.value = _state.value.copy(creating = false)
                 refresh()
                 onCreated(task.id)
             } catch (e: FluxApiException) {
-                _state.value = _state.value.copy(error = e.message)
+                _state.value = _state.value.copy(creating = false, error = e.message)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(error = e.message ?: "创建失败")
+                _state.value = _state.value.copy(creating = false, error = e.message ?: "创建失败")
             }
         }
     }
@@ -122,7 +127,6 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 delay(POLL_INTERVAL_MS)
                 val status = _state.value.task?.status ?: continue
                 if (status == "running" || status == "waiting_for_user_decision") {
-                    // 不要让一次较慢的 HTTP 请求被下一轮 3 秒轮询取消。
                     refresh(quiet = true)
                 }
             }
@@ -138,7 +142,6 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     fun refresh(quiet: Boolean = false) {
-        // 非静默刷新允许用户主动刷新时取消旧请求；轮询则避免重叠取消。
         if (quiet && refreshJob?.isActive == true) return
         if (!quiet) refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -180,11 +183,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             _state.value = _state.value.copy(sending = true, error = null, draft = "")
             try {
                 val outcome = api().sendMessage(taskId, content)
-                _state.value = _state.value.copy(
-                    sending = false,
-                    task = outcome.task,
-                    messages = outcome.messages,
-                )
+                _state.value = _state.value.copy(sending = false, task = outcome.task, messages = outcome.messages)
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(sending = false, draft = content, error = e.message)
             } catch (e: Exception) {
