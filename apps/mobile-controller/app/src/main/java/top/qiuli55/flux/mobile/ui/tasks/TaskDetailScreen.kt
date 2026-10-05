@@ -97,7 +97,7 @@ fun TaskDetailScreen(
     // 消息数量变化（发出去了 / 收到回复 / 轮询拉到新的）→ 跳到列表底部
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) {
-            runCatching { listState.animateScrollToItem(Int.MAX_VALUE) }
+            runCatching { listState.animateScrollToItem(state.messages.lastIndex) }
         }
     }
 
