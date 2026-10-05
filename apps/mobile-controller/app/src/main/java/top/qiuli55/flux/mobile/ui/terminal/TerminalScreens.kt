@@ -155,7 +155,7 @@ fun TerminalScreen(viewModel: TerminalViewModel, onBack: () -> Unit) {
 
     LaunchedEffect(state.lines.size) {
         if (state.lines.isNotEmpty()) {
-            runCatching { listState.animateScrollToItem(Int.MAX_VALUE) }
+            runCatching { listState.animateScrollToItem(state.lines.lastIndex) }
         }
     }
 
@@ -243,10 +243,12 @@ fun TerminalScreen(viewModel: TerminalViewModel, onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { viewModel.stop(force = false) },
+                        enabled = state.session?.status == "active",
                         modifier = Modifier.weight(1f),
                     ) { Text("Stop") }
                     Button(
                         onClick = { viewModel.stop(force = true) },
+                        enabled = state.session?.status == "active",
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                             containerColor = FluxColors.red.copy(alpha = 0.18f),
