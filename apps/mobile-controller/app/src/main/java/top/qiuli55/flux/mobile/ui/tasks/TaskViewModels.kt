@@ -26,30 +26,33 @@ data class TaskListUiState(
     val error: String? = null,
 )
 
-/** 任务列表：打开即拉、下拉刷新、新建任务。 */
 class TaskListViewModel : FluxViewModel() {
 
     private var refreshJob: Job? = null
     private val _state = MutableStateFlow(TaskListUiState())
     val state = _state.asStateFlow()
 
-    init {
-        refresh()
-    }
+    init { refresh() }
 
     fun refresh() {
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
-            _state.value = _state.value.copy(refreshing = true, error = null)
+            _state.value = _state.value.copy(
+                loading = _state.value.tasks.isEmpty(),
+                refreshing = true,
+                error = null,
+            )
             try {
                 val api = api()
                 val tasksDeferred = async { api.listTasks() }
                 val agentsDeferred = async { runCatching { api.listAgents() }.getOrDefault(emptyList()) }
+                val tasks = tasksDeferred.await()
+                val agents = agentsDeferred.await()
                 _state.value = _state.value.copy(
                     loading = false,
                     refreshing = false,
-                    tasks = tasksDeferred.await(),
-                    agents = agentsDeferred.await(),
+                    tasks = tasks,
+                    agents = agents,
                 )
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(loading = false, refreshing = false, error = e.message)
@@ -63,13 +66,17 @@ class TaskListViewModel : FluxViewModel() {
         }
     }
 
-    /** 新建任务（不自动开始执行——先让用户在详情页看需求确认，再决定开工）。 */
     fun createTask(description: String, decisionMode: String, onCreated: (String) -> Unit) {
+        val cleanDescription = description.trim()
+        if (cleanDescription.isEmpty()) {
+            _state.value = _state.value.copy(error = "任务描述不能为空")
+            return
+        }
         viewModelScope.launch {
             try {
                 val agentId = _state.value.agents.firstOrNull { it.spec?.name == "flux-builtin" }?.id
                     ?: _state.value.agents.firstOrNull()?.id
-                val task = api().createTask(description.trim(), agentId, decisionMode)
+                val task = api().createTask(cleanDescription, agentId, decisionMode)
                 refresh()
                 onCreated(task.id)
             } catch (e: FluxApiException) {
@@ -96,13 +103,6 @@ data class TaskDetailUiState(
     val draft: String = "",
 )
 
-/**
- * 任务详情：对话、需求确认、执行控制、提案审核，全在一个页面里。
- *
- * 轮询策略与桌面端一致（running / waiting_for_user_decision 时每 3 秒拉一次任务状态）：
- * 手机上没有 SSE 的任务状态流，轮询是最省电且不会漏终态的做法——一旦离开这两个状态
- * 就停止轮询，并把消息与提案列表各刷一次（终态那一刻的变化必须落到界面上）。
- */
 class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
 
     private var refreshJob: Job? = null
@@ -122,6 +122,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 delay(POLL_INTERVAL_MS)
                 val status = _state.value.task?.status ?: continue
                 if (status == "running" || status == "waiting_for_user_decision") {
+                    // 不要让一次较慢的 HTTP 请求被下一轮 3 秒轮询取消。
                     refresh(quiet = true)
                 }
             }
@@ -137,7 +138,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     fun refresh(quiet: Boolean = false) {
-        refreshJob?.cancel()
+        // 非静默刷新允许用户主动刷新时取消旧请求；轮询则避免重叠取消。
+        if (quiet && refreshJob?.isActive == true) return
+        if (!quiet) refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             if (!quiet) _state.value = _state.value.copy(loading = _state.value.task == null)
             try {
@@ -170,8 +173,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     fun send() {
-        val content = _state.value.draft.trim()
-        if (content.isEmpty() || _state.value.sending) return
+        val current = _state.value
+        val content = current.draft.trim()
+        if (content.isEmpty() || current.sending || current.busyAction != null) return
         viewModelScope.launch {
             _state.value = _state.value.copy(sending = true, error = null, draft = "")
             try {
@@ -179,12 +183,12 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 _state.value = _state.value.copy(
                     sending = false,
                     task = outcome.task,
-                    messages = _state.value.messages + outcome.messages,
+                    messages = outcome.messages,
                 )
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(sending = false, draft = content, error = e.message)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(sending = false, draft = content, error = e.message)
+                _state.value = _state.value.copy(sending = false, draft = content, error = e.message ?: "发送失败")
             }
         }
     }
@@ -193,7 +197,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         val outcome = api.startTask(taskId)
         _state.value = _state.value.copy(
             task = outcome.task,
-            messages = _state.value.messages + listOfNotNull(outcome.message),
+            messages = outcome.message?.let { _state.value.messages + it } ?: _state.value.messages,
             notice = "已开始执行，Agent 的改动会进入下面的变更列表",
         )
     }
@@ -203,7 +207,6 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(task = task, notice = "任务已取消")
     }
 
-    /** 停止正在跑的 Agent（Run 终态以进程树确认清理为准，服务端不谎报）。 */
     fun interruptRun() = runAction("interrupt") { api ->
         val runId = _state.value.task?.runId ?: return@runAction
         val run = api.interruptRun(runId)
@@ -221,23 +224,13 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(task = task, notice = if (reject) "已拒绝全部候选方案" else "已提交你的选择")
     }
 
-    // --- 提案动作（列表里直接操作，与详情页共用同一套语义）---
-
     fun acceptChange(changeId: String) = changeAction(changeId, "accept") { api -> api.acceptChanges(listOf(changeId)) }
-
     fun applyChange(changeId: String) = changeAction(changeId, "apply") { api -> api.applyChanges(listOf(changeId)) }
-
-    fun rejectChange(changeId: String) = changeAction(changeId, "reject") { api ->
-        api.rejectChanges(listOf(changeId), reason = null)
-    }
-
+    fun rejectChange(changeId: String) = changeAction(changeId, "reject") { api -> api.rejectChanges(listOf(changeId), reason = null) }
     fun rollbackChange(changeId: String) = changeAction(changeId, "rollback") { api -> listOf(api.rollbackChange(changeId)) }
 
-    private fun changeAction(
-        changeId: String,
-        action: String,
-        block: suspend (FluxApi) -> List<Change>,
-    ) {
+    private fun changeAction(changeId: String, action: String, block: suspend (FluxApi) -> List<Change>) {
+        if (_state.value.busyAction != null) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "$action:$changeId", error = null, notice = null)
             try {
@@ -249,7 +242,6 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     notice = noticeFor(action, changeId, fresh),
                 )
             } catch (e: FluxApiException) {
-                // 409（状态变了、文件被外部改过）与 500（落盘失败）都原样显示服务端的话
                 _state.value = _state.value.copy(busyAction = null, error = e.message)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null, error = e.message ?: "操作失败")
@@ -261,17 +253,14 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         val change = fresh.firstOrNull { it.id == changeId }
         return when (action) {
             "accept" -> "已批准：${change?.filePath ?: changeId}（还需「应用」才会落到磁盘）"
-            "apply" -> if (change?.applyError != null) {
-                "落盘失败：${change.applyError}"
-            } else {
-                "已落盘：${change?.filePath ?: changeId}"
-            }
+            "apply" -> if (change?.applyError != null) "落盘失败：${change.applyError}" else "已落盘：${change?.filePath ?: changeId}"
             "reject" -> "已拒绝：${change?.filePath ?: changeId}"
             else -> "已回滚：${change?.filePath ?: changeId}"
         }
     }
 
     private fun runAction(action: String, block: suspend (FluxApi) -> Unit) {
+        if (_state.value.busyAction != null || _state.value.sending) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = action, error = null, notice = null)
             try {
