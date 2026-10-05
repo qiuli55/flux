@@ -247,7 +247,7 @@ private fun TaskHeaderCard(task: Task?, onStart: () -> Unit, onCancel: () -> Uni
         task.result?.takeIf { it.toString() != "null" }?.let { result ->
             ThinDivider(Modifier.padding(vertical = 8.dp))
             SectionTitle("最终结果")
-            val displayResult = (result as? JsonPrimitive)?.contentOrNull ?: result.toString()
+            val displayResult = (result as? JsonPrimitive)?.content ?: result.toString()
             Text(displayResult, style = MaterialTheme.typography.bodySmall, color = FluxColors.text2)
         }
 
