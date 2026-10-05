@@ -200,7 +200,7 @@ data class TerminalSession(
     @SerialName("workspace_root") val workspaceRoot: String? = null,
     val status: String = "active",
     @SerialName("next_seq") val nextSeq: Int = 1,
-    val createdAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
     @SerialName("finished_at") val finishedAt: String? = null,
 )
 
@@ -214,7 +214,7 @@ data class TerminalEvent(
     val command: String? = null,
     val chunk: String? = null,
     @SerialName("exit_code") val exitCode: Int? = null,
-    val createdAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
 )
 
 class FluxApiException(
