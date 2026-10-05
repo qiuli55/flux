@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -150,3 +151,20 @@ def issue_token(
     )
     assert response.status_code == 200, response.text
     return str(response.json()["data"]["token"])
+
+
+# --- Windows CI 诊断 ---
+
+
+if sys.platform == "win32":
+
+    def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+        """Windows 上把每个失败**即时**打到 stdout。
+
+        windows-latest 的 pwsh wrapper 在 pytest 跑到后段会进入交互调试模式
+        （日志出现 `[DBG]: PS ...`），末尾的 FAILED 列表与 traceback 会整体丢失，
+        只留下进度点里的 F，无法定位是哪些用例。即时打印出现在进度点之间，
+        不会被吞掉；仅 Windows 生效，不影响本地输出。
+        """
+        if report.failed and report.when in ("setup", "call"):
+            print(f"\n### FAILED {report.nodeid}\n{report.longrepr}\n", flush=True)

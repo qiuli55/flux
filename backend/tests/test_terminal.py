@@ -10,12 +10,26 @@ T1 覆盖：会话创建（工作区根与 Apply 同源）、用户命令执行�
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
+import sys
 
 import pytest
 
 from flux.container import Container
 from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError, NotFoundError, ValidationError
+
+
+def _py(code: str) -> str:
+    """一条跨平台可执行的 `python -c` 命令。
+
+    终端执行的是 shell 命令，Windows 上是 cmd.exe：`sleep` / `echo` 这类 POSIX 命令不存在，
+    且 cmd 不认单引号。用例统一改用 python 调用，命令语义在两个平台一致。
+    """
+    exe = f'"{sys.executable}"' if os.name == "nt" else shlex.quote(sys.executable)
+    body = f'"{code}"' if os.name == "nt" else shlex.quote(code)
+    return f"{exe} -c {body}"
 
 
 async def test_create_session_uses_configured_workspace_root(
@@ -35,7 +49,7 @@ async def test_create_session_without_workspace_root_is_rejected(container: Cont
 async def test_run_command_records_output_and_exit_code(apply_container: Container) -> None:
     session = await apply_container.terminal.create_session()
 
-    event = await apply_container.terminal.run_command(session.id, "echo flux-terminal")
+    event = await apply_container.terminal.run_command(session.id, _py("print('flux-terminal')"))
 
     assert event.kind == TerminalEventKind.COMMAND_FINISHED.value
     assert event.exit_code == 0
@@ -52,7 +66,7 @@ async def test_run_command_records_output_and_exit_code(apply_container: Contain
 async def test_run_command_reports_failure_exit_code(apply_container: Container) -> None:
     session = await apply_container.terminal.create_session()
 
-    event = await apply_container.terminal.run_command(session.id, "exit 3")
+    event = await apply_container.terminal.run_command(session.id, _py("import sys; sys.exit(3)"))
 
     assert event.kind == TerminalEventKind.COMMAND_FAILED.value
     assert event.exit_code == 3
@@ -61,7 +75,7 @@ async def test_run_command_reports_failure_exit_code(apply_container: Container)
 async def test_events_are_seq_ordered_and_resumable(apply_container: Container) -> None:
     """seq 单调不重复，且 after_seq 之后的续读结果与全量一致（§12 历史恢复的基础）。"""
     session = await apply_container.terminal.create_session()
-    await apply_container.terminal.run_command(session.id, "echo one")
+    await apply_container.terminal.run_command(session.id, _py("print('one')"))
 
     all_events = await apply_container.terminal.list_events(session.id)
     seqs = [item.seq for item in all_events]
@@ -84,13 +98,15 @@ async def test_stop_closes_session_and_rejects_further_commands(
     assert TerminalEventKind.STOP_REQUESTED.value in kinds
     assert TerminalEventKind.SESSION_CLOSED.value in kinds
     with pytest.raises(ConflictError):
-        await apply_container.terminal.run_command(session.id, "echo x")
+        await apply_container.terminal.run_command(session.id, _py("print('x')"))
 
 
 async def test_force_stop_terminates_a_long_running_command(apply_container: Container) -> None:
     """Force Stop 必须真的杀掉进程树：命令立刻结束，而不是等它自然跑完（§3.4 / §10）。"""
     session = await apply_container.terminal.create_session()
-    task = asyncio.create_task(apply_container.terminal.run_command(session.id, "sleep 30"))
+    task = asyncio.create_task(
+        apply_container.terminal.run_command(session.id, _py("import time; time.sleep(30)"))
+    )
     await asyncio.sleep(1.0)  # 让命令真正跑起来
 
     stopped = await apply_container.terminal.stop(session.id, force=True)
@@ -107,7 +123,8 @@ def test_terminal_api_roundtrip(apply_client, workspace_root) -> None:
     session_id = created["data"]["id"]
 
     ran = apply_client.post(
-        f"/api/v1/terminal/sessions/{session_id}/commands", json={"command": "echo api-check"}
+        f"/api/v1/terminal/sessions/{session_id}/commands",
+        json={"command": _py("print('api-check')")},
     ).json()
     assert ran["success"] is True
     assert ran["data"]["exit_code"] == 0
@@ -130,7 +147,7 @@ async def test_stream_replays_history_and_pushes_live_until_closed(
 ) -> None:
     """打开既运行中的会话：先补历史，再实时推 Stop 产生的事件，收流于 session.closed。"""
     session = await apply_container.terminal.create_session()
-    await apply_container.terminal.run_command(session.id, "echo stream-me")
+    await apply_container.terminal.run_command(session.id, _py("print('stream-me')"))
 
     collected: list[dict] = []
 
@@ -161,7 +178,7 @@ async def test_stream_resumes_from_after_seq_on_finished_session(
 ) -> None:
     """已结束会话 + after_seq 续读：只补断点之后的事件，补完立即收流（不挂住连接）。"""
     session = await apply_container.terminal.create_session()
-    await apply_container.terminal.run_command(session.id, "echo done")
+    await apply_container.terminal.run_command(session.id, _py("print('done')"))
     head = await apply_container.terminal.list_events(session.id)
     await apply_container.terminal.stop(session.id)
     tail = await apply_container.terminal.list_events(session.id, after_seq=head[-1].seq)
@@ -188,7 +205,8 @@ def test_terminal_stream_sse_endpoint(apply_client) -> None:
     created = apply_client.post("/api/v1/terminal/sessions", json={}).json()
     session_id = created["data"]["id"]
     apply_client.post(
-        f"/api/v1/terminal/sessions/{session_id}/commands", json={"command": "echo sse-check"}
+        f"/api/v1/terminal/sessions/{session_id}/commands",
+        json={"command": _py("print('sse-check')")},
     )
     apply_client.post(f"/api/v1/terminal/sessions/{session_id}/stop", json={})
 
@@ -200,7 +218,7 @@ def test_terminal_stream_sse_endpoint(apply_client) -> None:
 
     assert "event: terminal.event" in body
     assert "id: 1" in body
-    assert "echo sse-check" in body
+    assert "sse-check" in body
     assert '"kind": "terminal.session.closed"' in body
 
     # 断线重连：Last-Event-ID 已到末尾时不再重放旧帧，也不挂住连接
