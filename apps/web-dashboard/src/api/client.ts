@@ -103,6 +103,23 @@ export const api = {
       regex: options?.regex ? "true" : undefined,
       max_results: options?.maxResults?.toString(),
     })}`),
+  replaceWorkspaceSearch: (
+    projectId: string,
+    queryText: string,
+    replacement: string,
+    options?: { path?: string; caseSensitive?: boolean; regex?: boolean },
+  ) =>
+    getData<{ files: string[]; replacements: number; truncated: boolean }>(
+      "POST",
+      `/projects/${projectId}/search/replace`,
+      {
+        query: queryText,
+        replacement,
+        path: options?.path,
+        case_sensitive: options?.caseSensitive ?? false,
+        regex: options?.regex ?? false,
+      },
+    ),
   listChanges: (status?: string) => getData<Change[]>("GET", `/workspace/changes${query({ status })}`),
   getChange: (changeId: string) => getData<Change>("GET", `/workspace/changes/${changeId}`),
   accept: (changeIds: string[]) => getData<Change[]>("POST", "/workspace/accept", { change_ids: changeIds }),
