@@ -23,7 +23,7 @@ from flux.api.response import ok
 from flux.container import Container
 from flux.core.terminal.pty_service import HumanPtyService
 from flux.enums import TerminalSource
-from flux.errors import ConflictError, NotFoundError
+from flux.errors import ConflictError, NotFoundError ConflictError, NotFoundError
 from flux.schemas.api import (
     TerminalCommandRequest,
     TerminalSessionCreateRequest,
