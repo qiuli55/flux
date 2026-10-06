@@ -34,11 +34,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await container.task_runs.reconcile_orphan_tasks()
             container.dsh.supervisor.ensure_background()
         yield
-        # Human PTY sessions are process-local interactive shells. Stop them before
-        # closing the database/event resources; Agent Terminal keeps its own shutdown.
-        human_pty = getattr(container.terminal, "_human_pty", None)
-        if human_pty is not None:
-            await human_pty.shutdown()
+        # Container.dispose() owns service shutdown ordering, including Human PTY.
         await container.dispose()
 
     app = FastAPI(
