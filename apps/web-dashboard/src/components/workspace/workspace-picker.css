@@ -1,0 +1,87 @@
+.flux-workspace-picker {
+  position: fixed;
+  top: 10px;
+  left: 14px;
+  z-index: 1200;
+}
+
+.flux-workspace-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(360px, 42vw);
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #252a34);
+  border-radius: 7px;
+  background: var(--panel, #11151c);
+  color: var(--text, #e6eaf0);
+  font: inherit;
+  cursor: pointer;
+}
+
+.flux-workspace-trigger:hover,
+.flux-workspace-trigger[aria-expanded="true"] { border-color: var(--border-strong, #3a4352); }
+.flux-workspace-icon { opacity: .75; }
+.flux-workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.flux-workspace-chevron { opacity: .55; margin-left: 2px; }
+
+.flux-workspace-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  border: 0;
+  background: transparent;
+}
+
+.flux-workspace-menu {
+  position: absolute;
+  top: 42px;
+  left: 0;
+  width: min(380px, calc(100vw - 28px));
+  padding: 12px;
+  border: 1px solid var(--border, #252a34);
+  border-radius: 9px;
+  background: var(--panel, #11151c);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .35);
+}
+
+.flux-workspace-menu-label {
+  margin-bottom: 7px;
+  color: var(--text-3, #7f8998);
+  font-size: 10px;
+  letter-spacing: .12em;
+  font-weight: 700;
+}
+
+.flux-workspace-current {
+  overflow: hidden;
+  margin-bottom: 10px;
+  color: var(--text-2, #aeb6c3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flux-workspace-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border, #252a34);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text, #e6eaf0);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.flux-workspace-open:hover:not(:disabled) { background: var(--hover, rgba(255,255,255,.05)); }
+.flux-workspace-open:disabled { cursor: default; opacity: .5; }
+.flux-workspace-hint { margin-top: 8px; color: var(--text-3, #7f8998); font-size: 11px; line-height: 1.4; }
