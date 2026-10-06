@@ -108,6 +108,7 @@ export function HumanTerminalPanel() {
     runtime.socket?.close();
     runtime.terminal.dispose();
     delete runtimesRef.current[id];
+    setConnectionState((previous) => ({ ...previous, [id]: "disconnected" }));
   }, []);
 
   const sendInput = useCallback((id: string, data: string) => {
@@ -230,8 +231,14 @@ export function HumanTerminalPanel() {
 
   const stopSession = useCallback(async (id: string) => {
     const runtime = runtimesRef.current[id];
-    if (runtime?.socket?.readyState === WebSocket.OPEN) { runtime.socket.send(JSON.stringify({ type: "stop", force: false })); return; }
-    destroyRuntime(id);
+    if (runtime) {
+      runtime.manualClose = true;
+      if (runtime.reconnectTimer !== null) window.clearTimeout(runtime.reconnectTimer);
+      if (runtime.socket?.readyState === WebSocket.OPEN) {
+        runtime.socket.send(JSON.stringify({ type: "stop", force: false }));
+      }
+      destroyRuntime(id);
+    }
     await refreshSessions();
   }, [destroyRuntime, refreshSessions]);
 
@@ -267,6 +274,7 @@ export function HumanTerminalPanel() {
 
   const closeSplit = useCallback(() => {
     if (!splitDirection) return;
+    setContextMenu(null);
     setSplitSessions([]);
     setSplitDirection(null);
   }, [splitDirection]);
@@ -376,6 +384,13 @@ export function HumanTerminalPanel() {
     if (!host || !active) return;
     void refreshSessions().then((list) => { if (!list.length) void createSession(); }).catch((caught) => setError(errorText(caught)));
   }, [host, active, refreshSessions, createSession]);
+
+  useEffect(() => {
+    if (splitDirection && splitSessions.length < 2) {
+      setSplitDirection(null);
+      setSplitSessions([]);
+    }
+  }, [splitDirection, splitSessions.length]);
 
   useEffect(() => {
     if (!active || !visibleSessionIds.length) return;
