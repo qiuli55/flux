@@ -9,40 +9,8 @@ import type { TerminalSession } from "../../api/types";
 import "../../styles/human-terminal.css";
 import "../../styles/human-terminal-xterm.css";
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function labelFor(session: TerminalSession, index: number): string {
-  const root = session.workspace_root.split(/[\\/]/).filter(Boolean).pop();
-  return root ? `${root} ${index + 1}` : `Terminal ${index + 1}`;
-}
-
-function websocketUrl(sessionId: string): string {
-  const url = new URL(
-    `${API_BASE}/terminal/pty/sessions/${encodeURIComponent(sessionId)}/ws`,
-    window.location.origin,
-  );
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
-}
-
-async function createHumanSession(): Promise<TerminalSession> {
-  const response = await fetch(`${API_BASE}/terminal/pty/sessions`, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-  });
-  const envelope = (await response.json()) as {
-    success: boolean;
-    message?: string;
-    data: TerminalSession;
-  };
-  if (!response.ok || !envelope.success) {
-    throw new Error(envelope.message || `创建终端失败（HTTP ${response.status}）`);
-  }
-  return envelope.data;
-}
-
+interface SearchMatch { row: number; start: number; length: number }
+interface SearchOptions { caseSensitive: boolean; wholeWord: boolean; regex: boolean }
 interface TerminalRuntime {
   terminal: Terminal;
   fit: FitAddon;
@@ -54,6 +22,42 @@ interface TerminalRuntime {
   manualClose: boolean;
 }
 
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function labelFor(session: TerminalSession, index: number): string {
+  const root = session.workspace_root.split(/[\\/]/).filter(Boolean).pop();
+  return root ? `${root} ${index + 1}` : `Terminal ${index + 1}`;
+}
+function websocketUrl(sessionId: string): string {
+  const url = new URL(`${API_BASE}/terminal/pty/sessions/${encodeURIComponent(sessionId)}/ws`, window.location.origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function findMatches(terminal: Terminal, query: string, options: SearchOptions): SearchMatch[] {
+  if (!query) return [];
+  const matches: SearchMatch[] = [];
+  const flags = options.caseSensitive ? "g" : "gi";
+  const source = options.regex ? query : escapeRegExp(query);
+  const expression = new RegExp(options.wholeWord ? `\\b(?:${source})\\b` : source, flags);
+  const buffer = terminal.buffer.active;
+  for (let row = 0; row < buffer.length; row += 1) {
+    const line = buffer.getLine(row)?.translateToString(true) ?? "";
+    expression.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = expression.exec(line)) !== null) {
+      if (match[0].length === 0) { expression.lastIndex += 1; continue; }
+      matches.push({ row, start: match.index, length: match[0].length });
+    }
+  }
+  return matches;
+}
+async function createHumanSession(): Promise<TerminalSession> {
+  const response = await fetch(`${API_BASE}/terminal/pty/sessions`, { method: "POST", headers: { Accept: "application/json" } });
+  const envelope = (await response.json()) as { success: boolean; message?: string; data: TerminalSession };
+  if (!response.ok || !envelope.success) throw new Error(envelope.message || `创建终端失败（HTTP ${response.status}）`);
+  return envelope.data;
+}
+
 export function HumanTerminalPanel() {
   const [host, setHost] = useState<HTMLElement | null>(null);
   const [active, setActive] = useState(false);
@@ -61,19 +65,24 @@ export function HumanTerminalPanel() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<Record<string, boolean>>({});
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOptions, setSearchOptions] = useState<SearchOptions>({ caseSensitive: false, wholeWord: false, regex: false });
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
+  const [searchIndex, setSearchIndex] = useState(-1);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const hostsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const runtimesRef = useRef<Record<string, TerminalRuntime>>({});
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
+  const currentRuntime = sessionId ? runtimesRef.current[sessionId] : undefined;
 
   const refreshSessions = useCallback(async () => {
-    const list = await api.listTerminalSessions();
-    const users = list.filter((session) => session.run_id === null);
+    const users = (await api.listTerminalSessions()).filter((session) => session.run_id === null);
     setSessions(users);
-    setSessionId((current) =>
-      current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null,
-    );
+    setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
     return users;
   }, []);
 
@@ -94,33 +103,25 @@ export function HumanTerminalPanel() {
     if (runtime.manualClose || runtime.socket) return;
     const socket = new WebSocket(websocketUrl(session.id));
     runtime.socket = socket;
-
     socket.onopen = () => {
       setConnected((previous) => ({ ...previous, [session.id]: true }));
       try {
         runtime.fit.fit();
         socket.send(JSON.stringify({ type: "resize", cols: runtime.terminal.cols, rows: runtime.terminal.rows }));
-      } catch {
-        // Socket may close between open and the initial resize.
-      }
+      } catch { /* Socket may close between open and initial resize. */ }
     };
-
     socket.onmessage = (event) => {
       try {
         const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string };
         if (message.type === "output" && message.data) runtime.terminal.write(message.data);
         if (message.type === "error") setError(message.message || "终端通信失败");
         if (message.type === "closed") void refreshSessions();
-      } catch {
-        setError("终端返回了无法解析的数据");
-      }
+      } catch { setError("终端返回了无法解析的数据"); }
     };
-
     socket.onerror = () => {
       setConnected((previous) => ({ ...previous, [session.id]: false }));
       setError("PTY WebSocket 连接失败");
     };
-
     socket.onclose = () => {
       if (runtime.socket !== socket) return;
       runtime.socket = null;
@@ -137,30 +138,14 @@ export function HumanTerminalPanel() {
   const ensureRuntime = useCallback((session: TerminalSession): TerminalRuntime => {
     const existing = runtimesRef.current[session.id];
     if (existing) return existing;
-
     const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: "block",
-      fontFamily: "var(--mono)",
-      fontSize: 13,
-      lineHeight: 1.15,
-      scrollback: 5000,
-      theme: {
-        background: "#080a10",
-        foreground: "#d9deea",
-        cursor: "#7c5cff",
-        selectionBackground: "rgba(124,92,255,.35)",
-      },
+      cursorBlink: true, cursorStyle: "block", fontFamily: "var(--mono)", fontSize: 13, lineHeight: 1.15, scrollback: 5000,
+      theme: { background: "#080a10", foreground: "#d9deea", cursor: "#7c5cff", selectionBackground: "rgba(124,92,255,.35)" },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     const runtime = {} as TerminalRuntime;
-    runtime.terminal = terminal;
-    runtime.fit = fit;
-    runtime.socket = null;
-    runtime.resizeObserver = null;
-    runtime.reconnectTimer = null;
-    runtime.manualClose = false;
+    runtime.terminal = terminal; runtime.fit = fit; runtime.socket = null; runtime.resizeObserver = null; runtime.reconnectTimer = null; runtime.manualClose = false;
     runtime.dataDisposable = terminal.onData((data) => {
       const socket = runtime.socket;
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
@@ -179,20 +164,58 @@ export function HumanTerminalPanel() {
       const created = await createHumanSession();
       setSessions((previous) => [created, ...previous]);
       setSessionId(created.id);
-    } catch (caught) {
-      setError(errorText(caught));
-    }
+    } catch (caught) { setError(errorText(caught)); }
   }, []);
 
   const stopSession = useCallback(async (id: string) => {
     const runtime = runtimesRef.current[id];
-    if (runtime?.socket?.readyState === WebSocket.OPEN) {
-      runtime.socket.send(JSON.stringify({ type: "stop", force: false }));
-      return;
-    }
+    if (runtime?.socket?.readyState === WebSocket.OPEN) { runtime.socket.send(JSON.stringify({ type: "stop", force: false })); return; }
     destroyRuntime(id);
     await refreshSessions();
   }, [destroyRuntime, refreshSessions]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false); setSearchMatches([]); setSearchIndex(-1); setSearchError(null);
+    currentRuntime?.terminal.clearSelection();
+    currentRuntime?.terminal.focus();
+  }, [currentRuntime]);
+
+  const openSearch = useCallback(() => {
+    const runtime = sessionId ? runtimesRef.current[sessionId] : undefined;
+    setSearchOpen(true);
+    if (runtime) {
+      const selection = runtime.terminal.getSelection();
+      if (selection && !searchQuery) setSearchQuery(selection);
+    }
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  }, [searchQuery, sessionId]);
+
+  const runSearch = useCallback((direction: 1 | -1) => {
+    const runtime = sessionId ? runtimesRef.current[sessionId] : undefined;
+    if (!runtime || !searchQuery) return;
+    let matches: SearchMatch[];
+    try { matches = findMatches(runtime.terminal, searchQuery, searchOptions); }
+    catch { setSearchError("无效的正则表达式"); setSearchMatches([]); setSearchIndex(-1); return; }
+    setSearchError(null); setSearchMatches(matches);
+    if (!matches.length) { setSearchIndex(-1); runtime.terminal.clearSelection(); return; }
+    const next = searchIndex < 0 ? (direction > 0 ? 0 : matches.length - 1) : (searchIndex + direction + matches.length) % matches.length;
+    const match = matches[next];
+    runtime.terminal.select(match.start, match.row, match.length);
+    runtime.terminal.scrollToLine(Math.max(0, match.row - Math.floor(runtime.terminal.rows / 2)));
+    setSearchIndex(next);
+  }, [searchIndex, searchOptions, searchQuery, sessionId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!active) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); openSearch(); return; }
+      if (!searchOpen) return;
+      if (event.key === "Escape") { event.preventDefault(); closeSearch(); }
+      else if (event.key === "Enter") { event.preventDefault(); runSearch(event.shiftKey ? -1 : 1); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, closeSearch, openSearch, runSearch, searchOpen]);
 
   useEffect(() => {
     const findHost = () => setHost(document.querySelector<HTMLElement>(".ide-bottom .bp-body"));
@@ -206,30 +229,14 @@ export function HumanTerminalPanel() {
     if (!host) return;
     const header = host.parentElement?.querySelector<HTMLElement>(".bp-head");
     if (!header) return;
-
-    const open = () => {
-      setActive(true);
-      button.classList.add("is-active");
-    };
-    const closeFromSibling = () => {
-      setActive(false);
-      button.classList.remove("is-active");
-    };
     const button = document.createElement("button");
-    button.type = "button";
-    button.className = "bp-tab human-terminal-trigger";
-    button.textContent = "终端";
-    button.addEventListener("click", open);
-
+    const open = () => { setActive(true); button.classList.add("is-active"); };
+    const closeFromSibling = () => { setActive(false); button.classList.remove("is-active"); setSearchOpen(false); };
+    button.type = "button"; button.className = "bp-tab human-terminal-trigger"; button.textContent = "终端"; button.addEventListener("click", open);
     const siblingTabs = Array.from(header.querySelectorAll<HTMLElement>(".bp-tab:not(.human-terminal-trigger)"));
     siblingTabs.forEach((tab) => tab.addEventListener("click", closeFromSibling));
     header.insertBefore(button, header.querySelector(".bp-gap"));
-
-    return () => {
-      button.removeEventListener("click", open);
-      siblingTabs.forEach((tab) => tab.removeEventListener("click", closeFromSibling));
-      button.remove();
-    };
+    return () => { button.removeEventListener("click", open); siblingTabs.forEach((tab) => tab.removeEventListener("click", closeFromSibling)); button.remove(); };
   }, [host]);
 
   useEffect(() => {
@@ -240,11 +247,7 @@ export function HumanTerminalPanel() {
 
   useEffect(() => {
     if (!host || !active) return;
-    void refreshSessions()
-      .then((list) => {
-        if (list.length === 0) void createSession();
-      })
-      .catch((caught) => setError(errorText(caught)));
+    void refreshSessions().then((list) => { if (!list.length) void createSession(); }).catch((caught) => setError(errorText(caught)));
   }, [host, active, refreshSessions, createSession]);
 
   useEffect(() => {
@@ -254,67 +257,63 @@ export function HumanTerminalPanel() {
     const runtime = ensureRuntime(session);
     const element = hostsRef.current[session.id];
     if (!element) return;
-
     if (!runtime.terminal.element) runtime.terminal.open(element);
     runtime.fit.fit();
     runtime.resizeObserver?.disconnect();
-    runtime.resizeObserver = new ResizeObserver(() => {
-      try {
-        runtime.fit.fit();
-      } catch {
-        // Element may be temporarily hidden while the bottom panel changes tabs.
-      }
-    });
+    runtime.resizeObserver = new ResizeObserver(() => { try { runtime.fit.fit(); } catch { /* panel temporarily hidden */ } });
     runtime.resizeObserver.observe(element);
     connectRuntime(session, runtime);
     runtime.terminal.focus();
-
     return () => runtime.resizeObserver?.disconnect();
   }, [active, sessionId, userSessions, ensureRuntime, connectRuntime]);
 
-  useEffect(() => () => {
-    Object.keys(runtimesRef.current).forEach(destroyRuntime);
-  }, [destroyRuntime]);
+  useEffect(() => {
+    if (!searchOpen) return;
+    setSearchIndex(-1); setSearchMatches([]); setSearchError(null);
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  }, [searchOpen, sessionId]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const timer = window.setTimeout(() => runSearch(1), 80);
+    return () => window.clearTimeout(timer);
+  }, [searchOpen, searchOptions, searchQuery]);
+
+  useEffect(() => () => { Object.keys(runtimesRef.current).forEach(destroyRuntime); }, [destroyRuntime]);
 
   if (!host) return null;
-
   return createPortal(
     <div className={`human-terminal${active ? " is-active" : ""}`}>
       <div className="ht-toolbar">
         <div className="ht-tabs" role="tablist" aria-label="终端会话">
           {userSessions.map((session, index) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={session.id === sessionId}
-              key={session.id}
-              className={`ht-tab${session.id === sessionId ? " is-active" : ""}`}
-              onClick={() => setSessionId(session.id)}
-              title={session.workspace_root}
-            >
-              <span className={`ht-dot${connected[session.id] ? " is-live" : ""}`} />
-              {labelFor(session, index)}
+            <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => setSessionId(session.id)} title={session.workspace_root}>
+              <span className={`ht-dot${connected[session.id] ? " is-live" : ""}`} />{labelFor(session, index)}
             </button>
           ))}
-          <button type="button" className="ht-add" onClick={() => void createSession()} aria-label="新建终端">
-            ＋
-          </button>
+          <button type="button" className="ht-add" onClick={() => void createSession()} aria-label="新建终端">＋</button>
         </div>
         <div className="ht-actions">
           <span className="ht-cwd" title={currentSession?.workspace_root}>{currentSession?.workspace_root ?? ""}</span>
+          <button type="button" className={`ht-tool${searchOpen ? " is-active" : ""}`} onClick={openSearch} title="搜索终端 (Ctrl/Cmd+F)">搜索</button>
           <button type="button" className="ht-tool" onClick={() => sessionId && runtimesRef.current[sessionId]?.terminal.clear()} title="清空">清空</button>
           <button type="button" className="ht-tool" onClick={() => sessionId && void stopSession(sessionId)} title="停止终端">停止</button>
         </div>
       </div>
+      {searchOpen ? (
+        <div className="ht-search" role="search">
+          <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); runSearch(event.shiftKey ? -1 : 1); } else if (event.key === "Escape") { event.preventDefault(); closeSearch(); } }} placeholder="搜索终端输出…" aria-label="搜索终端输出" />
+          <button type="button" className={searchOptions.caseSensitive ? "is-active" : ""} onClick={() => setSearchOptions((value) => ({ ...value, caseSensitive: !value.caseSensitive }))} title="区分大小写">Aa</button>
+          <button type="button" className={searchOptions.wholeWord ? "is-active" : ""} onClick={() => setSearchOptions((value) => ({ ...value, wholeWord: !value.wholeWord }))} title="全词匹配">ab</button>
+          <button type="button" className={searchOptions.regex ? "is-active" : ""} onClick={() => setSearchOptions((value) => ({ ...value, regex: !value.regex }))} title="正则表达式">.*</button>
+          <span className={`ht-search-count${searchError ? " is-error" : ""}`}>{searchError ?? (searchQuery ? (searchMatches.length ? `${searchIndex + 1}/${searchMatches.length}` : "无匹配") : "")}</span>
+          <button type="button" onClick={() => runSearch(-1)} disabled={!searchQuery} title="上一个">↑</button>
+          <button type="button" onClick={() => runSearch(1)} disabled={!searchQuery} title="下一个">↓</button>
+          <button type="button" onClick={closeSearch} title="关闭搜索">×</button>
+        </div>
+      ) : null}
       <div className="ht-body" role="tabpanel">
-        {userSessions.map((session) => (
-          <div
-            key={session.id}
-            ref={(element) => { hostsRef.current[session.id] = element; }}
-            className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`}
-            aria-hidden={session.id !== sessionId}
-          />
-        ))}
+        {userSessions.map((session) => <div key={session.id} ref={(element) => { hostsRef.current[session.id] = element; }} className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`} aria-hidden={session.id !== sessionId} />)}
       </div>
       {error ? <div className="ht-error">{error}</div> : null}
       <div className="ht-statusbar">
