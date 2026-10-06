@@ -84,3 +84,30 @@ def test_workspace_search_rejects_invalid_regex(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         explorer.search(query="[", regex=True)
+
+def test_workspace_replace_updates_matching_text(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    target = tmp_path / "src" / "app.ts"
+    target.write_text("target target\nkeep\n", encoding="utf-8")
+    explorer = WorkspaceFileExplorer(workspace_root=tmp_path)
+
+    result = explorer.replace(query="target", replacement="value")
+
+    assert result["replacements"] == 2
+    assert result["files"] == ["src/app.ts"]
+    assert target.read_text(encoding="utf-8") == "value value\nkeep\n"
+
+
+def test_workspace_replace_preserves_regex_backreferences(tmp_path: Path) -> None:
+    target = tmp_path / "app.ts"
+    target.write_text("foo=alpha\nfoo=beta\n", encoding="utf-8")
+    explorer = WorkspaceFileExplorer(workspace_root=tmp_path)
+
+    result = explorer.replace(
+        query=r"foo=(\w+)",
+        replacement=r"bar=\1",
+        regex=True,
+    )
+
+    assert result["replacements"] == 2
+    assert target.read_text(encoding="utf-8") == "bar=alpha\nbar=beta\n"
