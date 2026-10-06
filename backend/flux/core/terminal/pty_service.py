@@ -1,12 +1,11 @@
 """Human Terminal PTY service.
 
-This is deliberately separate from the Agent Terminal command runner. A human terminal
-is an interactive shell backed by a real pseudo-terminal: input is written byte-for-byte
-to the PTY, output contains ANSI/control sequences, and resize changes the PTY window size.
+This is separate from the Agent Terminal command runner. A human terminal is an
+interactive shell backed by a real pseudo-terminal: input is written byte-for-byte
+to the PTY, output contains ANSI/control sequences, and resize changes the PTY size.
 
-Linux/macOS use Python's native pty module. The current implementation targets the Unix
-runtime used by Flux's server/desktop Linux environment; Windows support should use a
-ConPTY-backed implementation before shipping a Windows desktop build.
+Linux/macOS use Python's native pty module. A Windows desktop build needs a ConPTY-backed
+implementation before this service is enabled there.
 """
 
 from __future__ import annotations
@@ -19,13 +18,14 @@ import struct
 import termios
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
 
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
 from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
-from flux.errors import ConflictError, ValidationError
+from flux.errors import ConflictError
 from flux.models.terminal import TerminalSession
 
 
@@ -58,7 +58,7 @@ class HumanPtyService:
         root = resolve_workspace_root(self._configured_root)
         session = await self._repo.create_session(workspace_root=str(root), run_id=None)
         try:
-            pid, fd = await asyncio.to_thread(self._spawn, str(session.id), str(root), cols, rows)
+            pid, fd = await asyncio.to_thread(self._spawn, str(root), cols, rows)
         except Exception:
             await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
             raise
@@ -75,9 +75,8 @@ class HumanPtyService:
         fd = self._fds.get(key)
         if fd is None or key in self._closed:
             raise ConflictError("终端会话已结束", details={"session_id": key})
-        if not data:
-            return
-        await asyncio.to_thread(os.write, fd, data.encode("utf-8", errors="replace"))
+        if data:
+            await asyncio.to_thread(os.write, fd, data.encode("utf-8", errors="replace"))
 
     async def resize(self, session_id: str | uuid.UUID, cols: int, rows: int) -> None:
         key = str(session_id)
@@ -121,7 +120,7 @@ class HumanPtyService:
         for key in list(self._pids):
             await self.stop(key, force=True)
 
-    def _spawn(self, session_id: str, cwd: str, cols: int, rows: int) -> tuple[int, int]:
+    def _spawn(self, cwd: str, cols: int, rows: int) -> tuple[int, int]:
         shell = os.environ.get("SHELL") or "/bin/bash"
         pid, fd = pty.fork()
         if pid == 0:
@@ -137,9 +136,8 @@ class HumanPtyService:
     @staticmethod
     def _resize_fd(fd: int, cols: int, rows: int) -> None:
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        termios.tcsetwinsize(fd, (rows, cols))
-        # tcsetwinsize is the preferred API on modern Python; the ioctl fallback keeps
-        # this compatible with older Python versions supported by Flux.
+        with suppress(AttributeError):
+            termios.tcsetwinsize(fd, (rows, cols))
         try:
             import fcntl
 
@@ -155,7 +153,7 @@ class HumanPtyService:
             fd = self._fds.pop(key, None)
             self._pids.pop(key, None)
         if fd is not None:
-            with contextlib_suppress(OSError):
+            with suppress(OSError):
                 os.close(fd)
         try:
             session = await self._repo.get_session(key)
@@ -163,8 +161,6 @@ class HumanPtyService:
                 await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
             await self._emit(session.id, TerminalEventKind.SESSION_CLOSED)
         except Exception:
-            # The PTY is already gone; cleanup must not turn a normal process exit into
-            # an application-level failure.
             return
 
     async def _emit(self, session_id: uuid.UUID, kind: TerminalEventKind) -> None:
@@ -175,16 +171,3 @@ class HumanPtyService:
         )
         if self._bus is not None:
             await self._bus.publish(Events.TERMINAL_EVENT, event.to_dict())
-
-
-class contextlib_suppress:
-    """Tiny local suppress helper to keep the PTY module dependency-free."""
-
-    def __init__(self, *exceptions: type[BaseException]) -> None:
-        self._exceptions = exceptions
-
-    def __enter__(self) -> "contextlib_suppress":
-        return self
-
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object) -> bool:
-        return exc_type is not None and issubclass(exc_type, self._exceptions)
