@@ -38,10 +38,18 @@ function formatValidationDetails(details: unknown): string | null {
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<Envelope<T>> {
   let response: Response;
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (
+    typeof window !== "undefined" &&
+    (window as Window & { fluxDesktop?: { isDesktop?: boolean } }).fluxDesktop?.isDesktop
+  ) {
+    headers["X-Flux-Desktop"] = "1";
+  }
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -69,6 +77,14 @@ export const api = {
   health: () => getData<HealthData>("GET", "/health"),
   ready: () => getData<ReadyData>("GET", "/health/ready"),
   getWorkspaceRoot: () => getData<{ root: string }>("GET", "/workspace/root"),
+  createWorkspaceFile: (projectId: string, path: string, content = "") =>
+    getData<{ path: string }>("POST", `/projects/${projectId}/files/file`, { path, content }),
+  createWorkspaceDirectory: (projectId: string, path: string) =>
+    getData<{ path: string }>("POST", `/projects/${projectId}/files/directory`, { path }),
+  renameWorkspacePath: (projectId: string, path: string, newPath: string) =>
+    getData<{ path: string }>("PATCH", `/projects/${projectId}/files`, { path, new_path: newPath }),
+  deleteWorkspacePath: (projectId: string, path: string) =>
+    getData<{ path: string }>("DELETE", `/projects/${projectId}/files`, { path }),
   listProjects: () => getData<Project[]>("GET", "/projects"),
   createProject: (body: { name: string; repository: string | null }) => getData<Project>("POST", "/projects", body),
   scanProject: (projectId: string) => getData<ScanOutcome>("POST", `/projects/${projectId}/scan`, { record: true }),
@@ -105,6 +121,17 @@ export const api = {
   decideTask: (taskId: string, body: { decision: DecisionMode }) => getData<DecisionOutcome>("POST", `/tasks/${taskId}/decision`, body),
   listConfirmations: (taskId: string) => getData<ConfirmationItem[]>("GET", `/tasks/${taskId}/confirmations`),
   listTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/sessions"),
+  listHumanTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/pty/sessions"),
+  getHumanTerminalSession: (sessionId: string) =>
+    getData<TerminalSession>("GET", `/terminal/pty/sessions/${encodeURIComponent(sessionId)}`),
+  createHumanTerminalSession: () =>
+    getData<TerminalSession>("POST", "/terminal/pty/sessions"),
+  stopHumanTerminalSession: (sessionId: string, force = false) =>
+    getData<TerminalSession>(
+      "POST",
+      `/terminal/pty/sessions/${encodeURIComponent(sessionId)}/stop`,
+      { force },
+    ),
   createTerminalSession: (body?: { workspace_root?: string }) => getData<TerminalSession>("POST", "/terminal/sessions", body),
   stopTerminalSession: (id: string) => getData<TerminalSession>("POST", `/terminal/sessions/${id}/stop`),
   terminalEvents: (id: string, after?: number) => getData<TerminalEvent[]>("GET", `/terminal/sessions/${id}/events${query({ after: after?.toString() })}`),
