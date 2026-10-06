@@ -890,6 +890,18 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   );
 
   const activeFile = activeTab && activeTab !== CHANGES_TAB ? files[activeTab] : undefined;
+
+  useEffect(() => {
+    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
+      );
+      row?.scrollIntoView({ block: "center", behavior: "smooth" });
+      setRevealLine(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeFile, activeTab, revealLine]);
   const activeLines = useMemo(() => (activeFile ? activeFile.content.split("\n") : []), [activeFile]);
   const activeKind = activeTab && activeTab !== CHANGES_TAB ? lexerKind(activeTab) : "code";
   const changedLines = useMemo(() => {
