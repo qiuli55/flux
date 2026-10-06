@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import sys
 from pathlib import Path
@@ -45,8 +46,22 @@ def main() -> int:
         if not OUTPUT_PATH.exists():
             print(f"缺少契约文件：{OUTPUT_PATH}，请先运行 python scripts/export_openapi.py")
             return 1
-        if OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
+        existing = OUTPUT_PATH.read_text(encoding="utf-8")
+        if existing != rendered:
             print(f"契约漂移：{OUTPUT_PATH} 与当前代码不一致，请重新导出并提交")
+            diff = list(
+                difflib.unified_diff(
+                    existing.splitlines(),
+                    rendered.splitlines(),
+                    fromfile=str(OUTPUT_PATH),
+                    tofile="generated",
+                    lineterm="",
+                    n=2,
+                )
+            )
+            if diff:
+                print("差异（最多显示前 120 行）：")
+                print("\n".join(diff[:120]))
             return 1
         print(f"契约一致：{OUTPUT_PATH}")
         return 0
