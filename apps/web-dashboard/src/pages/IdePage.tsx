@@ -2325,9 +2325,13 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             title="刷新"
             onClick={() => {
               if (bottomTab === "git") void loadGit();
-              else if (bottomTab === "changes" || bottomTab === "problems") {
+              else if (bottomTab === "changes") {
                 void loadChanges();
                 void loadRecovery();
+              } else if (bottomTab === "problems") {
+                void loadChanges();
+                void loadRecovery();
+                void loadTerminalProblems();
               } else void loadTask(projectId);
             }}
           >
