@@ -58,3 +58,10 @@
 
 .ag-tools li.is-clickable { cursor: pointer; }
 .ag-tools li.is-clickable:hover { background: rgba(124,92,255,.08); }
+
+
+/* Problems panel */
+.bp-problem { width: 100%; border: 0; text-align: left; cursor: pointer; }
+.bp-problem:hover { background: rgba(124,92,255,.08); }
+.bp-problem-message { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9aa3b8); }
+.bp-line { color: var(--text-3, #666e85); font: 11px var(--mono, monospace); }
