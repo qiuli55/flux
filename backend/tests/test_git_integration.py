@@ -321,3 +321,19 @@ async def test_service_requires_workspace_service_for_change_ids() -> None:
         await service.commit("feat: x", change_ids=["0f0f0f0f-0000-0000-0000-000000000000"])
 
     assert "未接入 Virtual Workspace" in excinfo.value.message
+
+def test_stage_and_unstage(tmp_path: Path) -> None:
+    (tmp_path / "file.txt").write_text("hello\n", encoding="utf-8")
+    git = GitClient(workspace_root=tmp_path)
+    git._run("init", "-q", root=tmp_path)  # noqa: SLF001
+    git._run("config", "user.email", "flux@example.com", root=tmp_path)  # noqa: SLF001
+    git._run("config", "user.name", "Flux Test", root=tmp_path)  # noqa: SLF001
+    git._run("add", "--", "file.txt", root=tmp_path)  # noqa: SLF001
+    git._run("commit", "-m", "initial", root=tmp_path)  # noqa: SLF001
+    (tmp_path / "file.txt").write_text("changed\n", encoding="utf-8")
+
+    staged = git.stage(["file.txt"])
+    assert staged.files[0].staged is True
+
+    unstaged = git.unstage(["file.txt"])
+    assert unstaged.files[0].staged is False
