@@ -97,6 +97,12 @@ export interface FileTree {
 }
 
 /** GET /api/v1/projects/{id}/files/content 的 data：size 是文件真实字节数 */
+export interface SearchHit {
+  path: string;
+  line: number;
+  column: number;
+  text: string;
+}
 export interface FileContent {
   path: string;
   content: string;
