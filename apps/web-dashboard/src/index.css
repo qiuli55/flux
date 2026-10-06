@@ -36,3 +36,10 @@
 .search-hit-main .search-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-hit-line { color: var(--text-3, #666e85); font-family: var(--mono, monospace); font-size: 10px; }
 .search-hit-preview { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9aa3b8); font-family: var(--mono, monospace); font-size: 10px; }
+
+.fl-search-stack { display: grid; gap: 6px; }
+.fl-search, .fl-replace { display: flex; align-items: center; gap: 4px; }
+.fl-search input, .fl-replace input { min-width: 0; flex: 1; }
+.fl-search > button { min-width: 34px; height: 30px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-2, #9aa3b8); cursor: pointer; font-size: 11px; }
+.fl-search > button:hover, .fl-search > button.is-active { border-color: var(--line, #232741); background: rgba(124,92,255,.12); color: var(--text, #e8eaf3); }
+.fl-replace .btn { white-space: nowrap; }
