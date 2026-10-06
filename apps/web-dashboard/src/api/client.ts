@@ -273,8 +273,12 @@ export const api = {
   /** 开一个终端会话（工作区根由服务端 FLUX_WORKSPACE_ROOT 决定，未配置时后端 422） */
   createTerminalSession: (body: { run_id?: string | null } = {}) =>
     getData<TerminalSession>("POST", "/terminal/sessions", body),
-  /** 最近的终端会话列表（最新在前），用于重开窗口时接回已有会话 */
+  /** 最近的终端会话列表（Agent Terminal），最新在前 */
   listTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/sessions"),
+  /** Human Terminal 专用会话列表；不会混入 Agent Terminal */
+  listHumanTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/pty/sessions"),
+  /** 创建 Human Terminal PTY 会话，沿用统一 API 错误处理 */
+  createHumanTerminalSession: () => getData<TerminalSession>("POST", "/terminal/pty/sessions"),
   /** 单个会话（含状态与 next_seq） */
   getTerminalSession: (sessionId: string) =>
     getData<TerminalSession>("GET", `/terminal/sessions/${sessionId}`),
