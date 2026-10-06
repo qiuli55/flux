@@ -142,6 +142,28 @@ async def test_stop_blocks_a_command_already_queued(
     )
 
 
+async def test_shutdown_closes_active_agent_sessions_and_rejects_new_work(
+    apply_container: Container,
+) -> None:
+    first = await apply_container.terminal.create_session()
+    second = await apply_container.terminal.create_session()
+
+    await apply_container.terminal.shutdown()
+
+    first_closed = await apply_container.terminal.get_session(first.id)
+    second_closed = await apply_container.terminal.get_session(second.id)
+    assert first_closed.status == TerminalSessionStatus.CLOSED.value
+    assert second_closed.status == TerminalSessionStatus.CLOSED.value
+
+    events = await apply_container.terminal.list_events(first.id)
+    assert events[-1].kind == TerminalEventKind.SESSION_CLOSED.value
+
+    with pytest.raises(ConflictError):
+        await apply_container.terminal.create_session()
+    with pytest.raises(ConflictError):
+        await apply_container.terminal.run_command(second.id, _py("print('must-not-run')"))
+
+
 async def test_stop_fails_closed_when_process_tree_cannot_be_confirmed(
     apply_container: Container,
     monkeypatch: pytest.MonkeyPatch,
