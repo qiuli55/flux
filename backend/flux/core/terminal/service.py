@@ -69,7 +69,9 @@ class TerminalService:
         return session
 
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
-        return await self._repo.get_session(session_id)
+        session = await self._repo.get_session(session_id)
+        self._ensure_agent_session(session)
+        return session
 
     async def list_sessions(
         self,
@@ -83,7 +85,8 @@ class TerminalService:
     async def list_events(
         self, session_id: str | uuid.UUID, *, after_seq: int = 0, limit: int = 2000
     ) -> list[TerminalEvent]:
-        return await self._repo.list_events(session_id, after_seq=after_seq, limit=limit)
+        session = await self.get_session(session_id)
+        return await self._repo.list_events(session.id, after_seq=after_seq, limit=limit)
 
     async def stream_events(
         self, session_id: str | uuid.UUID, *, after_seq: int = 0
@@ -94,7 +97,7 @@ class TerminalService:
         合并，因此既不重复也不丢。会话已结束（session.closed）时推完即收流；仍在跑则保持
         连接，直到客户端断开（关闭终端窗口不停 Agent，§11）。产出 `None` 表示心跳哨兵。
         """
-        session = await self._repo.get_session(session_id)
+        session = await self.get_session(session_id)
         key = str(session.id)
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -190,6 +193,14 @@ class TerminalService:
         lock = self._locks.setdefault(str(session.id), asyncio.Lock())
         async with lock:
             return await self._run_locked(session, text, source)
+
+    @staticmethod
+    def _ensure_agent_session(session: TerminalSession) -> None:
+        if session.kind != TerminalSessionKind.AGENT.value:
+            raise ConflictError(
+                "该会话属于 Human Terminal，不是 Agent Terminal",
+                details={"session_id": str(session.id), "kind": session.kind},
+            )
 
     async def _run_locked(
         self, session: TerminalSession, command: str, source: TerminalSource
