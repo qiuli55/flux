@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 from collections import deque
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ from typing import Any
 from flux.core.project_scanner.scanner import IGNORED_DIRS
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root, safe_relative_path
 from flux.core.virtual_workspace.path_guard import resolve_within_root
-from flux.errors import NotFoundError, ValidationError
+from flux.errors import ConflictError, NotFoundError, ValidationError
 
 #: 文件树一次最多返回多少条（超出即截断，不让"列目录"变成无界内存操作）
 MAX_TREE_ENTRIES = 2000
@@ -245,6 +246,126 @@ class WorkspaceFileExplorer:
             size=info.st_size,  # 真实字节数，不是截断后的长度
             truncated=truncated,
         )
+
+    # --- 用户发起的文件操作 ---
+
+    def create_file(
+        self, *, path: str, workspace_root: str | Path | None = None, content: str = ""
+    ) -> str:
+        """Create one regular UTF-8 text file as an explicit user operation."""
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = safe_relative_path(path)
+        self._guard_user_path(relative)
+        target = resolve_within_root(root, relative)
+        parent = resolve_within_root(root, relative.parent)
+        if target.exists():
+            raise ConflictError(
+                f"文件已存在：{relative.as_posix()}", details={"path": relative.as_posix()}
+            )
+        if not parent.is_dir():
+            raise NotFoundError(
+                f"父目录不存在：{relative.parent.as_posix() or '.'}",
+                details={"path": relative.parent.as_posix()},
+            )
+        data = content.encode("utf-8")
+        if len(data) > MAX_CONTENT_BYTES:
+            raise ValidationError(
+                f"新建文件内容超过 {MAX_CONTENT_BYTES} 字节上限",
+                details={"path": relative.as_posix(), "max_bytes": MAX_CONTENT_BYTES},
+            )
+        with open(target, "xb") as handle:
+            handle.write(data)
+        return relative.as_posix()
+
+    def create_directory(
+        self, *, path: str, workspace_root: str | Path | None = None
+    ) -> str:
+        """Create one directory; parent must already exist."""
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = safe_relative_path(path)
+        self._guard_user_path(relative)
+        target = resolve_within_root(root, relative)
+        parent = resolve_within_root(root, relative.parent)
+        if target.exists():
+            raise ConflictError(
+                f"路径已存在：{relative.as_posix()}", details={"path": relative.as_posix()}
+            )
+        if not parent.is_dir():
+            raise NotFoundError(
+                f"父目录不存在：{relative.parent.as_posix() or '.'}",
+                details={"path": relative.parent.as_posix()},
+            )
+        target.mkdir()
+        return relative.as_posix()
+
+    def rename(
+        self,
+        *,
+        path: str,
+        new_path: str,
+        workspace_root: str | Path | None = None,
+    ) -> str:
+        """Rename/move a user-selected file or directory within the workspace."""
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        source = safe_relative_path(path)
+        target_relative = safe_relative_path(new_path)
+        if not source.parts:
+            raise ValidationError("不能重命名工作区根目录")
+        self._guard_user_path(source)
+        self._guard_user_path(target_relative)
+        source_path = resolve_within_root(root, source)
+        target_path = resolve_within_root(root, target_relative)
+        if not source_path.exists():
+            raise NotFoundError(
+                f"路径不存在：{source.as_posix()}", details={"path": source.as_posix()}
+            )
+        if target_path.exists():
+            raise ConflictError(
+                f"目标路径已存在：{target_relative.as_posix()}",
+                details={"path": target_relative.as_posix()},
+            )
+        if source_path.is_dir() and source_path in target_path.parents:
+            raise ValidationError("不能把目录移动到自己的子目录中")
+        parent = resolve_within_root(root, target_relative.parent)
+        if not parent.is_dir():
+            raise NotFoundError(
+                f"目标父目录不存在：{target_relative.parent.as_posix() or '.'}",
+                details={"path": target_relative.parent.as_posix()},
+            )
+        source_path.rename(target_path)
+        return target_relative.as_posix()
+
+    def delete(self, *, path: str, workspace_root: str | Path | None = None) -> str:
+        """Delete a user-selected file or directory recursively."""
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = safe_relative_path(path)
+        if not relative.parts:
+            raise ValidationError("不能删除工作区根目录")
+        self._guard_user_path(relative)
+        target = resolve_within_root(root, relative)
+        if not target.exists():
+            raise NotFoundError(
+                f"路径不存在：{relative.as_posix()}", details={"path": relative.as_posix()}
+            )
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return relative.as_posix()
+
+    @staticmethod
+    def _guard_user_path(relative: Path) -> None:
+        """Human Explorer may write, but never into Flux/Git internal directories."""
+        if relative.parts and relative.parts[0] == ".flux":
+            raise ValidationError(
+                f"路径落在 Flux 内部目录 .flux/ 内，已拒绝：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
+        if relative.parts and relative.parts[0] == ".git":
+            raise ValidationError(
+                f"路径落在 Git 元数据目录 .git/ 内，已拒绝：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
 
     # --- 内部工具 ---
 
