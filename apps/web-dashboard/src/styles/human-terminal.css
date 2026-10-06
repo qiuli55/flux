@@ -1,0 +1,150 @@
+.human-terminal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #080a10;
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.ht-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.ht-tabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  flex: 1;
+}
+
+.ht-tab,
+.ht-add {
+  border: 0;
+  border-right: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--text-3);
+  height: 34px;
+  padding: 0 11px;
+  font: 11px var(--ui);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ht-tab:hover,
+.ht-add:hover {
+  color: var(--text);
+  background: rgba(255,255,255,.025);
+}
+
+.ht-tab.is-active {
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+
+.ht-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.ht-dot.is-live {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(61,220,151,.45);
+}
+
+.ht-state {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-size: 9px;
+}
+
+.ht-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+}
+
+.ht-cwd {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font: 10px var(--mono);
+  margin-right: 4px;
+}
+
+.ht-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.ht-pty-screen {
+  padding: 10px 12px;
+  background: #080a10;
+  cursor: text;
+}
+
+.ht-pty-screen:focus {
+  box-shadow: inset 0 0 0 1px rgba(124,92,255,.18);
+}
+
+.ht-pty-screen pre {
+  margin: 0;
+  min-height: 100%;
+  color: #d9deea;
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.ht-error {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--red);
+  background: rgba(241,106,106,.05);
+  font: 10.5px var(--ui);
+}
+
+.ht-pty-hint {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text-3);
+  font: 10.5px var(--ui);
+}
+
+.ht-pty-hint .ht-prompt {
+  color: var(--green);
+  font: 13px var(--mono);
+}
+
+.ht-pty-hint .ht-hint {
+  margin-left: auto;
+}
+
+@media (max-width: 860px) {
+  .ht-cwd { display: none; }
+  .ht-pty-hint span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
