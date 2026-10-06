@@ -241,6 +241,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [projectOpen, setProjectOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickOpenQuery, setQuickOpenQuery] = useState("");
+  const desktop = typeof window !== "undefined" ? window.fluxDesktop : null;
 
   const [railPanel, setRailPanel] = useState<RailPanel>("files");
   const [filesCollapsed, setFilesCollapsed] = useState(false);
