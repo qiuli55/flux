@@ -12,13 +12,20 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.project_files.explorer import DEFAULT_TREE_DEPTH, MAX_TREE_DEPTH
-from flux.schemas.api import MemoryWriteRequest, ProjectCreateRequest, ScanRequest
+from flux.schemas.api import (
+    MemoryWriteRequest,
+    ProjectCreateRequest,
+    ScanRequest,
+    WorkspaceFileCreateRequest,
+    WorkspaceFilePathRequest,
+    WorkspaceFileRenameRequest,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -96,6 +103,78 @@ async def scan_project(
         record=payload.record,
     )
     return ok(outcome.to_dict(), metadata={"truncated": outcome.profile.truncated})
+
+
+def _require_desktop_file_operation(
+    container: Container,
+    x_flux_desktop: str | None,
+) -> None:
+    if container.settings.env != "local" or x_flux_desktop != "1":
+        raise HTTPException(status_code=403, detail="本地文件操作只允许 Flux 桌面端")
+
+
+@router.post("/{project_id}/files/file")
+async def create_project_file(
+    project_id: uuid.UUID,
+    payload: WorkspaceFileCreateRequest,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Create one human-selected file in the active workspace."""
+    _require_desktop_file_operation(container, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    path = await asyncio.to_thread(
+        container.files.create_file,
+        path=payload.path,
+        content=payload.content,
+    )
+    return ok({"path": path})
+
+
+@router.post("/{project_id}/files/directory")
+async def create_project_directory(
+    project_id: uuid.UUID,
+    payload: WorkspaceFilePathRequest,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Create one human-selected directory in the active workspace."""
+    _require_desktop_file_operation(container, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    path = await asyncio.to_thread(container.files.create_directory, path=payload.path)
+    return ok({"path": path})
+
+
+@router.patch("/{project_id}/files")
+async def rename_project_path(
+    project_id: uuid.UUID,
+    payload: WorkspaceFileRenameRequest,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Rename/move one human-selected file or directory within the workspace."""
+    _require_desktop_file_operation(container, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    path = await asyncio.to_thread(
+        container.files.rename,
+        path=payload.path,
+        new_path=payload.new_path,
+    )
+    return ok({"path": path})
+
+
+@router.delete("/{project_id}/files")
+async def delete_project_path(
+    project_id: uuid.UUID,
+    payload: WorkspaceFilePathRequest,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Delete one human-selected file or directory in the active workspace."""
+    _require_desktop_file_operation(container, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    path = await asyncio.to_thread(container.files.delete, path=payload.path)
+    return ok({"path": path})
 
 
 @router.get("/{project_id}/files")
