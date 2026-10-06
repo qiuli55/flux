@@ -102,6 +102,41 @@ async def test_stop_closes_session_and_rejects_further_commands(
         await apply_container.terminal.run_command(session.id, _py("print('x')"))
 
 
+async def test_stop_blocks_a_command_already_queued(
+    apply_container: Container,
+) -> None:
+    session = await apply_container.terminal.create_session()
+    running = asyncio.create_task(
+        apply_container.terminal.run_command(
+            session.id,
+            _py("import time; time.sleep(30)"),
+        )
+    )
+    await asyncio.sleep(0.4)
+
+    queued = asyncio.create_task(
+        apply_container.terminal.run_command(
+            session.id,
+            _py("print('must-not-run-after-stop')"),
+        )
+    )
+    await asyncio.sleep(0.1)
+
+    stopped = await apply_container.terminal.stop(session.id, force=True)
+    assert stopped.status == TerminalSessionStatus.STOPPED.value
+
+    with pytest.raises(ConflictError):
+        await queued
+    finished = await asyncio.wait_for(running, timeout=10)
+    assert finished.kind == TerminalEventKind.COMMAND_FAILED.value
+
+    events = await apply_container.terminal.list_events(session.id)
+    assert not any(
+        event.command and "must-not-run-after-stop" in event.command
+        for event in events
+    )
+
+
 async def test_force_stop_terminates_a_long_running_command(apply_container: Container) -> None:
     """Force Stop 必须真的杀掉进程树：命令立刻结束，而不是等它自然跑完（§3.4 / §10）。"""
     session = await apply_container.terminal.create_session()
