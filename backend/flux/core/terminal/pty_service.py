@@ -172,21 +172,26 @@ class HumanPtyService:
             pgid = os.getpgid(pid)
         except ProcessLookupError:
             await self._finish(key)
-            return
+            return await self.get_session(session_id)
 
         try:
             signal_value = signal.SIGKILL if force else signal.SIGTERM
             await asyncio.to_thread(os.killpg, pgid, signal_value)
         except ProcessLookupError:
             await self._finish(key)
-            return
+            return await self.get_session(session_id)
 
         if not force:
-            exited = await self._wait_for_group_exit(pgid, STOP_GRACE_SECONDS)
-            if not exited:
+            confirmed = await self._wait_for_group_exit(pgid, STOP_GRACE_SECONDS)
+            if not confirmed:
                 with suppress(ProcessLookupError):
                     await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
-                await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+                confirmed = await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+            if not confirmed:
+                raise ConflictError(
+                    "无法确认 Human Terminal 进程组已退出",
+                    details={"session_id": key, "pgid": pgid},
+                )
         else:
             confirmed = await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
             if not confirmed:
@@ -315,6 +320,7 @@ class HumanPtyService:
             reader = self._reader_tasks.pop(key, None)
             subscribers = self._subscribers.pop(key, set())
             self._buffers.pop(key, None)
+            self._write_locks.pop(key, None)
 
         if fd is not None:
             with suppress(OSError):
