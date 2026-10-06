@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, Menu, dialog, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require("electron");
 const http = require("http");
 const fs = require("fs");
 const net = require("net");
@@ -179,12 +179,13 @@ async function chooseWorkspaceRoot(dataDir) {
     properties: ["openDirectory", "createDirectory"],
     defaultPath: currentWorkspaceRoot || dataDir,
   });
-  if (result.canceled || !result.filePaths[0]) return;
+  if (result.canceled || !result.filePaths[0]) return null;
   const root = path.resolve(result.filePaths[0]);
   await postWorkspaceRoot(root);
   currentWorkspaceRoot = root;
   persistWorkspaceRoot(dataDir, root);
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("flux:workspace-changed", root);
+  return root;
 }
 
 function killBackendTree() {
@@ -337,6 +338,7 @@ async function bootstrap() {
   uiPort = await getFreePort();
   uiServer = await startStaticServer(uiPort, webRoot);
   buildMenu(dataDir);
+  ipcMain.handle("flux:choose-workspace-root", () => chooseWorkspaceRoot(dataDir));
   createMainWindow();
 }
 
@@ -350,9 +352,3 @@ app.whenReady().then(() => {
 });
 
 app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0 && uiPort) createMainWindow(); });
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => {
-  isQuitting = true;
-  if (uiServer) { try { uiServer.close(); } catch { /* ignore */ } }
-  killBackendTree();
-});
