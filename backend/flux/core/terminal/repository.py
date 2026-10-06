@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
+from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
 from flux.errors import NotFoundError
 from flux.models.terminal import TerminalEvent, TerminalSession
 
@@ -22,12 +22,17 @@ class TerminalRepository:
         self._session_factory = session_factory
 
     async def create_session(
-        self, *, workspace_root: str, run_id: uuid.UUID | None = None
+        self,
+        *,
+        workspace_root: str,
+        run_id: uuid.UUID | None = None,
+        kind: TerminalSessionKind = TerminalSessionKind.AGENT,
     ) -> TerminalSession:
         session = TerminalSession(
             id=uuid.uuid4(),
             run_id=run_id,
             workspace_root=workspace_root,
+            kind=kind.value,
             status=TerminalSessionStatus.ACTIVE.value,
         )
         async with self._session_factory() as db:
@@ -44,11 +49,17 @@ class TerminalRepository:
                 )
             return session
 
-    async def list_sessions(self, *, limit: int = 20) -> list[TerminalSession]:
-        statement = (
-            select(TerminalSession)
-            .order_by(TerminalSession.created_at.desc(), TerminalSession.id.desc())
-            .limit(limit)
+    async def list_sessions(
+        self,
+        *,
+        limit: int = 20,
+        kind: TerminalSessionKind | None = None,
+    ) -> list[TerminalSession]:
+        statement = select(TerminalSession)
+        if kind is not None:
+            statement = statement.where(TerminalSession.kind == kind.value)
+        statement = statement.order_by(TerminalSession.created_at.desc(), TerminalSession.id.desc()).limit(
+            limit
         )
         async with self._session_factory() as db:
             return list(await db.scalars(statement))
