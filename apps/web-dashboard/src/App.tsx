@@ -13,13 +13,13 @@ import { ToastHost } from "./app/toast";
 import { readWindowMode } from "./app/windowMode";
 import { HumanTerminalPanel } from "./components/terminal/HumanTerminalPanel";
 import { TerminalWindow } from "./components/terminal/TerminalWindow";
+import { WorkspacePicker } from "./components/workspace/WorkspacePicker";
 import { IdePage } from "./pages/IdePage";
 import { SoloPage } from "./pages/SoloPage";
 
 export default function App() {
   const [view, navigate] = useView();
 
-  // 桌面端 Agent Terminal 独立窗口（Electron 第二个 BrowserWindow）：只渲染终端
   if (readWindowMode() === "terminal") {
     return (
       <>
@@ -31,15 +31,10 @@ export default function App() {
 
   return (
     <>
-      {view === "solo" ? (
-        <SoloPage onOpenWorkspace={() => navigate("ide")} />
-      ) : (
-        <IdePage onBackToSolo={() => navigate("solo")} />
-      )}
+      {view === "solo" ? <SoloPage onOpenWorkspace={() => navigate("ide")} /> : <IdePage onBackToSolo={() => navigate("solo")} />}
+      {view === "ide" ? <WorkspacePicker /> : null}
       <CommandPalette view={view} navigate={navigate} />
-      {/* Agent Terminal 独立窗口：跨视图常驻，关闭不停 Agent（AGENT_TERMINAL_CONSOLE §11） */}
       <TerminalWindow />
-      {/* 用户终端：只在 IDE 的底部 Panel 中出现，与 Agent Terminal 会话隔离。 */}
       {view === "ide" ? <HumanTerminalPanel /> : null}
       <ToastHost />
     </>
