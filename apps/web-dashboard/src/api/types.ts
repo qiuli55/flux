@@ -437,10 +437,13 @@ export type TerminalEventKind =
   | "terminal.session.closed";
 
 /** GET /api/v1/terminal/sessions */
+export type TerminalSessionKind = "agent" | "human";
+
 export interface TerminalSession {
   id: string;
   run_id: string | null;
   workspace_root: string;
+  kind: TerminalSessionKind;
   status: TerminalSessionStatus;
   next_seq: number;
   created_at: string | null;
