@@ -24,7 +24,7 @@ from flux.core.agent_runtime import platforms
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
-from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
+from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError, ValidationError
 from flux.models.terminal import TerminalEvent, TerminalSession
 
@@ -71,8 +71,14 @@ class TerminalService:
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
         return await self._repo.get_session(session_id)
 
-    async def list_sessions(self, *, limit: int = 20) -> list[TerminalSession]:
-        return await self._repo.list_sessions(limit=limit)
+    async def list_sessions(
+        self,
+        *,
+        limit: int = 20,
+        kind: TerminalSessionKind = TerminalSessionKind.AGENT,
+    ) -> list[TerminalSession]:
+        """List sessions owned by the requested terminal runtime."""
+        return await self._repo.list_sessions(limit=limit, kind=kind)
 
     async def list_events(
         self, session_id: str | uuid.UUID, *, after_seq: int = 0, limit: int = 2000
