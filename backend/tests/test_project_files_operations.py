@@ -63,3 +63,24 @@ def test_user_directory_rename_cannot_move_inside_itself(tmp_path: Path) -> None
 
     with pytest.raises(ValidationError):
         explorer.rename(path="parent", new_path="parent/child/new-parent")
+
+def test_workspace_search_returns_line_and_column_and_ignores_binary(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text(
+        "const target = 1;\nconst value = target + 1;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "data.bin").write_bytes(b"target\x00binary")
+    explorer = WorkspaceFileExplorer(workspace_root=tmp_path)
+
+    hits = explorer.search(query="target")
+    assert [(hit.path, hit.line, hit.column) for hit in hits] == [
+        ("src/app.ts", 1, 7),
+        ("src/app.ts", 2, 15),
+    ]
+
+
+def test_workspace_search_rejects_invalid_regex(tmp_path: Path) -> None:
+    explorer = WorkspaceFileExplorer(workspace_root=tmp_path)
+
+    with pytest.raises(ValidationError):
+        explorer.search(query="[", regex=True)
