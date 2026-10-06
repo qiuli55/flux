@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI
 
 from flux.api.auth import require_rest_auth
 from flux.api.errors import register_exception_handlers
-from flux.api.v1 import api_v1_router
+from flux.api.v1 import api_v1_router, terminal
 from flux.config import Settings, get_settings
 from flux.container import Container
 from flux.core.mcp.server import router as mcp_router
@@ -51,6 +51,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         api_v1_router,
         prefix=app_settings.api_v1_prefix,
         dependencies=[Depends(require_rest_auth)],
+    )
+    # WebSocket 不能复用 Request + HTTPBearer 的 REST 依赖；Human PTY 自己执行
+    # same-origin + token/cookie 鉴权，并单独挂到应用，避免依赖注入在 WS 上失效。
+    app.include_router(
+        terminal.websocket_router,
+        prefix=app_settings.api_v1_prefix,
     )
     app.include_router(mcp_router)
     return app
