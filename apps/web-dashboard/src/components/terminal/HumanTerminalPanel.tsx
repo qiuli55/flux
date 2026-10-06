@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { api, terminalStreamUrl } from "../../api/client";
-import type { TerminalEvent, TerminalSession } from "../../api/types";
+import { API_BASE, api } from "../../api/client";
+import type { TerminalSession } from "../../api/types";
 
-const MAX_EVENTS = 3000;
+const SCROLLBACK_LIMIT = 256 * 1024;
 
-function mergeEvent(previous: TerminalEvent[], next: TerminalEvent): TerminalEvent[] {
-  if (previous.some((event) => event.seq === next.seq)) return previous;
-  const merged = [...previous, next].sort((a, b) => a.seq - b.seq);
-  return merged.length > MAX_EVENTS ? merged.slice(-MAX_EVENTS) : merged;
-}
-
-function outputLines(chunk: string): string[] {
-  return chunk.replace(/\n$/, "").split("\n");
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function labelFor(session: TerminalSession, index: number): string {
@@ -21,32 +15,75 @@ function labelFor(session: TerminalSession, index: number): string {
   return root ? `${root} ${index + 1}` : `Terminal ${index + 1}`;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function websocketUrl(sessionId: string): string {
+  const url = new URL(
+    `${API_BASE}/terminal/pty/sessions/${encodeURIComponent(sessionId)}/ws`,
+    window.location.origin,
+  );
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
 
-/**
- * Flux 人用集成终端。
- *
- * 与 Agent Terminal 完全隔离：只创建 run_id=null 的用户会话，不复用 Agent 会话。
- * 当前后端终端协议以「命令 + SSE 输出」为基础，因此这里先做到 VS Code 风格的
- * Panel / tabs / scrollback / new terminal / kill / clear / 快捷键体验；真正的
- * PTY 原始按键、交互式程序（vim/top）需要后端升级为 websocket PTY 后再接入。
- */
+function controlSequence(event: KeyboardEvent): string | null {
+  if (event.ctrlKey && event.key.length === 1) {
+    const code = event.key.toLowerCase().charCodeAt(0);
+    if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+  }
+  switch (event.key) {
+    case "Enter": return "\r";
+    case "Backspace": return "\x7f";
+    case "Tab": return "\t";
+    case "Escape": return "\x1b";
+    case "ArrowUp": return "\x1b[A";
+    case "ArrowDown": return "\x1b[B";
+    case "ArrowRight": return "\x1b[C";
+    case "ArrowLeft": return "\x1b[D";
+    case "Home": return "\x1b[H";
+    case "End": return "\x1b[F";
+    case "Delete": return "\x1b[3~";
+    case "PageUp": return "\x1b[5~";
+    case "PageDown": return "\x1b[6~";
+    case "Insert": return "\x1b[2~";
+    case "F1": return "\x1bOP";
+    case "F2": return "\x1bOQ";
+    case "F3": return "\x1bOR";
+    case "F4": return "\x1bOS";
+    case "F5": return "\x1b[15~";
+    case "F6": return "\x1b[17~";
+    case "F7": return "\x1b[18~";
+    case "F8": return "\x1b[19~";
+    case "F9": return "\x1b[20~";
+    case "F10": return "\x1b[21~";
+    case "F11": return "\x1b[23~";
+    case "F12": return "\x1b[24~";
+    default: return event.key.length === 1 ? event.key : null;
+  }
+}
+
+async function createHumanSession(): Promise<TerminalSession> {
+  const response = await fetch(`${API_BASE}/terminal/pty/sessions`, { method: "POST" });
+  const envelope = (await response.json()) as { success: boolean; message?: string; data: TerminalSession };
+  if (!response.ok || !envelope.success) {
+    throw new Error(envelope.message || `创建终端失败（HTTP ${response.status}）`);
+  }
+  return envelope.data;
+}
+
 export function HumanTerminalPanel() {
   const [host, setHost] = useState<HTMLElement | null>(null);
   const [active, setActive] = useState(false);
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [events, setEvents] = useState<Record<string, TerminalEvent[]>>({});
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [output, setOutput] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
+  const socketRef = useRef<WebSocket | null>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<ResizeObserver | null>(null);
 
-  const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
-  const currentEvents = sessionId ? events[sessionId] ?? [] : [];
+  const userSessions = useMemo(
+    () => sessions.filter((session) => session.run_id === null),
+    [sessions],
+  );
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
   const running = currentSession?.status === "active";
 
@@ -54,17 +91,21 @@ export function HumanTerminalPanel() {
     const list = await api.listTerminalSessions();
     const users = list.filter((session) => session.run_id === null);
     setSessions(users);
-    setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
+    setSessionId((current) =>
+      current && users.some((session) => session.id === current)
+        ? current
+        : users[0]?.id ?? null,
+    );
     return users;
   }, []);
 
   const createSession = useCallback(async () => {
     setError(null);
     try {
-      const created = await api.createTerminalSession();
+      const created = await createHumanSession();
       setSessions((previous) => [created, ...previous]);
       setSessionId(created.id);
-      setEvents((previous) => ({ ...previous, [created.id]: [] }));
+      setOutput((previous) => ({ ...previous, [created.id]: "" }));
     } catch (caught) {
       setError(errorText(caught));
     }
@@ -72,8 +113,7 @@ export function HumanTerminalPanel() {
 
   useEffect(() => {
     const findHost = () => {
-      const next = document.querySelector<HTMLElement>(".ide-bottom .bp-body");
-      setHost(next);
+      setHost(document.querySelector<HTMLElement>(".ide-bottom .bp-body"));
     };
     findHost();
     const observer = new MutationObserver(findHost);
@@ -86,8 +126,7 @@ export function HumanTerminalPanel() {
     const header = host.parentElement?.querySelector<HTMLElement>(".bp-head");
     if (!header) return;
     const open = () => {
-      const firstTab = header.querySelector<HTMLElement>(".bp-tab");
-      firstTab?.click();
+      header.querySelector<HTMLElement>(".bp-tab")?.click();
       setActive(true);
     };
     const button = document.createElement("button");
@@ -101,9 +140,8 @@ export function HumanTerminalPanel() {
 
   useEffect(() => {
     if (!host) return;
-    const bottom = host.parentElement;
-    bottom?.classList.toggle("has-human-terminal", active);
-    return () => bottom?.classList.remove("has-human-terminal");
+    host.parentElement?.classList.toggle("has-human-terminal", active);
+    return () => host.parentElement?.classList.remove("has-human-terminal");
   }, [host, active]);
 
   useEffect(() => {
@@ -115,62 +153,80 @@ export function HumanTerminalPanel() {
 
   useEffect(() => {
     if (!active || !sessionId) return;
-    setEvents((previous) => ({ ...previous, [sessionId]: [] }));
-    const source = new EventSource(terminalStreamUrl(sessionId, 0));
-    const onEvent = (raw: MessageEvent<string>) => {
+    const socket = new WebSocket(websocketUrl(sessionId));
+    socketRef.current = socket;
+    setError(null);
+
+    socket.onmessage = (event) => {
       try {
-        const event = JSON.parse(raw.data) as TerminalEvent;
-        setEvents((previous) => ({
-          ...previous,
-          [sessionId]: mergeEvent(previous[sessionId] ?? [], event),
-        }));
-        if (event.kind === "terminal.session.closed") void refreshSessions();
+        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string };
+        if (message.type === "output" && message.data) {
+          setOutput((previous) => {
+            const next = `${previous[sessionId] ?? ""}${message.data}`;
+            return { ...previous, [sessionId]: next.slice(-SCROLLBACK_LIMIT) };
+          });
+        } else if (message.type === "error") {
+          setError(message.message || "终端通信失败");
+        } else if (message.type === "closed") {
+          void refreshSessions();
+        }
       } catch {
-        // Ignore malformed frames without breaking the stream.
+        setError("终端返回了无法解析的数据");
       }
     };
-    source.addEventListener("terminal.event", onEvent as EventListener);
-    source.onerror = () => setError("终端连接中断，浏览器会自动重连");
+    socket.onerror = () => setError("PTY WebSocket 连接失败");
+    socket.onclose = () => {
+      if (socketRef.current === socket) socketRef.current = null;
+    };
+
     return () => {
-      source.removeEventListener("terminal.event", onEvent as EventListener);
-      source.close();
+      if (socketRef.current === socket) socketRef.current = null;
+      socket.close();
     };
   }, [active, sessionId, refreshSessions]);
 
   useEffect(() => {
-    const body = bodyRef.current;
-    if (!body || !stickRef.current) return;
-    body.scrollTop = body.scrollHeight;
-  }, [currentEvents]);
+    const screen = screenRef.current;
+    if (!screen) return;
+    screen.scrollTop = screen.scrollHeight;
+  }, [sessionId, output]);
 
-  const runCommand = async () => {
-    const command = input.trim();
-    if (!command || !sessionId || !running || busy) return;
-    setInput("");
-    setBusy(true);
-    setError(null);
-    try {
-      await api.runTerminalCommand(sessionId, command);
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setBusy(false);
-    }
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (!screen || !sessionId) return;
+    const resize = () => {
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      const cols = Math.max(20, Math.min(240, Math.floor(screen.clientWidth / 8)));
+      const rows = Math.max(5, Math.min(100, Math.floor(screen.clientHeight / 18)));
+      socket.send(JSON.stringify({ type: "resize", cols, rows }));
+    };
+    resizeRef.current?.disconnect();
+    resizeRef.current = new ResizeObserver(resize);
+    resizeRef.current.observe(screen);
+    resize();
+    return () => resizeRef.current?.disconnect();
+  }, [sessionId, active]);
+
+  const sendKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!running) return;
+    const data = controlSequence(event.nativeEvent);
+    if (!data || event.metaKey) return;
+    event.preventDefault();
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
   };
 
-  const kill = async () => {
-    if (!sessionId || !running) return;
-    try {
-      await api.stopTerminalSession(sessionId, false);
-      await refreshSessions();
-    } catch (caught) {
-      setError(errorText(caught));
+  const stop = () => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "stop", force: false }));
     }
   };
 
   const clear = () => {
     if (!sessionId) return;
-    setEvents((previous) => ({ ...previous, [sessionId]: [] }));
+    setOutput((previous) => ({ ...previous, [sessionId]: "" }));
   };
 
   if (!host) return null;
@@ -194,78 +250,38 @@ export function HumanTerminalPanel() {
               {session.status !== "active" ? <span className="ht-state">{session.status}</span> : null}
             </button>
           ))}
-          <button type="button" className="ht-add" title="新建终端" onClick={() => void createSession()}>
-            ＋
-          </button>
+          <button type="button" className="ht-add" title="新建终端" onClick={() => void createSession()}>＋</button>
         </div>
         <div className="ht-actions">
           <span className="ht-cwd" title={currentSession?.workspace_root ?? ""}>
             {currentSession?.workspace_root ?? "未连接"}
           </span>
-          <button type="button" className="icon-btn sm" title="清空终端" onClick={clear} disabled={!sessionId}>⌫</button>
-          <button type="button" className="icon-btn sm" title="终止当前终端" onClick={() => void kill()} disabled={!running}>■</button>
+          <button type="button" className="icon-btn sm" title="清空终端显示" onClick={clear} disabled={!sessionId}>⌫</button>
+          <button type="button" className="icon-btn sm" title="终止当前终端" onClick={stop} disabled={!running}>■</button>
           <button type="button" className="icon-btn sm" title="关闭终端面板" onClick={() => setActive(false)}>×</button>
         </div>
       </div>
 
       <div
-        className="ht-body"
-        ref={bodyRef}
-        onScroll={() => {
-          const body = bodyRef.current;
-          if (body) stickRef.current = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+        className="ht-body ht-pty-screen"
+        ref={screenRef}
+        tabIndex={0}
+        onKeyDown={sendKey}
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) event.currentTarget.focus();
         }}
+        role="textbox"
+        aria-label="Flux Human Terminal"
       >
-        {currentEvents.length === 0 ? (
-          <div className="ht-empty">在这里运行 Git、pnpm、npm、python、docker 等命令。</div>
-        ) : (
-          currentEvents.map((event) => {
-            if (event.kind === "terminal.command.started") {
-              return (
-                <div className="ht-line ht-command" key={event.id}>
-                  <span className="ht-prompt">$</span><span>{event.command}</span>
-                </div>
-              );
-            }
-            if (event.kind === "terminal.output") {
-              return outputLines(event.chunk ?? "").map((line, index) => (
-                <div className="ht-line ht-output" key={`${event.id}-${index}`}>{line || " "}</div>
-              ));
-            }
-            if (event.kind === "terminal.command.finished" || event.kind === "terminal.command.failed") {
-              const failed = event.kind === "terminal.command.failed" || event.exit_code !== 0;
-              return (
-                <div className={`ht-line ht-exit${failed ? " is-error" : ""}`} key={event.id}>
-                  {failed ? "✕" : "✓"} exit code {event.exit_code ?? "unknown"}
-                </div>
-              );
-            }
-            return null;
-          })
-        )}
+        <pre>{output[sessionId ?? ""] || (running ? "" : "终端已停止，点击 ＋ 新建终端")}</pre>
       </div>
 
       {error ? <div className="ht-error">{error}</div> : null}
-      <form
-        className="ht-input"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void runCommand();
-        }}
-      >
-        <span className="ht-prompt">$</span>
-        <input
-          autoFocus
-          value={input}
-          disabled={!running || busy}
-          placeholder={running ? "输入命令，Enter 执行" : "终端已停止，点击 ＋ 新建终端"}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setInput("");
-          }}
-        />
-        <span className="ht-hint">Enter 执行 · Esc 清空</span>
-      </form>
+      <div className="ht-input ht-pty-hint">
+        <span className="ht-prompt">›</span>
+        <span>点击终端后直接输入。Ctrl+C / Ctrl+D / Tab / 方向键会原样发送到 PTY。</span>
+        <span className="ht-hint">PTY · WebSocket</span>
+      </div>
     </div>,
     host,
   );
