@@ -1,0 +1,29 @@
+.explorer-context-menu {
+  position: fixed;
+  z-index: 5000;
+  width: 224px;
+  padding: 5px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 8px;
+  background: #11151d;
+  box-shadow: 0 18px 45px rgba(0,0,0,.45);
+  font-size: 12px;
+}
+.explorer-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #e7eaf1;
+  text-align: left;
+  cursor: pointer;
+}
+.explorer-context-menu button:hover { background: rgba(255,255,255,.06); }
+.explorer-context-menu button.danger { color: #ff8c8c; }
+.explorer-context-separator {
+  height: 1px;
+  margin: 5px 2px;
+  background: rgba(255,255,255,.08);
+}
