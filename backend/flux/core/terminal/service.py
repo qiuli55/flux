@@ -302,7 +302,16 @@ class TerminalService:
             )
             process = self._processes.get(key)
             if process is not None and process.poll() is None:
-                await asyncio.to_thread(self._terminate_tree, process, force=force)
+                terminated = await asyncio.to_thread(
+                    self._terminate_tree,
+                    process,
+                    force=force,
+                )
+                if not terminated:
+                    raise ConflictError(
+                        "无法确认终端进程树已退出",
+                        details={"session_id": key, "force": force},
+                    )
 
             command_task = self._command_tasks.get(key)
             if command_task is not None and command_task is not asyncio.current_task():
