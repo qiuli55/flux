@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
+from flux.enums import TerminalSessionKind
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
