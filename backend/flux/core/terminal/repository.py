@@ -12,7 +12,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
+from flux.enums import (
+    TerminalEventKind,
+    TerminalSessionKind,
+    TerminalSessionStatus,
+    TerminalSource,
+)
 from flux.errors import NotFoundError
 from flux.models.terminal import TerminalEvent, TerminalSession
 
