@@ -2201,6 +2201,48 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         </div>
       ) : null}
 
+      {quickOpen ? (
+        <div className="review-mask" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setQuickOpen(false);
+        }}>
+          <div className="quick-open-dialog">
+            <div className="quick-open-input">
+              <span>⌕</span>
+              <input
+                autoFocus
+                value={quickOpenQuery}
+                placeholder="快速打开文件…"
+                onChange={(event) => setQuickOpenQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setQuickOpen(false);
+                  if (event.key === "Enter" && quickOpenItems[0]) {
+                    openFile(quickOpenItems[0]);
+                    setQuickOpen(false);
+                  }
+                }}
+              />
+              <kbd>Esc</kbd>
+            </div>
+            <div className="quick-open-list">
+              {quickOpenItems.length === 0 ? (
+                <div className="quick-open-empty">没有匹配的文件。</div>
+              ) : (
+                quickOpenItems.map((path) => (
+                  <button
+                    type="button"
+                    className={`quick-open-item${activeTab === path ? " is-active" : ""}`}
+                    key={path}
+                    onClick={() => { openFile(path); setQuickOpen(false); }}
+                  >
+                    <span className={`t-ic ${iconClass(path)}`} />
+                    <span className="quick-open-path">{path}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {projectOpen ? (
         <div
           className="review-mask"
