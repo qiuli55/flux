@@ -188,6 +188,16 @@ export function ExplorerContextMenu() {
       {target.kind === "file" ? (
         <button type="button" role="menuitem" onClick={openTarget}>打开</button>
       ) : null}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          window.dispatchEvent(new Event("flux:open-human-terminal"));
+          setTarget(null);
+        }}
+      >
+        打开 Human Terminal
+      </button>
       {target.kind === "file" || target.kind === "dir" || target.kind === "root" ? (
         <>
           <button type="button" role="menuitem" onClick={() => void createEntry(false)}>新建文件</button>
