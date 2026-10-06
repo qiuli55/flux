@@ -20,7 +20,6 @@ interface TerminalRuntime {
   resizeObserver: ResizeObserver | null;
   dataDisposable: { dispose: () => void };
   resizeDisposable: { dispose: () => void };
-  keyDisposable: { dispose: () => void };
   reconnectTimer: number | null;
   manualClose: boolean;
 }
@@ -76,7 +75,7 @@ export function HumanTerminalPanel() {
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchIndex, setSearchIndex] = useState(-1);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string; hasSelection: boolean } | null>(null);
   const hostsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const runtimesRef = useRef<Record<string, TerminalRuntime>>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -106,7 +105,6 @@ export function HumanTerminalPanel() {
     runtime.resizeObserver?.disconnect();
     runtime.dataDisposable.dispose();
     runtime.resizeDisposable.dispose();
-    runtime.keyDisposable.dispose();
     runtime.socket?.close();
     runtime.terminal.dispose();
     delete runtimesRef.current[id];
@@ -195,7 +193,7 @@ export function HumanTerminalPanel() {
       const socket = runtime.socket;
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols, rows }));
     });
-    runtime.keyDisposable = terminal.attachCustomKeyEventHandler((event) => {
+    terminal.attachCustomKeyEventHandler((event) => {
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const modifier = isMac ? event.metaKey : event.ctrlKey;
       if (event.type !== "keydown") return true;
@@ -299,6 +297,7 @@ export function HumanTerminalPanel() {
     if (!matches.length) { setSearchIndex(-1); runtime.terminal.clearSelection(); return; }
     const next = searchIndex < 0 ? (direction > 0 ? 0 : matches.length - 1) : (searchIndex + direction + matches.length) % matches.length;
     const match = matches[next];
+    if (!match) return;
     runtime.terminal.select(match.start, match.row, match.length);
     runtime.terminal.scrollToLine(Math.max(0, match.row - Math.floor(runtime.terminal.rows / 2)));
     setSearchIndex(next);
