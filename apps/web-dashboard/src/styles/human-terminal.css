@@ -9,6 +9,10 @@
   font-family: var(--mono);
 }
 
+.human-terminal:not(.is-active) {
+  display: none;
+}
+
 .ht-toolbar {
   display: flex;
   align-items: center;
