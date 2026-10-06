@@ -199,7 +199,10 @@ class TerminalService:
         async with lock:
             # Stop 可能在本条命令排队期间发生；拿到锁后必须重新读取权威状态。
             session = await self.get_session(key)
-            if key in self._stopping or TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE:
+            if (
+                key in self._stopping
+                or TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE
+            ):
                 raise ConflictError(
                     f"终端会话已 {session.status}，不能再执行命令",
                     details={"session_id": key, "status": session.status},
