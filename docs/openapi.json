@@ -3924,6 +3924,35 @@
         ]
       }
     },
+    "/api/v1/terminal/pty/sessions": {
+      "post": {
+        "description": "Create an interactive user shell backed by a real Unix PTY.",
+        "operationId": "create_human_session_api_v1_terminal_pty_sessions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Human Session Api V1 Terminal Pty Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Human Session",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
     "/api/v1/terminal/sessions/{session_id}/stream": {
       "get": {
         "description": "终端事件实时流（SSE，§11 / §12）：先补历史再推增量。\n\n断线重连时浏览器会带 `Last-Event-ID`（即上一帧的 seq），与 `after_seq` 取较大者续读。\n会话结束时服务端会推完 `terminal.session.closed` 后收流；客户端断开只结束观察，\n不会停 Agent（§11）。",
