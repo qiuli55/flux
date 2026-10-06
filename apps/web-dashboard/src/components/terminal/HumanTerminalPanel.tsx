@@ -172,10 +172,23 @@ export function HumanTerminalPanel() {
       setConnectionState((previous) => ({ ...previous, [session.id]: "reconnecting" }));
       setError("PTY WebSocket 连接失败，正在重连…");
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (runtime.socket !== socket) return;
       runtime.socket = null;
-      setConnectionState((previous) => ({ ...previous, [session.id]: runtime.manualClose ? "disconnected" : "reconnecting" }));
+      const permanentClose = event.code === 1008 || event.code === 1003;
+      if (permanentClose) runtime.manualClose = true;
+      setConnectionState((previous) => ({
+        ...previous,
+        [session.id]: runtime.manualClose ? "disconnected" : "reconnecting",
+      }));
+      if (permanentClose) {
+        setError(
+          event.code === 1008
+            ? "终端连接被拒绝，请检查登录状态或访问令牌"
+            : "终端连接不支持当前协议",
+        );
+        return;
+      }
       if (!runtime.manualClose && runtime.reconnectTimer === null) {
         runtime.reconnectTimer = window.setTimeout(() => {
           runtime.reconnectTimer = null;
