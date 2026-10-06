@@ -20,7 +20,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.terminal.pty_service import HumanPtyService
-from flux.enums import TerminalSessionKind, TerminalSource
+from flux.enums import TerminalSource
 from flux.schemas.api import (
     TerminalCommandRequest,
     TerminalSessionCreateRequest,
@@ -155,7 +155,7 @@ async def list_human_sessions(
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     """List only Human Terminal sessions; Agent Terminal sessions are never exposed here."""
-    sessions = await container.terminal_repo.list_sessions(kind=TerminalSessionKind.HUMAN)
+    sessions = await container.human_pty.list_sessions()
     return ok([s.to_dict() for s in sessions], metadata={"count": len(sessions)})
 
 
