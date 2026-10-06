@@ -14,6 +14,7 @@ Flux 自己执行命令，因此命令、输出、退出码都拿得到（不再
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import uuid
 from collections.abc import AsyncIterator
@@ -62,6 +63,8 @@ class TerminalService:
         self._command_tasks: dict[str, asyncio.Task[TerminalEvent]] = {}
         #: 正在停止的会话：阻断已经排队、尚未启动的下一条命令。
         self._stopping: set[str] = set()
+        #: 服务开始退出后拒绝新的会话/命令，避免 shutdown 与新请求产生竞态。
+        self._shutting_down = False
         #: 每会话一把锁：同一会话的命令串行执行
         self._locks: dict[str, asyncio.Lock] = {}
         #: seq 分配与落库串行化：并发 emit（输出线程 + Stop）不允许撞号
@@ -72,9 +75,16 @@ class TerminalService:
     async def create_session(
         self, *, run_id: uuid.UUID | None = None, workspace_root: str | Path | None = None
     ) -> TerminalSession:
+        if self._shutting_down:
+            raise ConflictError("终端服务正在关闭，暂不接受新会话")
         root = self._resolve_root(workspace_root)
         session = await self._repo.create_session(workspace_root=str(root), run_id=run_id)
-        await self._emit(session.id, TerminalEventKind.SESSION_CREATED, TerminalSource.USER)
+        try:
+            await self._emit(session.id, TerminalEventKind.SESSION_CREATED, TerminalSource.USER)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
+            raise
         return session
 
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
@@ -193,6 +203,11 @@ class TerminalService:
         text = (command or "").strip()
         if not text:
             raise ValidationError("命令不能为空", details={"session_id": str(session_id)})
+        if self._shutting_down:
+            raise ConflictError(
+                "终端服务正在关闭，不能执行命令",
+                details={"session_id": str(session_id)},
+            )
         session = await self.get_session(session_id)
         if TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE:
             raise ConflictError(
@@ -357,11 +372,16 @@ class TerminalService:
         )
 
     async def shutdown(self) -> None:
-        """进程退出前清理仍在跑的终端进程树并等待命令 task 收尾。"""
+        """进程退出前拒绝新任务、清理进程树，并把本进程留下的 active 会话收敛为 closed。"""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+
         for session_id in list(self._processes):
             process = self._processes.get(session_id)
             if process is not None and process.poll() is None:
                 await asyncio.to_thread(self._terminate_tree, process, force=True)
+
         tasks = [
             task
             for task in self._command_tasks.values()
@@ -372,7 +392,28 @@ class TerminalService:
                 *(asyncio.wait_for(asyncio.shield(task), timeout=10.0) for task in tasks),
                 return_exceptions=True,
             )
+
+        # By this point no new command can start. Close every remaining active Agent
+        # session so a graceful backend shutdown never leaves durable "active" rows.
+        sessions = await self._repo.list_sessions(
+            limit=10000,
+            kind=TerminalSessionKind.AGENT,
+            status=TerminalSessionStatus.ACTIVE,
+        )
+        for session in sessions:
+            with contextlib.suppress(Exception):
+                await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
+            with contextlib.suppress(Exception):
+                await self._emit(
+                    session.id,
+                    TerminalEventKind.SESSION_CLOSED,
+                    TerminalSource.USER,
+                )
+
         self._processes.clear()
+        self._command_tasks.clear()
+        self._stopping.clear()
+        self._locks.clear()
 
     # --- 内部 ---
 
