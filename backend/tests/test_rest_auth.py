@@ -157,11 +157,9 @@ def test_human_websocket_requires_auth_when_rest_is_secured(
         assert created.status_code == 200
         session_id = created.json()["data"]["id"]
 
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with test_client.websocket_connect(
-                f"/api/v1/terminal/pty/sessions/{session_id}/ws"
-            ):
-                pass
+        ws_path = f"/api/v1/terminal/pty/sessions/{session_id}/ws"
+        with pytest.raises(WebSocketDisconnect) as exc, test_client.websocket_connect(ws_path):
+            pass
         assert exc.value.code == 1008
 
 
