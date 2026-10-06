@@ -1003,17 +1003,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     return () => window.cancelAnimationFrame(frame);
   }, [activeFile, activeTab, revealLine]);
 
-  useEffect(() => {
-    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
-    const frame = window.requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(
-        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
-      );
-      row?.scrollIntoView({ block: "center", behavior: "smooth" });
-      setRevealLine(null);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeFile, activeTab, revealLine]);
+
   const activeLines = useMemo(() => (activeFile ? activeFile.content.split("\n") : []), [activeFile]);
   const activeKind = activeTab && activeTab !== CHANGES_TAB ? lexerKind(activeTab) : "code";
   const changedLines = useMemo(() => {
@@ -1985,7 +1975,15 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                     {taskChanges.map((change) => {
                       const badge = changeBadge(change);
                       return (
-                        <li key={change.id}>
+                        <li
+                          key={change.id}
+                          className="is-clickable"
+                          onClick={() => {
+                            if (change.status === "pending") setReviewId(change.id);
+                            else openFile(change.file_path);
+                          }}
+                          title={change.status === "pending" ? "打开审核 Diff" : "打开文件"}
+                        >
                           <span className="tool-ic">✎</span>
                           <span className="tool-name">{change.file_path.split("/").pop()}</span>
                           <span className="tool-path">{change.file_path}</span>
