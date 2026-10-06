@@ -132,6 +132,15 @@ class WorkspaceFileRenameRequest(BaseModel):
     new_path: str = Field(min_length=1, max_length=4096)
 
 
+class WorkspaceFileReplaceRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    replacement: str = Field(max_length=10000)
+    path: str | None = Field(default=None, max_length=4096)
+    case_sensitive: bool = False
+    regex: bool = False
+
+
+
 class TerminalSessionCreateRequest(BaseModel):
     run_id: str | None = None
 
