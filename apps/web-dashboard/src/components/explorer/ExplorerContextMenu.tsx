@@ -59,10 +59,10 @@ export function ExplorerContextMenu() {
       const raw = event.target instanceof Element ? event.target.closest(".view-ide .t-row") : null;
       if (!(raw instanceof HTMLElement)) return;
       const row = raw;
-      const owner = row.closest(".t-root");
+      const ownerLi = row.closest("li");
       const kind: ExplorerKind = row.classList.contains("is-file")
         ? "file"
-        : owner?.contains(row) && owner === row.closest("li.t-root")
+        : ownerLi?.classList.contains("t-root")
           ? "root"
           : "dir";
       const path = getRelativePath(row);
