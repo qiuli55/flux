@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Flux · 最小 IDE 前端（React + Vite + Tailwind）",
+  "keywords": ["flux", "ide", "terminal"],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
