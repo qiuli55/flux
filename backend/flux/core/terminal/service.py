@@ -55,6 +55,8 @@ class TerminalService:
         self._processes: dict[str, subprocess.Popen[str]] = {}
         #: 正在执行的命令 task；Stop 必须等它写完 command.finished/failed 再关闭会话。
         self._command_tasks: dict[str, asyncio.Task[TerminalEvent]] = {}
+        #: 正在停止的会话：阻断已经排队、尚未启动的下一条命令。
+        self._stopping: set[str] = set()
         #: 每会话一把锁：同一会话的命令串行执行
         self._locks: dict[str, asyncio.Lock] = {}
         #: seq 分配与落库串行化：并发 emit（输出线程 + Stop）不允许撞号
@@ -192,8 +194,16 @@ class TerminalService:
                 f"终端会话已 {session.status}，不能再执行命令",
                 details={"session_id": str(session.id), "status": session.status},
             )
-        lock = self._locks.setdefault(str(session.id), asyncio.Lock())
+        key = str(session.id)
+        lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
+            # Stop 可能在本条命令排队期间发生；拿到锁后必须重新读取权威状态。
+            session = await self.get_session(key)
+            if key in self._stopping or TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE:
+                raise ConflictError(
+                    f"终端会话已 {session.status}，不能再执行命令",
+                    details={"session_id": key, "status": session.status},
+                )
             return await self._run_locked(session, text, source)
 
     @staticmethod
@@ -273,13 +283,20 @@ class TerminalService:
     async def stop(self, session_id: str | uuid.UUID, *, force: bool = False) -> TerminalSession:
         """停止会话；confirm 到进程组消失之后才写 stopped，状态不谎报。"""
         session = await self.get_session(session_id)
-        await self._emit(
+        key = str(session.id)
+        if key in self._stopping:
+            raise ConflictError(
+                "终端会话正在停止",
+                details={"session_id": key, "status": session.status},
+            )
+        self._stopping.add(key)
+        try:
+            await self._emit(
             session.id,
             TerminalEventKind.STOP_REQUESTED,
             TerminalSource.USER,
             command="force-stop" if force else "stop",
         )
-        key = str(session.id)
         process = self._processes.get(key)
         if process is not None and process.poll() is None:
             await asyncio.to_thread(self._terminate_tree, process, force=force)
@@ -297,10 +314,20 @@ class TerminalService:
                     details={"session_id": key},
                 ) from exc
 
-        if process is not None:
-            await self._emit(session.id, TerminalEventKind.PROCESS_TERMINATED, TerminalSource.USER)
-        await self._emit(session.id, TerminalEventKind.SESSION_CLOSED, TerminalSource.USER)
-        return await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
+            if process is not None:
+                await self._emit(
+                    session.id,
+                    TerminalEventKind.PROCESS_TERMINATED,
+                    TerminalSource.USER,
+                )
+            await self._emit(
+                session.id,
+                TerminalEventKind.SESSION_CLOSED,
+                TerminalSource.USER,
+            )
+            return await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
+        finally:
+            self._stopping.discard(key)
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen[str], *, force: bool) -> bool:
