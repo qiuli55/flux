@@ -329,33 +329,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [recoveryOpenId, setRecoveryOpenId] = useState<string | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
 
-  const problems = useMemo<Problem[]>(() => {
-    const items: Problem[] = [];
-    for (const change of failedChanges) {
-      const location = parseProblemLocation(change.apply_error ?? "");
-      items.push({
-        id: `apply:${change.id}`,
-        severity: "error",
-        source: "Apply",
-        message: failureSummary(change.apply_error ?? "落盘失败"),
-        path: location.path ?? change.file_path,
-        line: location.line,
-        changeId: change.id,
-      });
-    }
-    for (const item of recoveryItems) {
-      items.push({
-        id: `recovery:${item.change_id}`,
-        severity: "warning",
-        source: "Recovery",
-        message: item.note,
-        path: item.file_path,
-        line: null,
-      });
-    }
-    return items;
-  }, [failedChanges, recoveryItems]);
-
   /* ---------- 加载 ---------- */
 
   const loadProjects = useCallback(async () => {
@@ -659,6 +632,33 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const pendingChanges = useMemo(() => changes.filter((change) => change.status === "pending"), [changes]);
   const appliedChanges = useMemo(() => changes.filter((change) => change.status === "applied"), [changes]);
   const failedChanges = useMemo(() => changes.filter((change) => change.status === "failed"), [changes]);
+
+  const problems = useMemo<Problem[]>(() => {
+    const items: Problem[] = [];
+    for (const change of failedChanges) {
+      const location = parseProblemLocation(change.apply_error ?? "");
+      items.push({
+        id: `apply:${change.id}`,
+        severity: "error",
+        source: "Apply",
+        message: failureSummary(change.apply_error ?? "落盘失败"),
+        path: location.path ?? change.file_path,
+        line: location.line,
+        changeId: change.id,
+      });
+    }
+    for (const item of recoveryItems) {
+      items.push({
+        id: `recovery:${item.change_id}`,
+        severity: "warning",
+        source: "Recovery",
+        message: item.note,
+        path: item.file_path,
+        line: null,
+      });
+    }
+    return items;
+  }, [failedChanges, recoveryItems]);
   const reviewChange = useMemo(
     () => changes.find((change) => change.id === reviewId) ?? null,
     [changes, reviewId],
