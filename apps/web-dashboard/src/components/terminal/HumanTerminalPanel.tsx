@@ -255,7 +255,7 @@ export function HumanTerminalPanel() {
     const element = hostsRef.current[session.id];
     if (!element) return;
 
-    if (!element.contains(runtime.terminal.element)) runtime.terminal.open(element);
+    if (!runtime.terminal.element) runtime.terminal.open(element);
     runtime.fit.fit();
     runtime.resizeObserver?.disconnect();
     runtime.resizeObserver = new ResizeObserver(() => {
