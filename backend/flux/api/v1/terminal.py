@@ -20,7 +20,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.terminal.pty_service import HumanPtyService
-from flux.enums import TerminalSource
+from flux.enums import TerminalSessionKind, TerminalSource
 from flux.schemas.api import (
     TerminalCommandRequest,
     TerminalSessionCreateRequest,
