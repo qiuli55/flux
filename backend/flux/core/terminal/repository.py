@@ -54,12 +54,16 @@ class TerminalRepository:
         *,
         limit: int = 20,
         kind: TerminalSessionKind | None = None,
+        status: TerminalSessionStatus | None = None,
     ) -> list[TerminalSession]:
         statement = select(TerminalSession)
         if kind is not None:
             statement = statement.where(TerminalSession.kind == kind.value)
-        statement = statement.order_by(TerminalSession.created_at.desc(), TerminalSession.id.desc()).limit(
-            limit
+        if status is not None:
+            statement = statement.where(TerminalSession.status == status.value)
+        statement = (
+            statement.order_by(TerminalSession.created_at.desc(), TerminalSession.id.desc())
+            .limit(limit)
         )
         async with self._session_factory() as db:
             return list(await db.scalars(statement))
