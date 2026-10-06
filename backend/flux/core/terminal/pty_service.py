@@ -161,11 +161,13 @@ class HumanPtyService:
         finally:
             subscribers.discard(queue)
 
-    async def stop(self, session_id: str | uuid.UUID, *, force: bool = False) -> None:
+    async def stop(
+        self, session_id: str | uuid.UUID, *, force: bool = False
+    ) -> TerminalSession:
         key = str(session_id)
         pid = self._pids.get(key)
         if pid is None:
-            return
+            return await self.get_session(session_id)
         try:
             pgid = os.getpgid(pid)
         except ProcessLookupError:
@@ -186,8 +188,14 @@ class HumanPtyService:
                     await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
                 await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
         else:
-            await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+            confirmed = await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+            if not confirmed:
+                raise ConflictError(
+                    "无法确认 Human Terminal 进程组已退出",
+                    details={"session_id": key, "pgid": pgid},
+                )
         await self._finish(key)
+        return await self.get_session(session_id)
 
     async def shutdown(self) -> None:
         for key in list(self._pids):
