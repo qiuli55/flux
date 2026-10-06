@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from flux.api.deps import get_container
 from flux.api.response import ok
@@ -200,6 +200,7 @@ async def search_project_files(
     )
     return ok([hit.to_dict() for hit in hits], metadata={"count": len(hits), "query": q})
 
+
 @router.post("/{project_id}/search/replace")
 async def replace_project_files(
     project_id: uuid.UUID,
@@ -219,6 +220,7 @@ async def replace_project_files(
         regex=payload.regex,
     )
     return ok(result, metadata={"query": payload.query})
+
 
 @router.get("/{project_id}/files")
 async def list_project_files(
