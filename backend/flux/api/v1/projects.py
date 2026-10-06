@@ -25,6 +25,7 @@ from flux.schemas.api import (
     WorkspaceFileCreateRequest,
     WorkspaceFilePathRequest,
     WorkspaceFileRenameRequest,
+    WorkspaceFileReplaceRequest,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -198,6 +199,26 @@ async def search_project_files(
         max_results=max_results,
     )
     return ok([hit.to_dict() for hit in hits], metadata={"count": len(hits), "query": q})
+
+@router.post("/{project_id}/search/replace")
+async def replace_project_files(
+    project_id: uuid.UUID,
+    payload: WorkspaceFileReplaceRequest,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Replace matching text in the active workspace as an explicit human operation."""
+    _require_desktop_file_operation(container, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    result = await asyncio.to_thread(
+        container.files.replace,
+        query=payload.query,
+        replacement=payload.replacement,
+        path=payload.path,
+        case_sensitive=payload.case_sensitive,
+        regex=payload.regex,
+    )
+    return ok(result, metadata={"query": payload.query})
 
 @router.get("/{project_id}/files")
 async def list_project_files(
