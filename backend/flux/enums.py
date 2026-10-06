@@ -138,6 +138,13 @@ class TerminalSessionStatus(StrEnum):
     CLOSED = "closed"
 
 
+class TerminalSessionKind(StrEnum):
+    """terminal_sessions.kind：区分 Agent Terminal 与 Human Terminal，会话持久化层面不可混淆。"""
+
+    AGENT = "agent"
+    HUMAN = "human"
+
+
 class TerminalSource(StrEnum):
     """终端命令的来源：AI 还是 USER。§5 要求两者在输出中必须明确区分。"""
 
