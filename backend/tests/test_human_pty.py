@@ -88,6 +88,22 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     )
     assert human_get_agent.status_code == 409
 
+    stopped = apply_client.post(
+        f"/api/v1/terminal/pty/sessions/{session_id}/stop",
+        json={"force": False},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["data"]["status"] == TerminalSessionStatus.STOPPED.value
+
+    stopped_detail = apply_client.get(
+        f"/api/v1/terminal/pty/sessions/{session_id}"
+    )
+    assert stopped_detail.status_code == 200
+    assert stopped_detail.json()["data"]["status"] == TerminalSessionStatus.STOPPED.value
+
+    live_humans = apply_client.get("/api/v1/terminal/pty/sessions").json()["data"]
+    assert session_id not in {item["id"] for item in live_humans}
+
 
 async def test_human_terminal_list_excludes_stopped_sessions(
     apply_container: Container,
