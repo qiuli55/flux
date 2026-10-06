@@ -1,7 +1,7 @@
 """区分 Agent Terminal 与 Human Terminal 会话（终端运行时隔离）。
 
 Revision ID: f2a7c4d9e1b3
-Revises: d5e8b1c3a7f2
+Revises: f3a1b2c4d5e6
 Create Date: 2026-10-06 22:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "f2a7c4d9e1b3"
-down_revision: str | Sequence[str] | None = "d5e8b1c3a7f2"
+down_revision: str | Sequence[str] | None = "f3a1b2c4d5e6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
