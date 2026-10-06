@@ -1637,12 +1637,32 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
 
           {railPanel === "search" ? (
             <div className="fl-panel">
-              <div className="fl-search">
-                <input
-                  value={search}
-                  placeholder="搜索工作区代码…"
-                  onChange={(event) => setSearch(event.target.value)}
-                />
+              <div className="fl-search-stack">
+                <div className="fl-search">
+                  <input
+                    value={search}
+                    placeholder="搜索工作区代码…"
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                  <button type="button" className={searchCaseSensitive ? "is-active" : ""} onClick={() => setSearchCaseSensitive((value) => !value)} title="区分大小写">Aa</button>
+                  <button type="button" className={searchRegex ? "is-active" : ""} onClick={() => setSearchRegex((value) => !value)} title="正则表达式">.*</button>
+                </div>
+                <div className="fl-replace">
+                  <input
+                    value={replaceText}
+                    placeholder="替换为…"
+                    onChange={(event) => setReplaceText(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    disabled={!search.trim() || replaceBusy || !desktop?.isDesktop}
+                    onClick={() => void replaceAllSearch()}
+                    title={desktop?.isDesktop ? "替换 Workspace 中所有匹配项" : "全部替换需要桌面版"}
+                  >
+                    {replaceBusy ? "替换中…" : "全部替换"}
+                  </button>
+                </div>
               </div>
               {search.trim() === "" ? (
                 <div className="fl-empty">搜索工作区内的代码内容，点击结果可直接打开文件并定位到对应行。</div>
@@ -1664,9 +1684,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                       <span className={`t-ic ${iconClass(entry.path)}`} />
                       <span className="search-hit-main">
                         <span className="search-path">{entry.path}</span>
-                        <span className="search-hit-line">
-                          {entry.line}:{entry.column}
-                        </span>
+                        <span className="search-hit-line">{entry.line}:{entry.column}</span>
                         <span className="search-hit-preview">{entry.text}</span>
                       </span>
                     </li>
