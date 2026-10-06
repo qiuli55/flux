@@ -247,6 +247,33 @@ class GitClient:
         self._run(*args, root=root)
         return self.branches(workspace_root=root)
 
+    def stage(
+        self,
+        paths: list[str] | tuple[str, ...],
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> GitStatus:
+        """Stage explicit workspace paths without touching any other files."""
+        root = self._root(workspace_root)
+        relative = self._safe_paths(paths)
+        if not relative:
+            raise ValidationError("至少指定一个要暂存的文件")
+        self._run("add", "--", *relative, root=root)
+        return self.status(workspace_root=root)
+
+    def unstage(
+        self,
+        paths: list[str] | tuple[str, ...],
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> GitStatus:
+        """Remove explicit paths from the index while preserving working-tree changes."""
+        root = self._root(workspace_root)
+        relative = self._safe_paths(paths)
+        if not relative:
+            raise ValidationError("至少指定一个要取消暂存的文件")
+        self._run("restore", "--staged", "--", *relative, root=root)
+        return self.status(workspace_root=root)
     def commit(
         self,
         message: str,
