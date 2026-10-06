@@ -3595,6 +3595,33 @@
       }
     },
     "/api/v1/terminal/pty/sessions": {
+      "get": {
+        "description": "List only Human Terminal sessions; Agent Terminal sessions are never exposed here.",
+        "operationId": "list_human_sessions_api_v1_terminal_pty_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Human Sessions Api V1 Terminal Pty Sessions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Human Sessions",
+        "tags": [
+          "terminal"
+        ]
+      },
       "post": {
         "description": "Create an interactive user shell backed by a real Unix PTY.",
         "operationId": "create_human_session_api_v1_terminal_pty_sessions_post",
