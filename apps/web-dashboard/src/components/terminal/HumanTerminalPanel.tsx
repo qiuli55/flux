@@ -54,10 +54,7 @@ function findMatches(terminal: Terminal, query: string, options: SearchOptions):
   return matches;
 }
 async function createHumanSession(): Promise<TerminalSession> {
-  const response = await fetch(`${API_BASE}/terminal/pty/sessions`, { method: "POST", headers: { Accept: "application/json" } });
-  const envelope = (await response.json()) as { success: boolean; message?: string; data: TerminalSession };
-  if (!response.ok || !envelope.success) throw new Error(envelope.message || `创建终端失败（HTTP ${response.status}）`);
-  return envelope.data;
+  return api.createHumanTerminalSession();
 }
 
 export function HumanTerminalPanel() {
@@ -82,7 +79,9 @@ export function HumanTerminalPanel() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
+  // This state is sourced only from /terminal/pty/sessions. Never infer Human Terminal
+  // ownership from run_id: Agent Terminal user sessions also have run_id === null.
+  const userSessions = sessions;
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
   const currentRuntime = sessionId ? runtimesRef.current[sessionId] : undefined;
   const visibleSessionIds = useMemo(
@@ -91,7 +90,7 @@ export function HumanTerminalPanel() {
   );
 
   const refreshSessions = useCallback(async () => {
-    const users = (await api.listTerminalSessions()).filter((session) => session.run_id === null);
+    const users = await api.listHumanTerminalSessions();
     setSessions(users);
     setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
     setSplitSessions((current) => current.filter((id) => users.some((session) => session.id === id)));
