@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.schemas.api import GitCheckoutRequest, GitCommitRequest, GitDiffRequest
+from flux.schemas.api import GitCheckoutRequest, GitCommitRequest, GitDiffRequest, GitPathsRequest
 
 router = APIRouter(prefix="/git", tags=["git"])
 
@@ -44,6 +44,21 @@ async def git_checkout(
     branches = await container.git.checkout(payload.target, create=payload.create)
     return ok(branches.to_dict())
 
+
+@router.post("/stage")
+async def git_stage(
+    payload: GitPathsRequest, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    status = await container.git.stage(payload.paths)
+    return ok(status.to_dict())
+
+
+@router.post("/unstage")
+async def git_unstage(
+    payload: GitPathsRequest, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    status = await container.git.unstage(payload.paths)
+    return ok(status.to_dict())
 
 @router.post("/commit")
 async def git_commit(
