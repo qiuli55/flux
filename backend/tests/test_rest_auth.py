@@ -11,6 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from flux.config import Settings
 from flux.main import create_app
@@ -49,6 +50,11 @@ def test_health_requires_token_when_configured(secured_client: TestClient) -> No
     body = response.json()
     assert body["success"] is False
     assert body["code"] == "unauthenticated"
+
+
+def test_auth_cookie_passes(secured_client: TestClient) -> None:
+    response = secured_client.get("/api/v1/health", cookies={"flux_auth_token": TOKEN})
+    assert response.status_code == 200
 
 
 def test_valid_token_passes(secured_client: TestClient) -> None:
@@ -135,3 +141,44 @@ def test_openapi_declares_bearer_scheme(secured_client: TestClient) -> None:
     schemes = schema["components"]["securitySchemes"]
     assert schemes["HTTPBearer"]["scheme"] == "bearer"
     assert schema["paths"]["/api/v1/health"]["get"]["security"] == [{"HTTPBearer": []}]
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="native PTY is not enabled on Windows")
+def test_human_websocket_requires_auth_when_rest_is_secured(
+    secured_app_settings: Settings, db_schema: None
+) -> None:
+    app = create_app(secured_app_settings)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        created = test_client.post(
+            "/api/v1/terminal/pty/sessions",
+            headers=_auth(TOKEN),
+        )
+        assert created.status_code == 200
+        session_id = created.json()["data"]["id"]
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with test_client.websocket_connect(
+                f"/api/v1/terminal/pty/sessions/{session_id}/ws"
+            ):
+                pass
+        assert exc.value.code == 1008
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="native PTY is not enabled on Windows")
+def test_human_websocket_accepts_auth_header_when_rest_is_secured(
+    secured_app_settings: Settings, db_schema: None
+) -> None:
+    app = create_app(secured_app_settings)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        created = test_client.post(
+            "/api/v1/terminal/pty/sessions",
+            headers=_auth(TOKEN),
+        )
+        assert created.status_code == 200
+        session_id = created.json()["data"]["id"]
+
+        with test_client.websocket_connect(
+            f"/api/v1/terminal/pty/sessions/{session_id}/ws",
+            headers=_auth(TOKEN),
+        ) as websocket:
+            websocket.send_json({"type": "stop", "force": True})
