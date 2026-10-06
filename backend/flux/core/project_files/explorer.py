@@ -523,7 +523,9 @@ class WorkspaceFileExplorer:
         queue: deque[Path] = deque([base])
         while queue and len(changed_files) < max_files and replacements < max_replacements:
             directory = queue.popleft()
-            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(directory):
+            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(
+                directory
+            ):
                 if is_link:
                     continue
                 if is_dir:
@@ -548,20 +550,9 @@ class WorkspaceFileExplorer:
                 if not matches:
                     continue
                 available = max_replacements - replacements
-                if len(matches) > available:
-                    # Build a partial replacement using the first N matches.
-                    pieces: list[str] = []
-                    cursor = 0
-                    for match in matches[:available]:
-                        pieces.append(text[cursor:match.start()])
-                        pieces.append(replacement if regex else replacement)
-                        cursor = match.end()
-                    pieces.append(text[cursor:])
-                    updated = "".join(pieces)
-                    replacements += available
-                else:
-                    updated = expression.sub(replacement, text)
-                    replacements += len(matches)
+                count = min(len(matches), available)
+                updated = expression.sub(replacement, text, count=count)
+                replacements += count
                 relative_path = candidate.relative_to(root).as_posix()
                 relative_obj = safe_relative_path(relative_path)
                 self._guard_user_path(relative_obj)
