@@ -164,7 +164,7 @@ def _scan_directory(directory: Path) -> list[tuple[str, str, bool, bool, bool, i
 
 
 class WorkspaceFileExplorer:
-    """工作区文件树 / 文件内容的只读实现。"""
+    """Workspace file tree, text read, and bounded human file operations."""
 
     def __init__(self, *, workspace_root: str | Path | None = None) -> None:
         self._workspace_root = workspace_root
@@ -546,12 +546,10 @@ class WorkspaceFileExplorer:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError:
                     continue
-                matches = list(expression.finditer(text))
-                if not matches:
-                    continue
                 available = max_replacements - replacements
-                count = min(len(matches), available)
-                updated = expression.sub(replacement, text, count=count)
+                updated, count = expression.subn(replacement, text, count=available)
+                if count == 0:
+                    continue
                 replacements += count
                 relative_path = candidate.relative_to(root).as_posix()
                 relative_obj = safe_relative_path(relative_path)
