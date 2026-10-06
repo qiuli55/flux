@@ -11,6 +11,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -18,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.terminal.pty_service import HumanPtyService
 from flux.enums import TerminalSource
 from flux.schemas.api import (
     TerminalCommandRequest,
@@ -32,6 +34,23 @@ SSE_EVENT_NAME = "terminal.event"
 def _format_sse(payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False)
     return f"id: {payload['seq']}\nevent: {SSE_EVENT_NAME}\ndata: {data}\n\n"
+
+
+def _same_origin_websocket(websocket: WebSocket) -> bool:
+    """Reject browser WebSockets initiated by an unrelated Origin.
+
+    The browser WebSocket API does not let application code attach arbitrary
+    Authorization headers, so Flux currently relies on the same-origin boundary here.
+    Deployment-level authentication remains responsible for protecting the web app.
+    """
+    origin = websocket.headers.get("origin")
+    if not origin:
+        # Non-browser clients normally omit Origin; allow them so desktop/CLI clients
+        # can use the PTY protocol without pretending to be a browser.
+        return True
+    parsed = urlparse(origin)
+    host = websocket.headers.get("host", "")
+    return parsed.netloc == host
 
 
 @router.post("/sessions")
@@ -133,8 +152,12 @@ async def create_human_session(
 @router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
+    if not _same_origin_websocket(websocket):
+        await websocket.close(code=1008, reason="cross-origin websocket rejected")
+        return
+
     container: Container = websocket.app.state.container
-    service = container.human_pty
+    service: HumanPtyService = container.human_pty
     session = await service.get_session(session_id)
     if session.run_id is not None:
         await websocket.close(code=1008, reason="agent terminal sessions are not human PTYs")
@@ -159,7 +182,6 @@ async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if output_task in done:
-                # PTY exited. Do not leave a websocket waiting forever for input.
                 with suppress(Exception):
                     await websocket.close(code=1000, reason="terminal closed")
                 break
@@ -206,7 +228,7 @@ async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
 
 
 async def _forward_pty_output(
-    websocket: WebSocket, service, session_id: str
+    websocket: WebSocket, service: HumanPtyService, session_id: str
 ) -> None:
     try:
         async for chunk in service.stream_output(session_id):
