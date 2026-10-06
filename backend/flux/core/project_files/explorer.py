@@ -1,9 +1,10 @@
 """工作区文件浏览（实施计划 ⑫ 前端 File Explorer / Code Editor 的后端前置）。
 
-两个只读能力：
+Explorer 提供三类能力：
 
-1. `tree()` —— 把工作区的一层/多层目录读成扁平条目表（每条带工作区内的相对路径）；
-2. `read()` —— 读单个文件的文本内容。
+1. `tree()` / `read()` —— 只读浏览工作区；
+2. 用户文件操作 —— 新建、重命名/移动、删除；
+3. `search()` —— 有界的 Workspace 文本搜索。
 
 四条边界（与 §12.5 的落地说明一致）：
 
@@ -434,7 +435,9 @@ class WorkspaceFileExplorer:
         queue: deque[Path] = deque([base])
         while queue and len(hits) < max_results:
             directory = queue.popleft()
-            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(directory):
+            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(
+                directory
+            ):
                 if is_link:
                     continue
                 if is_dir:
