@@ -388,6 +388,21 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     void loadTask(projectId);
   }, [projectId, loadTree, loadTask]);
 
+  useEffect(() => {
+    const refreshExplorer = () => {
+      setEntries([]);
+      setFiles({});
+      setOpenTabs([]);
+      setActiveTab(CHANGES_TAB);
+      setExpanded(new Set());
+      setFileError(null);
+      void loadTree(projectId);
+      void loadGit();
+    };
+    window.addEventListener("flux:explorer-refresh", refreshExplorer);
+    return () => window.removeEventListener("flux:explorer-refresh", refreshExplorer);
+  }, [projectId, loadTree, loadGit]);
+
   /* ---------- 视图状态（与设计稿同一套 body 类） ---------- */
 
   useEffect(() => {
@@ -1221,7 +1236,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   /* ---------- 渲染：页面 ---------- */
 
   return (
-    <div className="view view-ide">
+    <div className="view view-ide" data-project-id={projectId ?? ""}>
       <header className="ide-top">
         <div className="it-left">
           <button type="button" className="icon-btn" title="返回 Solo" onClick={onBackToSolo}>
