@@ -259,7 +259,8 @@ function serveStatic(req, res, webRoot) {
   if (pathname === "/") pathname = "/index.html";
 
   const resolved = path.normalize(path.join(webRoot, pathname));
-  if (!resolved.startsWith(webRoot)) {
+  const relative = path.relative(webRoot, resolved);
+  if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
     res.writeHead(403);
     res.end("forbidden");
     return;
