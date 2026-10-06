@@ -15,6 +15,11 @@ import type {
 
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api/v1").replace(/\/$/, "");
 
+export function terminalStreamUrl(sessionId: string, afterSeq = 0): string {
+  const suffix = afterSeq > 0 ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
+  return `${API_BASE}/terminal/sessions/${encodeURIComponent(sessionId)}/stream${suffix}`;
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -123,12 +128,32 @@ export const api = {
     const envelope = await request<TaskMessage[]>("GET", `/tasks/${taskId}/messages${query({ limit: options?.limit?.toString(), before: options?.before?.toString() })}`);
     return { items: envelope.data, hasMore: Boolean(envelope.metadata?.has_more) };
   },
-  startTask: (taskId: string) => getData<TaskStartOutcome>("POST", `/tasks/${taskId}/start`),
+  sendTaskMessage: (taskId: string, content: string) =>
+    getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
+    getData<TaskStartOutcome>(
+      "POST",
+      `/tasks/${taskId}/start`,
+      confirmation ? { confirmation } : {},
+    ),
+  setDecisionMode: (taskId: string, mode: DecisionMode) =>
+    getData<Task>("POST", `/tasks/${taskId}/decision-mode`, { mode }),
+  updateTaskConfirmation: (taskId: string, items: ConfirmationItem[]) =>
+    getData<TaskConfirmationOutcome>("PUT", `/tasks/${taskId}/confirmation`, { items }),
+  cancelTask: (taskId: string) => getData<Task>("POST", `/tasks/${taskId}/cancel`),
+  chooseDecision: (
+    taskId: string,
+    body: { decision_id: string; action: "choose" | "reject"; option?: string; note?: string },
+  ) => getData<DecisionOutcome>("POST", `/tasks/${taskId}/decisions/choose`, body),
   replyTask: (taskId: string, body: { content: string }) => getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/reply`, body),
   confirmTask: (taskId: string, body: { confirmation_id: string; approved: boolean }) => getData<TaskConfirmationOutcome>("POST", `/tasks/${taskId}/confirm`, body),
   decideTask: (taskId: string, body: { decision: DecisionMode }) => getData<DecisionOutcome>("POST", `/tasks/${taskId}/decision`, body),
   listConfirmations: (taskId: string) => getData<ConfirmationItem[]>("GET", `/tasks/${taskId}/confirmations`),
   listTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/sessions"),
+  getTerminalSession: (sessionId: string) =>
+    getData<TerminalSession>("GET", `/terminal/sessions/${encodeURIComponent(sessionId)}`),
+  runTerminalCommand: (sessionId: string, command: string) =>
+    getData<TerminalEvent>("POST", `/terminal/sessions/${encodeURIComponent(sessionId)}/commands`, { command }),
   listHumanTerminalSessions: () => getData<TerminalSession[]>("GET", "/terminal/pty/sessions"),
   getHumanTerminalSession: (sessionId: string) =>
     getData<TerminalSession>("GET", `/terminal/pty/sessions/${encodeURIComponent(sessionId)}`),
