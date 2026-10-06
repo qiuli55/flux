@@ -219,7 +219,7 @@ interface Problem {
 }
 
 function parseProblemLocation(text: string): { path: string | null; line: number | null } {
-  const match = text.match(/(?:^|\\s)([^\\s:]+\\.(?:py|ts|tsx|js|jsx|json|css|md|yml|yaml)):(\\d+)(?::(\\d+))?/);
+  const match = text.match(/(?:^|\s)([^\s:]+\.(?:py|ts|tsx|js|jsx|json|css|md|yml|yaml)):(\d+)(?::(\d+))?/);
   return match ? { path: match[1], line: Number(match[2]) } : { path: null, line: null };
 }
 
