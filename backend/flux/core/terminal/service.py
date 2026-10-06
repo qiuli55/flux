@@ -281,7 +281,7 @@ class TerminalService:
     # --- Stop / Force Stop（§3.3 / §3.4 / §10）---
 
     async def stop(self, session_id: str | uuid.UUID, *, force: bool = False) -> TerminalSession:
-        """停止会话；confirm 到进程组消失之后才写 stopped，状态不谎报。"""
+        """停止会话；confirm 到进程组消失之后才落 stopped，状态不谎报。"""
         session = await self.get_session(session_id)
         key = str(session.id)
         if key in self._stopping:
@@ -292,27 +292,27 @@ class TerminalService:
         self._stopping.add(key)
         try:
             await self._emit(
-            session.id,
-            TerminalEventKind.STOP_REQUESTED,
-            TerminalSource.USER,
-            command="force-stop" if force else "stop",
-        )
-        process = self._processes.get(key)
-        if process is not None and process.poll() is None:
-            await asyncio.to_thread(self._terminate_tree, process, force=force)
+                session.id,
+                TerminalEventKind.STOP_REQUESTED,
+                TerminalSource.USER,
+                command="force-stop" if force else "stop",
+            )
+            process = self._processes.get(key)
+            if process is not None and process.poll() is None:
+                await asyncio.to_thread(self._terminate_tree, process, force=force)
 
-        command_task = self._command_tasks.get(key)
-        if command_task is not None and command_task is not asyncio.current_task():
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(command_task),
-                    timeout=STOP_GRACE_SECONDS + KILL_CONFIRM_SECONDS + 1.0,
-                )
-            except asyncio.TimeoutError as exc:
-                raise ConflictError(
-                    "终端命令未能在停止后完成收尾",
-                    details={"session_id": key},
-                ) from exc
+            command_task = self._command_tasks.get(key)
+            if command_task is not None and command_task is not asyncio.current_task():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(command_task),
+                        timeout=STOP_GRACE_SECONDS + KILL_CONFIRM_SECONDS + 1.0,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise ConflictError(
+                        "终端命令未能在停止后完成收尾",
+                        details={"session_id": key},
+                    ) from exc
 
             if process is not None:
                 await self._emit(
