@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { API_BASE, api } from "../../api/client";
 import type { TerminalSession } from "../../api/types";
 import "../../styles/human-terminal.css";
+import "../../styles/human-terminal-xterm.css";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -63,19 +64,14 @@ export function HumanTerminalPanel() {
   const hostsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const runtimesRef = useRef<Record<string, TerminalRuntime>>({});
 
-  const userSessions = useMemo(
-    () => sessions.filter((session) => session.run_id === null),
-    [sessions],
-  );
+  const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listTerminalSessions();
     const users = list.filter((session) => session.run_id === null);
     setSessions(users);
-    setSessionId((current) =>
-      current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null,
-    );
+    setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
     return users;
   }, []);
 
@@ -103,17 +99,13 @@ export function HumanTerminalPanel() {
         runtime.fit.fit();
         socket.send(JSON.stringify({ type: "resize", cols: runtime.terminal.cols, rows: runtime.terminal.rows }));
       } catch {
-        // The socket may close between open and the first resize.
+        // Socket may close between open and the initial resize.
       }
     };
 
     socket.onmessage = (event) => {
       try {
-        const message = JSON.parse(String(event.data)) as {
-          type: string;
-          data?: string;
-          message?: string;
-        };
+        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string };
         if (message.type === "output" && message.data) runtime.terminal.write(message.data);
         if (message.type === "error") setError(message.message || "终端通信失败");
         if (message.type === "closed") void refreshSessions();
@@ -149,8 +141,6 @@ export function HumanTerminalPanel() {
       fontSize: 13,
       lineHeight: 1.15,
       scrollback: 5000,
-      convertEol: false,
-      allowTransparency: false,
       theme: {
         background: "#080a10",
         foreground: "#d9deea",
@@ -160,22 +150,21 @@ export function HumanTerminalPanel() {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
-    const runtime: TerminalRuntime = {
-      terminal,
-      fit,
-      socket: null,
-      resizeObserver: null,
-      dataDisposable: terminal.onData((data) => {
-        const socket = runtime.socket;
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
-      }),
-      resizeDisposable: terminal.onResize(({ cols, rows }) => {
-        const socket = runtime.socket;
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols, rows }));
-      }),
-      reconnectTimer: null,
-      manualClose: false,
-    };
+    const runtime = {} as TerminalRuntime;
+    runtime.terminal = terminal;
+    runtime.fit = fit;
+    runtime.socket = null;
+    runtime.resizeObserver = null;
+    runtime.reconnectTimer = null;
+    runtime.manualClose = false;
+    runtime.dataDisposable = terminal.onData((data) => {
+      const socket = runtime.socket;
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
+    });
+    runtime.resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      const socket = runtime.socket;
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols, rows }));
+    });
     runtimesRef.current[session.id] = runtime;
     return runtime;
   }, []);
@@ -260,10 +249,8 @@ export function HumanTerminalPanel() {
     return () => runtime.resizeObserver?.disconnect();
   }, [active, sessionId, userSessions, ensureRuntime, connectRuntime]);
 
-  useEffect(() => {
-    return () => {
-      Object.keys(runtimesRef.current).forEach(destroyRuntime);
-    };
+  useEffect(() => () => {
+    Object.keys(runtimesRef.current).forEach(destroyRuntime);
   }, [destroyRuntime]);
 
   if (!host) return null;
@@ -273,15 +260,7 @@ export function HumanTerminalPanel() {
       <div className="ht-toolbar">
         <div className="ht-tabs" role="tablist" aria-label="终端会话">
           {userSessions.map((session, index) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={session.id === sessionId}
-              key={session.id}
-              className={`ht-tab${session.id === sessionId ? " is-active" : ""}`}
-              onClick={() => setSessionId(session.id)}
-              title={session.workspace_root}
-            >
+            <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => setSessionId(session.id)} title={session.workspace_root}>
               <span className={`ht-dot${connected[session.id] ? " is-live" : ""}`} />
               {labelFor(session, index)}
             </button>
@@ -296,12 +275,7 @@ export function HumanTerminalPanel() {
       </div>
       <div className="ht-body" role="tabpanel">
         {userSessions.map((session) => (
-          <div
-            key={session.id}
-            ref={(element) => { hostsRef.current[session.id] = element; }}
-            className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`}
-            aria-hidden={session.id !== sessionId}
-          />
+          <div key={session.id} ref={(element) => { hostsRef.current[session.id] = element; }} className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`} aria-hidden={session.id !== sessionId} />
         ))}
       </div>
       {error ? <div className="ht-error">{error}</div> : null}
