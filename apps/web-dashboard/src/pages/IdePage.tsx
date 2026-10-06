@@ -471,6 +471,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const openFile = useCallback((path: string) => {
     setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
     setActiveTab(path);
+    setRecentFiles((prev) => [path, ...prev.filter((item) => item !== path)].slice(0, 20));
   }, []);
 
   const openFileAtLine = useCallback(
