@@ -291,6 +291,33 @@ function serveStatic(req, res, webRoot) {
   });
 }
 
+function proxyWebSocket(req, socket, head) {
+  const requestUrl = req.url || "";
+  if (!(requestUrl === "/api" || requestUrl.startsWith("/api/"))) {
+    socket.destroy();
+    return;
+  }
+
+  const upstream = net.connect({ host: "127.0.0.1", port: backendPort });
+  upstream.on("connect", () => {
+    const lines = [
+      `${req.method || "GET"} ${requestUrl} HTTP/${req.httpVersion || "1.1"}`,
+      ...Array.from({ length: req.rawHeaders.length / 2 }, (_, index) => {
+        const offset = index * 2;
+        return `${req.rawHeaders[offset]}: ${req.rawHeaders[offset + 1]}`;
+      }),
+      "",
+      "",
+    ];
+    upstream.write(lines.join("\r\n"));
+    if (head && head.length) upstream.write(head);
+    socket.pipe(upstream);
+    upstream.pipe(socket);
+  });
+  upstream.on("error", () => socket.destroy());
+  socket.on("error", () => upstream.destroy());
+}
+
 function startStaticServer(port, webRoot) {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(path.join(webRoot, "index.html"))) {
@@ -310,6 +337,9 @@ function startStaticServer(port, webRoot) {
       serveStatic(req, res, webRoot);
     });
     server.on("error", reject);
+    // Electron 自带的静态服务器不走 Vite dev proxy，因此必须显式转发
+    // /api 下的 WebSocket upgrade，否则 Human Terminal 在桌面发行版无法建立 PTY 通道。
+    server.on("upgrade", proxyWebSocket);
     server.listen(port, "127.0.0.1", () => resolve(server));
   });
 }
