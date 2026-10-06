@@ -239,8 +239,21 @@ class HumanPtyService:
         return await self.get_session(session_id)
 
     async def shutdown(self) -> None:
+        """Best-effort cleanup during app shutdown; never block the whole shutdown path on one PTY."""
         for key in list(self._pids):
-            await self.stop(key, force=True)
+            pid = self._pids.get(key)
+            fd = self._fds.get(key)
+            try:
+                await self.stop(key, force=True)
+            except Exception:
+                if pid is not None and fd is not None:
+                    with suppress(Exception):
+                        await self._cleanup_spawned_process(key, pid, fd)
+                with suppress(Exception):
+                    await self._repo.set_status(
+                        key,
+                        TerminalSessionStatus.CLOSED,
+                    )
 
     async def _cleanup_spawned_process(self, key: str, pid: int, fd: int) -> None:
         self._closed.add(key)
