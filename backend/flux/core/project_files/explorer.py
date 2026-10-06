@@ -50,6 +50,10 @@ MAX_CONTENT_BYTES = 256 * 1024
 MAX_SEARCH_FILE_BYTES = 1024 * 1024
 #: 全局搜索最多返回的命中数
 MAX_SEARCH_RESULTS = 1000
+#: 一次 Replace All 最多修改多少个文件
+MAX_REPLACE_FILES = 100
+#: 一次 Replace All 最多替换多少处
+MAX_REPLACEMENTS = 10000
 
 
 @dataclass(frozen=True)
@@ -479,6 +483,101 @@ class WorkspaceFileExplorer:
                 if len(hits) >= max_results:
                     break
         return hits
+    def replace(
+        self,
+        *,
+        query: str,
+        replacement: str,
+        path: str | None = None,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        max_files: int = MAX_REPLACE_FILES,
+        max_replacements: int = MAX_REPLACEMENTS,
+        workspace_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Replace text in bounded UTF-8 files as an explicit human operation."""
+        query = query.strip()
+        if not query:
+            return {"files": [], "replacements": 0, "truncated": False}
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = self._relative_directory(path)
+        base = resolve_within_root(root, relative)
+        if not base.exists() or not base.is_dir():
+            raise ValidationError(
+                f"搜索范围不是目录：{relative.as_posix() or '.'}",
+                details={"path": relative.as_posix()},
+            )
+        max_files = max(1, min(int(max_files), MAX_REPLACE_FILES))
+        max_replacements = max(1, min(int(max_replacements), MAX_REPLACEMENTS))
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            expression = re.compile(query if regex else re.escape(query), flags)
+        except re.error as exc:
+            raise ValidationError(
+                f"无效的替换正则表达式：{query}",
+                details={"query": query},
+            ) from exc
+
+        changed_files: list[str] = []
+        replacements = 0
+        queue: deque[Path] = deque([base])
+        while queue and len(changed_files) < max_files and replacements < max_replacements:
+            directory = queue.popleft()
+            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(directory):
+                if is_link:
+                    continue
+                if is_dir:
+                    if name in IGNORED_DIRS:
+                        continue
+                    queue.append(Path(raw_path))
+                    continue
+                if not is_file:
+                    continue
+                candidate = Path(raw_path)
+                try:
+                    data = candidate.read_bytes()
+                except OSError:
+                    continue
+                if len(data) > MAX_SEARCH_FILE_BYTES or b"\x00" in data:
+                    continue
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                matches = list(expression.finditer(text))
+                if not matches:
+                    continue
+                available = max_replacements - replacements
+                if len(matches) > available:
+                    # Build a partial replacement using the first N matches.
+                    pieces: list[str] = []
+                    cursor = 0
+                    for match in matches[:available]:
+                        pieces.append(text[cursor:match.start()])
+                        pieces.append(replacement if regex else replacement)
+                        cursor = match.end()
+                    pieces.append(text[cursor:])
+                    updated = "".join(pieces)
+                    replacements += available
+                else:
+                    updated = expression.sub(replacement, text)
+                    replacements += len(matches)
+                relative_path = candidate.relative_to(root).as_posix()
+                relative_obj = safe_relative_path(relative_path)
+                self._guard_user_path(relative_obj)
+                candidate.write_text(updated, encoding="utf-8")
+                changed_files.append(relative_path)
+                if replacements >= max_replacements:
+                    break
+            if replacements >= max_replacements:
+                break
+        truncated = bool(queue) or len(changed_files) >= max_files or replacements >= max_replacements
+        return {
+            "files": changed_files,
+            "replacements": replacements,
+            "truncated": truncated,
+        }
+
     # --- 内部工具 ---
 
     @staticmethod
@@ -522,6 +621,8 @@ __all__ = [
     "FileEntry",
     "FileTree",
     "MAX_SEARCH_FILE_BYTES",
+    "MAX_REPLACE_FILES",
+    "MAX_REPLACEMENTS",
     "MAX_SEARCH_RESULTS",
     "SearchHit",
     "WorkspaceFileExplorer",
