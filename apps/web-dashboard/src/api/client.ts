@@ -9,7 +9,7 @@
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, Change, ConfirmationItem, DecisionMode,
   DecisionOutcome, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
-  Installation, Project, ReadyData, RecoveryItem, ScanOutcome, Task, TaskConfirmationOutcome,
+  Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task, TaskConfirmationOutcome,
   TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome, TerminalEvent, TerminalSession,
 } from "./types";
 
@@ -90,6 +90,14 @@ export const api = {
   scanProject: (projectId: string) => getData<ScanOutcome>("POST", `/projects/${projectId}/scan`, { record: true }),
   listFiles: (projectId: string, options?: { path?: string; depth?: number }) => getData<FileTree>("GET", `/projects/${projectId}/files${query({ path: options?.path, depth: options?.depth?.toString() })}`),
   readFile: (projectId: string, path: string) => getData<FileContent>("GET", `/projects/${projectId}/files/content${query({ path })}`),
+  searchWorkspace: (projectId: string, search: string, options?: { path?: string; caseSensitive?: boolean; regex?: boolean; maxResults?: number }) =>
+    getData<SearchHit[]>("GET", `/projects/${projectId}/search${query({
+      q: search,
+      path: options?.path,
+      case_sensitive: options?.caseSensitive ? "true" : undefined,
+      regex: options?.regex ? "true" : undefined,
+      max_results: options?.maxResults?.toString(),
+    })}`),
   listChanges: (status?: string) => getData<Change[]>("GET", `/workspace/changes${query({ status })}`),
   getChange: (changeId: string) => getData<Change>("GET", `/workspace/changes/${changeId}`),
   accept: (changeIds: string[]) => getData<Change[]>("POST", "/workspace/accept", { change_ids: changeIds }),
