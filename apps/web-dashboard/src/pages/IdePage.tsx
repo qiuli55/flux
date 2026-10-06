@@ -478,6 +478,35 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     [openFile],
   );
 
+  const replaceAllSearch = useCallback(async () => {
+    const queryText = search.trim();
+    if (!queryText || !projectId) return;
+    if (!desktop?.isDesktop) {
+      toast("全部替换需要使用 Flux 桌面版", "error");
+      return;
+    }
+    if (!window.confirm(`确定在当前 Workspace 中替换所有匹配「${queryText}」的内容吗？此操作会直接修改本地文件。`)) return;
+    setReplaceBusy(true);
+    try {
+      const result = await api.replaceWorkspaceSearch(projectId, queryText, replaceText, {
+        caseSensitive: searchCaseSensitive,
+        regex: searchRegex,
+      });
+      toast(`已替换 ${result.replacements} 处，修改 ${result.files.length} 个文件`);
+      setFiles({});
+      setOpenTabs([]);
+      setActiveTab(CHANGES_TAB);
+      await loadTree(projectId);
+      await loadGit();
+      setSearch("");
+      setReplaceText("");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setReplaceBusy(false);
+    }
+  }, [desktop, loadGit, loadTree, projectId, replaceText, search, searchCaseSensitive, searchRegex]);
+
   const closeTab = useCallback(
     (key: string) => {
       if (key === CHANGES_TAB) {
