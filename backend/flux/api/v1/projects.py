@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Header, Query
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.project_files.explorer import DEFAULT_TREE_DEPTH, MAX_TREE_DEPTH
+from flux.core.project_files.explorer import DEFAULT_TREE_DEPTH, MAX_SEARCH_RESULTS, MAX_TREE_DEPTH
 from flux.schemas.api import (
     MemoryWriteRequest,
     ProjectCreateRequest,
@@ -176,6 +176,28 @@ async def delete_project_path(
     path = await asyncio.to_thread(container.files.delete, path=payload.path)
     return ok({"path": path})
 
+
+@router.get("/{project_id}/search")
+async def search_project_files(
+    project_id: uuid.UUID,
+    q: str = Query(min_length=1, max_length=500, description="工作区文本搜索关键词"),
+    path: str | None = Query(default=None, description="限定搜索范围的工作区相对子目录"),
+    case_sensitive: bool = Query(default=False),
+    regex: bool = Query(default=False),
+    max_results: int = Query(default=200, ge=1, le=MAX_SEARCH_RESULTS),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """Search text across the active workspace; binary and oversized files are skipped."""
+    await container.brain.get_project(project_id)
+    hits = await asyncio.to_thread(
+        container.files.search,
+        query=q,
+        path=path,
+        case_sensitive=case_sensitive,
+        regex=regex,
+        max_results=max_results,
+    )
+    return ok([hit.to_dict() for hit in hits], metadata={"count": len(hits), "query": q})
 
 @router.get("/{project_id}/files")
 async def list_project_files(
