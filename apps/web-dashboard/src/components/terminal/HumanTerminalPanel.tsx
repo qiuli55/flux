@@ -528,7 +528,21 @@ export function HumanTerminalPanel() {
       ) : null}
       {error ? <div className="ht-error">{error}</div> : null}
       <div className="ht-statusbar">
-        <span>{connectionState[sessionId ?? ""] === "connected" ? "● 已连接" : connectionState[sessionId ?? ""] === "reconnecting" ? "◌ 正在重连…" : "○ 未连接"}</span>
+        <span
+          className={
+            connectionState[sessionId ?? ""] === "connected"
+              ? "is-connected"
+              : connectionState[sessionId ?? ""] === "reconnecting"
+                ? "is-reconnecting"
+                : "is-disconnected"
+          }
+        >
+          {connectionState[sessionId ?? ""] === "connected"
+            ? "● 已连接"
+            : connectionState[sessionId ?? ""] === "reconnecting"
+              ? "◌ 正在重连…"
+              : "○ 未连接"}
+        </span>
         <span>{currentSession?.workspace_root ?? ""}</span>
         <span>{splitDirection ? splitSessions.length + " 个终端分屏" : "PTY · WebSocket"}</span>
       </div>
