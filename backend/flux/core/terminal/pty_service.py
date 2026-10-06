@@ -27,7 +27,7 @@ from pathlib import Path
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
-from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
+from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError
 from flux.models.terminal import TerminalSession
 
@@ -69,7 +69,11 @@ class HumanPtyService:
         if os.name == "nt":
             raise ConflictError("Windows 暂不支持 Human Terminal PTY，请等待 ConPTY 后端")
         root = resolve_workspace_root(self._configured_root)
-        session = await self._repo.create_session(workspace_root=str(root), run_id=None)
+        session = await self._repo.create_session(
+            workspace_root=str(root),
+            run_id=None,
+            kind=TerminalSessionKind.HUMAN,
+        )
         try:
             # pty.fork() must run on the event-loop thread. Forking from an asyncio
             # worker thread can inherit partially locked runtime state.
@@ -88,7 +92,13 @@ class HumanPtyService:
         return session
 
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
-        return await self._repo.get_session(session_id)
+        session = await self._repo.get_session(session_id)
+        if session.kind != TerminalSessionKind.HUMAN.value:
+            raise ConflictError(
+                "该会话属于 Agent Terminal，不是 Human Terminal",
+                details={"session_id": str(session.id), "kind": session.kind},
+            )
+        return session
 
     async def send_input(self, session_id: str | uuid.UUID, data: str) -> None:
         key = str(session_id)
