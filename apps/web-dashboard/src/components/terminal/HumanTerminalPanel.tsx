@@ -158,7 +158,14 @@ export function HumanTerminalPanel() {
         const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string };
         if (message.type === "output" && message.data) runtime.terminal.write(message.data);
         if (message.type === "error") setError(message.message || "终端通信失败");
-        if (message.type === "closed") void refreshSessions();
+        if (message.type === "closed") {
+          runtime.manualClose = true;
+          if (runtime.reconnectTimer !== null) {
+            window.clearTimeout(runtime.reconnectTimer);
+            runtime.reconnectTimer = null;
+          }
+          void refreshSessions();
+        }
       } catch { setError("终端返回了无法解析的数据"); }
     };
     socket.onerror = () => {
@@ -418,6 +425,13 @@ export function HumanTerminalPanel() {
     activeRuntime?.terminal.focus();
     return () => observedIds.forEach((id) => runtimesRef.current[id]?.resizeObserver?.disconnect());
   }, [active, sessionId, userSessions, visibleSessionIds, ensureRuntime, connectRuntime]);
+
+  useEffect(() => {
+    const liveIds = new Set(userSessions.map((session) => session.id));
+    Object.keys(runtimesRef.current).forEach((id) => {
+      if (!liveIds.has(id)) destroyRuntime(id);
+    });
+  }, [destroyRuntime, userSessions]);
 
   useEffect(() => {
     if (!searchOpen) return;
