@@ -118,6 +118,20 @@ class WorkspaceRootRequest(BaseModel):
     root: str = Field(min_length=1, max_length=4096)
 
 
+class WorkspaceFileCreateRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = Field(default="", max_length=262144)
+
+
+class WorkspaceFilePathRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class WorkspaceFileRenameRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    new_path: str = Field(min_length=1, max_length=4096)
+
+
 class TerminalSessionCreateRequest(BaseModel):
     run_id: str | None = None
 
