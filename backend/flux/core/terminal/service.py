@@ -380,7 +380,15 @@ class TerminalService:
         for session_id in list(self._processes):
             process = self._processes.get(session_id)
             if process is not None and process.poll() is None:
-                await asyncio.to_thread(self._terminate_tree, process, force=True)
+                terminated = await asyncio.to_thread(
+                    self._terminate_tree,
+                    process,
+                    force=True,
+                )
+                if not terminated:
+                    # Keep the process/session tracked. We must not manufacture a
+                    # terminal.closed state while a process may still be alive.
+                    continue
 
         tasks = [
             task
@@ -393,14 +401,17 @@ class TerminalService:
                 return_exceptions=True,
             )
 
-        # By this point no new command can start. Close every remaining active Agent
-        # session so a graceful backend shutdown never leaves durable "active" rows.
+        # By this point no new command can start. Only close sessions whose process
+        # has actually gone away (or which never had a command process at all).
         sessions = await self._repo.list_sessions(
             limit=10000,
             kind=TerminalSessionKind.AGENT,
             status=TerminalSessionStatus.ACTIVE,
         )
         for session in sessions:
+            process = self._processes.get(str(session.id))
+            if process is not None and process.poll() is None:
+                continue
             with contextlib.suppress(Exception):
                 await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
             with contextlib.suppress(Exception):
@@ -410,8 +421,18 @@ class TerminalService:
                     TerminalSource.USER,
                 )
 
-        self._processes.clear()
-        self._command_tasks.clear()
+        # Do not discard references to unconfirmed live processes: keeping them tracked
+        # is preferable to falsely reporting a clean shutdown.
+        self._processes = {
+            key: process
+            for key, process in self._processes.items()
+            if process.poll() is None
+        }
+        self._command_tasks = {
+            key: task
+            for key, task in self._command_tasks.items()
+            if not task.done()
+        }
         self._stopping.clear()
         self._locks.clear()
 
