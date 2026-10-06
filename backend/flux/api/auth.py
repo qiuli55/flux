@@ -65,7 +65,11 @@ def require_rest_auth(
         return
     if is_trusted_local(request):
         return
-    provided = credentials.credentials if credentials is not None else None
+    provided = (
+        credentials.credentials
+        if credentials is not None
+        else request.cookies.get("flux_auth_token")
+    )
     # 常量时间比对：不因"前缀对上了"而早退，不给计时侧信道。
     if not provided or not hmac.compare_digest(provided, expected):
         raise AuthenticationError("缺少或无效的访问令牌")
