@@ -18,6 +18,7 @@ interface TerminalRuntime {
   resizeObserver: ResizeObserver | null;
   dataDisposable: { dispose: () => void };
   resizeDisposable: { dispose: () => void };
+  keyDisposable: { dispose: () => void };
   reconnectTimer: number | null;
   manualClose: boolean;
 }
@@ -71,9 +72,11 @@ export function HumanTerminalPanel() {
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchIndex, setSearchIndex] = useState(-1);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
   const hostsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const runtimesRef = useRef<Record<string, TerminalRuntime>>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
@@ -94,10 +97,41 @@ export function HumanTerminalPanel() {
     runtime.resizeObserver?.disconnect();
     runtime.dataDisposable.dispose();
     runtime.resizeDisposable.dispose();
+    runtime.keyDisposable.dispose();
     runtime.socket?.close();
     runtime.terminal.dispose();
     delete runtimesRef.current[id];
   }, []);
+
+  const sendInput = useCallback((id: string, data: string) => {
+    const runtime = runtimesRef.current[id];
+    const socket = runtime?.socket;
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
+  }, []);
+
+  const copySelection = useCallback(async (id: string) => {
+    const runtime = runtimesRef.current[id];
+    if (!runtime || !runtime.terminal.hasSelection()) return false;
+    const selection = runtime.terminal.getSelection();
+    if (!selection) return false;
+    try {
+      await navigator.clipboard.writeText(selection);
+      runtime.terminal.clearSelection();
+      return true;
+    } catch {
+      setError("无法访问系统剪贴板，请检查浏览器权限");
+      return false;
+    }
+  }, []);
+
+  const pasteClipboard = useCallback(async (id: string) => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) sendInput(id, text);
+    } catch {
+      setError("无法读取系统剪贴板，请检查浏览器权限");
+    }
+  }, [sendInput]);
 
   const connectRuntime = useCallback((session: TerminalSession, runtime: TerminalRuntime) => {
     if (runtime.manualClose || runtime.socket) return;
@@ -146,17 +180,36 @@ export function HumanTerminalPanel() {
     terminal.loadAddon(fit);
     const runtime = {} as TerminalRuntime;
     runtime.terminal = terminal; runtime.fit = fit; runtime.socket = null; runtime.resizeObserver = null; runtime.reconnectTimer = null; runtime.manualClose = false;
-    runtime.dataDisposable = terminal.onData((data) => {
-      const socket = runtime.socket;
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
-    });
+    runtime.dataDisposable = terminal.onData((data) => sendInput(session.id, data));
     runtime.resizeDisposable = terminal.onResize(({ cols, rows }) => {
       const socket = runtime.socket;
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols, rows }));
     });
+    runtime.keyDisposable = terminal.attachCustomKeyEventHandler((event) => {
+      const isMac = navigator.platform.toLowerCase().includes("mac");
+      const modifier = isMac ? event.metaKey : event.ctrlKey;
+      if (event.type !== "keydown") return true;
+      if (modifier && event.shiftKey && event.key.toLowerCase() === "c") {
+        void copySelection(session.id);
+        return false;
+      }
+      if (modifier && event.shiftKey && event.key.toLowerCase() === "v") {
+        void pasteClipboard(session.id);
+        return false;
+      }
+      if (modifier && event.key.toLowerCase() === "c" && terminal.hasSelection()) {
+        void copySelection(session.id);
+        return false;
+      }
+      if (modifier && event.key.toLowerCase() === "v") {
+        void pasteClipboard(session.id);
+        return false;
+      }
+      return true;
+    });
     runtimesRef.current[session.id] = runtime;
     return runtime;
-  }, []);
+  }, [copySelection, pasteClipboard, sendInput]);
 
   const createSession = useCallback(async () => {
     setError(null);
@@ -205,6 +258,35 @@ export function HumanTerminalPanel() {
     setSearchIndex(next);
   }, [searchIndex, searchOptions, searchQuery, sessionId]);
 
+  const openContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    const runtime = sessionId ? runtimesRef.current[sessionId] : undefined;
+    if (!runtime) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 190;
+    const menuHeight = 148;
+    setContextMenu({
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+      hasSelection: runtime.terminal.hasSelection(),
+    });
+    runtime.terminal.focus();
+    void rect;
+  }, [sessionId]);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!contextMenuRef.current?.contains(event.target as Node)) setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setContextMenu(null); };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => { window.removeEventListener("pointerdown", onPointerDown); window.removeEventListener("keydown", onKeyDown); };
+  }, [contextMenu]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!active) return;
@@ -231,7 +313,7 @@ export function HumanTerminalPanel() {
     if (!header) return;
     const button = document.createElement("button");
     const open = () => { setActive(true); button.classList.add("is-active"); };
-    const closeFromSibling = () => { setActive(false); button.classList.remove("is-active"); setSearchOpen(false); };
+    const closeFromSibling = () => { setActive(false); button.classList.remove("is-active"); setSearchOpen(false); setContextMenu(null); };
     button.type = "button"; button.className = "bp-tab human-terminal-trigger"; button.textContent = "终端"; button.addEventListener("click", open);
     const siblingTabs = Array.from(header.querySelectorAll<HTMLElement>(".bp-tab:not(.human-terminal-trigger)"));
     siblingTabs.forEach((tab) => tab.addEventListener("click", closeFromSibling));
@@ -312,9 +394,18 @@ export function HumanTerminalPanel() {
           <button type="button" onClick={closeSearch} title="关闭搜索">×</button>
         </div>
       ) : null}
-      <div className="ht-body" role="tabpanel">
+      <div className="ht-body" role="tabpanel" onContextMenu={openContextMenu}>
         {userSessions.map((session) => <div key={session.id} ref={(element) => { hostsRef.current[session.id] = element; }} className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`} aria-hidden={session.id !== sessionId} />)}
       </div>
+      {contextMenu ? (
+        <div ref={contextMenuRef} className="ht-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
+          <button type="button" role="menuitem" disabled={!contextMenu.hasSelection} onClick={() => { if (sessionId) void copySelection(sessionId); closeContextMenu(); }}>复制</button>
+          <button type="button" role="menuitem" onClick={() => { if (sessionId) void pasteClipboard(sessionId); closeContextMenu(); }}>粘贴</button>
+          <div className="ht-context-separator" />
+          <button type="button" role="menuitem" onClick={() => { if (sessionId) runtimesRef.current[sessionId]?.terminal.selectAll(); closeContextMenu(); }}>全选</button>
+          <button type="button" role="menuitem" onClick={() => { if (sessionId) runtimesRef.current[sessionId]?.terminal.clearSelection(); closeContextMenu(); }}>取消选择</button>
+        </div>
+      ) : null}
       {error ? <div className="ht-error">{error}</div> : null}
       <div className="ht-statusbar">
         <span>{connected[sessionId ?? ""] ? "● 已连接" : "○ 连接中…"}</span>
