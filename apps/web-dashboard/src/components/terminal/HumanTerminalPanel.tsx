@@ -11,6 +11,8 @@ import "../../styles/human-terminal-xterm.css";
 
 interface SearchMatch { row: number; start: number; length: number }
 interface SearchOptions { caseSensitive: boolean; wholeWord: boolean; regex: boolean }
+type ConnectionState = "connected" | "reconnecting" | "disconnected";
+type SplitDirection = "horizontal" | "vertical";
 interface TerminalRuntime {
   terminal: Terminal;
   fit: FitAddon;
@@ -65,7 +67,9 @@ export function HumanTerminalPanel() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState<Record<string, boolean>>({});
+  const [connectionState, setConnectionState] = useState<Record<string, ConnectionState>>({});
+  const [splitDirection, setSplitDirection] = useState<SplitDirection | null>(null);
+  const [splitSessions, setSplitSessions] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOptions, setSearchOptions] = useState<SearchOptions>({ caseSensitive: false, wholeWord: false, regex: false });
@@ -81,11 +85,16 @@ export function HumanTerminalPanel() {
   const userSessions = useMemo(() => sessions.filter((session) => session.run_id === null), [sessions]);
   const currentSession = userSessions.find((session) => session.id === sessionId) ?? null;
   const currentRuntime = sessionId ? runtimesRef.current[sessionId] : undefined;
+  const visibleSessionIds = useMemo(
+    () => splitDirection && splitSessions.length >= 2 ? splitSessions : sessionId ? [sessionId] : [],
+    [sessionId, splitDirection, splitSessions],
+  );
 
   const refreshSessions = useCallback(async () => {
     const users = (await api.listTerminalSessions()).filter((session) => session.run_id === null);
     setSessions(users);
     setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
+    setSplitSessions((current) => current.filter((id) => users.some((session) => session.id === id)));
     return users;
   }, []);
 
@@ -138,7 +147,8 @@ export function HumanTerminalPanel() {
     const socket = new WebSocket(websocketUrl(session.id));
     runtime.socket = socket;
     socket.onopen = () => {
-      setConnected((previous) => ({ ...previous, [session.id]: true }));
+      setConnectionState((previous) => ({ ...previous, [session.id]: "connected" }));
+      setError(null);
       try {
         runtime.fit.fit();
         socket.send(JSON.stringify({ type: "resize", cols: runtime.terminal.cols, rows: runtime.terminal.rows }));
@@ -153,13 +163,13 @@ export function HumanTerminalPanel() {
       } catch { setError("终端返回了无法解析的数据"); }
     };
     socket.onerror = () => {
-      setConnected((previous) => ({ ...previous, [session.id]: false }));
-      setError("PTY WebSocket 连接失败");
+      setConnectionState((previous) => ({ ...previous, [session.id]: "reconnecting" }));
+      setError("PTY WebSocket 连接失败，正在重连…");
     };
     socket.onclose = () => {
       if (runtime.socket !== socket) return;
       runtime.socket = null;
-      setConnected((previous) => ({ ...previous, [session.id]: false }));
+      setConnectionState((previous) => ({ ...previous, [session.id]: runtime.manualClose ? "disconnected" : "reconnecting" }));
       if (!runtime.manualClose && runtime.reconnectTimer === null) {
         runtime.reconnectTimer = window.setTimeout(() => {
           runtime.reconnectTimer = null;
@@ -227,6 +237,42 @@ export function HumanTerminalPanel() {
     await refreshSessions();
   }, [destroyRuntime, refreshSessions]);
 
+  const selectSession = useCallback((id: string) => {
+    if (splitDirection && splitSessions.length >= 2 && !splitSessions.includes(id)) {
+      setSplitSessions((previous) => previous.map((paneId) => paneId === sessionId ? id : paneId));
+    }
+    setSessionId(id);
+  }, [sessionId, splitDirection, splitSessions]);
+
+  const splitTerminal = useCallback(async (direction: SplitDirection) => {
+    if (!sessionId || splitDirection) return;
+    setError(null);
+    try {
+      const created = await createHumanSession();
+      setSessions((previous) => [...previous, created]);
+      setSplitSessions([sessionId, created.id]);
+      setSplitDirection(direction);
+      setSessionId(created.id);
+    } catch (caught) {
+      setError(errorText(caught));
+    }
+  }, [sessionId, splitDirection]);
+
+  const closeSplitPane = useCallback(async (id: string) => {
+    if (!splitDirection || splitSessions.length < 2) return;
+    const remaining = splitSessions.filter((paneId) => paneId !== id);
+    await stopSession(id);
+    setSplitSessions([]);
+    setSplitDirection(null);
+    setSessionId(remaining[0] ?? null);
+  }, [splitDirection, splitSessions, stopSession]);
+
+  const closeSplit = useCallback(() => {
+    if (!splitDirection) return;
+    setSplitSessions([]);
+    setSplitDirection(null);
+  }, [splitDirection]);
+
   const closeSearch = useCallback(() => {
     setSearchOpen(false); setSearchMatches([]); setSearchIndex(-1); setSearchError(null);
     currentRuntime?.terminal.clearSelection();
@@ -258,21 +304,21 @@ export function HumanTerminalPanel() {
     setSearchIndex(next);
   }, [searchIndex, searchOptions, searchQuery, sessionId]);
 
-  const openContextMenu = useCallback((event: React.MouseEvent) => {
+  const openContextMenu = useCallback((event: React.MouseEvent, targetSessionId: string) => {
     event.preventDefault();
-    const runtime = sessionId ? runtimesRef.current[sessionId] : undefined;
+    const runtime = runtimesRef.current[targetSessionId];
     if (!runtime) return;
-    const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = 190;
     const menuHeight = 148;
+    setSessionId(targetSessionId);
     setContextMenu({
       x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
       y: Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+      sessionId: targetSessionId,
       hasSelection: runtime.terminal.hasSelection(),
     });
     runtime.terminal.focus();
-    void rect;
-  }, [sessionId]);
+  }, []);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
@@ -333,21 +379,26 @@ export function HumanTerminalPanel() {
   }, [host, active, refreshSessions, createSession]);
 
   useEffect(() => {
-    if (!active || !sessionId) return;
-    const session = userSessions.find((item) => item.id === sessionId);
-    if (!session) return;
-    const runtime = ensureRuntime(session);
-    const element = hostsRef.current[session.id];
-    if (!element) return;
-    if (!runtime.terminal.element) runtime.terminal.open(element);
-    runtime.fit.fit();
-    runtime.resizeObserver?.disconnect();
-    runtime.resizeObserver = new ResizeObserver(() => { try { runtime.fit.fit(); } catch { /* panel temporarily hidden */ } });
-    runtime.resizeObserver.observe(element);
-    connectRuntime(session, runtime);
-    runtime.terminal.focus();
-    return () => runtime.resizeObserver?.disconnect();
-  }, [active, sessionId, userSessions, ensureRuntime, connectRuntime]);
+    if (!active || !visibleSessionIds.length) return;
+    const observedIds: string[] = [];
+    visibleSessionIds.forEach((id) => {
+      const session = userSessions.find((item) => item.id === id);
+      if (!session) return;
+      const runtime = ensureRuntime(session);
+      const element = hostsRef.current[id];
+      if (!element) return;
+      if (!runtime.terminal.element) runtime.terminal.open(element);
+      try { runtime.fit.fit(); } catch { /* pane may still be hidden during layout transition */ }
+      runtime.resizeObserver?.disconnect();
+      runtime.resizeObserver = new ResizeObserver(() => { try { runtime.fit.fit(); } catch { /* pane temporarily hidden */ } });
+      runtime.resizeObserver.observe(element);
+      connectRuntime(session, runtime);
+      observedIds.push(id);
+    });
+    const activeRuntime = sessionId ? runtimesRef.current[sessionId] : undefined;
+    activeRuntime?.terminal.focus();
+    return () => observedIds.forEach((id) => runtimesRef.current[id]?.resizeObserver?.disconnect());
+  }, [active, sessionId, userSessions, visibleSessionIds, ensureRuntime, connectRuntime]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -370,7 +421,7 @@ export function HumanTerminalPanel() {
         <div className="ht-tabs" role="tablist" aria-label="终端会话">
           {userSessions.map((session, index) => (
             <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => setSessionId(session.id)} title={session.workspace_root}>
-              <span className={`ht-dot${connected[session.id] ? " is-live" : ""}`} />{labelFor(session, index)}
+              <span className={`ht-dot${connectionState[session.id] === "connected" ? " is-live" : ""}`} />{labelFor(session, index)}
             </button>
           ))}
           <button type="button" className="ht-add" onClick={() => void createSession()} aria-label="新建终端">＋</button>
@@ -380,6 +431,9 @@ export function HumanTerminalPanel() {
           <button type="button" className={`ht-tool${searchOpen ? " is-active" : ""}`} onClick={openSearch} title="搜索终端 (Ctrl/Cmd+F)">搜索</button>
           <button type="button" className="ht-tool" onClick={() => sessionId && runtimesRef.current[sessionId]?.terminal.clear()} title="清空">清空</button>
           <button type="button" className="ht-tool" onClick={() => sessionId && void stopSession(sessionId)} title="停止终端">停止</button>
+          <button type="button" className={`ht-tool${splitDirection === "horizontal" ? " is-active" : ""}`} onClick={() => void splitTerminal("horizontal")} disabled={!sessionId || !!splitDirection} title="上下分屏">上下分屏</button>
+          <button type="button" className={`ht-tool${splitDirection === "vertical" ? " is-active" : ""}`} onClick={() => void splitTerminal("vertical")} disabled={!sessionId || !!splitDirection} title="左右分屏">左右分屏</button>
+          {splitDirection ? <button type="button" className="ht-tool" onClick={closeSplit} title="取消分屏">取消分屏</button> : null}
         </div>
       </div>
       {searchOpen ? (
@@ -394,23 +448,43 @@ export function HumanTerminalPanel() {
           <button type="button" onClick={closeSearch} title="关闭搜索">×</button>
         </div>
       ) : null}
-      <div className="ht-body" role="tabpanel" onContextMenu={openContextMenu}>
-        {userSessions.map((session) => <div key={session.id} ref={(element) => { hostsRef.current[session.id] = element; }} className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`} aria-hidden={session.id !== sessionId} />)}
+      <div className={`ht-body${splitDirection ? ` ht-split-${splitDirection}` : ""}`} role="tabpanel">
+        {userSessions.map((session) => {
+          const visible = visibleSessionIds.includes(session.id);
+          const isFocused = session.id === sessionId;
+          return (
+            <div
+              key={session.id}
+              className={`ht-pane${visible ? " is-visible" : ""}${isFocused ? " is-focused" : ""}`}
+              onMouseDown={() => selectSession(session.id)}
+              onContextMenu={(event) => openContextMenu(event, session.id)}
+              aria-hidden={!visible}
+            >
+              {splitDirection && visible ? (
+                <div className="ht-pane-toolbar">
+                  <span>{labelFor(session, userSessions.findIndex((item) => item.id === session.id))}</span>
+                  <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void closeSplitPane(session.id)} aria-label="关闭分屏">×</button>
+                </div>
+              ) : null}
+              <div ref={(element) => { hostsRef.current[session.id] = element; }} className="ht-xterm-host" />
+            </div>
+          );
+        })}
       </div>
       {contextMenu ? (
         <div ref={contextMenuRef} className="ht-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
-          <button type="button" role="menuitem" disabled={!contextMenu.hasSelection} onClick={() => { if (sessionId) void copySelection(sessionId); closeContextMenu(); }}>复制</button>
-          <button type="button" role="menuitem" onClick={() => { if (sessionId) void pasteClipboard(sessionId); closeContextMenu(); }}>粘贴</button>
+          <button type="button" role="menuitem" disabled={!contextMenu.hasSelection} onClick={() => { void copySelection(contextMenu.sessionId); closeContextMenu(); }}>复制</button>
+          <button type="button" role="menuitem" onClick={() => { void pasteClipboard(contextMenu.sessionId); closeContextMenu(); }}>粘贴</button>
           <div className="ht-context-separator" />
-          <button type="button" role="menuitem" onClick={() => { if (sessionId) runtimesRef.current[sessionId]?.terminal.selectAll(); closeContextMenu(); }}>全选</button>
-          <button type="button" role="menuitem" onClick={() => { if (sessionId) runtimesRef.current[sessionId]?.terminal.clearSelection(); closeContextMenu(); }}>取消选择</button>
+          <button type="button" role="menuitem" onClick={() => { runtimesRef.current[contextMenu.sessionId]?.terminal.selectAll(); closeContextMenu(); }}>全选</button>
+          <button type="button" role="menuitem" onClick={() => { runtimesRef.current[contextMenu.sessionId]?.terminal.clearSelection(); closeContextMenu(); }}>取消选择</button>
         </div>
       ) : null}
       {error ? <div className="ht-error">{error}</div> : null}
       <div className="ht-statusbar">
-        <span>{connected[sessionId ?? ""] ? "● 已连接" : "○ 连接中…"}</span>
+        <span>{connectionState[sessionId ?? ""] === "connected" ? "● 已连接" : connectionState[sessionId ?? ""] === "reconnecting" ? "◌ 正在重连…" : "○ 未连接"}</span>
         <span>{currentSession?.workspace_root ?? ""}</span>
-        <span>PTY · WebSocket</span>
+        <span>{splitDirection ? splitSessions.length + " 个终端分屏" : "PTY · WebSocket"}</span>
       </div>
     </div>,
     host,
