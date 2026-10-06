@@ -75,3 +75,13 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     ids = {item["id"] for item in human_list["data"]}
     assert session_id in ids
     assert agent["data"]["id"] not in ids
+
+    agent_get_human = apply_client.get(
+        f"/api/v1/terminal/sessions/{session_id}"
+    )
+    assert agent_get_human.status_code == 409
+
+    human_get_agent = apply_client.get(
+        f"/api/v1/terminal/pty/sessions/{agent['data']['id']}"
+    )
+    assert human_get_agent.status_code == 404
