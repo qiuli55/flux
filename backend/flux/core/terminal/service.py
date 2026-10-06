@@ -53,6 +53,8 @@ class TerminalService:
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
         #: 正在跑的进程（会话 ID → Popen），Stop 与 shutdown 都从这里找
         self._processes: dict[str, subprocess.Popen[str]] = {}
+        #: 正在执行的命令 task；Stop 必须等它写完 command.finished/failed 再关闭会话。
+        self._command_tasks: dict[str, asyncio.Task[TerminalEvent]] = {}
         #: 每会话一把锁：同一会话的命令串行执行
         self._locks: dict[str, asyncio.Lock] = {}
         #: seq 分配与落库串行化：并发 emit（输出线程 + Stop）不允许撞号
@@ -205,30 +207,46 @@ class TerminalService:
     async def _run_locked(
         self, session: TerminalSession, command: str, source: TerminalSource
     ) -> TerminalEvent:
-        await self._emit(session.id, TerminalEventKind.COMMAND_STARTED, source, command=command)
-        loop = asyncio.get_running_loop()
-        process = subprocess.Popen(  # noqa: S602 - 终端本身就是为了执行命令（用户/Agent 主动发起）
-            command,
-            shell=True,
-            cwd=session.workspace_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            **platforms.popen_kwargs(),  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
-        )
-        self._processes[str(session.id)] = process
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Terminal command must run inside an asyncio task")
+        key = str(session.id)
+        self._command_tasks[key] = task
         try:
-            await asyncio.to_thread(self._pump_output, loop, session.id, process, source)
-            exit_code = await asyncio.to_thread(process.wait)
+            await self._emit(
+                session.id, TerminalEventKind.COMMAND_STARTED, source, command=command
+            )
+            loop = asyncio.get_running_loop()
+            process = subprocess.Popen(  # noqa: S602 - 终端本身就是为了执行命令（用户/Agent 主动发起）
+                command,
+                shell=True,
+                cwd=session.workspace_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                **platforms.popen_kwargs(),  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
+            )
+            self._processes[key] = process
+            try:
+                await asyncio.to_thread(self._pump_output, loop, session.id, process, source)
+                exit_code = await asyncio.to_thread(process.wait)
+            finally:
+                self._processes.pop(key, None)
+            finished = (
+                TerminalEventKind.COMMAND_FINISHED
+                if exit_code == 0
+                else TerminalEventKind.COMMAND_FAILED
+            )
+            return await self._emit(
+                session.id,
+                finished,
+                source,
+                command=command,
+                exit_code=exit_code,
+            )
         finally:
-            self._processes.pop(str(session.id), None)
-        finished = (
-            TerminalEventKind.COMMAND_FINISHED
-            if exit_code == 0
-            else TerminalEventKind.COMMAND_FAILED
-        )
-        return await self._emit(session.id, finished, source, command=command, exit_code=exit_code)
+            self._command_tasks.pop(key, None)
 
     def _pump_output(
         self,
@@ -261,10 +279,26 @@ class TerminalService:
             TerminalSource.USER,
             command="force-stop" if force else "stop",
         )
-        process = self._processes.get(str(session.id))
+        key = str(session.id)
+        process = self._processes.get(key)
         if process is not None and process.poll() is None:
             await asyncio.to_thread(self._terminate_tree, process, force=force)
-        await self._emit(session.id, TerminalEventKind.PROCESS_TERMINATED, TerminalSource.USER)
+
+        command_task = self._command_tasks.get(key)
+        if command_task is not None and command_task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(command_task),
+                    timeout=STOP_GRACE_SECONDS + KILL_CONFIRM_SECONDS + 1.0,
+                )
+            except asyncio.TimeoutError as exc:
+                raise ConflictError(
+                    "终端命令未能在停止后完成收尾",
+                    details={"session_id": key},
+                ) from exc
+
+        if process is not None:
+            await self._emit(session.id, TerminalEventKind.PROCESS_TERMINATED, TerminalSource.USER)
         await self._emit(session.id, TerminalEventKind.SESSION_CLOSED, TerminalSource.USER)
         return await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
 
@@ -279,11 +313,21 @@ class TerminalService:
         )
 
     async def shutdown(self) -> None:
-        """进程退出前清理仍在跑的终端进程树（与 DSH supervisor 同一取舍）。"""
+        """进程退出前清理仍在跑的终端进程树并等待命令 task 收尾。"""
         for session_id in list(self._processes):
             process = self._processes.get(session_id)
             if process is not None and process.poll() is None:
                 await asyncio.to_thread(self._terminate_tree, process, force=True)
+        tasks = [
+            task
+            for task in self._command_tasks.values()
+            if task is not asyncio.current_task()
+        ]
+        if tasks:
+            await asyncio.gather(
+                *(asyncio.wait_for(asyncio.shield(task), timeout=10.0) for task in tasks),
+                return_exceptions=True,
+            )
         self._processes.clear()
 
     # --- 内部 ---
