@@ -76,6 +76,11 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     assert session_id in ids
     assert agent["data"]["id"] not in ids
 
+    stopped = apply_client.post(
+        f"/api/v1/terminal/pty/sessions/{session_id}/stop", json={}
+    )
+    assert stopped.status_code == 405
+
     agent_get_human = apply_client.get(
         f"/api/v1/terminal/sessions/{session_id}"
     )
@@ -84,4 +89,4 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     human_get_agent = apply_client.get(
         f"/api/v1/terminal/pty/sessions/{agent['data']['id']}"
     )
-    assert human_get_agent.status_code == 404
+    assert human_get_agent.status_code == 409
