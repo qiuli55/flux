@@ -17,10 +17,9 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
-import pty
 import signal
 import struct
-import termios
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -32,6 +31,10 @@ from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
 from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError
 from flux.models.terminal import TerminalSession
+
+if os.name != "nt":
+    import pty
+    import termios
 
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 32
@@ -64,6 +67,8 @@ class HumanPtyService:
     async def create_session(
         self, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS
     ) -> TerminalSession:
+        if os.name == "nt":
+            raise ConflictError("Windows 暂不支持 Human Terminal PTY，请等待 ConPTY 后端")
         root = resolve_workspace_root(self._configured_root)
         session = await self._repo.create_session(workspace_root=str(root), run_id=None)
         try:
@@ -151,6 +156,8 @@ class HumanPtyService:
             await self.stop(key, force=True)
 
     def _spawn(self, cwd: str, cols: int, rows: int) -> tuple[int, int]:
+        if os.name == "nt":
+            raise ConflictError("Windows 暂不支持 Human Terminal PTY，请使用 ConPTY 实现")
         shell = os.environ.get("SHELL") or "/bin/bash"
         pid, fd = pty.fork()
         if pid == 0:
@@ -165,6 +172,8 @@ class HumanPtyService:
 
     @staticmethod
     def _resize_fd(fd: int, cols: int, rows: int) -> None:
+        if os.name == "nt":
+            return
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
         with suppress(AttributeError):
             termios.tcsetwinsize(fd, (rows, cols))
