@@ -17,7 +17,12 @@ import sys
 import pytest
 
 from flux.container import Container
-from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
+from flux.enums import (
+    TerminalEventKind,
+    TerminalSessionKind,
+    TerminalSessionStatus,
+    TerminalSource,
+)
 from flux.errors import ConflictError, NotFoundError, ValidationError
 
 
