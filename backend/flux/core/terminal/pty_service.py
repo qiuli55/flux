@@ -28,7 +28,12 @@ from pathlib import Path
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
-from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
+from flux.enums import (
+    TerminalEventKind,
+    TerminalSessionKind,
+    TerminalSessionStatus,
+    TerminalSource,
+)
 from flux.errors import ConflictError
 from flux.models.terminal import TerminalSession
 
