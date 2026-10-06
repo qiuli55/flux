@@ -185,6 +185,18 @@ async def get_human_session(
     return ok((await container.human_pty.get_session(session_id)).to_dict())
 
 
+@router.post("/pty/sessions/{session_id}/stop")
+async def stop_human_session(
+    session_id: str,
+    payload: TerminalStopRequest | None = None,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """Stop one Human Terminal PTY without depending on an open WebSocket."""
+    force = payload.force if payload is not None else False
+    session = await container.human_pty.stop(session_id, force=force)
+    return ok(session.to_dict(), metadata={"force": force})
+
+
 @websocket_router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
