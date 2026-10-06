@@ -103,6 +103,10 @@ class HumanPtyService:
             )
         return session
 
+    async def list_sessions(self, *, limit: int = 20) -> list[TerminalSession]:
+        """List only Human Terminal sessions."""
+        return await self._repo.list_sessions(limit=limit, kind=TerminalSessionKind.HUMAN)
+
     async def send_input(self, session_id: str | uuid.UUID, data: str) -> None:
         key = str(session_id)
         fd = self._fds.get(key)
