@@ -403,11 +403,13 @@ class TerminalService:
 
         # By this point no new command can start. Only close sessions whose process
         # has actually gone away (or which never had a command process at all).
-        sessions = await self._repo.list_sessions(
-            limit=10000,
-            kind=TerminalSessionKind.AGENT,
-            status=TerminalSessionStatus.ACTIVE,
-        )
+        sessions: list[TerminalSession] = []
+        with contextlib.suppress(Exception):
+            sessions = await self._repo.list_sessions(
+                limit=10000,
+                kind=TerminalSessionKind.AGENT,
+                status=TerminalSessionStatus.ACTIVE,
+            )
         for session in sessions:
             process = self._processes.get(str(session.id))
             if process is not None and process.poll() is None:
