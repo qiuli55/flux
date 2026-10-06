@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { API_BASE, api } from "../../api/client";
 import type { TerminalSession } from "../../api/types";
+import "../../styles/human-terminal.css";
 
 const SCROLLBACK_LIMIT = 256 * 1024;
 
@@ -62,7 +64,11 @@ function controlSequence(event: KeyboardEvent): string | null {
 
 async function createHumanSession(): Promise<TerminalSession> {
   const response = await fetch(`${API_BASE}/terminal/pty/sessions`, { method: "POST" });
-  const envelope = (await response.json()) as { success: boolean; message?: string; data: TerminalSession };
+  const envelope = (await response.json()) as {
+    success: boolean;
+    message?: string;
+    data: TerminalSession;
+  };
   if (!response.ok || !envelope.success) {
     throw new Error(envelope.message || `创建终端失败（HTTP ${response.status}）`);
   }
@@ -159,7 +165,11 @@ export function HumanTerminalPanel() {
 
     socket.onmessage = (event) => {
       try {
-        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string };
+        const message = JSON.parse(String(event.data)) as {
+          type: string;
+          data?: string;
+          message?: string;
+        };
         if (message.type === "output" && message.data) {
           setOutput((previous) => {
             const next = `${previous[sessionId] ?? ""}${message.data}`;
@@ -208,13 +218,15 @@ export function HumanTerminalPanel() {
     return () => resizeRef.current?.disconnect();
   }, [sessionId, active]);
 
-  const sendKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+  const sendKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!running) return;
     const data = controlSequence(event.nativeEvent);
     if (!data || event.metaKey) return;
     event.preventDefault();
     const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "input", data }));
+    }
   };
 
   const stop = () => {
