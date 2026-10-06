@@ -58,7 +58,10 @@ class HumanPtyService:
         root = resolve_workspace_root(self._configured_root)
         session = await self._repo.create_session(workspace_root=str(root), run_id=None)
         try:
-            pid, fd = await asyncio.to_thread(self._spawn, str(root), cols, rows)
+            # pty.fork() must happen on the event-loop thread; forking from an asyncio
+            # worker thread can inherit a partially locked runtime. The actual I/O is
+            # moved to worker threads below.
+            pid, fd = self._spawn(str(root), cols, rows)
         except Exception:
             await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
             raise
