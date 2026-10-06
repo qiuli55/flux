@@ -74,3 +74,19 @@
 @media (max-width: 860px) {
   .ht-statusbar span:nth-child(3) { display: none; }
 }
+
+
+.ht-pane .ht-xterm-host {
+  position: relative;
+  inset: auto;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: auto;
+  height: auto;
+}
+
+.ht-pane.is-visible .ht-xterm-host {
+  display: block;
+}
