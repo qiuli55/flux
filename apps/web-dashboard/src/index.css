@@ -55,3 +55,6 @@
 .quick-open-item:hover, .quick-open-item.is-active { background: rgba(124,92,255,.11); color: var(--text, #e8eaf3); }
 .quick-open-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono, monospace); }
 .quick-open-empty { padding: 24px 12px; color: var(--text-3, #666e85); text-align: center; font-size: 12px; }
+
+.ag-tools li.is-clickable { cursor: pointer; }
+.ag-tools li.is-clickable:hover { background: rgba(124,92,255,.08); }
