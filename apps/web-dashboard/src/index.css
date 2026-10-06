@@ -30,3 +30,9 @@
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb { background-color: #2a2f47; border-radius: 9999px; }
 *::-webkit-scrollbar-track { background-color: transparent; }
+
+/* Workspace code search */
+.search-hit-main { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
+.search-hit-main .search-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-hit-line { color: var(--text-3, #666e85); font-family: var(--mono, monospace); font-size: 10px; }
+.search-hit-preview { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9aa3b8); font-family: var(--mono, monospace); font-size: 10px; }
