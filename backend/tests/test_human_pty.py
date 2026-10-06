@@ -159,3 +159,36 @@ def test_human_terminal_websocket_roundtrip(apply_client) -> None:
                 break
         assert marker in "".join(chunks)
         websocket.send_json({"type": "stop", "force": True})
+
+
+async def test_human_terminal_recovers_stale_persisted_sessions(
+    apply_container: Container,
+) -> None:
+    session = await apply_container.terminal_repo.create_session(
+        workspace_root=str(apply_container.settings.workspace_root),
+        kind=TerminalSessionKind.HUMAN,
+    )
+    assert session.status == TerminalSessionStatus.ACTIVE.value
+
+    recovered = await apply_container.human_pty.recover_orphaned_sessions()
+
+    assert recovered == 1
+    assert (
+        await apply_container.human_pty.get_session(session.id)
+    ).status == TerminalSessionStatus.CLOSED.value
+
+
+async def test_human_terminal_creation_cleans_up_when_created_event_fails(
+    apply_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_emit(*_args, **_kwargs):
+        raise RuntimeError("simulated event-store failure")
+
+    monkeypatch.setattr(apply_container.human_pty, "_emit", fail_emit)
+
+    with pytest.raises(RuntimeError, match="simulated event-store failure"):
+        await apply_container.human_pty.create_session()
+
+    assert apply_container.human_pty._pids == {}
+    assert apply_container.human_pty._fds == {}
