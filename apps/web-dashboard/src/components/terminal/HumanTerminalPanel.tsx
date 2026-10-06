@@ -71,7 +71,9 @@ export function HumanTerminalPanel() {
     const list = await api.listTerminalSessions();
     const users = list.filter((session) => session.run_id === null);
     setSessions(users);
-    setSessionId((current) => current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null);
+    setSessionId((current) =>
+      current && users.some((session) => session.id === current) ? current : users[0]?.id ?? null,
+    );
     return users;
   }, []);
 
@@ -132,8 +134,10 @@ export function HumanTerminalPanel() {
     };
   }, [refreshSessions]);
 
-  const ensureRuntime = useCallback((session: TerminalSession) => {
-    if (runtimesRef.current[session.id]) return runtimesRef.current[session.id];
+  const ensureRuntime = useCallback((session: TerminalSession): TerminalRuntime => {
+    const existing = runtimesRef.current[session.id];
+    if (existing) return existing;
+
     const terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: "block",
@@ -202,17 +206,30 @@ export function HumanTerminalPanel() {
     if (!host) return;
     const header = host.parentElement?.querySelector<HTMLElement>(".bp-head");
     if (!header) return;
+
     const open = () => {
-      header.querySelector<HTMLElement>(".bp-tab")?.click();
       setActive(true);
+      button.classList.add("is-active");
+    };
+    const closeFromSibling = () => {
+      setActive(false);
+      button.classList.remove("is-active");
     };
     const button = document.createElement("button");
     button.type = "button";
     button.className = "bp-tab human-terminal-trigger";
     button.textContent = "终端";
     button.addEventListener("click", open);
+
+    const siblingTabs = Array.from(header.querySelectorAll<HTMLElement>(".bp-tab:not(.human-terminal-trigger)"));
+    siblingTabs.forEach((tab) => tab.addEventListener("click", closeFromSibling));
     header.insertBefore(button, header.querySelector(".bp-gap"));
-    return () => button.remove();
+
+    return () => {
+      button.removeEventListener("click", open);
+      siblingTabs.forEach((tab) => tab.removeEventListener("click", closeFromSibling));
+      button.remove();
+    };
   }, [host]);
 
   useEffect(() => {
@@ -223,9 +240,11 @@ export function HumanTerminalPanel() {
 
   useEffect(() => {
     if (!host || !active) return;
-    void refreshSessions().then((list) => {
-      if (list.length === 0) void createSession();
-    }).catch((caught) => setError(errorText(caught)));
+    void refreshSessions()
+      .then((list) => {
+        if (list.length === 0) void createSession();
+      })
+      .catch((caught) => setError(errorText(caught)));
   }, [host, active, refreshSessions, createSession]);
 
   useEffect(() => {
@@ -240,7 +259,11 @@ export function HumanTerminalPanel() {
     runtime.fit.fit();
     runtime.resizeObserver?.disconnect();
     runtime.resizeObserver = new ResizeObserver(() => {
-      try { runtime.fit.fit(); } catch { /* element may be temporarily hidden */ }
+      try {
+        runtime.fit.fit();
+      } catch {
+        // Element may be temporarily hidden while the bottom panel changes tabs.
+      }
     });
     runtime.resizeObserver.observe(element);
     connectRuntime(session, runtime);
@@ -256,16 +279,26 @@ export function HumanTerminalPanel() {
   if (!host) return null;
 
   return createPortal(
-    <div className="human-terminal">
+    <div className={`human-terminal${active ? " is-active" : ""}`}>
       <div className="ht-toolbar">
         <div className="ht-tabs" role="tablist" aria-label="终端会话">
           {userSessions.map((session, index) => (
-            <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => setSessionId(session.id)} title={session.workspace_root}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={session.id === sessionId}
+              key={session.id}
+              className={`ht-tab${session.id === sessionId ? " is-active" : ""}`}
+              onClick={() => setSessionId(session.id)}
+              title={session.workspace_root}
+            >
               <span className={`ht-dot${connected[session.id] ? " is-live" : ""}`} />
               {labelFor(session, index)}
             </button>
           ))}
-          <button type="button" className="ht-add" onClick={() => void createSession()} aria-label="新建终端">＋</button>
+          <button type="button" className="ht-add" onClick={() => void createSession()} aria-label="新建终端">
+            ＋
+          </button>
         </div>
         <div className="ht-actions">
           <span className="ht-cwd" title={currentSession?.workspace_root}>{currentSession?.workspace_root ?? ""}</span>
@@ -275,7 +308,12 @@ export function HumanTerminalPanel() {
       </div>
       <div className="ht-body" role="tabpanel">
         {userSessions.map((session) => (
-          <div key={session.id} ref={(element) => { hostsRef.current[session.id] = element; }} className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`} aria-hidden={session.id !== sessionId} />
+          <div
+            key={session.id}
+            ref={(element) => { hostsRef.current[session.id] = element; }}
+            className={`ht-xterm-host${session.id === sessionId ? " is-active" : ""}`}
+            aria-hidden={session.id !== sessionId}
+          />
         ))}
       </div>
       {error ? <div className="ht-error">{error}</div> : null}
