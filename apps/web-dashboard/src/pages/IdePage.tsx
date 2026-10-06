@@ -255,6 +255,10 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [treeError, setTreeError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [replaceText, setReplaceText] = useState("");
+  const [replaceBusy, setReplaceBusy] = useState(false);
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [searchRegex, setSearchRegex] = useState(false);
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -839,7 +843,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     setSearchLoading(true);
     setSearchError(null);
     const timer = window.setTimeout(() => {
-      api.searchWorkspace(projectId, keyword, { maxResults: 200 })
+      api.searchWorkspace(projectId, keyword, { maxResults: 200, caseSensitive: searchCaseSensitive, regex: searchRegex })
         .then((hits) => {
           if (alive) setSearchHits(hits);
         })
@@ -856,7 +860,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [projectId, railPanel, search]);
+  }, [projectId, railPanel, search, searchCaseSensitive, searchRegex]);
   const assistantTurns = useMemo(
     () => taskMessages.filter((message) => message.role === "assistant"),
     [taskMessages],
