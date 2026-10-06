@@ -23,6 +23,7 @@ from flux.api.response import ok
 from flux.container import Container
 from flux.core.terminal.pty_service import HumanPtyService
 from flux.enums import TerminalSource
+from flux.errors import ConflictError, NotFoundError
 from flux.schemas.api import (
     TerminalCommandRequest,
     TerminalSessionCreateRequest,
@@ -209,9 +210,10 @@ async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
 
     container: Container = websocket.app.state.container
     service: HumanPtyService = container.human_pty
-    session = await service.get_session(session_id)
-    if session.run_id is not None:
-        await websocket.close(code=1008, reason="agent terminal sessions are not human PTYs")
+    try:
+        session = await service.get_session(session_id)
+    except (NotFoundError, ConflictError):
+        await websocket.close(code=1008, reason="invalid Human Terminal session")
         return
     if session.status != "active":
         await websocket.close(code=1008, reason="human terminal session is not active")
