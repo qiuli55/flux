@@ -1,10 +1,10 @@
-/* 顺序：先 Tailwind，再设计稿样式基座，最后产品补充（同权重时以靠后者为准） */
+/* 顺序：先 Tailwind，再设计稿样式基座，最后产品补充，最后 UI 信息层级覆盖 */
 @import "tailwindcss";
 @import "./styles/design-v2.css";
 @import "./styles/product.css";
+@import "./styles/ui-hierarchy.css";
 
-/* Flux 设计令牌 v2（事实源：设计稿 v2 的 :root，色值取自设计图，无占位符）。
-   Tailwind v4 会据此生成 bg-* / text-* / border-* 工具类。 */
+/* Flux 设计令牌 v2（事实源：设计稿 v2 的 :root，色值取自设计图，无占位符）。 */
 @theme {
   --color-bg: #08090f;
   --color-bg-2: #0b0d16;
@@ -22,27 +22,11 @@
   --color-green: #3ddc97;
   --color-orange: #f5a623;
   --color-red: #f16a6a;
-
-  --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, "Liberation Mono",
-    monospace;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
 }
 
 /* 暗色细滚动条，贴合 IDE 观感 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #2a2f47 transparent;
-}
-
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-*::-webkit-scrollbar-thumb {
-  background-color: #2a2f47;
-  border-radius: 9999px;
-}
-
-*::-webkit-scrollbar-track {
-  background-color: transparent;
-}
+* { scrollbar-width: thin; scrollbar-color: #2a2f47 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background-color: #2a2f47; border-radius: 9999px; }
+*::-webkit-scrollbar-track { background-color: transparent; }
