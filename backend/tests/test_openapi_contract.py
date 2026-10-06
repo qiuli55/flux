@@ -28,6 +28,14 @@ SPEC_ENDPOINTS: dict[str, set[str]] = {
     "/api/v1/projects/{project_id}/scan": {"post"},
     "/api/v1/models/chat": {"post"},
     "/api/v1/connectors/execute": {"post"},
+    "/api/v1/terminal/sessions": {"get", "post"},
+    "/api/v1/terminal/sessions/{session_id}": {"get"},
+    "/api/v1/terminal/sessions/{session_id}/events": {"get"},
+    "/api/v1/terminal/sessions/{session_id}/stream": {"get"},
+    "/api/v1/terminal/sessions/{session_id}/commands": {"post"},
+    "/api/v1/terminal/sessions/{session_id}/stop": {"post"},
+    "/api/v1/terminal/pty/sessions": {"get", "post"},
+    "/api/v1/terminal/pty/sessions/{session_id}": {"get"},
 }
 
 
