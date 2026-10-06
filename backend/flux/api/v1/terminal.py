@@ -18,7 +18,6 @@ from fastapi.responses import StreamingResponse
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.terminal.pty_service import HumanPtyService
 from flux.enums import TerminalSource
 from flux.schemas.api import (
     TerminalCommandRequest,
@@ -33,18 +32,6 @@ SSE_EVENT_NAME = "terminal.event"
 def _format_sse(payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False)
     return f"id: {payload['seq']}\nevent: {SSE_EVENT_NAME}\ndata: {data}\n\n"
-
-
-def _human_pty(container: Container) -> HumanPtyService:
-    service = getattr(container.terminal, "_human_pty", None)
-    if service is None:
-        service = HumanPtyService(
-            container.terminal._repo,  # noqa: SLF001 - shared terminal repository
-            container.bus,
-            workspace_root=container.settings.workspace_root,
-        )
-        container.terminal._human_pty = service  # noqa: SLF001
-    return service
 
 
 @router.post("/sessions")
@@ -139,61 +126,92 @@ async def create_human_session(
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     """Create an interactive user shell backed by a real Unix PTY."""
-    session = await _human_pty(container).create_session()
+    session = await container.human_pty.create_session()
     return ok(session.to_dict())
 
 
 @router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
-    container = websocket.app.state.container
-    service = _human_pty(container)
+    container: Container = websocket.app.state.container
+    service = container.human_pty
+    session = await service.get_session(session_id)
+    if session.run_id is not None:
+        await websocket.close(code=1008, reason="agent terminal sessions are not human PTYs")
+        return
+
     await websocket.accept()
     output_task: asyncio.Task[None] | None = None
+    receive_task: asyncio.Task[str] | None = None
     try:
-        await service.get_session(session_id)
-        output_task = asyncio.create_task(_forward_pty_output(websocket, service, session_id))
+        output_task = asyncio.create_task(
+            _forward_pty_output(websocket, service, session_id),
+            name=f"flux-pty-ws-output-{session_id}",
+        )
+        receive_task = asyncio.create_task(
+            websocket.receive_text(),
+            name=f"flux-pty-ws-input-{session_id}",
+        )
+
         while True:
-            raw = await websocket.receive_text()
+            done, _ = await asyncio.wait(
+                {output_task, receive_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if output_task in done:
+                # PTY exited. Do not leave a websocket waiting forever for input.
+                with suppress(Exception):
+                    await websocket.close(code=1000, reason="terminal closed")
+                break
+
+            try:
+                raw = receive_task.result()
+            except WebSocketDisconnect:
+                break
+
             try:
                 message = json.loads(raw)
             except json.JSONDecodeError:
                 await websocket.send_json({"type": "error", "message": "invalid JSON"})
+                receive_task = asyncio.create_task(websocket.receive_text())
                 continue
+
             kind = message.get("type")
-            if kind == "input":
-                await service.send_input(session_id, str(message.get("data", "")))
-            elif kind == "resize":
-                await service.resize(
-                    session_id,
-                    int(message.get("cols", 120)),
-                    int(message.get("rows", 32)),
-                )
-            elif kind == "stop":
-                await service.stop(session_id, force=bool(message.get("force", False)))
-                break
-            else:
-                await websocket.send_json({"type": "error", "message": f"unsupported message: {kind}"})
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        with suppress(Exception):
-            await websocket.send_json({"type": "error", "message": str(exc)})
-            await websocket.close(code=1011)
+            try:
+                if kind == "input":
+                    await service.send_input(session_id, str(message.get("data", "")))
+                elif kind == "resize":
+                    await service.resize(
+                        session_id,
+                        int(message.get("cols", 120)),
+                        int(message.get("rows", 32)),
+                    )
+                elif kind == "stop":
+                    await service.stop(session_id, force=bool(message.get("force", False)))
+                    break
+                else:
+                    await websocket.send_json(
+                        {"type": "error", "message": f"unsupported message: {kind}"}
+                    )
+            except Exception as exc:
+                await websocket.send_json({"type": "error", "message": str(exc)})
+
+            receive_task = asyncio.create_task(websocket.receive_text())
     finally:
-        if output_task is not None:
-            output_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await output_task
+        for task in (receive_task, output_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 async def _forward_pty_output(
-    websocket: WebSocket, service: HumanPtyService, session_id: str
+    websocket: WebSocket, service, session_id: str
 ) -> None:
     try:
         async for chunk in service.stream_output(session_id):
             await websocket.send_json({"type": "output", "data": chunk})
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         return
     finally:
         with suppress(Exception):
