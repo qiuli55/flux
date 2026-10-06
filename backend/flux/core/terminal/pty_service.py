@@ -105,13 +105,12 @@ class HumanPtyService:
 
     async def list_sessions(self, *, limit: int = 20) -> list[TerminalSession]:
         """List only live Human Terminal sessions owned by this Flux process."""
-        sessions = await self._repo.list_sessions(limit=limit, kind=TerminalSessionKind.HUMAN)
-        return [
-            session
-            for session in sessions
-            if session.status == TerminalSessionStatus.ACTIVE.value
-            and str(session.id) in self._fds
-        ]
+        sessions = await self._repo.list_sessions(
+            limit=limit,
+            kind=TerminalSessionKind.HUMAN,
+            status=TerminalSessionStatus.ACTIVE,
+        )
+        return [session for session in sessions if str(session.id) in self._fds]
 
     async def send_input(self, session_id: str | uuid.UUID, data: str) -> None:
         key = str(session_id)
