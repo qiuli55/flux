@@ -1362,6 +1362,12 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                     }}
                   >
                     {changeByPath.get(file.path) ? "看 Diff" : "打开"}
+                  </button>                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => void stageGitPaths([file.path], !file.staged)}
+                  >
+                    {file.staged ? "取消暂存" : "暂存"}
                   </button>
                 </div>
               ))}
@@ -1381,14 +1387,26 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   window.localStorage.setItem(LS_COMMIT_TOUCHED, "1");
                 }}
               />
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={commitBusy || committablePaths.length === 0 || !commitMessage.trim()}
-                onClick={() => void handleCommit()}
-              >
-                {commitBusy ? "提交中…" : `提交已落盘的 ${committablePaths.length} 项`}
-              </button>
+              {committablePaths.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={commitBusy || !commitMessage.trim()}
+                  onClick={() => void handleCommit()}
+                >
+                  {commitBusy ? "提交中…" : `提交已落盘的 ${committablePaths.length} 项`}
+                </button>
+              ) : null}
+              {stagedFiles.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={commitBusy || !commitMessage.trim()}
+                  onClick={() => void handleCommitStaged()}
+                >
+                  {commitBusy ? "提交中…" : `提交暂存区的 ${stagedFiles.length} 项`}
+                </button>
+              ) : null}
               {lastCommit ? (
                 <span className="t-dim">
                   上次提交 {lastCommit.short_sha} · {lastCommit.files.length} 个文件
