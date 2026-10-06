@@ -132,9 +132,7 @@ async def stop_session(
     return ok(session.to_dict(), metadata={"force": force})
 
 
-# ---------------------------------------------------------------------------
 # Human Terminal — real PTY
-# ---------------------------------------------------------------------------
 
 @router.post("/pty/sessions")
 async def create_human_session(
@@ -148,7 +146,7 @@ async def create_human_session(
 @router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
-    container = websocket.app.state.flux_container
+    container = websocket.app.state.container
     service = _human_pty(container)
     await websocket.accept()
     output_task: asyncio.Task[None] | None = None
@@ -177,7 +175,6 @@ async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
             else:
                 await websocket.send_json({"type": "error", "message": f"unsupported message: {kind}"})
     except WebSocketDisconnect:
-        # UI disconnect does not kill the shell. The session can be reattached.
         return
     except Exception as exc:
         with suppress(Exception):
