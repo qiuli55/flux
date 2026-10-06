@@ -1417,7 +1417,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   /* ---------- 渲染：页面 ---------- */
 
   return (
-    <div className="view view-ide" data-project-id={projectId ?? ""}>
+    <div className="view view-ide" data-project-id={projectId ?? ""} data-workspace-root={displayWorkspace}>
       <header className="ide-top">
         <div className="it-left">
           <button type="button" className="icon-btn" title="返回 Solo" onClick={onBackToSolo}>
