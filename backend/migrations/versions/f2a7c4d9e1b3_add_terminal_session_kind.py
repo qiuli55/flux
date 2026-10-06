@@ -22,7 +22,6 @@ def upgrade() -> None:
         "terminal_sessions",
         sa.Column("kind", sa.String(length=16), server_default="agent", nullable=False),
     )
-    op.alter_column("terminal_sessions", "kind", server_default=None)
 
 
 def downgrade() -> None:
