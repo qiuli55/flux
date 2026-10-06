@@ -490,17 +490,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     [openTabs, activeTab],
   );
 
-  useEffect(() => {
-    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
-    const frame = window.requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(
-        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
-      );
-      row?.scrollIntoView({ block: "center", behavior: "smooth" });
-      setRevealLine(null);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeFile, activeTab, revealLine]);
   // 打开文件时按需读取内容（只读）
   useEffect(() => {
     if (!activeTab || activeTab === CHANGES_TAB || !projectId) return;
@@ -890,6 +879,18 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   );
 
   const activeFile = activeTab && activeTab !== CHANGES_TAB ? files[activeTab] : undefined;
+
+  useEffect(() => {
+    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
+      );
+      row?.scrollIntoView({ block: "center", behavior: "smooth" });
+      setRevealLine(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeFile, activeTab, revealLine]);
 
   useEffect(() => {
     if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
