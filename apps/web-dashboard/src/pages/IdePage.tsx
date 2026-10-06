@@ -27,6 +27,7 @@ import type {
   SearchHit,
   Task,
   TaskMessage,
+  TerminalEvent,
 } from "../api/types";
 import { openCommandPalette, setIdeIntentHandler, type IdeIntent } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
@@ -211,7 +212,7 @@ function kindLabel(kind: Change["kind"]): string {
 interface Problem {
   id: string;
   severity: "error" | "warning";
-  source: "Apply" | "Recovery";
+  source: "Agent" | "Test" | "Build" | "Apply" | "Recovery";
   message: string;
   path: string | null;
   line: number | null;
@@ -221,6 +222,68 @@ interface Problem {
 function parseProblemLocation(text: string): { path: string | null; line: number | null } {
   const match = text.match(/(?:^|\s)([^\s:]+\.(?:py|ts|tsx|js|jsx|json|css|md|yml|yaml)):(\d+)(?::(\d+))?/);
   return match ? { path: match[1] ?? null, line: Number(match[2]) } : { path: null, line: null };
+}
+
+function terminalProblemSource(command: string | null): "Agent" | "Test" | "Build" {
+  const text = command ?? "";
+  if (/\b(pytest|vitest|jest|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|cargo\s+test|go\s+test|ruff|eslint|mypy|pyright)\b/i.test(text)) {
+    return "Test";
+  }
+  if (/\b(build|vite|webpack|tsc|npm\s+(?:run\s+)?build|pnpm\s+(?:run\s+)?build|yarn\s+(?:run\s+)?build|cargo\s+build)\b/i.test(text)) {
+    return "Build";
+  }
+  return "Agent";
+}
+
+function parseTerminalDiagnosticLine(text: string): {
+  path: string | null;
+  line: number | null;
+  message: string;
+  severity: "error" | "warning";
+} | null {
+  const line = text.trim();
+  if (!line) return null;
+
+  const ts = line.match(/^(.+?)\((\d+),(\d+)\):\s*(error|warning)\b(?:\s+[^:]+:)?\s*(.*)$/i);
+  if (ts) {
+    return {
+      path: ts[1]?.trim() ?? null,
+      line: Number(ts[2]),
+      message: ts[5]?.trim() || line,
+      severity: ts[4]?.toLowerCase() === "warning" ? "warning" : "error",
+    };
+  }
+
+  const colon = line.match(/^(.*?\.(?:py|ts|tsx|js|jsx|json|css|md|yml|yaml)):(\d+)(?::(\d+))?\s*(?::|-)?\s*(?:(error|warning)\b[^:]*:\s*)?(.*)$/i);
+  if (colon) {
+    const message = colon[5]?.trim() || "";
+    const severity = colon[4]?.toLowerCase() === "warning" || /\bwarning\b/i.test(line) ? "warning" : "error";
+    if (message || /\b(?:error|failed|failure|exception|traceback)\b/i.test(line)) {
+      return { path: colon[1]?.trim() ?? null, line: Number(colon[2]), message: message || line, severity };
+    }
+  }
+
+  const traceback = line.match(/^File ["'](.+?)["'], line (\d+)/);
+  if (traceback) {
+    return {
+      path: traceback[1]?.trim() ?? null,
+      line: Number(traceback[2]),
+      message: line,
+      severity: "error",
+    };
+  }
+
+  const failed = line.match(/^FAILED\s+(.+?)(?:\s+-\s+(.+))?$/i);
+  if (failed) {
+    return {
+      path: failed[1]?.split("::")[0]?.trim() ?? null,
+      line: null,
+      message: failed[2]?.trim() || line,
+      severity: "error",
+    };
+  }
+
+  return null;
 }
 
 function failureSummary(log: string): string {
@@ -316,6 +379,9 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [agents, setAgents] = useState<AgentHandle[]>([]);
   const [task, setTask] = useState<Task | null>(null);
   const [taskMessages, setTaskMessages] = useState<TaskMessage[]>([]);
+  const [terminalProblems, setTerminalProblems] = useState<Problem[]>([]);
+  const [terminalProblemsLoading, setTerminalProblemsLoading] = useState(false);
+  const [terminalProblemsError, setTerminalProblemsError] = useState<string | null>(null);
 
   const [bottomTab, setBottomTab] = useState<BottomTab>("flow");
   const [bottomOpen, setBottomOpen] = useState(true);
@@ -413,6 +479,97 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       toast(errorMessage(error), "error");
     }
   }, []);
+
+  const loadTerminalProblems = useCallback(async () => {
+    if (!treeRoot) {
+      setTerminalProblems([]);
+      setTerminalProblemsError(null);
+      return;
+    }
+    setTerminalProblemsLoading(true);
+    try {
+      const root = treeRoot.replace(/[/\\]+$/, "");
+      const sessions = (await api.listTerminalSessions())
+        .filter((session) => session.kind === "agent")
+        .filter((session) => session.workspace_root.replace(/[/\\]+$/, "") === root)
+        .slice(0, 8);
+
+      const sessionResults = await Promise.all(
+        sessions.map(async (session) => {
+          const after = Math.max(0, session.next_seq - 401);
+          const events = await api.terminalEvents(session.id, after);
+          const problems: Problem[] = [];
+          let currentCommand: TerminalEvent["command"] = null;
+          let currentProblemCount = 0;
+
+          for (const event of events) {
+            if (event.kind === "terminal.command.started") {
+              currentCommand = event.command;
+              currentProblemCount = 0;
+              continue;
+            }
+            if (event.kind === "terminal.output" && event.chunk) {
+              for (const rawLine of event.chunk.split(/\r?\n/)) {
+                const diagnostic = parseTerminalDiagnosticLine(rawLine);
+                if (!diagnostic) continue;
+                currentProblemCount += 1;
+                problems.push({
+                  id: `terminal:${event.id}:${problems.length}`,
+                  severity: diagnostic.severity,
+                  source: terminalProblemSource(currentCommand),
+                  message: diagnostic.message,
+                  path: diagnostic.path,
+                  line: diagnostic.line,
+                });
+                if (problems.length >= 120) break;
+              }
+            }
+            if (event.kind === "terminal.command.failed") {
+              if (currentProblemCount === 0) {
+                problems.push({
+                  id: `terminal-failed:${event.id}`,
+                  severity: "error",
+                  source: terminalProblemSource(currentCommand),
+                  message: `命令失败（退出码 ${event.exit_code ?? "未知"}）：${currentCommand ?? "未知命令"}`,
+                  path: null,
+                  line: null,
+                });
+              }
+              currentCommand = null;
+              currentProblemCount = 0;
+            } else if (event.kind === "terminal.command.finished") {
+              currentCommand = null;
+              currentProblemCount = 0;
+            }
+            if (problems.length >= 120) break;
+          }
+          return problems;
+        }),
+      );
+
+      const seen = new Set<string>();
+      const merged = sessionResults
+        .flat()
+        .filter((problem) => {
+          const key = `${problem.severity}|${problem.path ?? ""}|${problem.line ?? ""}|${problem.message}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 120);
+      setTerminalProblems(merged);
+      setTerminalProblemsError(null);
+    } catch (error) {
+      setTerminalProblems([]);
+      setTerminalProblemsError(errorMessage(error));
+    } finally {
+      setTerminalProblemsLoading(false);
+    }
+  }, [treeRoot]);
+
+  useEffect(() => {
+    if (bottomTab === "problems") void loadTerminalProblems();
+  }, [bottomTab, loadTerminalProblems]);
 
   useEffect(() => {
     void loadProjects();
@@ -634,7 +791,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const failedChanges = useMemo(() => changes.filter((change) => change.status === "failed"), [changes]);
 
   const problems = useMemo<Problem[]>(() => {
-    const items: Problem[] = [];
+    const items: Problem[] = [...terminalProblems];
     for (const change of failedChanges) {
       const location = parseProblemLocation(change.apply_error ?? "");
       items.push({
@@ -658,7 +815,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       });
     }
     return items;
-  }, [failedChanges, recoveryItems]);
+  }, [failedChanges, recoveryItems, terminalProblems]);
   const reviewChange = useMemo(
     () => changes.find((change) => change.id === reviewId) ?? null,
     [changes, reviewId],
@@ -1291,8 +1448,12 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     if (bottomTab === "problems") {
       return (
         <div className="bp-rows">
-          {problems.length === 0 ? (
-            <span className="bp-empty">当前没有已捕获的问题。Agent 落盘失败与崩溃恢复冲突会自动出现在这里。</span>
+          {terminalProblemsLoading ? (
+            <span className="bp-empty">正在读取最近 Agent Terminal 的诊断输出…</span>
+          ) : terminalProblemsError && terminalProblems.length === 0 ? (
+            <span className="bp-empty">Agent Terminal 诊断读取失败：{terminalProblemsError}</span>
+          ) : problems.length === 0 ? (
+            <span className="bp-empty">当前没有已捕获的问题。Agent、测试、构建、落盘失败与崩溃恢复问题会自动出现在这里。</span>
           ) : (
             problems.map((problem) => (
               <button
