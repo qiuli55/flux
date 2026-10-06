@@ -9,6 +9,7 @@ import asyncio
 import os
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from flux.container import Container
 from flux.enums import TerminalSessionKind, TerminalSessionStatus
@@ -129,13 +130,9 @@ async def test_human_terminal_list_excludes_stopped_sessions(
 
 
 def test_human_terminal_websocket_rejects_unknown_session(apply_client) -> None:
-    from starlette.websockets import WebSocketDisconnect
-
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with apply_client.websocket_connect(
-            "/api/v1/terminal/pty/sessions/00000000-0000-0000-0000-000000000000/ws"
-        ):
-            pass
+    ws_path = "/api/v1/terminal/pty/sessions/00000000-0000-0000-0000-000000000000/ws"
+    with pytest.raises(WebSocketDisconnect) as exc, apply_client.websocket_connect(ws_path):
+        pass
     assert exc.value.code == 1008
 
 
