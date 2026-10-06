@@ -161,9 +161,9 @@ FLUX_DATA_DIR=/tmp/flux-app-test \
 - `GET http://127.0.0.1:43911/index.html` → HTTP 200（前端静态资源已打进 `resources/web`）；
 - `GET .../api/v1/workspace/changes`（走反代查库）→ HTTP 200；
 - `~/.flux`（此处为 `FLUX_DATA_DIR`）下生成 `flux.db`、`workspace/`、`backups/`（见上文数据目录约定）；
-- 迁移跑到 head：`alembic_version = f3a1b2c4d5e6`。
+- 迁移跑到 head：`alembic_version = f2a7c4d9e1b3`。
 
-> 备注：本机实测时工作区 head 已是 `f3a1b2c4d5e6`（`add_change_kind`，与我构建并行合入的
+> 备注：本机实测时工作区 head 已是 `f2a7c4d9e1b3`（`add_change_kind`，与我构建并行合入的
 > 未跟踪迁移，`down_revision = d5e8b1c3a7f2`）。sidecar 打包的是构建当刻的 `backend/migrations`
 > （共 16 个版本脚本），所以换机器重新构建时会自动跟随当时的 head。
 
