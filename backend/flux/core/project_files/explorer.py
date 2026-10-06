@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 from collections import deque
@@ -44,6 +45,10 @@ DEFAULT_TREE_DEPTH = 2
 MAX_TREE_DEPTH = 4
 #: 单文件最大返回字节数；超出只截断返回，不拒绝（配合 `truncated` 标记）
 MAX_CONTENT_BYTES = 256 * 1024
+#: 全局搜索读取单个文件的最大字节数；超过即跳过该文件
+MAX_SEARCH_FILE_BYTES = 1024 * 1024
+#: 全局搜索最多返回的命中数
+MAX_SEARCH_RESULTS = 1000
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,23 @@ class FileTree:
             "truncated": self.truncated,
         }
 
+
+@dataclass(frozen=True)
+class SearchHit:
+    """One bounded text-search match in the active workspace."""
+
+    path: str
+    line: int
+    column: int
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "line": self.line,
+            "column": self.column,
+            "text": self.text,
+        }
 
 @dataclass(frozen=True)
 class FileContent:
@@ -367,6 +389,93 @@ class WorkspaceFileExplorer:
                 details={"path": relative.as_posix()},
             )
 
+    # --- 全局文本搜索 ---
+
+    def search(
+        self,
+        *,
+        query: str,
+        path: str | None = None,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        max_results: int = MAX_SEARCH_RESULTS,
+        workspace_root: str | Path | None = None,
+    ) -> list[SearchHit]:
+        """Search text across the workspace without following symlinks."""
+
+        query = query.strip()
+        if not query:
+            return []
+        max_results = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = self._relative_directory(path)
+        base = resolve_within_root(root, relative)
+        if not base.exists():
+            raise NotFoundError(
+                f"目录不存在：{relative.as_posix() or '.'}",
+                details={"path": relative.as_posix()},
+            )
+        if not base.is_dir():
+            raise ValidationError(
+                f"搜索范围不是目录：{relative.as_posix() or '.'}",
+                details={"path": relative.as_posix()},
+            )
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            expression = re.compile(query if regex else re.escape(query), flags)
+        except re.error as exc:
+            raise ValidationError(
+                f"无效的搜索正则表达式：{query}",
+                details={"query": query},
+            ) from exc
+
+        hits: list[SearchHit] = []
+        queue: deque[Path] = deque([base])
+        while queue and len(hits) < max_results:
+            directory = queue.popleft()
+            for name, raw_path, is_link, is_dir, is_file, _size, _mtime in _scan_directory(directory):
+                if is_link:
+                    continue
+                if is_dir:
+                    if name in IGNORED_DIRS:
+                        continue
+                    queue.append(Path(raw_path))
+                    continue
+                if not is_file:
+                    continue
+
+                candidate = Path(raw_path)
+                try:
+                    with open(candidate, "rb") as handle:
+                        data = handle.read(MAX_SEARCH_FILE_BYTES + 1)
+                except OSError:
+                    continue
+                if len(data) > MAX_SEARCH_FILE_BYTES or b"\x00" in data:
+                    continue
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+
+                for line_number, line_text in enumerate(text.splitlines(), start=1):
+                    for match in expression.finditer(line_text):
+                        relative_path = candidate.relative_to(root).as_posix()
+                        hits.append(
+                            SearchHit(
+                                path=relative_path,
+                                line=line_number,
+                                column=match.start() + 1,
+                                text=line_text[:500],
+                            )
+                        )
+                        if len(hits) >= max_results:
+                            break
+                    if len(hits) >= max_results:
+                        break
+                if len(hits) >= max_results:
+                    break
+        return hits
     # --- 内部工具 ---
 
     @staticmethod
@@ -409,5 +518,8 @@ __all__ = [
     "FileContent",
     "FileEntry",
     "FileTree",
+    "MAX_SEARCH_FILE_BYTES",
+    "MAX_SEARCH_RESULTS",
+    "SearchHit",
     "WorkspaceFileExplorer",
 ]
