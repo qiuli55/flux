@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import select
 import signal
 import struct
 import uuid
@@ -40,6 +41,7 @@ DEFAULT_ROWS = 32
 SCROLLBACK_BYTES = 256 * 1024
 QUEUE_SIZE = 256
 STOP_GRACE_SECONDS = 1.0
+KILL_CONFIRM_SECONDS = 1.0
 
 
 class HumanPtyService:
@@ -57,6 +59,7 @@ class HumanPtyService:
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
         self._fds: dict[str, int] = {}
         self._pids: dict[str, int] = {}
+        self._write_locks: dict[str, asyncio.Lock] = {}
         self._closed: set[str] = set()
         self._buffers: dict[str, bytearray] = {}
         self._subscribers: dict[str, set[asyncio.Queue[bytes | None]]] = {}
@@ -105,8 +108,18 @@ class HumanPtyService:
         fd = self._fds.get(key)
         if fd is None or key in self._closed:
             raise ConflictError("终端会话已结束", details={"session_id": key})
-        if data:
-            await asyncio.to_thread(os.write, fd, data.encode("utf-8", errors="replace"))
+        if not data:
+            return
+        payload = data.encode("utf-8", errors="replace")
+        lock = self._write_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            try:
+                await asyncio.to_thread(self._write_all, fd, payload)
+            except (OSError, ValueError) as exc:
+                raise ConflictError(
+                    "终端输入写入失败",
+                    details={"session_id": key},
+                ) from exc
 
     async def resize(self, session_id: str | uuid.UUID, cols: int, rows: int) -> None:
         key = str(session_id)
@@ -150,14 +163,20 @@ class HumanPtyService:
             return
 
         try:
-            await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL if force else signal.SIGTERM)
+            signal_value = signal.SIGKILL if force else signal.SIGTERM
+            await asyncio.to_thread(os.killpg, pgid, signal_value)
         except ProcessLookupError:
             await self._finish(key)
             return
 
-        if not force and not await self._wait_for_exit(pid, STOP_GRACE_SECONDS):
-            with suppress(ProcessLookupError):
-                await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
+        if not force:
+            exited = await self._wait_for_group_exit(pgid, STOP_GRACE_SECONDS)
+            if not exited:
+                with suppress(ProcessLookupError):
+                    await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
+                await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+        else:
+            await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
         await self._finish(key)
 
     async def shutdown(self) -> None:
@@ -194,17 +213,38 @@ class HumanPtyService:
             pass
 
     @staticmethod
-    async def _wait_for_exit(pid: int, timeout: float) -> bool:
+    async def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             try:
-                result = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
-            except ChildProcessError:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
                 return True
-            if result[0] == pid:
-                return True
+            except PermissionError:
+                # The group still exists; the caller must not claim it is gone.
+                return False
             await asyncio.sleep(0.05)
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
         return False
+
+    @staticmethod
+    def _write_all(fd: int, payload: bytes) -> None:
+        view = memoryview(payload)
+        while view:
+            try:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("PTY write returned no progress")
+                view = view[written:]
+            except BlockingIOError:
+                _ready, writable, _exceptional = select.select([], [fd], [], 0.2)
+                if not writable:
+                    continue
 
     async def _read_loop(self, key: str) -> None:
         fd = self._fds.get(key)
