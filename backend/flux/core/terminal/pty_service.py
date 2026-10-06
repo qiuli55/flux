@@ -239,7 +239,10 @@ class HumanPtyService:
         return await self.get_session(session_id)
 
     async def shutdown(self) -> None:
-        """Best-effort cleanup during app shutdown; never block the whole shutdown path on one PTY."""
+        """Best-effort cleanup during app shutdown.
+        
+        Never block the whole shutdown path on one PTY.
+        """
         for key in list(self._pids):
             pid = self._pids.get(key)
             fd = self._fds.get(key)
