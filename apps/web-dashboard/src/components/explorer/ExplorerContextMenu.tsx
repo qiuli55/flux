@@ -73,8 +73,8 @@ export function ExplorerContextMenu() {
         x: Math.min(event.clientX, window.innerWidth - 256),
         y: Math.min(event.clientY, window.innerHeight - 320),
       });
-      const root = document.querySelector<HTMLElement>(".flux-workspace-current");
-      setWorkspaceRoot(root?.textContent?.trim() || "");
+      const root = document.querySelector<HTMLElement>(".view-ide");
+      setWorkspaceRoot(root?.dataset.workspaceRoot || "");
     };
 
     const close = () => setTarget(null);
