@@ -186,5 +186,5 @@ export const api = {
     ),
   createTerminalSession: (body?: { workspace_root?: string }) => getData<TerminalSession>("POST", "/terminal/sessions", body),
   stopTerminalSession: (id: string, force = false) => getData<TerminalSession>("POST", `/terminal/sessions/${id}/stop`, { force }),
-  terminalEvents: (id: string, after?: number) => getData<TerminalEvent[]>("GET", `/terminal/sessions/${id}/events${query({ after: after?.toString() })}`),
+  terminalEvents: (id: string, after?: number) => getData<TerminalEvent[]>("GET", `/terminal/sessions/${id}/events${query({ after_seq: after?.toString() })}`),
 };
