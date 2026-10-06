@@ -68,6 +68,7 @@ export function HumanTerminalPanel() {
   const [error, setError] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<Record<string, ConnectionState>>({});
   const [splitDirection, setSplitDirection] = useState<SplitDirection | null>(null);
+  // Each visible pane maps to one unique Human PTY session; hidden sessions stay mounted so xterm state is preserved.
   const [splitSessions, setSplitSessions] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
