@@ -98,3 +98,25 @@ async def test_human_terminal_list_excludes_stopped_sessions(
     await apply_container.human_pty.stop(session.id, force=True)
 
     assert session.id not in {item.id for item in await apply_container.human_pty.list_sessions()}
+
+
+def test_human_terminal_websocket_roundtrip(apply_client) -> None:
+    created = apply_client.post("/api/v1/terminal/pty/sessions").json()
+    assert created["success"] is True
+    session_id = created["data"]["id"]
+
+    marker = "flux-human-ws-check"
+    with apply_client.websocket_connect(
+        f"/api/v1/terminal/pty/sessions/{session_id}/ws"
+    ) as websocket:
+        websocket.send_json({"type": "input", "data": f"printf '%s\\n' '{marker}'\\n"})
+        chunks: list[str] = []
+        for _ in range(20):
+            message = websocket.receive_json()
+            if message.get("type") != "output":
+                continue
+            chunks.append(str(message.get("data", "")))
+            if marker in "".join(chunks):
+                break
+        assert marker in "".join(chunks)
+        websocket.send_json({"type": "stop", "force": True})
