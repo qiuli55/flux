@@ -386,6 +386,11 @@ export function HumanTerminalPanel() {
   }, []);
 
   useEffect(() => {
+    const openFromExplorer = () => setActive(true);
+    window.addEventListener("flux:open-human-terminal", openFromExplorer);
+    return () => window.removeEventListener("flux:open-human-terminal", openFromExplorer);
+  }, []);
+  useEffect(() => {
     if (!host) return;
     const header = host.parentElement?.querySelector<HTMLElement>(".bp-head");
     if (!header) return;
