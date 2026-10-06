@@ -4030,6 +4030,73 @@
         ]
       }
     },
+    "/api/v1/terminal/pty/sessions/{session_id}/stop": {
+      "post": {
+        "description": "Stop one Human Terminal PTY without depending on an open WebSocket.",
+        "operationId": "stop_human_session_api_v1_terminal_pty_sessions__session_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TerminalStopRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Human Session Api V1 Terminal Pty Sessions  Session Id  Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Stop Human Session",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
     "/api/v1/terminal/sessions/{session_id}/stream": {
       "get": {
         "description": "终端事件实时流（SSE，§11 / §12）：先补历史再推增量。\n\n断线重连时浏览器会带 `Last-Event-ID`（即上一帧的 seq），与 `after_seq` 取较大者续读。\n会话结束时服务端会推完 `terminal.session.closed` 后收流；客户端断开只结束观察，\n不会停 Agent（§11）。",
