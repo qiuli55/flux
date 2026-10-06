@@ -280,6 +280,11 @@ export const api = {
   /** Human Terminal 单会话详情；Agent Terminal 会话会被后端拒绝 */
   getHumanTerminalSession: (sessionId: string) =>
     getData<TerminalSession>("GET", `/terminal/pty/sessions/${sessionId}`),
+  /** 可靠停止 Human Terminal PTY，不依赖 WebSocket 是否仍存活 */
+  stopHumanTerminalSession: (sessionId: string, force = false) =>
+    getData<TerminalSession>("POST", `/terminal/pty/sessions/${sessionId}/stop`, {
+      body: JSON.stringify({ force }),
+    }),
   /** 创建 Human Terminal PTY 会话，沿用统一 API 错误处理 */
   createHumanTerminalSession: () => getData<TerminalSession>("POST", "/terminal/pty/sessions"),
   /** 单个会话（含状态与 next_seq） */
