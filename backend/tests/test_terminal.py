@@ -17,7 +17,7 @@ import sys
 import pytest
 
 from flux.container import Container
-from flux.enums import TerminalEventKind, TerminalSessionStatus, TerminalSource
+from flux.enums import TerminalEventKind, TerminalSessionKind, TerminalSessionStatus, TerminalSource
 from flux.errors import ConflictError, NotFoundError, ValidationError
 
 
@@ -37,6 +37,7 @@ async def test_create_session_uses_configured_workspace_root(
 ) -> None:
     session = await apply_container.terminal.create_session()
     assert session.status == TerminalSessionStatus.ACTIVE.value
+    assert session.kind == TerminalSessionKind.AGENT.value
     assert session.workspace_root == str(workspace_root.resolve())
 
 
@@ -232,3 +233,17 @@ def test_terminal_stream_unknown_session_returns_404(apply_client) -> None:
         "/api/v1/terminal/sessions/00000000-0000-0000-0000-000000000000/stream"
     )
     assert response.status_code == 404
+
+
+@pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
+def test_agent_terminal_list_excludes_human_pty_sessions(apply_client) -> None:
+    human = apply_client.post("/api/v1/terminal/pty/sessions").json()
+    assert human["success"] is True
+
+    agent = apply_client.post("/api/v1/terminal/sessions", json={}).json()
+    assert agent["success"] is True
+
+    listed = apply_client.get("/api/v1/terminal/sessions").json()
+    ids = {item["id"] for item in listed["data"]}
+    assert agent["data"]["id"] in ids
+    assert human["data"]["id"] not in ids
