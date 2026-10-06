@@ -42,7 +42,7 @@ const LS_COMMIT_TOUCHED = "flux.ide.commitTouched";
 const LS_RECENT_FILES = "flux.ide.recentFiles";
 
 type RailPanel = "files" | "search" | "git" | "debug" | "ext";
-type BottomTab = "flow" | "changes" | "git";
+type BottomTab = "flow" | "changes" | "problems" | "git";
 /** 移动端（≤860px）侧栏抽屉：文件与 Agent 二选一，其余面板走底部面板 */
 type MobilePanel = "none" | "files" | "agent";
 /** 编辑器里的特殊 Tab（不是文件路径） */
@@ -208,6 +208,21 @@ function kindLabel(kind: Change["kind"]): string {
 }
 
 /** 落盘失败日志 → 一行结论（优先 pytest 的 FAILED 行与计数行，见 F-01） */
+interface Problem {
+  id: string;
+  severity: "error" | "warning";
+  source: "Apply" | "Recovery";
+  message: string;
+  path: string | null;
+  line: number | null;
+  changeId?: string;
+}
+
+function parseProblemLocation(text: string): { path: string | null; line: number | null } {
+  const match = text.match(/(?:^|\\s)([^\\s:]+\\.(?:py|ts|tsx|js|jsx|json|css|md|yml|yaml)):(\\d+)(?::(\\d+))?/);
+  return match ? { path: match[1], line: Number(match[2]) } : { path: null, line: null };
+}
+
 function failureSummary(log: string): string {
   const lines = log.split("\n").map((line) => line.trim()).filter(Boolean);
   const failed = lines.find((line) => /^FAILED\b/.test(line));
@@ -313,6 +328,33 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [recoveryItems, setRecoveryItems] = useState<RecoveryItem[]>([]);
   const [recoveryOpenId, setRecoveryOpenId] = useState<string | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
+
+  const problems = useMemo<Problem[]>(() => {
+    const items: Problem[] = [];
+    for (const change of failedChanges) {
+      const location = parseProblemLocation(change.apply_error ?? "");
+      items.push({
+        id: `apply:${change.id}`,
+        severity: "error",
+        source: "Apply",
+        message: failureSummary(change.apply_error ?? "落盘失败"),
+        path: location.path ?? change.file_path,
+        line: location.line,
+        changeId: change.id,
+      });
+    }
+    for (const item of recoveryItems) {
+      items.push({
+        id: `recovery:${item.change_id}`,
+        severity: "warning",
+        source: "Recovery",
+        message: item.note,
+        path: item.file_path,
+        line: null,
+      });
+    }
+    return items;
+  }, [failedChanges, recoveryItems]);
 
   /* ---------- 加载 ---------- */
 
@@ -859,8 +901,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     } else if (intent === "changes") {
       setActiveTab(CHANGES_TAB);
     } else if (intent === "problems") {
-      setActiveTab(CHANGES_TAB);
-      showBottom("changes");
+      showBottom("problems");
     } else if (typeof intent === "object" && intent.kind === "open-file") {
       openFile(intent.path);
     }
@@ -1247,6 +1288,39 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   /* ---------- 渲染：底部面板 ---------- */
 
   const renderBottom = () => {
+    if (bottomTab === "problems") {
+      return (
+        <div className="bp-rows">
+          {problems.length === 0 ? (
+            <span className="bp-empty">当前没有已捕获的问题。Agent 落盘失败与崩溃恢复冲突会自动出现在这里。</span>
+          ) : (
+            problems.map((problem) => (
+              <button
+                type="button"
+                className="bp-row bp-problem"
+                key={problem.id}
+                onClick={() => {
+                  if (problem.path) {
+                    void openFileAtLine(problem.path, problem.line ?? 1);
+                  } else if (problem.changeId) {
+                    setReviewId(problem.changeId);
+                  }
+                }}
+              >
+                <span className={`bp-who ${problem.severity === "error" ? "t-err" : "t-warn"}`}>
+                  {problem.severity === "error" ? "错误" : "警告"}
+                </span>
+                <span className="bp-who t-dim">{problem.source}</span>
+                <span className="bp-tx">{problem.path ?? "工作区"}</span>
+                {problem.line ? <span className="bp-line">:{problem.line}</span> : null}
+                <span className="bp-problem-message">{problem.message}</span>
+              </button>
+            ))
+          )}
+        </div>
+      );
+    }
+
     if (bottomTab === "flow") {
       return (
         <div className="bp-rows">
@@ -2053,6 +2127,16 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           </button>
           <button
             type="button"
+            className={`bp-tab${bottomTab === "problems" ? " is-active" : ""}`}
+            onClick={() => {
+              setBottomTab("problems");
+              setBottomOpen(true);
+            }}
+          >
+            问题<em>{problems.length}</em>
+          </button>
+          <button
+            type="button"
             className={`bp-tab${bottomTab === "git" ? " is-active" : ""}`}
             onClick={() => {
               setBottomTab("git");
@@ -2080,8 +2164,10 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             title="刷新"
             onClick={() => {
               if (bottomTab === "git") void loadGit();
-              else if (bottomTab === "changes") void loadChanges();
-              else void loadTask(projectId);
+              else if (bottomTab === "changes" || bottomTab === "problems") {
+                void loadChanges();
+                void loadRecovery();
+              } else void loadTask(projectId);
             }}
           >
             ⟳
