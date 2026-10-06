@@ -17,16 +17,25 @@ from flux.enums import (
 
 
 class AgentCreateRequest(BaseModel):
+    """登记一个 Agent 档案（身份 + 权限边界）。
+
+    模型与 system prompt 不在登记范围内——那是 Agent 自己的事（目标架构 §1）。
+    """
+
     name: str = Field(min_length=1, max_length=128)
     role: AgentRole
     description: str = ""
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     permissions: list[Capability] = Field(default_factory=list)
+    #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI（codex / opencode）。
+    #: 取值在边界即校验（非法 → 422），并由 AgentManager 再校验一次（内部调用方同样受约束）。
     runtime: Literal["dsh", "codex", "opencode"] = "dsh"
 
 
 class AgentTokenIssueRequest(BaseModel):
+    """为某个 Agent 签发一枚 MCP 接入令牌（目标架构 §3.2）。"""
+
     scopes: list[Capability] = Field(default_factory=lambda: [Capability.FILE_READ])
     label: str = Field(default="", max_length=128)
 
@@ -161,3 +170,31 @@ class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     repository: str | None = Field(default=None, max_length=255)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryWriteRequest(BaseModel):
+    section: BrainSection
+    content: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserMemoryWriteRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+    source: str = Field(default="user", max_length=64)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScanRequest(BaseModel):
+    workspace_root: str | None = None
+    record: bool = True
+
+
+class CapabilityImportRequest(BaseModel):
+    kind: CapabilityKind
+    name: str = Field(min_length=1, max_length=128)
+    decision: Literal["keep", "replace"] | None = None
+
+
+class InstallationConnectRequest(BaseModel):
+    agent: str | None = Field(default=None, max_length=64)
+    all: bool = False
