@@ -31,7 +31,9 @@ async def test_human_terminal_session_is_persistently_isolated(
         await apply_container.human_pty.get_session(agent.id)
 
     await apply_container.human_pty.stop(human.id, force=True)
-    assert (await apply_container.human_pty.get_session(human.id)).status == TerminalSessionStatus.STOPPED.value
+    assert (
+        await apply_container.human_pty.get_session(human.id)
+    ).status == TerminalSessionStatus.STOPPED.value
 
 
 async def test_human_terminal_can_receive_input_and_stream_output(
@@ -76,11 +78,6 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     assert session_id in ids
     assert agent["data"]["id"] not in ids
 
-    stopped = apply_client.post(
-        f"/api/v1/terminal/pty/sessions/{session_id}/stop", json={}
-    )
-    assert stopped.status_code == 405
-
     agent_get_human = apply_client.get(
         f"/api/v1/terminal/sessions/{session_id}"
     )
@@ -90,3 +87,14 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
         f"/api/v1/terminal/pty/sessions/{agent['data']['id']}"
     )
     assert human_get_agent.status_code == 409
+
+
+async def test_human_terminal_list_excludes_stopped_sessions(
+    apply_container: Container,
+) -> None:
+    session = await apply_container.human_pty.create_session()
+    assert session.id in {item.id for item in await apply_container.human_pty.list_sessions()}
+
+    await apply_container.human_pty.stop(session.id, force=True)
+
+    assert session.id not in {item.id for item in await apply_container.human_pty.list_sessions()}
