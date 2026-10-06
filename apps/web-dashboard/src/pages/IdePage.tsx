@@ -238,6 +238,8 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState("");
 
   const [railPanel, setRailPanel] = useState<RailPanel>("files");
   const [filesCollapsed, setFilesCollapsed] = useState(false);
@@ -265,6 +267,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [revealLine, setRevealLine] = useState<{ path: string; line: number } | null>(null);
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [recentFiles, setRecentFiles] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(CHANGES_TAB);
   const [files, setFiles] = useState<Record<string, FileContent>>({});
   const [fileBusy, setFileBusy] = useState(false);
