@@ -8,3 +8,16 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare global {
+  interface Window {
+    fluxDesktop?: {
+      isDesktop: boolean;
+      platform: string;
+      chooseWorkspaceRoot?: () => Promise<string | null>;
+      onWorkspaceChanged?: (callback: (root: string) => void) => () => void;
+    };
+  }
+}
+
+export {};
