@@ -192,3 +192,8 @@ async def test_human_terminal_creation_cleans_up_when_created_event_fails(
 
     assert apply_container.human_pty._pids == {}
     assert apply_container.human_pty._fds == {}
+    created = await apply_container.terminal_repo.list_sessions(
+        kind=TerminalSessionKind.HUMAN,
+        status=TerminalSessionStatus.CLOSED,
+    )
+    assert created
