@@ -560,7 +560,11 @@ class WorkspaceFileExplorer:
                     break
             if replacements >= max_replacements:
                 break
-        truncated = bool(queue) or len(changed_files) >= max_files or replacements >= max_replacements
+        truncated = (
+            bool(queue)
+            or len(changed_files) >= max_files
+            or replacements >= max_replacements
+        )
         return {
             "files": changed_files,
             "replacements": replacements,
