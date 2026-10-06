@@ -1362,7 +1362,8 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                     }}
                   >
                     {changeByPath.get(file.path) ? "看 Diff" : "打开"}
-                  </button>                  <button
+                  </button>
+                  <button
                     type="button"
                     className="btn btn-ghost btn-xs"
                     onClick={() => void stageGitPaths([file.path], !file.staged)}
@@ -1378,9 +1379,11 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 placeholder={
                   committablePaths.length > 0
                     ? "提交信息（默认取最新一条已落盘变更的摘要，可修改）"
-                    : "暂无待提交内容：已落盘变更都提交过了"
+                    : stagedFiles.length > 0
+                      ? "提交信息"
+                      : "暂无待提交内容：已落盘变更都提交过了"
                 }
-                disabled={committablePaths.length === 0}
+                disabled={committablePaths.length === 0 && stagedFiles.length === 0}
                 onChange={(event) => {
                   setCommitMessage(event.target.value);
                   setCommitTouched(true);
