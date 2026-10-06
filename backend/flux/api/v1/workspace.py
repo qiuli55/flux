@@ -29,12 +29,11 @@ async def get_workspace_root(container: Container = Depends(get_container)) -> d
 async def set_workspace_root(
     payload: WorkspaceRootRequest,
     container: Container = Depends(get_container),
-    x_flux_desktop_token: str | None = Header(default=None),
+    x_flux_desktop: str | None = Header(default=None),
 ) -> dict[str, object]:
-    """Switch the live workspace root. Only the Electron desktop capability may change it."""
-    expected = container.settings.desktop_control_token
-    if expected is None or x_flux_desktop_token != expected:
-        raise HTTPException(status_code=403, detail="只有 Flux 桌面端可以选择本机工作目录")
+    """Switch the live workspace root from the local Electron desktop shell only."""
+    if container.settings.env != "local" or x_flux_desktop != "1":
+        raise HTTPException(status_code=403, detail="只有本机 Flux 桌面端可以选择工作目录")
     try:
         root = container.set_workspace_root(payload.root)
     except ValueError as exc:
@@ -51,13 +50,7 @@ async def list_changes(
     status: str | None = None,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    changes = await container.workspace.list(
-        project_id=project_id,
-        task_id=task_id,
-        group_id=group_id,
-        file_path=file_path,
-        status=status,
-    )
+    changes = await container.workspace.list(project_id=project_id, task_id=task_id, group_id=group_id, file_path=file_path, status=status)
     return ok([c.to_dict() for c in changes], metadata={"count": len(changes)})
 
 
@@ -116,11 +109,7 @@ async def expire_stale(container: Container = Depends(get_container)) -> dict[st
 
 
 @router.get("/apply-batches")
-async def list_apply_batches(
-    recent: int = 0,
-    limit: int = 20,
-    container: Container = Depends(get_container),
-) -> dict[str, object]:
+async def list_apply_batches(recent: int = 0, limit: int = 20, container: Container = Depends(get_container)) -> dict[str, object]:
     batches = await container.workspace.list_recent_batches(recent=bool(recent), limit=limit)
     return ok([b.to_dict() for b in batches], metadata={"count": len(batches)})
 
@@ -145,7 +134,5 @@ async def list_recovery(container: Container = Depends(get_container)) -> dict[s
 
 @router.post("/recovery/resolve")
 async def resolve_recovery(payload: RecoveryResolveRequest, container: Container = Depends(get_container)) -> dict[str, object]:
-    change = await container.workspace.resolve_recovery(
-        payload.change_id, RecoveryResolution(payload.action)
-    )
+    change = await container.workspace.resolve_recovery(payload.change_id, RecoveryResolution(payload.action))
     return ok(change.to_dict(), metadata={"action": payload.action})
