@@ -93,11 +93,38 @@ class HumanPtyService:
 
         # Persist session.created before starting the reader so a very fast shell exit
         # can never make session.closed appear before session.created in the event stream.
-        await self._emit(session.id, TerminalEventKind.SESSION_CREATED)
+        try:
+            await self._emit(session.id, TerminalEventKind.SESSION_CREATED)
+        except Exception:
+            await self._cleanup_spawned_process(key, pid, fd)
+            with suppress(Exception):
+                await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
+            raise
+
         self._reader_tasks[key] = asyncio.create_task(
             self._read_loop(key), name=f"flux-pty-{key}"
         )
         return session
+
+    async def recover_orphaned_sessions(self) -> int:
+        """Mark persisted Human PTYs from a previous process as closed.
+
+        PTY processes are process-local and intentionally not resurrected after a Flux
+        restart. The database must therefore not advertise stale active sessions.
+        """
+        sessions = await self._repo.list_sessions(
+            limit=10000,
+            kind=TerminalSessionKind.HUMAN,
+            status=TerminalSessionStatus.ACTIVE,
+        )
+        recovered = 0
+        for session in sessions:
+            if str(session.id) in self._fds:
+                continue
+            await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
+            await self._emit(session.id, TerminalEventKind.SESSION_CLOSED)
+            recovered += 1
+        return recovered
 
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
         session = await self._repo.get_session(session_id)
@@ -209,6 +236,24 @@ class HumanPtyService:
     async def shutdown(self) -> None:
         for key in list(self._pids):
             await self.stop(key, force=True)
+
+    async def _cleanup_spawned_process(self, key: str, pid: int, fd: int) -> None:
+        self._closed.add(key)
+        self._pids.pop(key, None)
+        self._fds.pop(key, None)
+        self._write_locks.pop(key, None)
+        self._subscribers.pop(key, None)
+        self._buffers.pop(key, None)
+        try:
+            pgid = os.getpgid(pid)
+            with suppress(ProcessLookupError):
+                await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        with suppress(OSError):
+            await asyncio.to_thread(os.close, fd)
+        with suppress(ChildProcessError, ProcessLookupError):
+            await asyncio.to_thread(os.waitpid, pid, 0)
 
     def _spawn(self, cwd: str, cols: int, rows: int) -> tuple[int, int]:
         if os.name == "nt":
