@@ -165,7 +165,7 @@ def test_human_websocket_requires_auth_when_rest_is_secured(
         assert exc.value.code == 1008
 
 
-@pytest.mark.skipif(__import__("os").name == "nt", reason="native PTY is not enabled on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
 def test_human_websocket_accepts_auth_header_when_rest_is_secured(
     secured_app_settings: Settings, db_schema: None
 ) -> None:
