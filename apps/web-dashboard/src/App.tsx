@@ -13,6 +13,7 @@ import { ToastHost } from "./app/toast";
 import { readWindowMode } from "./app/windowMode";
 import { HumanTerminalPanel } from "./components/terminal/HumanTerminalPanel";
 import { TerminalWindow } from "./components/terminal/TerminalWindow";
+import { ExplorerContextMenu } from "./components/explorer/ExplorerContextMenu";
 import { WorkspacePicker } from "./components/workspace/WorkspacePicker";
 import { IdePage } from "./pages/IdePage";
 import { SoloPage } from "./pages/SoloPage";
@@ -33,6 +34,7 @@ export default function App() {
     <>
       {view === "solo" ? <SoloPage onOpenWorkspace={() => navigate("ide")} /> : <IdePage onBackToSolo={() => navigate("solo")} />}
       {view === "ide" ? <WorkspacePicker /> : null}
+      {view === "ide" ? <ExplorerContextMenu /> : null}
       <CommandPalette view={view} navigate={navigate} />
       <TerminalWindow />
       {view === "ide" ? <HumanTerminalPanel /> : null}
