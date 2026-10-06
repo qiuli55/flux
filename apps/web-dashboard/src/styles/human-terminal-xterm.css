@@ -61,7 +61,10 @@
   font: 10px var(--ui);
 }
 
-.ht-statusbar span:first-child { color: var(--green); }
+.ht-statusbar span:first-child { color: var(--text-3); }
+.ht-statusbar span:first-child.is-connected { color: var(--green); }
+.ht-statusbar span:first-child.is-reconnecting { color: var(--yellow, #e7b75f); }
+.ht-statusbar span:first-child.is-disconnected { color: var(--text-3); }
 .ht-statusbar span:nth-child(2) {
   flex: 1;
   min-width: 0;
