@@ -181,6 +181,9 @@ async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     if session.run_id is not None:
         await websocket.close(code=1008, reason="agent terminal sessions are not human PTYs")
         return
+    if session.status != "active":
+        await websocket.close(code=1008, reason="human terminal session is not active")
+        return
 
     await websocket.accept()
     output_task: asyncio.Task[None] | None = None
