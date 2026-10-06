@@ -90,8 +90,13 @@ class HumanPtyService:
         self._fds[key] = fd
         self._buffers[key] = bytearray()
         self._subscribers[key] = set()
-        self._reader_tasks[key] = asyncio.create_task(self._read_loop(key), name=f"flux-pty-{key}")
+
+        # Persist session.created before starting the reader so a very fast shell exit
+        # can never make session.closed appear before session.created in the event stream.
         await self._emit(session.id, TerminalEventKind.SESSION_CREATED)
+        self._reader_tasks[key] = asyncio.create_task(
+            self._read_loop(key), name=f"flux-pty-{key}"
+        )
         return session
 
     async def get_session(self, session_id: str | uuid.UUID) -> TerminalSession:
