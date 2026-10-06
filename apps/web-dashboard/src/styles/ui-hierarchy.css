@@ -1,0 +1,37 @@
+/* Flux UI information hierarchy: primary coding loop stays visually dominant. */
+.view-ide .ide-files{width:208px}
+.view-ide .ide-agent{width:286px}
+.view-ide .ide-rail{width:44px}
+.view-ide .ide-rail .rail-btn[data-panel="files"]{color:var(--text);background:rgba(124,92,255,.10)}
+.view-ide .ide-rail .rail-btn[data-panel="search"],
+.view-ide .ide-rail .rail-btn[data-panel="git"]{opacity:.72}
+.view-ide .ide-rail .rail-btn[data-panel="search"]:hover,
+.view-ide .ide-rail .rail-btn[data-panel="git"]:hover,
+.view-ide .ide-rail .rail-btn[data-panel="search"].is-active,
+.view-ide .ide-rail .rail-btn[data-panel="git"].is-active{opacity:1}
+/* Debug/Extensions remain reachable from the command palette without occupying permanent rail space. */
+.view-ide .ide-rail .rail-btn[data-panel="debug"],
+.view-ide .ide-rail .rail-btn[data-panel="ext"]{display:none}
+/* Agent panel: current task first, secondary details quieter. */
+.view-ide .ag-scroll{padding:10px;gap:8px}
+.view-ide .ag-card{padding:9px 10px}
+.view-ide .ag-status{padding:0 2px;font-size:11.5px}
+.view-ide .ag-task{padding:8px 10px}
+.view-ide .ag-tools{gap:4px}
+.view-ide .ag-tools li{padding:6px 8px;background:var(--panel)}
+/* Bottom panel: Flow + Changes are the primary loop; Git is secondary. */
+.view-ide .bp-head{gap:2px;padding:0 6px}
+.view-ide .bp-tab{padding:0 10px}
+.view-ide .bp-tab:nth-of-type(3){color:var(--text-3);opacity:.72}
+.view-ide .bp-tab:nth-of-type(3):hover,.view-ide .bp-tab:nth-of-type(3).is-active{opacity:1}
+.view-ide .bp-body{padding:8px 12px}
+.view-ide .bp-shell{opacity:.72}
+/* Give the editor slightly more vertical space and reduce minimap noise. */
+.view-ide .ed-tabs,.view-ide .ed-tab{height:34px}
+.view-ide .ed-crumbs{height:28px}
+.view-ide .minimap{width:58px;opacity:.5}
+.view-ide .it-right{gap:4px}
+.view-ide .it-right .icon-btn.m-hide{opacity:.72}
+.view-ide .it-right .icon-btn.m-hide:hover,.view-ide .it-right .pill-run{opacity:1}
+@media (max-width:1280px){.view-ide .ide-files{width:190px}.view-ide .ide-agent{width:268px}}
+@media (max-width:980px){.view-ide .ide-files{width:180px}.view-ide .ide-agent{width:250px}}
