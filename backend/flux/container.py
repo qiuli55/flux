@@ -6,6 +6,7 @@ M0 是单进程装配。后续拆分微服务（§17.2 后端服务拆分）时�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -95,12 +96,12 @@ class Container:
         self.agent_repo = AgentRepository(self.session_factory)  # type: ignore[attr-defined]
         self.agents = AgentManager(self.bus, self.agent_repo)
         self.installations = InstallationService(
-            InstallationRepository(self.session_factory),  # type: ignore[attr-defined]
+            InstallationRepository(self.session_factory),
             bus=self.bus,
             adapters=cli_adapters,
         )
         self.capability_import = CapabilityImportService(
-            ImportedCapabilityRepository(self.session_factory),  # type: ignore[attr-defined]
+            ImportedCapabilityRepository(self.session_factory),
             agents=AgentScanner(self.installations),
             bus=self.bus,
         )
@@ -129,8 +130,6 @@ class Container:
             self.bus,
             workspace_root=self.settings.workspace_root,
         )
-        # Human Terminal is a separate lifecycle: its PTY processes must survive client
-        # websocket reconnects but must always be reaped when the Flux process exits.
         self.human_pty = HumanPtyService(
             self.terminal_repo,
             self.bus,
@@ -169,6 +168,21 @@ class Container:
         self.dsh.supervisor.add_reconcile_hook(self.task_runs.reconcile_orphan_tasks)
         self.bus.subscribe(Events.MCP_TOOL_CALLED, self._on_mcp_tool_called)
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
+
+    def set_workspace_root(self, root: str) -> str:
+        """Switch the live IDE workspace root for all filesystem-bound services."""
+        resolved = Path(root).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"工作目录不存在或不是目录：{resolved}")
+        value = str(resolved)
+        self.settings.workspace_root = value
+        self.apply_engine.workspace_root = value
+        self.terminal.workspace_root = value
+        self.human_pty.workspace_root = value
+        self.git_client.workspace_root = value
+        self.files.workspace_root = value
+        self.brain.workspace_root = value
+        return value
 
     async def _on_mcp_tool_called(self, _event: str, payload: dict[str, object]) -> None:
         if payload.get("error"):
