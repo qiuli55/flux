@@ -42,6 +42,12 @@ class FluxApi(
         }
         .build()
 
+    // 终端命令可能运行数分钟甚至更久，不能沿用普通 API 的 120 秒读取超时。
+    // 实时输出由 SSE 提供，HTTP 请求只等待服务端返回最终事件。
+    private val terminalClient = client.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
     private val sseFactory = EventSources.createFactory(
         client.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).build(),
     )
@@ -140,7 +146,7 @@ class FluxApi(
         get("api/v1/terminal/sessions/$sessionId/events?after_seq=$afterSeq&limit=$limit")
 
     suspend fun runTerminalCommand(sessionId: String, command: String): TerminalEvent =
-        post("api/v1/terminal/sessions/$sessionId/commands", buildJsonObject { put("command", command) })
+        terminalPost("api/v1/terminal/sessions/$sessionId/commands", buildJsonObject { put("command", command) })
 
     suspend fun stopTerminalSession(sessionId: String, force: Boolean): TerminalSession =
         post("api/v1/terminal/sessions/$sessionId/stop", buildJsonObject { put("force", force) })
@@ -180,11 +186,22 @@ class FluxApi(
 
     private suspend inline fun <reified T> post(path: String, body: JsonObject): T = request("POST", path, body)
 
-    private suspend inline fun <reified T> request(method: String, path: String, body: JsonObject?): T {
+    private suspend inline fun <reified T> terminalPost(path: String, body: JsonObject): T =
+        requestWithClient(terminalClient, "POST", path, body)
+
+    private suspend inline fun <reified T> request(method: String, path: String, body: JsonObject?): T =
+        requestWithClient(client, method, path, body)
+
+    private suspend inline fun <reified T> requestWithClient(
+        httpClient: OkHttpClient,
+        method: String,
+        path: String,
+        body: JsonObject?,
+    ): T {
         val requestBody = body?.toString()?.toRequestBody(JSON)
         val request = Request.Builder().url(url(path)).method(method, requestBody).build()
         val response = try {
-            client.newCall(request).execute()
+            httpClient.newCall(request).execute()
         } catch (e: Exception) {
             throw FluxApiException("network_error", e.message ?: "网络请求失败")
         }
