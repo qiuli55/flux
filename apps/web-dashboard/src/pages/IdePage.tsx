@@ -799,6 +799,43 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     }
   }, [commitMessage, committableChanges, loadGit, loadChanges]);
 
+  const stagedFiles = useMemo(
+    () => (gitStatus?.files ?? []).filter((file) => file.staged),
+    [gitStatus],
+  );
+
+  const stageGitPaths = useCallback(
+    async (paths: string[], stage: boolean) => {
+      if (paths.length === 0) return;
+      try {
+        const next = stage ? await api.gitStage(paths) : await api.gitUnstage(paths);
+        setGitStatus(next);
+        toast((stage ? "已暂存 " : "已取消暂存 ") + paths.length + " 个文件");
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+    },
+    [],
+  );
+
+  const handleCommitStaged = useCallback(async () => {
+    const message = commitMessage.trim();
+    if (!message || stagedFiles.length === 0) return;
+    setCommitBusy(true);
+    try {
+      const commit = await api.gitCommit({ message, change_ids: [], paths: [] });
+      setLastCommit(commit);
+      setCommitTouched(false);
+      window.localStorage.removeItem(LS_COMMIT_TOUCHED);
+      toast("已提交暂存区 " + commit.short_sha + " · " + commit.files.length + " 个文件");
+      await loadGit();
+      await loadChanges();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setCommitBusy(false);
+    }
+  }, [commitMessage, loadChanges, loadGit, stagedFiles]);
   /* ---------- 意图与快捷键 ---------- */
 
   const showBottom = useCallback(
