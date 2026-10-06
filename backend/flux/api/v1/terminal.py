@@ -159,6 +159,15 @@ async def list_human_sessions(
     return ok([s.to_dict() for s in sessions], metadata={"count": len(sessions)})
 
 
+@router.get("/pty/sessions/{session_id}")
+async def get_human_session(
+    session_id: str,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """Get one Human Terminal session and reject Agent Terminal IDs."""
+    return ok((await container.human_pty.get_session(session_id)).to_dict())
+
+
 @router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
