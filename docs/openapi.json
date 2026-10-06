@@ -3650,6 +3650,46 @@
         ]
       }
     },
+    "/api/v1/terminal/pty/sessions/{session_id}": {
+      "get": {
+        "description": "Get one Human Terminal session and reject Agent Terminal IDs.",
+        "operationId": "get_human_session_api_v1_terminal_pty_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Human Session Api V1 Terminal Pty Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Human Session",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
     "/api/v1/terminal/sessions": {
       "get": {
         "description": "最近的终端会话列表，最新的在前。",
