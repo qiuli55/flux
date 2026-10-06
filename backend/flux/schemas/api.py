@@ -173,6 +173,8 @@ class ConnectorExecuteRequest(BaseModel):
     agent_id: str | None = None
 
 
+class GitPathsRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=200)
 class GitDiffRequest(BaseModel):
     paths: list[str] = Field(default_factory=list)
     staged: bool = False
