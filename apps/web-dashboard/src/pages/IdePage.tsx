@@ -24,6 +24,7 @@ import type {
   GitStatus,
   Project,
   RecoveryItem,
+  SearchHit,
   Task,
   TaskMessage,
 } from "../api/types";
@@ -254,6 +255,10 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [treeError, setTreeError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [revealLine, setRevealLine] = useState<{ path: string; line: number } | null>(null);
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(CHANGES_TAB);
@@ -461,6 +466,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     setActiveTab(path);
   }, []);
 
+  const openFileAtLine = useCallback(
+    (path: string, line: number) => {
+      openFile(path);
+      setRevealLine({ path, line });
+    },
+    [openFile],
+  );
+
   const closeTab = useCallback(
     (key: string) => {
       if (key === CHANGES_TAB) {
@@ -477,6 +490,17 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     [openTabs, activeTab],
   );
 
+  useEffect(() => {
+    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
+      );
+      row?.scrollIntoView({ block: "center", behavior: "smooth" });
+      setRevealLine(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeFile, activeTab, revealLine]);
   // 打开文件时按需读取内容（只读）
   useEffect(() => {
     if (!activeTab || activeTab === CHANGES_TAB || !projectId) return;
@@ -814,14 +838,36 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const tree = useMemo(() => buildTree(entries), [entries]);
   const rootName = treeRoot ? (treeRoot.split("/").filter(Boolean).pop() ?? treeRoot) : "工作区";
 
-  const searchHits = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return [];
-    return entries
-      .filter((entry) => entry.name.toLowerCase().includes(keyword) || entry.path.toLowerCase().includes(keyword))
-      .slice(0, 200);
-  }, [entries, search]);
-
+  useEffect(() => {
+    const keyword = search.trim();
+    if (railPanel !== "search" || !projectId || !keyword) {
+      setSearchHits([]);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+    let alive = true;
+    setSearchLoading(true);
+    setSearchError(null);
+    const timer = window.setTimeout(() => {
+      api.searchWorkspace(projectId, keyword, { maxResults: 200 })
+        .then((hits) => {
+          if (alive) setSearchHits(hits);
+        })
+        .catch((error) => {
+          if (!alive) return;
+          setSearchHits([]);
+          setSearchError(errorMessage(error));
+        })
+        .finally(() => {
+          if (alive) setSearchLoading(false);
+        });
+    }, 180);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, railPanel, search]);
   const assistantTurns = useMemo(
     () => taskMessages.filter((message) => message.role === "assistant"),
     [taskMessages],
@@ -1548,39 +1594,42 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               <div className="fl-search">
                 <input
                   value={search}
-                  placeholder="按文件名或路径搜索"
+                  placeholder="搜索工作区代码…"
                   onChange={(event) => setSearch(event.target.value)}
                 />
               </div>
               {search.trim() === "" ? (
-                <div className="fl-empty">在工作区文件树里搜索文件名与路径（大小写不敏感）。</div>
+                <div className="fl-empty">搜索工作区内的代码内容，点击结果可直接打开文件并定位到对应行。</div>
+              ) : searchLoading ? (
+                <div className="fl-empty">正在搜索「{search.trim()}」…</div>
+              ) : searchError ? (
+                <div className="fl-empty">{searchError}</div>
               ) : searchHits.length === 0 ? (
-                <div className="fl-empty">没有匹配「{search.trim()}」的文件。</div>
+                <div className="fl-empty">没有匹配「{search.trim()}」。</div>
               ) : (
                 <ul className="search-list">
-                  {searchHits.map((entry) => (
+                  {searchHits.map((entry, index) => (
                     <li
-                      key={entry.path}
+                      key={`${entry.path}:${entry.line}:${entry.column}:${index}`}
                       className="search-item"
-                      onClick={() => {
-                        if (entry.kind === "file") openFile(entry.path);
-                        else {
-                          setRailPanel("files");
-                          void toggleDir(entry.path);
-                        }
-                      }}
+                      onClick={() => openFileAtLine(entry.path, entry.line)}
+                      title={`${entry.path}:${entry.line}:${entry.column}`}
                     >
-                      <span className={`t-ic ${entry.kind === "dir" ? "folder" : iconClass(entry.path)}`} />
-                      <span className="t-name">{entry.name}</span>
-                      <span className="search-path">{entry.path}</span>
+                      <span className={`t-ic ${iconClass(entry.path)}`} />
+                      <span className="search-hit-main">
+                        <span className="search-path">{entry.path}</span>
+                        <span className="search-hit-line">
+                          {entry.line}:{entry.column}
+                        </span>
+                        <span className="search-hit-preview">{entry.text}</span>
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
           ) : null}
-
-          {railPanel === "git" ? (
+{railPanel === "git" ? (
             <div className="fl-panel">
               <div className="fl-git-head">
                 变更 ({gitStatus?.files.length ?? 0}) · {branch ?? "未关联仓库"}
