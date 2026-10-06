@@ -183,3 +183,23 @@ def test_human_websocket_accepts_auth_header_when_rest_is_secured(
             headers=_auth(TOKEN),
         ) as websocket:
             websocket.send_json({"type": "stop", "force": True})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
+def test_human_websocket_accepts_auth_cookie_when_rest_is_secured(
+    secured_app_settings: Settings, db_schema: None
+) -> None:
+    app = create_app(secured_app_settings)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        created = test_client.post(
+            "/api/v1/terminal/pty/sessions",
+            headers=_auth(TOKEN),
+        )
+        assert created.status_code == 200
+        session_id = created.json()["data"]["id"]
+
+        with test_client.websocket_connect(
+            f"/api/v1/terminal/pty/sessions/{session_id}/ws",
+            headers={"Cookie": f"flux_auth_token={TOKEN}"},
+        ) as websocket:
+            websocket.send_json({"type": "stop", "force": True})
