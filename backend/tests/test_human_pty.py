@@ -83,6 +83,18 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     )
     assert agent_get_human.status_code == 409
 
+    agent_run_human = apply_client.post(
+        f"/api/v1/terminal/sessions/{session_id}/commands",
+        json={"command": "echo should-not-run"},
+    )
+    assert agent_run_human.status_code == 409
+
+    agent_stop_human = apply_client.post(
+        f"/api/v1/terminal/sessions/{session_id}/stop",
+        json={"force": True},
+    )
+    assert agent_stop_human.status_code == 409
+
     human_get_agent = apply_client.get(
         f"/api/v1/terminal/pty/sessions/{agent['data']['id']}"
     )
