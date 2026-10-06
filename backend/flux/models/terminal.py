@@ -25,6 +25,8 @@ class TerminalSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), index=True, nullable=True)
     # 会话执行命令的工作目录：创建时解析并固定，之后不再变（工作区根）
     workspace_root: Mapped[str] = mapped_column(String(1024))
+    # 会话类型：持久化区分 Agent Terminal 与 Human Terminal，避免两个运行时互相接管。
+    kind: Mapped[str] = mapped_column(String(16), default=TerminalSessionKind.AGENT.value)
     # 取值见 flux.enums.TerminalSessionStatus
     status: Mapped[str] = mapped_column(String(16), index=True, default="active")
     # 下一条事件的 seq（会话内单调递增，从 1 开始）
@@ -36,6 +38,7 @@ class TerminalSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "id": str(self.id),
             "run_id": str(self.run_id) if self.run_id is not None else None,
             "workspace_root": self.workspace_root,
+            "kind": self.kind,
             "status": self.status,
             "next_seq": self.next_seq,
             "created_at": self.created_at.isoformat() if self.created_at is not None else None,
