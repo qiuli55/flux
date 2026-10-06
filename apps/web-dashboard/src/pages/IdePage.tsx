@@ -492,11 +492,11 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       const sessions = (await api.listTerminalSessions())
         .filter((session) => session.kind === "agent")
         .filter((session) => session.workspace_root.replace(/[/\\]+$/, "") === root)
-        .slice(0, 8);
+        .slice(0, 4);
 
       const sessionResults = await Promise.all(
         sessions.map(async (session) => {
-          const after = Math.max(0, session.next_seq - 401);
+          const after = Math.max(0, session.next_seq - 201);
           const events = await api.terminalEvents(session.id, after);
           const problems: Problem[] = [];
           let currentCommand: TerminalEvent["command"] = null;
@@ -569,6 +569,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
 
   useEffect(() => {
     if (bottomTab === "problems") void loadTerminalProblems();
+  }, [bottomTab, loadTerminalProblems]);
+
+  useEffect(() => {
+    if (bottomTab !== "problems") return;
+    const timer = window.setInterval(() => {
+      void loadTerminalProblems();
+    }, 8000);
+    return () => window.clearInterval(timer);
   }, [bottomTab, loadTerminalProblems]);
 
   useEffect(() => {
