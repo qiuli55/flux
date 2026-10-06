@@ -841,6 +841,17 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         toggleFocus();
         return;
       }
+      if (mod && key === "p") {
+        event.preventDefault();
+        setQuickOpen(true);
+        setQuickOpenQuery("");
+        return;
+      }
+      if (mod && key === "w") {
+        event.preventDefault();
+        closeActiveTab();
+        return;
+      }
       if (event.key === "Escape") {
         if (reviewId) setReviewId(null);
         else if (projectOpen) setProjectOpen(false);
@@ -848,7 +859,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFiles, toggleBottom, toggleFocus, reviewId, projectOpen]);
+  }, [closeActiveTab, toggleFiles, toggleBottom, toggleFocus, reviewId, projectOpen]);
 
   /* ---------- 底部面板拖动调高 ---------- */
 
