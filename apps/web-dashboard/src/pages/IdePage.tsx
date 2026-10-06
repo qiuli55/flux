@@ -527,6 +527,20 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     [openTabs, activeTab],
   );
 
+  const closeActiveTab = useCallback(() => {
+    if (!activeTab || activeTab === CHANGES_TAB) return;
+    closeTab(activeTab);
+  }, [activeTab, closeTab]);
+
+  const quickOpenItems = useMemo(() => {
+    const keyword = quickOpenQuery.trim().toLowerCase();
+    const filesFromTree = entries.filter((entry) => entry.kind === "file").map((entry) => entry.path);
+    const candidates = [...new Set([...recentFiles, ...filesFromTree])];
+    const filtered = keyword
+      ? candidates.filter((path) => path.toLowerCase().includes(keyword))
+      : candidates;
+    return filtered.slice(0, 60);
+  }, [entries, quickOpenQuery, recentFiles]);
   // 打开文件时按需读取内容（只读）
   useEffect(() => {
     if (!activeTab || activeTab === CHANGES_TAB || !projectId) return;
