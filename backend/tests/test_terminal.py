@@ -137,6 +137,34 @@ async def test_stop_blocks_a_command_already_queued(
     )
 
 
+async def test_stop_fails_closed_when_process_tree_cannot_be_confirmed(
+    apply_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = await apply_container.terminal.create_session()
+    monkeypatch.setattr(
+        apply_container.terminal,
+        "_terminate_tree",
+        lambda *_args, **_kwargs: False,
+    )
+    task = asyncio.create_task(
+        apply_container.terminal.run_command(session.id, _py("import time; time.sleep(30)"))
+    )
+    await asyncio.sleep(0.4)
+
+    with pytest.raises(ConflictError):
+        await apply_container.terminal.stop(session.id, force=True)
+
+    assert (
+        await apply_container.terminal.get_session(session.id)
+    ).status == TerminalSessionStatus.ACTIVE.value
+
+    # Clean up the process using the real terminator after validating fail-closed behavior.
+    monkeypatch.undo()
+    await apply_container.terminal.stop(session.id, force=True)
+    await asyncio.wait_for(task, timeout=10)
+
+
 async def test_force_stop_terminates_a_long_running_command(apply_container: Container) -> None:
     """Force Stop 必须真的杀掉进程树：命令立刻结束，而不是等它自然跑完（§3.4 / §10）。"""
     session = await apply_container.terminal.create_session()
