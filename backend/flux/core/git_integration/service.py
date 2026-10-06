@@ -76,6 +76,25 @@ class GitService:
             self._git.checkout, target, create=create, workspace_root=workspace_root
         )
 
+    async def stage(
+        self,
+        paths: Sequence[str],
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> GitStatus:
+        return await asyncio.to_thread(
+            self._git.stage, list(paths), workspace_root=workspace_root
+        )
+
+    async def unstage(
+        self,
+        paths: Sequence[str],
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> GitStatus:
+        return await asyncio.to_thread(
+            self._git.unstage, list(paths), workspace_root=workspace_root
+        )
     async def commit(
         self,
         message: str,
