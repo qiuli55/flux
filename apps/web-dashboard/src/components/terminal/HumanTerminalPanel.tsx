@@ -226,20 +226,25 @@ export function HumanTerminalPanel() {
       const created = await createHumanSession();
       setSessions((previous) => [created, ...previous]);
       setSessionId(created.id);
-    } catch (caught) { setError(errorText(caught)); }
-  }, []);
+      if (splitDirection && splitSessions.length >= 2) {
+        setSplitSessions((previous) =>
+          previous.map((paneId) => (paneId === sessionId ? created.id : paneId)),
+        );
+      }
+    } catch (caught) {
+      setError(errorText(caught));
+    }
+  }, [sessionId, splitDirection, splitSessions.length]);
 
   const stopSession = useCallback(async (id: string) => {
-    const runtime = runtimesRef.current[id];
-    if (runtime) {
-      runtime.manualClose = true;
-      if (runtime.reconnectTimer !== null) window.clearTimeout(runtime.reconnectTimer);
-      if (runtime.socket?.readyState === WebSocket.OPEN) {
-        runtime.socket.send(JSON.stringify({ type: "stop", force: false }));
-      }
+    setError(null);
+    try {
+      await api.stopHumanTerminalSession(id, false);
       destroyRuntime(id);
+      await refreshSessions();
+    } catch (caught) {
+      setError(errorText(caught));
     }
-    await refreshSessions();
   }, [destroyRuntime, refreshSessions]);
 
   const selectSession = useCallback((id: string) => {
@@ -434,7 +439,7 @@ export function HumanTerminalPanel() {
       <div className="ht-toolbar">
         <div className="ht-tabs" role="tablist" aria-label="终端会话">
           {userSessions.map((session, index) => (
-            <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => setSessionId(session.id)} title={session.workspace_root}>
+            <button type="button" role="tab" aria-selected={session.id === sessionId} key={session.id} className={`ht-tab${session.id === sessionId ? " is-active" : ""}`} onClick={() => selectSession(session.id)} title={session.workspace_root}>
               <span className={`ht-dot${connectionState[session.id] === "connected" ? " is-live" : ""}`} />{labelFor(session, index)}
             </button>
           ))}
