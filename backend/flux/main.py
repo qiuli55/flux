@@ -29,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await container.agents.load_from_db()
         await container.agent_tokens.migrate_legacy_tokens()
         await container.workspace.recover_interrupted_applies()
+        await container.human_pty.recover_orphaned_sessions()
         if app_settings.dsh_enabled:
             await container.dsh.supervisor.startup_recovery()
             await container.task_runs.reconcile_orphan_tasks()
