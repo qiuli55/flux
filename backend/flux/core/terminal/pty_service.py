@@ -190,7 +190,7 @@ class HumanPtyService:
             if not confirmed:
                 with suppress(ProcessLookupError):
                     await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
-                confirmed = await self._wait_for_group_exit(pgid, KILL_CONFIRM_SECONDS)
+                confirmed = await self._wait_for_group_exit(pgid, pid, KILL_CONFIRM_SECONDS)
             if not confirmed:
                 raise ConflictError(
                     "无法确认 Human Terminal 进程组已退出",
@@ -240,17 +240,37 @@ class HumanPtyService:
             pass
 
     @staticmethod
-    async def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+    async def _wait_for_group_exit(pgid: int, pid: int, timeout: float) -> bool:
+        """Confirm the leader is reaped before checking whether any process remains in the group."""
         deadline = asyncio.get_running_loop().time() + timeout
+        leader_reaped = False
         while asyncio.get_running_loop().time() < deadline:
+            if not leader_reaped:
+                try:
+                    result = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
+                    leader_reaped = result[0] == pid
+                except ChildProcessError:
+                    leader_reaped = True
+
             try:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
-                return True
+                return leader_reaped
             except PermissionError:
-                # The group still exists; the caller must not claim it is gone.
                 return False
+
+            # A zombie leader has been reaped above, so killpg(..., 0) now reflects
+            # live group membership instead of the unreaped child itself.
             await asyncio.sleep(0.05)
+
+        if not leader_reaped:
+            try:
+                result = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
+                leader_reaped = result[0] == pid
+            except ChildProcessError:
+                leader_reaped = True
+        if not leader_reaped:
+            return False
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
