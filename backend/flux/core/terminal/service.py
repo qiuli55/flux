@@ -186,7 +186,7 @@ class TerminalService:
         text = (command or "").strip()
         if not text:
             raise ValidationError("命令不能为空", details={"session_id": str(session_id)})
-        session = await self._repo.get_session(session_id)
+        session = await self.get_session(session_id)
         if TerminalSessionStatus(session.status) is not TerminalSessionStatus.ACTIVE:
             raise ConflictError(
                 f"终端会话已 {session.status}，不能再执行命令",
@@ -272,7 +272,7 @@ class TerminalService:
 
     async def stop(self, session_id: str | uuid.UUID, *, force: bool = False) -> TerminalSession:
         """停止会话；confirm 到进程组消失之后才写 stopped，状态不谎报。"""
-        session = await self._repo.get_session(session_id)
+        session = await self.get_session(session_id)
         await self._emit(
             session.id,
             TerminalEventKind.STOP_REQUESTED,
