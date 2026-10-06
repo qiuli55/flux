@@ -39,6 +39,7 @@ import { ROLE_LABELS, STATE_LABELS } from "../data/team";
 /** 后端允许的最大展开层数（MAX_TREE_DEPTH） */
 const MAX_DEPTH = 4;
 const LS_COMMIT_TOUCHED = "flux.ide.commitTouched";
+const LS_RECENT_FILES = "flux.ide.recentFiles";
 
 type RailPanel = "files" | "search" | "git" | "debug" | "ext";
 type BottomTab = "flow" | "changes" | "git";
@@ -267,7 +268,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [revealLine, setRevealLine] = useState<{ path: string; line: number } | null>(null);
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
-  const [recentFiles, setRecentFiles] = useState<string[]>([]);
+  const [recentFiles, setRecentFiles] = useState<string[]>(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(LS_RECENT_FILES) ?? "[]");
+      return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string").slice(0, 20) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeTab, setActiveTab] = useState<string | null>(CHANGES_TAB);
   const [files, setFiles] = useState<Record<string, FileContent>>({});
   const [fileBusy, setFileBusy] = useState(false);
@@ -285,6 +293,9 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   );
   const [commitBusy, setCommitBusy] = useState(false);
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null);
+  useEffect(() => {
+    window.localStorage.setItem(LS_RECENT_FILES, JSON.stringify(recentFiles));
+  }, [recentFiles]);
 
   const [agents, setAgents] = useState<AgentHandle[]>([]);
   const [task, setTask] = useState<Task | null>(null);
