@@ -43,3 +43,15 @@
 .fl-search > button { min-width: 34px; height: 30px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-2, #9aa3b8); cursor: pointer; font-size: 11px; }
 .fl-search > button:hover, .fl-search > button.is-active { border-color: var(--line, #232741); background: rgba(124,92,255,.12); color: var(--text, #e8eaf3); }
 .fl-replace .btn { white-space: nowrap; }
+
+/* Quick Open */
+.quick-open-dialog { width: min(720px, calc(100vw - 40px)); max-height: min(640px, calc(100vh - 80px)); overflow: hidden; border: 1px solid var(--line, #232741); border-radius: 10px; background: #0f121a; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.quick-open-input { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line, #232741); }
+.quick-open-input > span { color: var(--text-3, #666e85); font-size: 18px; }
+.quick-open-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text, #e8eaf3); font: 14px var(--mono, monospace); }
+.quick-open-input kbd { color: var(--text-3, #666e85); font-size: 10px; }
+.quick-open-list { max-height: 560px; overflow: auto; padding: 5px; }
+.quick-open-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2, #9aa3b8); text-align: left; cursor: pointer; }
+.quick-open-item:hover, .quick-open-item.is-active { background: rgba(124,92,255,.11); color: var(--text, #e8eaf3); }
+.quick-open-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono, monospace); }
+.quick-open-empty { padding: 24px 12px; color: var(--text-3, #666e85); text-align: center; font-size: 12px; }
