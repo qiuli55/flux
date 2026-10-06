@@ -164,6 +164,53 @@ async def test_shutdown_closes_active_agent_sessions_and_rejects_new_work(
         await apply_container.terminal.run_command(second.id, _py("print('must-not-run')"))
 
 
+async def test_shutdown_leaves_session_active_when_process_exit_is_unconfirmed(
+    apply_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = await apply_container.terminal.create_session()
+
+    class LiveProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    key = str(session.id)
+    apply_container.terminal._processes[key] = LiveProcess()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        apply_container.terminal,
+        "_terminate_tree",
+        lambda *_args, **_kwargs: False,
+    )
+
+    await apply_container.terminal.shutdown()
+
+    assert (
+        await apply_container.terminal.get_session(session.id)
+    ).status == TerminalSessionStatus.ACTIVE.value
+    apply_container.terminal._processes.clear()
+
+
+async def test_create_session_closes_db_row_when_created_event_fails(
+    apply_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_emit(*_args, **_kwargs):
+        raise RuntimeError("simulated event-store failure")
+
+    monkeypatch.setattr(apply_container.terminal, "_emit", fail_emit)
+
+    with pytest.raises(RuntimeError, match="simulated event-store failure"):
+        await apply_container.terminal.create_session()
+
+    rows = await apply_container.terminal_repo.list_sessions(
+        kind=TerminalSessionKind.AGENT,
+        status=TerminalSessionStatus.CLOSED,
+    )
+    assert rows
+
+
 async def test_stop_fails_closed_when_process_tree_cannot_be_confirmed(
     apply_container: Container,
     monkeypatch: pytest.MonkeyPatch,
