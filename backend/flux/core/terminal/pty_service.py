@@ -37,6 +37,7 @@ DEFAULT_COLS = 120
 DEFAULT_ROWS = 32
 SCROLLBACK_BYTES = 256 * 1024
 QUEUE_SIZE = 256
+STOP_GRACE_SECONDS = 1.0
 
 
 class HumanPtyService:
@@ -128,12 +129,21 @@ class HumanPtyService:
         pid = self._pids.get(key)
         if pid is None:
             return
-        if key not in self._closed:
-            try:
-                sig = signal.SIGKILL if force else signal.SIGTERM
-                await asyncio.to_thread(os.killpg, os.getpgid(pid), sig)
-            except ProcessLookupError:
-                pass
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            await self._finish(key)
+            return
+
+        try:
+            await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            await self._finish(key)
+            return
+
+        if not force and not await self._wait_for_exit(pid, STOP_GRACE_SECONDS):
+            with suppress(ProcessLookupError):
+                await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
         await self._finish(key)
 
     async def shutdown(self) -> None:
@@ -165,6 +175,19 @@ class HumanPtyService:
         except (AttributeError, OSError):
             pass
 
+    @staticmethod
+    async def _wait_for_exit(pid: int, timeout: float) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                result = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if result[0] == pid:
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
     async def _read_loop(self, key: str) -> None:
         fd = self._fds.get(key)
         if fd is None:
@@ -193,9 +216,6 @@ class HumanPtyService:
                 try:
                     queue.put_nowait(data)
                 except asyncio.QueueFull:
-                    # A stalled browser must not backpressure the PTY. Drop queued
-                    # chunks for that subscriber and let its next reconnect receive
-                    # the bounded scrollback instead.
                     with suppress(asyncio.QueueEmpty):
                         queue.get_nowait()
                     with suppress(asyncio.QueueFull):
@@ -245,8 +265,6 @@ class HumanPtyService:
                 await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
             await self._emit(session.id, TerminalEventKind.SESSION_CLOSED)
         except Exception:
-            # PTY cleanup is already complete; database/event cleanup must not leak
-            # a process or break the server shutdown path.
             return
 
     async def _emit(self, session_id: uuid.UUID, kind: TerminalEventKind) -> None:
