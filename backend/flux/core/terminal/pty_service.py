@@ -19,7 +19,6 @@ import errno
 import os
 import signal
 import struct
-import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
