@@ -70,6 +70,15 @@ class TerminalService:
         #: seq 分配与落库串行化：并发 emit（输出线程 + Stop）不允许撞号
         self._emit_lock = asyncio.Lock()
 
+    @property
+    def workspace_root(self) -> Path | None:
+        """当前终端工作目录根（桌面端切换工作目录时由 Container 赋值）。"""
+        return self._configured_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        self._configured_root = Path(value).expanduser() if value else None
+
     # --- 会话 ---
 
     async def create_session(
@@ -246,9 +255,7 @@ class TerminalService:
         key = str(session.id)
         self._command_tasks[key] = task
         try:
-            await self._emit(
-                session.id, TerminalEventKind.COMMAND_STARTED, source, command=command
-            )
+            await self._emit(session.id, TerminalEventKind.COMMAND_STARTED, source, command=command)
             loop = asyncio.get_running_loop()
             process = subprocess.Popen(  # noqa: S602 - 终端本身就是为了执行命令（用户/Agent 主动发起）
                 command,
@@ -391,9 +398,7 @@ class TerminalService:
                     continue
 
         tasks = [
-            task
-            for task in self._command_tasks.values()
-            if task is not asyncio.current_task()
+            task for task in self._command_tasks.values() if task is not asyncio.current_task()
         ]
         if tasks:
             await asyncio.gather(
@@ -426,14 +431,10 @@ class TerminalService:
         # Do not discard references to unconfirmed live processes: keeping them tracked
         # is preferable to falsely reporting a clean shutdown.
         self._processes = {
-            key: process
-            for key, process in self._processes.items()
-            if process.poll() is None
+            key: process for key, process in self._processes.items() if process.poll() is None
         }
         self._command_tasks = {
-            key: task
-            for key, task in self._command_tasks.items()
-            if not task.done()
+            key: task for key, task in self._command_tasks.items() if not task.done()
         }
         self._stopping.clear()
         self._locks.clear()

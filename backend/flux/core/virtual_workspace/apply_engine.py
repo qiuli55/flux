@@ -142,6 +142,15 @@ class ApplyEngine:
         self._test_command = test_command
         self._test_timeout = test_timeout_seconds
 
+    @property
+    def workspace_root(self) -> Path | None:
+        """当前落盘根（桌面端切换工作目录时由 Container 赋值）。"""
+        return self._configured_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        self._configured_root = Path(value).expanduser() if value else None
+
     # --- 主流程 ---
 
     def apply(

@@ -66,10 +66,9 @@ class TerminalRepository:
             statement = statement.where(TerminalSession.kind == kind.value)
         if status is not None:
             statement = statement.where(TerminalSession.status == status.value)
-        statement = (
-            statement.order_by(TerminalSession.created_at.desc(), TerminalSession.id.desc())
-            .limit(limit)
-        )
+        statement = statement.order_by(
+            TerminalSession.created_at.desc(), TerminalSession.id.desc()
+        ).limit(limit)
         async with self._session_factory() as db:
             return list(await db.scalars(statement))
 

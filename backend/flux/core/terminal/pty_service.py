@@ -69,7 +69,17 @@ class HumanPtyService:
         self._buffers: dict[str, bytearray] = {}
         self._subscribers: dict[str, set[asyncio.Queue[bytes | None]]] = {}
         self._reader_tasks: dict[str, asyncio.Task[None]] = {}
+        self._finalizers: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+
+    @property
+    def workspace_root(self) -> Path | None:
+        """当前 PTY 会话工作目录根（桌面端切换工作目录时由 Container 赋值）。"""
+        return self._configured_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        self._configured_root = Path(value).expanduser() if value else None
 
     async def create_session(
         self, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS
@@ -106,9 +116,7 @@ class HumanPtyService:
                 await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
             raise
 
-        self._reader_tasks[key] = asyncio.create_task(
-            self._read_loop(key), name=f"flux-pty-{key}"
-        )
+        self._reader_tasks[key] = asyncio.create_task(self._read_loop(key), name=f"flux-pty-{key}")
         return session
 
     async def recover_orphaned_sessions(self) -> int:
@@ -197,12 +205,16 @@ class HumanPtyService:
         finally:
             subscribers.discard(queue)
 
-    async def stop(
-        self, session_id: str | uuid.UUID, *, force: bool = False
-    ) -> TerminalSession:
+    async def stop(self, session_id: str | uuid.UUID, *, force: bool = False) -> TerminalSession:
         key = str(session_id)
         pid = self._pids.get(key)
         if pid is None:
+            # 进程句柄已被摘除，但终结可能还在落库（reader 触发的）。等它完成再读状态，
+            # 否则 stop 会把仍是 active 的会话返回给用户。
+            finalizer = self._finalizers.get(key)
+            if finalizer is not None and not finalizer.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.shield(finalizer)
             return await self.get_session(session_id)
         try:
             pgid = os.getpgid(pid)
@@ -240,7 +252,7 @@ class HumanPtyService:
 
     async def shutdown(self) -> None:
         """Best-effort cleanup during app shutdown.
-        
+
         Never block the whole shutdown path on one PTY.
         """
         for key in list(self._pids):
@@ -401,43 +413,66 @@ class HumanPtyService:
             await self._finish(key)
 
     async def _finish(self, key: str) -> None:
+        """终结一个 PTY 会话；并发调用共享同一次终结，并且都等它跑完。
+
+        reader 退出（shell 自己结束）与 stop() 会同时走到这里，谁先到不固定。
+        状态与事件是在终结末尾才落库的，若后到的调用直接返回，stop() 就会把
+        "刚停掉却仍是 active"的会话返回出去（真机复现：SIGKILL 后 reader 先拿到
+        EIO 触发终结，stop 在守卫处提前返回）。因此这里不做提前返回。
+        """
         async with self._lock:
-            if key in self._closed and key not in self._fds:
-                return
-            self._closed.add(key)
-            fd = self._fds.pop(key, None)
-            pid = self._pids.pop(key, None)
-            reader = self._reader_tasks.pop(key, None)
-            subscribers = self._subscribers.pop(key, set())
-            self._buffers.pop(key, None)
-            self._write_locks.pop(key, None)
-
-        if fd is not None:
-            with suppress(OSError):
-                asyncio.get_running_loop().remove_reader(fd)
-            with suppress(OSError):
-                os.close(fd)
-        for queue in subscribers:
-            with suppress(asyncio.QueueFull):
-                queue.put_nowait(None)
-
-        current = asyncio.current_task()
-        if reader is not None and reader is not current:
-            reader.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader
-
-        if pid is not None:
-            with suppress(ChildProcessError, ProcessLookupError):
-                await asyncio.to_thread(os.waitpid, pid, 0)
-
-        try:
-            session = await self._repo.get_session(key)
-            if TerminalSessionStatus(session.status) is TerminalSessionStatus.ACTIVE:
-                await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
-            await self._emit(session.id, TerminalEventKind.SESSION_CLOSED)
-        except Exception:
+            finalizer = self._finalizers.get(key)
+            if finalizer is None:
+                if key in self._closed and key not in self._fds:
+                    # 状态已被此前的终结摘除（例如创建失败路径已清理），没有要等的东西。
+                    return
+                finalizer = asyncio.create_task(self._finalize(key), name=f"flux-pty-finish-{key}")
+                self._finalizers[key] = finalizer
+        if finalizer is asyncio.current_task():
             return
+        with suppress(asyncio.CancelledError):
+            await asyncio.shield(finalizer)
+
+    async def _finalize(self, key: str) -> None:
+        try:
+            async with self._lock:
+                if key in self._closed and key not in self._fds:
+                    return
+                self._closed.add(key)
+                fd = self._fds.pop(key, None)
+                pid = self._pids.pop(key, None)
+                reader = self._reader_tasks.pop(key, None)
+                subscribers = self._subscribers.pop(key, set())
+                self._buffers.pop(key, None)
+                self._write_locks.pop(key, None)
+
+            if fd is not None:
+                with suppress(OSError):
+                    asyncio.get_running_loop().remove_reader(fd)
+                with suppress(OSError):
+                    os.close(fd)
+            for queue in subscribers:
+                with suppress(asyncio.QueueFull):
+                    queue.put_nowait(None)
+
+            # 只取消、不等待 reader：reader 的收尾里会 await 本次终结（_finish），
+            # 终结再等 reader 会互相等待成死锁。
+            if reader is not None and reader is not asyncio.current_task():
+                reader.cancel()
+
+            if pid is not None:
+                with suppress(ChildProcessError, ProcessLookupError):
+                    await asyncio.to_thread(os.waitpid, pid, 0)
+
+            try:
+                session = await self._repo.get_session(key)
+                if TerminalSessionStatus(session.status) is TerminalSessionStatus.ACTIVE:
+                    await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
+                await self._emit(session.id, TerminalEventKind.SESSION_CLOSED)
+            except Exception:
+                return
+        finally:
+            self._finalizers.pop(key, None)
 
     async def _emit(self, session_id: uuid.UUID, kind: TerminalEventKind) -> None:
         event = await self._repo.append_event(

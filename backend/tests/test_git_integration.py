@@ -322,6 +322,7 @@ async def test_service_requires_workspace_service_for_change_ids() -> None:
 
     assert "未接入 Virtual Workspace" in excinfo.value.message
 
+
 def test_stage_and_unstage(tmp_path: Path) -> None:
     (tmp_path / "file.txt").write_text("hello\n", encoding="utf-8")
     git = GitClient(workspace_root=tmp_path)

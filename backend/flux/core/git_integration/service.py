@@ -82,9 +82,7 @@ class GitService:
         *,
         workspace_root: str | Path | None = None,
     ) -> GitStatus:
-        return await asyncio.to_thread(
-            self._git.stage, list(paths), workspace_root=workspace_root
-        )
+        return await asyncio.to_thread(self._git.stage, list(paths), workspace_root=workspace_root)
 
     async def unstage(
         self,
@@ -95,6 +93,7 @@ class GitService:
         return await asyncio.to_thread(
             self._git.unstage, list(paths), workspace_root=workspace_root
         )
+
     async def commit(
         self,
         message: str,

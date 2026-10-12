@@ -22,6 +22,7 @@ import type {
 } from "../api/types";
 import { openCommandPalette } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
+import { setSoloIntentHandler } from "../app/soloIntent";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
@@ -622,6 +623,16 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     const items = task?.confirmation?.items;
     setConfirmDraft(items ? items.map((item) => ({ ...item })) : null);
   }, [task?.id, task?.confirmation?.updated_at]);
+
+  // 向全局外壳暴露「项目列表 / Agent 面板」两个独有工具（依赖 app/soloIntent 的队列协议）。
+  // 全局导航收敛成一套后，Solo 自带左栏被隐藏，这两个入口改由顶栏按钮触发。
+  useEffect(() => {
+    setSoloIntentHandler((intent) => {
+      if (intent === "projects") setProjectListOpen(true);
+      if (intent === "agents") setAgentOpen(true);
+    });
+    return () => setSoloIntentHandler(null);
+  }, []);
 
   // 任务在跑或等人决策时轮询状态：进入终态/挂起后刷新消息与改动列表
   const activeStatus = task?.status;

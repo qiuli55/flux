@@ -118,6 +118,15 @@ class ProjectBrain:
         # 累积型分区的容量上限（批次② §4.2）：超出即裁掉最旧的，库不因只追加而无界增长
         self._section_max_entries = section_max_entries
 
+    @property
+    def workspace_root(self) -> str | Path | None:
+        """当前扫描/画像的工作区根（桌面端切换工作目录时由 Container 赋值）。"""
+        return self._workspace_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        self._workspace_root = value
+
     # --- 项目 ---
 
     async def create_project(

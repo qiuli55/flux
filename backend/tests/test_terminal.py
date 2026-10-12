@@ -136,10 +136,7 @@ async def test_stop_blocks_a_command_already_queued(
     assert finished.kind == TerminalEventKind.COMMAND_FAILED.value
 
     events = await apply_container.terminal.list_events(session.id)
-    assert not any(
-        event.command and "must-not-run-after-stop" in event.command
-        for event in events
-    )
+    assert not any(event.command and "must-not-run-after-stop" in event.command for event in events)
 
 
 async def test_shutdown_closes_active_agent_sessions_and_rejects_new_work(

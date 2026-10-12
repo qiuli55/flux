@@ -351,6 +351,7 @@ async def test_refresh_from_row_tolerates_naive_finished_at(
         pid=None,
         pgid=None,
         agent_id=None,
+        task_id=run.task_id,
         last_state_change_at=naive_finished,
         finished_at=naive_finished,
     )

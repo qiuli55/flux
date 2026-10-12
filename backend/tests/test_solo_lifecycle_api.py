@@ -19,6 +19,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,7 +32,7 @@ from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP
 from flux.core.event.bus import Events
 from flux.core.task_engine.assistant import CONFIRMATION_DIMENSIONS
-from flux.enums import DecisionMode, TaskStatus
+from flux.enums import DecisionMode, DshRunStatus, TaskStatus
 from flux.main import create_app
 from tests.fakes import (
     DshBehavior,
@@ -378,6 +379,53 @@ def test_cancel_stops_the_task_and_its_run(settings: Settings, tmp_path: Path) -
             time.sleep(0.01)
         assert run["status"] == "cancelled"
         assert _task(client, task["id"])["status"] == "cancelled"
+
+
+def test_cancel_after_run_completed_keeps_task_completed(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """竞态窗口：Run 已成功完成、任务尚未被桥接收尾时收到取消。
+
+    真实现场（2026-10-09 桩链路实测，run 22bbe5e6）：取消读任务时它还是 running，
+    而 Run 的终态已是 completed；旧实现把"非 cancelled"一律记 failed，把一次成功的
+    执行改判成失败。修复后按 Run 的真实结局收尾：任务与响应都停留在 completed。
+    """
+    root = tmp_path / "project"
+    root.mkdir(exist_ok=True)
+    enabled = settings.model_copy(
+        update={
+            "dsh_enabled": True,
+            "dsh_home": str(tmp_path / "dsh-home"),
+            "dsh_workspace": str(tmp_path / "dsh-ws"),
+            "workspace_root": str(root),
+        }
+    )
+    app = create_app(enabled)
+    factory = FakeDshHarnessFactory(_hold_behavior)
+    with TestClient(app) as client:
+        container = app.state.container
+        container.dsh = FluxDshClient(
+            enabled,
+            bus=container.bus,
+            harness_factory=factory,
+            token_service=container.agent_tokens,
+        )
+        try:
+            task = _create(client)
+            _start(client, task["id"])
+
+            async def cancel_reports_completed(run_id: str) -> Any:
+                """替身：取消发出的瞬间 Run 已经成功结束（终态先行、桥接收尾在后）。"""
+                return SimpleNamespace(status=DshRunStatus.COMPLETED)
+
+            container.dsh.cancel = cancel_reports_completed  # type: ignore[method-assign]
+            response = client.post(f"{PREFIX}/tasks/{task['id']}/cancel")
+            assert response.status_code == 200
+            assert response.json()["data"]["status"] == "completed"
+            assert _task(client, task["id"])["status"] == "completed"
+        finally:
+            for harness in factory.created:
+                harness.cancel_event.set()
 
 
 # --- §5 决策模式 ---

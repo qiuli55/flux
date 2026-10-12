@@ -90,9 +90,7 @@ async def reject_changes(
 ) -> dict[str, object]:
     rejected = [
         c.to_dict()
-        for c in await container.workspace.reject_many(
-            payload.change_ids, reason=payload.reason
-        )
+        for c in await container.workspace.reject_many(payload.change_ids, reason=payload.reason)
     ]
     return ok(rejected, metadata={"count": len(rejected), "reason": payload.reason})
 
@@ -111,9 +109,7 @@ async def reject_group(
 ) -> dict[str, object]:
     rejected = [
         c.to_dict()
-        for c in await container.workspace.reject_group(
-            payload.group_id, reason=payload.reason
-        )
+        for c in await container.workspace.reject_group(payload.group_id, reason=payload.reason)
     ]
     return ok(rejected, metadata={"count": len(rejected), "group_id": payload.group_id})
 
@@ -132,9 +128,7 @@ async def expire_changes(
 ) -> dict[str, object]:
     expired = [
         c.to_dict()
-        for c in await container.workspace.expire_many(
-            payload.change_ids, reason=payload.reason
-        )
+        for c in await container.workspace.expire_many(payload.change_ids, reason=payload.reason)
     ]
     return ok(expired, metadata={"count": len(expired)})
 

@@ -109,6 +109,7 @@ class SearchHit:
             "text": self.text,
         }
 
+
 @dataclass(frozen=True)
 class FileContent:
     path: str
@@ -168,6 +169,17 @@ class WorkspaceFileExplorer:
 
     def __init__(self, *, workspace_root: str | Path | None = None) -> None:
         self._workspace_root = workspace_root
+
+    @property
+    def workspace_root(self) -> str | Path | None:
+        """当前工作区根（只读投影，供容器切换根时读取核对）。"""
+        return self._workspace_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        # 桌面端「打开文件夹」切换根时由 Container 赋值；写这里才真的改到服务自身，
+        # 只改 settings 而漏掉服务实例会让接口说新根、实际仍读写旧根。
+        self._workspace_root = value
 
     # --- 文件树 ---
 
@@ -304,9 +316,7 @@ class WorkspaceFileExplorer:
             handle.write(data)
         return relative.as_posix()
 
-    def create_directory(
-        self, *, path: str, workspace_root: str | Path | None = None
-    ) -> str:
+    def create_directory(self, *, path: str, workspace_root: str | Path | None = None) -> str:
         """Create one directory; parent must already exist."""
         root = resolve_workspace_root(self._pick_root(workspace_root))
         relative = safe_relative_path(path)
@@ -483,6 +493,7 @@ class WorkspaceFileExplorer:
                 if len(hits) >= max_results:
                     break
         return hits
+
     def replace(
         self,
         *,
@@ -561,9 +572,7 @@ class WorkspaceFileExplorer:
             if replacements >= max_replacements:
                 break
         truncated = (
-            bool(queue)
-            or len(changed_files) >= max_files
-            or replacements >= max_replacements
+            bool(queue) or len(changed_files) >= max_files or replacements >= max_replacements
         )
         return {
             "files": changed_files,

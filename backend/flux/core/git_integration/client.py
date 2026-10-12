@@ -194,6 +194,15 @@ class GitClient:
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
         self._timeout = timeout_seconds
 
+    @property
+    def workspace_root(self) -> Path | None:
+        """当前 Git 操作根（桌面端切换工作目录时由 Container 赋值）。"""
+        return self._configured_root
+
+    @workspace_root.setter
+    def workspace_root(self, value: str | Path | None) -> None:
+        self._configured_root = Path(value).expanduser() if value else None
+
     # --- 只读操作 ---
 
     def status(self, *, workspace_root: str | Path | None = None) -> GitStatus:
@@ -274,6 +283,7 @@ class GitClient:
             raise ValidationError("至少指定一个要取消暂存的文件")
         self._run("restore", "--staged", "--", *relative, root=root)
         return self.status(workspace_root=root)
+
     def commit(
         self,
         message: str,

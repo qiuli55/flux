@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { View } from "./router";
+import { VIEW_LABEL } from "../shell/nav";
 import { openTerminalWindow } from "./terminalWindow";
 
 /** IDE 页可被外部（命令面板）触发的意图 */
@@ -78,8 +79,13 @@ export function CommandPalette({
       navigate("ide");
     };
     return [
+      { id: "go-overview", cat: "导航", name: "切换到 概览", run: () => navigate("overview") },
+      { id: "go-tasks", cat: "导航", name: "切换到 任务看板", run: () => navigate("tasks") },
       { id: "go-solo", cat: "导航", name: "切换到 Solo · AI 任务执行中心", run: () => navigate("solo") },
       { id: "go-ide", cat: "导航", name: "切换到 IDE · 工作台", run: () => navigate("ide") },
+      { id: "go-skills", cat: "导航", name: "切换到 Skills · 能力管理", run: () => navigate("skills") },
+      { id: "go-diagnostics", cat: "导航", name: "切换到 系统诊断", run: () => navigate("diagnostics") },
+      { id: "go-settings", cat: "导航", name: "切换到 设置", run: () => navigate("settings") },
       {
         id: "agent-terminal",
         cat: "终端",
@@ -231,7 +237,7 @@ export function CommandPalette({
           )}
         </ul>
         <div className="cmdk-foot">
-          <span>当前视图：{view === "ide" ? "IDE 工作台" : "Solo 任务执行中心"}</span>
+          <span>当前视图：{VIEW_LABEL[view]}</span>
           <span>
             <kbd>↑</kbd>
             <kbd>↓</kbd> 选择

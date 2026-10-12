@@ -49,15 +49,16 @@ export function ExplorerContextMenu() {
   const [projectId, setProjectId] = useState<string | null>(null);
 
   useEffect(() => {
-    const refreshProject = () => {
+    const readProject = () => {
       const root = document.querySelector<HTMLElement>(".view-ide");
-      setProjectId(root?.dataset.projectId || null);
+      return root?.dataset.projectId || null;
     };
-    refreshProject();
+    setProjectId(readProject());
 
     const onContextMenu = (event: MouseEvent) => {
       const raw = event.target instanceof Element ? event.target.closest(".view-ide .t-row") : null;
       if (!(raw instanceof HTMLElement)) return;
+      setProjectId(readProject());
       const row = raw;
       const ownerLi = row.closest("li");
       const kind: ExplorerKind = row.classList.contains("is-file")

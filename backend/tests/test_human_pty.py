@@ -15,7 +15,6 @@ from flux.container import Container
 from flux.enums import TerminalSessionKind, TerminalSessionStatus
 from flux.errors import ConflictError
 
-
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
 
 
@@ -79,9 +78,7 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     assert session_id in ids
     assert agent["data"]["id"] not in ids
 
-    agent_get_human = apply_client.get(
-        f"/api/v1/terminal/sessions/{session_id}"
-    )
+    agent_get_human = apply_client.get(f"/api/v1/terminal/sessions/{session_id}")
     assert agent_get_human.status_code == 409
 
     agent_run_human = apply_client.post(
@@ -96,9 +93,7 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     )
     assert agent_stop_human.status_code == 409
 
-    human_get_agent = apply_client.get(
-        f"/api/v1/terminal/pty/sessions/{agent['data']['id']}"
-    )
+    human_get_agent = apply_client.get(f"/api/v1/terminal/pty/sessions/{agent['data']['id']}")
     assert human_get_agent.status_code == 409
 
     stopped = apply_client.post(
@@ -108,9 +103,7 @@ def test_human_terminal_api_only_lists_human_sessions(apply_client) -> None:
     assert stopped.status_code == 200
     assert stopped.json()["data"]["status"] == TerminalSessionStatus.STOPPED.value
 
-    stopped_detail = apply_client.get(
-        f"/api/v1/terminal/pty/sessions/{session_id}"
-    )
+    stopped_detail = apply_client.get(f"/api/v1/terminal/pty/sessions/{session_id}")
     assert stopped_detail.status_code == 200
     assert stopped_detail.json()["data"]["status"] == TerminalSessionStatus.STOPPED.value
 

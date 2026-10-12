@@ -12,6 +12,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from flux.config import Settings
+from flux.main import create_app
+
 PREFIX = "/api/v1"
 MAX_CONTENT_BYTES = 256 * 1024
 
@@ -308,3 +311,52 @@ def test_unconfigured_workspace_root_is_rejected(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["code"] == "validation_error"
+
+
+def test_desktop_switching_root_rebinds_live_file_services(
+    settings: Settings, workspace_root: Path, tmp_path: Path, db_schema: None
+) -> None:
+    """桌面端「打开文件夹」后，文件树与读文件必须立刻跟随新根。
+
+    回归：`Container.set_workspace_root` 曾只写服务上不存在的属性名，接口答新根、
+    实际仍读写旧根——用户看到"选完文件夹，Explorer 还是原来那棵树"。
+    """
+    other = tmp_path / "other-root"
+    _write(other, "OTHER.md", "# 新根\n")
+    _write(workspace_root, "OLD.md", "旧根\n")
+    app = create_app(
+        settings.model_copy(update={"env": "local", "workspace_root": str(workspace_root)})
+    )
+    with TestClient(app) as desktop:
+        project_id = _new_project(desktop)
+
+        response = desktop.put(
+            f"{PREFIX}/workspace/root",
+            json={"root": str(other)},
+            headers={"X-Flux-Desktop": "1"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["root"] == str(other.resolve())
+        data = _tree(desktop, project_id, depth=1)
+        assert data["root"] == str(other.resolve())
+        assert [entry["name"] for entry in data["entries"]] == ["OTHER.md"]
+        read = _content(desktop, project_id, "OTHER.md")
+        assert read.status_code == 200, read.text
+        assert read.json()["data"]["content"] == "# 新根\n"
+
+
+def test_switching_root_stays_gated_outside_local_desktop(
+    apply_client: TestClient, tmp_path: Path
+) -> None:
+    """env 非 local（此处为 test）时，即便带桌面端请求头也不允许换根。"""
+    other = tmp_path / "other-root"
+    other.mkdir()
+
+    response = apply_client.put(
+        f"{PREFIX}/workspace/root",
+        json={"root": str(other)},
+        headers={"X-Flux-Desktop": "1"},
+    )
+
+    assert response.status_code == 403

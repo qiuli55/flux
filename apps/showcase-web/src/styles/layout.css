@@ -1,0 +1,583 @@
+/* ==========================================================================
+   Flux showcase · 应用壳布局
+   rail 侧栏 + 顶栏 + 内容区 + 状态栏；认证页为独立居中布局。
+   ========================================================================== */
+.fx-app {
+  display: grid;
+  grid-template-columns: var(--rail) 1fr;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.fx-app.wide {
+  grid-template-columns: var(--rail-wide) 1fr;
+}
+
+/* ---------- 左侧导航栏 ---------- */
+.fx-rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-2);
+  border-right: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.fx-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--topbar);
+  padding: 0 16px;
+  flex: none;
+  border-bottom: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.fx-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--grad-brand);
+  display: grid;
+  place-content: center;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  flex: none;
+  box-shadow: 0 6px 16px -6px var(--brand-glow);
+}
+.fx-brand-name {
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.fx-brand-sub {
+  font-size: 10px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+.fx-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 8px;
+}
+.fx-rail-group {
+  margin-bottom: 14px;
+}
+.fx-rail-label {
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+.fx-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--dur-1), color var(--dur-1);
+  position: relative;
+}
+.fx-nav .icon {
+  flex: none;
+  color: var(--text-4);
+  transition: color var(--dur-1);
+}
+.fx-nav:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.fx-nav:hover .icon {
+  color: var(--text-2);
+}
+.fx-nav.active {
+  background: var(--brand-soft);
+  color: var(--text);
+}
+.fx-nav.active .icon {
+  color: var(--brand-3);
+}
+.fx-nav.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--brand);
+  box-shadow: 0 0 12px var(--brand-glow);
+}
+.fx-nav .count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-4);
+  background: var(--panel-3);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.fx-rail-foot {
+  flex: none;
+  padding: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.fx-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--dur-1);
+}
+.fx-user:hover {
+  background: var(--panel-2);
+}
+.fx-user-meta {
+  min-width: 0;
+  overflow: hidden;
+}
+.fx-user-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.fx-user-plan {
+  font-size: 10.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+/* 折叠态（窄 rail）：隐藏文字 */
+.fx-app:not(.wide) .fx-brand-text,
+.fx-app:not(.wide) .fx-nav > span,
+.fx-app:not(.wide) .fx-nav .count,
+.fx-app:not(.wide) .fx-rail-label,
+.fx-app:not(.wide) .fx-user-meta {
+  display: none;
+}
+.fx-app:not(.wide) .fx-rail-brand,
+.fx-app:not(.wide) .fx-nav,
+.fx-app:not(.wide) .fx-user {
+  justify-content: center;
+  padding-inline: 0;
+}
+.fx-app:not(.wide) .fx-nav-group .fx-nav {
+  position: relative;
+}
+
+/* ---------- 顶栏 ---------- */
+.fx-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background:
+    radial-gradient(1200px 500px at 78% -12%, rgba(45, 212, 191, 0.07), transparent 60%),
+    var(--bg);
+}
+.fx-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--topbar);
+  padding: 0 16px;
+  flex: none;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(10, 11, 13, 0.72);
+  backdrop-filter: blur(8px);
+  position: relative;
+  z-index: 20;
+}
+.fx-crumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  min-width: 0;
+}
+.fx-crumb .sep {
+  color: var(--text-4);
+}
+.fx-crumb .cur {
+  font-weight: 700;
+  color: var(--text);
+}
+.fx-crumb .root {
+  color: var(--text-3);
+}
+.fx-searchbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  min-width: 220px;
+  max-width: 420px;
+  flex: 1;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-4);
+  font-size: 12.5px;
+  transition: border-color var(--dur-1), background var(--dur-1);
+}
+.fx-searchbox:hover {
+  border-color: var(--line-strong);
+  color: var(--text-3);
+}
+.fx-searchbox .kbd {
+  margin-left: auto;
+}
+.fx-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.fx-iconbtn {
+  display: grid;
+  place-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  transition: background var(--dur-1), color var(--dur-1);
+  position: relative;
+}
+.fx-iconbtn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.fx-iconbtn .pip {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--red);
+  border: 1.5px solid var(--bg-2);
+}
+
+/* ---------- 内容区 ---------- */
+.fx-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+.fx-content.pad {
+  padding: 22px 26px 40px;
+}
+.fx-content.nopad {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* 满高页面（IDE/Solo/Terminal）经由 .view-enter 撑满内容区 */
+.fx-content.nopad > .view-enter {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- 状态栏 ---------- */
+.fx-status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: var(--statusbar);
+  padding: 0 14px;
+  flex: none;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg-2);
+  font-size: 11px;
+  color: var(--text-4);
+}
+.fx-status .sitem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.fx-status .sitem.ok {
+  color: var(--green);
+}
+.fx-status .push {
+  margin-left: auto;
+}
+
+/* ---------- 页面头部 ---------- */
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.page-title {
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  margin: 0 0 5px;
+}
+.page-desc {
+  font-size: 12.5px;
+  color: var(--text-3);
+  max-width: 720px;
+}
+.page-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.toolbar .grow {
+  flex: 1;
+}
+
+/* ---------- 网格 ---------- */
+.grid {
+  display: grid;
+  gap: 14px;
+}
+.grid.c2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid.c3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.grid.c4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.grid.auto {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+@media (max-width: 1100px) {
+  .grid.c4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid.c3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .grid.c2,
+  .grid.c3,
+  .grid.c4 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- 统计卡片 ---------- */
+.stat {
+  padding: 15px 16px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-soft);
+  background: var(--grad-panel), var(--panel);
+}
+.stat .k {
+  font-size: 11.5px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stat .v {
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  margin: 8px 0 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.stat .v small {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.stat .delta {
+  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.stat .delta.up {
+  color: var(--green);
+}
+.stat .delta.down {
+  color: var(--red);
+}
+
+/* ---------- 认证布局 ---------- */
+.fx-auth {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  overflow: hidden;
+}
+.fx-auth-aside {
+  position: relative;
+  overflow: hidden;
+  padding: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background:
+    radial-gradient(700px 500px at 20% 10%, rgba(45, 212, 191, 0.20), transparent 60%),
+    radial-gradient(600px 500px at 90% 90%, rgba(76, 201, 221, 0.16), transparent 60%),
+    var(--bg-2);
+}
+.fx-auth-grid {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(45, 212, 191, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at 30% 30%, #000, transparent 75%);
+  pointer-events: none;
+}
+.fx-auth-copy {
+  position: relative;
+  max-width: 440px;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+.fx-auth-copy h1 {
+  font-size: 40px;
+  line-height: 1.12;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 26px 0 16px;
+}
+.fx-auth-copy h1 em {
+  font-style: normal;
+  background: linear-gradient(120deg, #6ee7d4, #2dd4bf 45%, #14b8a6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.fx-auth-copy p {
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
+}
+.fx-auth-points {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 34px;
+}
+.fx-auth-point {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.fx-auth-point .ic {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  color: var(--brand-3);
+  flex: none;
+}
+.fx-auth-form {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  overflow-y: auto;
+}
+.fx-auth-card {
+  width: 100%;
+  max-width: 400px;
+  animation: fade-up var(--dur-3) var(--ease) both;
+}
+.fx-auth-card h2 {
+  font-size: 24px;
+  font-weight: 750;
+  margin: 0 0 6px;
+}
+.fx-auth-card .sub {
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 0 0 26px;
+}
+.fx-auth-oauth {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.fx-oauth-btn {
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  display: grid;
+  place-content: center;
+  color: var(--text-2);
+  transition: border-color var(--dur-1), background var(--dur-1), color var(--dur-1);
+}
+.fx-oauth-btn:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.fx-auth-sep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: var(--text-4);
+  font-size: 11px;
+}
+.fx-auth-sep::before,
+.fx-auth-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+.fx-auth-alt {
+  text-align: center;
+  margin-top: 22px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+@media (max-width: 900px) {
+  .fx-auth {
+    grid-template-columns: 1fr;
+  }
+  .fx-auth-aside {
+    display: none;
+  }
+}
+
+/* 演示用页面切换过渡 */
+.view-enter {
+  animation: fade-up var(--dur-3) var(--ease) both;
+}

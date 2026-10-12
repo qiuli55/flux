@@ -60,6 +60,7 @@ async def git_unstage(
     status = await container.git.unstage(payload.paths)
     return ok(status.to_dict())
 
+
 @router.post("/commit")
 async def git_commit(
     payload: GitCommitRequest, container: Container = Depends(get_container)

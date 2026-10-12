@@ -7,10 +7,12 @@
  * - 422 校验失败 → 提取 FastAPI 的 details（字段级），拼成可读文本。
  */
 import type {
-  AgentCreateRequest, AgentHandle, ApplyBatch, Change, ConfirmationItem, DecisionMode,
-  DecisionOutcome, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
-  Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task, TaskConfirmationOutcome,
-  TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome, TerminalEvent, TerminalSession,
+  AgentCreateRequest, AgentHandle, ApplyBatch, CapabilityImportOutcome, CapabilityKind,
+  CapabilityScanReport, Change, ConfirmationItem, DecisionMode,
+  DecisionOutcome, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
+  ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
+  TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
+  TerminalEvent, TerminalSession,
 } from "./types";
 
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api/v1").replace(/\/$/, "");
@@ -65,7 +67,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   catch { throw new ApiError(`后端返回了无法解析的响应（HTTP ${response.status}）`, "bad_response", response.status); }
   if (!response.ok || envelope.success === false) {
     const code = envelope.code || "unknown_error";
-    let message = envelope.message || `请求失败（HTTP ${response.status}）`;
+    // HTTPException 风格的错误体（{detail: "..."}）没有信封 message，此时同样要透出后端原文。
+    const detail = (envelope as { detail?: unknown }).detail;
+    let message = envelope.message
+      || (typeof detail === "string" && detail.trim() ? detail : "")
+      || `请求失败（HTTP ${response.status}）`;
     if (code === "validation_error") { const fieldText = formatValidationDetails(envelope.data); if (fieldText) message = `${message}：${fieldText}`; }
     throw new ApiError(message, code, response.status, envelope.data);
   }
@@ -140,6 +146,11 @@ export const api = {
   scanInstallations: () => getData<Installation[]>("POST", "/installations/scan"),
   connectInstallation: (body: { agent?: string; all?: boolean }) => getData<Installation | Installation[]>("POST", "/installations/connect", body),
   removeInstallation: (name: string) => getData<{ agent: string; removed: boolean }>("DELETE", `/installations/${name}`),
+  listCapabilities: (kind?: CapabilityKind) => getData<ImportedCapability[]>("GET", `/capabilities${query({ kind })}`),
+  scanCapabilities: () => getData<CapabilityScanReport>("POST", "/capabilities/scan"),
+  importCapability: (body: { kind: string; name: string; decision?: "keep" | "replace" }) =>
+    getData<CapabilityImportOutcome>("POST", "/capabilities/import", body),
+  dshStatus: () => getData<DshStatus>("GET", "/dsh/status"),
   listTasks: (options?: { projectId?: string; status?: string; limit?: number }) => getData<Task[]>("GET", `/tasks${query({ project_id: options?.projectId, status: options?.status, limit: options?.limit?.toString() })}`),
   createTask: (body: { description: string; project_id: string | null; decision_mode?: DecisionMode; agent_id?: string | null }) => getData<Task>("POST", "/tasks", body),
   getTask: (taskId: string) => getData<Task>("GET", `/tasks/${taskId}`),

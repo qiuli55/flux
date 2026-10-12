@@ -458,6 +458,11 @@ async def cancel_task(
         # P2-15：以 Run 的终态为准映射任务状态——进程树确认清理干净才是 cancelled，
         # 清理失败（FAILED）或超时（TIMEOUT）都按 failed 记录，不粉饰成"取消成功"。
         run_status = await _cancel_run(container, task.run_id)
+        if run_status is DshRunStatus.COMPLETED:
+            # 取消来晚了：Run 已成功结束（竞态窗口：Run 落终态、任务尚未被桥接收尾）。
+            # 任务按 Run 的真实结局收尾，绝不把一次成功的执行改判成失败。
+            task = await container.task_repo.set_status(task_uuid, TaskStatus.COMPLETED)
+            return ok(_task_dict(task))
         if run_status is not None and run_status is not DshRunStatus.CANCELLED:
             task = await container.task_repo.set_status(task_uuid, TaskStatus.FAILED)
             return ok(_task_dict(task))

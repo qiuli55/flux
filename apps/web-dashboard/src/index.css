@@ -1,8 +1,9 @@
-/* 顺序：先 Tailwind，再设计稿样式基座，最后产品补充，最后 UI 信息层级覆盖 */
+/* 顺序：先 Tailwind，再设计稿样式基座，再产品补充，再 UI 信息层级覆盖，最后并入的全局外壳（fx- 前缀，互不冲突） */
 @import "tailwindcss";
 @import "./styles/design-v2.css";
 @import "./styles/product.css";
 @import "./styles/ui-hierarchy.css";
+@import "./styles/flux.css";
 
 /* Flux 设计令牌 v2（事实源：设计稿 v2 的 :root，色值取自设计图，无占位符）。 */
 @theme {

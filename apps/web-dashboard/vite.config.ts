@@ -11,10 +11,13 @@ export default defineConfig(({ mode }) => {
 
   // /api 下的 HTTP 与 WebSocket 请求统一代理到后端。
   // Human Terminal 的 PTY 通道使用 /api/v1/terminal/pty/... WebSocket。
+  // changeOrigin 必须为 false：后端对 PTY WS 做 Origin==Host 同源校验，
+  // 改写 Host 会让浏览器 Origin(5184) 与 Host(8802) 不匹配，握手被 403 拒绝
+  // （与桌面端 apps/desktop/src/main.js 的 WS 转发、nginx 的 Host 透传保持一致）。
   const apiProxy = {
     "/api": {
       target: backendOrigin,
-      changeOrigin: true,
+      changeOrigin: false,
       ws: true,
     },
   };

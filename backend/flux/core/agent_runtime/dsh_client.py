@@ -650,6 +650,7 @@ class FluxDshClient:
         run.pid = row.pid
         run.pgid = row.pgid
         run.agent_id = row.agent_id or run.agent_id
+        run.task_id = str(row.task_id) if row.task_id else run.task_id
         run.last_state_change_at = row.last_state_change_at
         if row.finished_at is not None:
             # SQLite 不存时区：库里读出来的时间是 naive，直接与 aware 的 started_at
@@ -669,6 +670,7 @@ class FluxDshClient:
             instruction=row.instruction,
             status=DshRunStatus(row.status),
             agent_id=row.agent_id,
+            task_id=str(row.task_id) if row.task_id else None,
         )
         await self._refresh_from_row(run)
         if status is not None:

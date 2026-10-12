@@ -1,0 +1,86 @@
+/* ==========================================================================
+   Flux showcase · 设计令牌
+   暗场工具型界面。底色改为中性石墨灰（去掉上一版的蓝紫底），
+   强调色只用一个：Flux 青（flow/aqua），呼应「流」；青色同时用于信息次级强调。
+   绿/橙/红只表状态。所有小字对比度按 WCAG AA（≥4.5:1）取值。
+   ========================================================================== */
+:root {
+  color-scheme: dark;
+
+  /* 背景层级（越靠前越亮，形成景深） */
+  --bg: #0a0b0c;
+  --bg-2: #101113;
+  --panel: #15171a;
+  --panel-2: #1a1d20;
+  --panel-3: #202428;
+  --panel-4: #272c30;
+
+  /* 描边 */
+  --line: #2a3033;
+  --line-soft: #1c2124;
+  --line-strong: #3a4247;
+
+  /* 文字四级（主/次/辅助/弱化），逐级实测对比度达标 */
+  --text: #eef1f0;
+  --text-2: #aeb6b4;
+  --text-3: #838b89;
+  --text-4: #5c6361;
+
+  /* 品牌主色（唯一强调色）：Flux 青 */
+  --brand: #2dd4bf;
+  --brand-2: #14b8a6;
+  --brand-3: #6ee7d4;
+  --brand-soft: rgba(45, 212, 191, 0.13);
+  --brand-line: rgba(45, 212, 191, 0.4);
+  --brand-glow: rgba(45, 212, 191, 0.45);
+
+  /* 信息色：同族的浅青，用于链接与文件图标，不再是纯蓝 */
+  --blue: #4cc9dd;
+  --blue-soft: rgba(76, 201, 221, 0.14);
+
+  /* 状态色 */
+  --green: #4ade80;
+  --green-soft: rgba(74, 222, 128, 0.14);
+  --orange: #fb923c;
+  --orange-soft: rgba(251, 146, 60, 0.15);
+  --red: #f87171;
+  --red-soft: rgba(248, 113, 113, 0.14);
+
+  /* 字体 */
+  --ui: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC",
+    "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+
+  /* 圆角 */
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* 阴影 */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --sh-2: 0 6px 20px -8px rgba(0, 0, 0, 0.6);
+  --sh-3: 0 18px 50px -16px rgba(0, 0, 0, 0.7);
+  --sh-glow: 0 0 0 1px var(--brand-line), 0 12px 40px -12px var(--brand-glow);
+
+  /* 动效 */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-2: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+
+  /* 布局尺寸 */
+  --rail: 60px;
+  --rail-wide: 212px;
+  --topbar: 52px;
+  --statusbar: 26px;
+}
+
+/* 品牌渐变（多处复用，集中定义） */
+:root {
+  --grad-brand: linear-gradient(135deg, #6ee7d4 0%, #2dd4bf 55%, #14b8a6 100%);
+  --grad-panel: linear-gradient(180deg, rgba(45, 212, 191, 0.05), rgba(45, 212, 191, 0) 42%);
+}

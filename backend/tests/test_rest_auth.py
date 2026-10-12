@@ -30,6 +30,17 @@ def secured_app_settings(settings: Settings) -> Settings:
 
 
 @pytest.fixture()
+def secured_apply_settings(apply_settings: Settings) -> Settings:
+    """带工作区根的加令牌配置。
+
+    Human PTY 会话创建要求已配置 workspace_root（未配置即 422，见
+    doc/HUMAN_TERMINAL_PTY.md），所以 PTY 的 WebSocket 鉴权用例必须在
+    `apply_settings` 基础上加令牌，不能用裸 `settings`。
+    """
+    return apply_settings.model_copy(update={"auth_token": TOKEN})
+
+
+@pytest.fixture()
 def secured_client(secured_app_settings: Settings, db_schema: None) -> Iterator[TestClient]:
     app = create_app(secured_app_settings)
     with TestClient(app, **PUBLIC_CLIENT) as test_client:
@@ -146,9 +157,9 @@ def test_openapi_declares_bearer_scheme(secured_client: TestClient) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
 def test_human_websocket_requires_auth_when_rest_is_secured(
-    secured_app_settings: Settings, db_schema: None
+    secured_apply_settings: Settings, db_schema: None
 ) -> None:
-    app = create_app(secured_app_settings)
+    app = create_app(secured_apply_settings)
     with TestClient(app, **PUBLIC_CLIENT) as test_client:
         created = test_client.post(
             "/api/v1/terminal/pty/sessions",
@@ -165,9 +176,9 @@ def test_human_websocket_requires_auth_when_rest_is_secured(
 
 @pytest.mark.skipif(os.name == "nt", reason="native PTY is not enabled on Windows")
 def test_human_websocket_accepts_auth_header_when_rest_is_secured(
-    secured_app_settings: Settings, db_schema: None
+    secured_apply_settings: Settings, db_schema: None
 ) -> None:
-    app = create_app(secured_app_settings)
+    app = create_app(secured_apply_settings)
     with TestClient(app, **PUBLIC_CLIENT) as test_client:
         created = test_client.post(
             "/api/v1/terminal/pty/sessions",

@@ -468,3 +468,73 @@ export interface TerminalEvent {
   exit_code: number | null;
   created_at: string | null;
 }
+
+/* ---------- Capabilities / Skills（GET/POST /api/v1/capabilities） ---------- */
+
+/** 能力类别：Agent 档案、Skill 能力包、Connector 连接器 */
+export type CapabilityKind = "agent" | "skill" | "connector";
+
+/** 已导入的能力记录（GET /api/v1/capabilities） */
+export interface ImportedCapability {
+  id: string;
+  kind: string;
+  name: string;
+  source: string;
+  version: string | null;
+  fingerprint: string;
+  spec: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 扫描候选：一个可被导入的能力（含被拦截项与拦截原因） */
+export interface CapabilityCandidate {
+  kind: string;
+  name: string;
+  source: string;
+  status: "ok" | "blocked";
+  spec: Record<string, unknown> | null;
+  findings: { field: string; reason: string }[];
+}
+
+/** 扫描时每个来源目录的读取结果 */
+export interface CapabilitySourceReport {
+  path: string;
+  kind: string;
+  status: "scanned" | "missing" | "unreadable" | "invalid";
+  candidates: number;
+}
+
+/** POST /api/v1/capabilities/scan 的 data */
+export interface CapabilityScanReport {
+  candidates: CapabilityCandidate[];
+  sources: CapabilitySourceReport[];
+  summary: { total: number; ok: number; blocked: number };
+}
+
+/** POST /api/v1/capabilities/import 的 data */
+export interface CapabilityImportOutcome {
+  outcome: "imported" | "unchanged" | "kept" | "replaced";
+  id: string;
+  kind: string;
+  name: string;
+  version: string | null;
+}
+
+/* ---------- DSH 运行时状态（GET /api/v1/dsh/status） ---------- */
+
+/** 当前 DSH 运行时配置快照，诊断页用它展示引擎与 MCP 接线 */
+export interface DshStatus {
+  enabled: boolean;
+  home: string;
+  workspace: string;
+  provider: string;
+  model: string;
+  mcp: {
+    enabled: boolean;
+    url: string;
+    server_name: string;
+    agent_name: string;
+    agent_id: string;
+  };
+}

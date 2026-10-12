@@ -627,6 +627,24 @@
         "title": "GitDiffRequest",
         "type": "object"
       },
+      "GitPathsRequest": {
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "GitPathsRequest",
+        "type": "object"
+      },
       "GroupRequest": {
         "description": "按一次提交（group_id）整组操作（P0-02）。",
         "properties": {
@@ -1036,6 +1054,123 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkspaceFileCreateRequest": {
+        "properties": {
+          "content": {
+            "default": "",
+            "maxLength": 262144,
+            "title": "Content",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "WorkspaceFileCreateRequest",
+        "type": "object"
+      },
+      "WorkspaceFilePathRequest": {
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "WorkspaceFilePathRequest",
+        "type": "object"
+      },
+      "WorkspaceFileRenameRequest": {
+        "properties": {
+          "new_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "New Path",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "new_path"
+        ],
+        "title": "WorkspaceFileRenameRequest",
+        "type": "object"
+      },
+      "WorkspaceFileReplaceRequest": {
+        "properties": {
+          "case_sensitive": {
+            "default": false,
+            "title": "Case Sensitive",
+            "type": "boolean"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "query": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "regex": {
+            "default": false,
+            "title": "Regex",
+            "type": "boolean"
+          },
+          "replacement": {
+            "maxLength": 10000,
+            "title": "Replacement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "replacement"
+        ],
+        "title": "WorkspaceFileReplaceRequest",
+        "type": "object"
+      },
+      "WorkspaceRootRequest": {
+        "description": "Native desktop-selected local workspace root.",
+        "properties": {
+          "root": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "title": "WorkspaceRootRequest",
         "type": "object"
       }
     },
@@ -1902,6 +2037,54 @@
         ]
       }
     },
+    "/api/v1/git/stage": {
+      "post": {
+        "operationId": "git_stage_api_v1_git_stage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitPathsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Stage Api V1 Git Stage Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Git Stage",
+        "tags": [
+          "git"
+        ]
+      }
+    },
     "/api/v1/git/status": {
       "get": {
         "operationId": "git_status_api_v1_git_status_get",
@@ -1925,6 +2108,54 @@
           }
         ],
         "summary": "Git Status",
+        "tags": [
+          "git"
+        ]
+      }
+    },
+    "/api/v1/git/unstage": {
+      "post": {
+        "operationId": "git_unstage_api_v1_git_unstage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitPathsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Git Unstage Api V1 Git Unstage Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Git Unstage",
         "tags": [
           "git"
         ]
@@ -2531,6 +2762,81 @@
       }
     },
     "/api/v1/projects/{project_id}/files": {
+      "delete": {
+        "description": "Delete one human-selected file or directory in the active workspace.",
+        "operationId": "delete_project_path_api_v1_projects__project_id__files_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceFilePathRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Path Api V1 Projects  Project Id  Files Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Project Path",
+        "tags": [
+          "projects"
+        ]
+      },
       "get": {
         "description": "列出工作区文件树（只读）。\n\n路径经 `safe_relative_path` 校验、沿途软链一律拒绝；忽略规则复用 Project Scanner；\n条目数触顶时 `truncated=true`，绝不静默丢结果。这里**不**关联待审提案——\n前端用 `/workspace/changes` 自行关联，后端不耦合。",
         "operationId": "list_project_files_api_v1_projects__project_id__files_get",
@@ -2629,6 +2935,81 @@
         "tags": [
           "projects"
         ]
+      },
+      "patch": {
+        "description": "Rename/move one human-selected file or directory within the workspace.",
+        "operationId": "rename_project_path_api_v1_projects__project_id__files_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceFileRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rename Project Path Api V1 Projects  Project Id  Files Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rename Project Path",
+        "tags": [
+          "projects"
+        ]
       }
     },
     "/api/v1/projects/{project_id}/files/content": {
@@ -2706,6 +3087,160 @@
           }
         ],
         "summary": "Read Project File",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/files/directory": {
+      "post": {
+        "description": "Create one human-selected directory in the active workspace.",
+        "operationId": "create_project_directory_api_v1_projects__project_id__files_directory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceFilePathRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project Directory Api V1 Projects  Project Id  Files Directory Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Project Directory",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/files/file": {
+      "post": {
+        "description": "Create one human-selected file in the active workspace.",
+        "operationId": "create_project_file_api_v1_projects__project_id__files_file_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceFileCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project File Api V1 Projects  Project Id  Files File Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Project File",
         "tags": [
           "projects"
         ]
@@ -2928,6 +3463,197 @@
           }
         ],
         "summary": "Scan Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/search": {
+      "get": {
+        "description": "Search text across the active workspace; binary and oversized files are skipped.",
+        "operationId": "search_project_files_api_v1_projects__project_id__search_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "工作区文本搜索关键词",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "工作区文本搜索关键词",
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "限定搜索范围的工作区相对子目录",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "限定搜索范围的工作区相对子目录",
+              "title": "Path"
+            }
+          },
+          {
+            "in": "query",
+            "name": "case_sensitive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Case Sensitive",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "regex",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Regex",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_results",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Max Results",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Project Files Api V1 Projects  Project Id  Search Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search Project Files",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/search/replace": {
+      "post": {
+        "description": "Replace matching text in the active workspace as an explicit human operation.",
+        "operationId": "replace_project_files_api_v1_projects__project_id__search_replace_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceFileReplaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replace Project Files Api V1 Projects  Project Id  Search Replace Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Project Files",
         "tags": [
           "projects"
         ]
@@ -3769,7 +4495,6 @@
     },
     "/api/v1/terminal/sessions": {
       "get": {
-        "description": "最近的终端会话列表，最新的在前。",
         "operationId": "list_sessions_api_v1_terminal_sessions_get",
         "responses": {
           "200": {
@@ -3796,7 +4521,6 @@
         ]
       },
       "post": {
-        "description": "开一个终端会话（工作区根取服务端配置；未配置时 422，与 Apply 同一口径）。",
         "operationId": "create_session_api_v1_terminal_sessions_post",
         "requestBody": {
           "content": {
@@ -3852,7 +4576,6 @@
     },
     "/api/v1/terminal/sessions/{session_id}": {
       "get": {
-        "description": "取单个会话（含状态与 next_seq），供终端窗口重开时对齐。",
         "operationId": "get_session_api_v1_terminal_sessions__session_id__get",
         "parameters": [
           {
@@ -3902,7 +4625,6 @@
     },
     "/api/v1/terminal/sessions/{session_id}/commands": {
       "post": {
-        "description": "执行一条用户命令并返回结束事件（含 exit code）；输出以 terminal.output 事件落库。",
         "operationId": "run_command_api_v1_terminal_sessions__session_id__commands_post",
         "parameters": [
           {
@@ -3962,7 +4684,6 @@
     },
     "/api/v1/terminal/sessions/{session_id}/events": {
       "get": {
-        "description": "按 seq 续读终端事件（历史恢复）：after_seq 之后、按 seq 升序。",
         "operationId": "list_events_api_v1_terminal_sessions__session_id__events_get",
         "parameters": [
           {
@@ -4032,7 +4753,6 @@
     },
     "/api/v1/terminal/sessions/{session_id}/stop": {
       "post": {
-        "description": "停止会话：默认 SIGTERM → grace → SIGKILL，force=true 直接 SIGKILL。\n\n确认进程组消失之后才落 stopped，不谎报「已停止」（§10）。",
         "operationId": "stop_session_api_v1_terminal_sessions__session_id__stop_post",
         "parameters": [
           {
@@ -4099,7 +4819,6 @@
     },
     "/api/v1/terminal/sessions/{session_id}/stream": {
       "get": {
-        "description": "终端事件实时流（SSE，§11 / §12）：先补历史再推增量。\n\n断线重连时浏览器会带 `Last-Event-ID`（即上一帧的 seq），与 `after_seq` 取较大者续读。\n会话结束时服务端会推完 `terminal.session.closed` 后收流；客户端断开只结束观察，\n不会停 Agent（§11）。",
         "operationId": "stream_events_api_v1_terminal_sessions__session_id__stream_get",
         "parameters": [
           {
@@ -4171,7 +4890,6 @@
     },
     "/api/v1/workspace/accept": {
       "post": {
-        "description": "批准提案但不落盘：pending → accepted，等人工再决定何时 apply。\n\n整批先校验再执行（P0-03）：列表里有一个坏 ID 或非法状态，整批都不动。",
         "operationId": "accept_changes_api_v1_workspace_accept_post",
         "requestBody": {
           "content": {
@@ -4220,7 +4938,6 @@
     },
     "/api/v1/workspace/accept-group": {
       "post": {
-        "description": "整组批准：一次提交（group_id）下的全部提案一起进入 accepted。",
         "operationId": "accept_group_api_v1_workspace_accept_group_post",
         "requestBody": {
           "content": {
@@ -4269,7 +4986,6 @@
     },
     "/api/v1/workspace/apply": {
       "post": {
-        "description": "原子批量落盘（P0-03）：要么全部成功，要么全部恢复原样并标记 failed。",
         "operationId": "apply_changes_api_v1_workspace_apply_post",
         "requestBody": {
           "content": {
@@ -4318,7 +5034,6 @@
     },
     "/api/v1/workspace/apply-batches": {
       "get": {
-        "description": "列出最近的 Apply 批（最新在前）；`recent=1` 只返回可回滚的 applied 批。\n\n`recent=1` 驱动前端\"回滚上一次\"按钮：取第一项即最近一次成功 Apply。",
         "operationId": "list_apply_batches_api_v1_workspace_apply_batches_get",
         "parameters": [
           {
@@ -4379,7 +5094,6 @@
     },
     "/api/v1/workspace/apply-batches/{batch_id}/rollback": {
       "post": {
-        "description": "整批回滚一次 Apply（P1-2）：先全量预检，再按批内逆序还原；不产生任何 git 提交。",
         "operationId": "rollback_batch_api_v1_workspace_apply_batches__batch_id__rollback_post",
         "parameters": [
           {
@@ -4429,7 +5143,6 @@
     },
     "/api/v1/workspace/apply-group": {
       "post": {
-        "description": "整组原子落盘：任一条失败则整组恢复原样（与 apply 同一语义）。",
         "operationId": "apply_group_api_v1_workspace_apply_group_post",
         "requestBody": {
           "content": {
@@ -4478,7 +5191,6 @@
     },
     "/api/v1/workspace/changes": {
       "get": {
-        "description": "列出提案。group_id 看整组、file_path 看单个文件，都支持（P0-02 按文件/按组审核）。",
         "operationId": "list_changes_api_v1_workspace_changes_get",
         "parameters": [
           {
@@ -4648,7 +5360,6 @@
     },
     "/api/v1/workspace/changes/{change_id}/rollback": {
       "post": {
-        "description": "单条回滚：撤销一条已落盘提案对文件的改动。",
         "operationId": "rollback_change_api_v1_workspace_changes__change_id__rollback_post",
         "parameters": [
           {
@@ -4698,7 +5409,6 @@
     },
     "/api/v1/workspace/expire": {
       "post": {
-        "description": "显式让一批提案失效（P0-02）：pending/accepted → expired 终态。\n\n过期的提案不能再被批准或落盘，只能由 agent 重新提交新提案。",
         "operationId": "expire_changes_api_v1_workspace_expire_post",
         "requestBody": {
           "content": {
@@ -4747,7 +5457,6 @@
     },
     "/api/v1/workspace/expire-stale": {
       "post": {
-        "description": "清理所有已超过审核有效期的提案（幂等，可被定时任务/人工调用）。",
         "operationId": "expire_stale_api_v1_workspace_expire_stale_post",
         "responses": {
           "200": {
@@ -4776,7 +5485,6 @@
     },
     "/api/v1/workspace/recovery": {
       "get": {
-        "description": "列出所有待人工决策的崩溃恢复项（P0-1 §2.2）：只读，不改任何状态。\n\n每项含三个版本——备份里的改动前原文 / 当前磁盘真实内容 / Flux 原本要写入的提案内容，\n以及 `backup_available`（决定能否选\"覆盖备份\"）与 `disk_state`。",
         "operationId": "list_recovery_api_v1_workspace_recovery_get",
         "responses": {
           "200": {
@@ -4805,7 +5513,6 @@
     },
     "/api/v1/workspace/recovery/resolve": {
       "post": {
-        "description": "人工决策一条挂起的恢复项：cover = 覆盖备份（还原原文）；keep = 保持现状（提案作废）。",
         "operationId": "resolve_recovery_api_v1_workspace_recovery_resolve_post",
         "requestBody": {
           "content": {
@@ -4943,6 +5650,99 @@
           }
         ],
         "summary": "Reject Group",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workspace/root": {
+      "get": {
+        "operationId": "get_workspace_root_api_v1_workspace_root_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Workspace Root Api V1 Workspace Root Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Workspace Root",
+        "tags": [
+          "workspace"
+        ]
+      },
+      "put": {
+        "description": "Switch the live workspace root from the local Electron desktop shell only.",
+        "operationId": "set_workspace_root_api_v1_workspace_root_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-flux-desktop",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flux-Desktop"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRootRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Workspace Root Api V1 Workspace Root Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Workspace Root",
         "tags": [
           "workspace"
         ]
