@@ -565,7 +565,9 @@ class WorkspaceFileExplorer:
                 relative_path = candidate.relative_to(root).as_posix()
                 relative_obj = safe_relative_path(relative_path)
                 self._guard_user_path(relative_obj)
-                candidate.write_text(updated, encoding="utf-8")
+                # 字节级写回：文本模式会把 \n 翻译成 \r\n（Windows），把原文件里的
+                # CRLF 变成 \r\r\n，与读取时保留的换行口径不一致（V2 同源教训）。
+                candidate.write_bytes(updated.encode("utf-8"))
                 changed_files.append(relative_path)
                 if replacements >= max_replacements:
                     break

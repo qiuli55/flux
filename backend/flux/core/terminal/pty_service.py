@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 
+from flux.core.agent_runtime import platforms
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
@@ -35,18 +36,71 @@ from flux.enums import (
     TerminalSource,
 )
 from flux.errors import ConflictError
+from flux.logging import get_logger
 from flux.models.terminal import TerminalSession
 
 if os.name != "nt":
     import pty
     import termios
 
+logger = get_logger(__name__)
+
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 32
 SCROLLBACK_BYTES = 256 * 1024
 QUEUE_SIZE = 256
 STOP_GRACE_SECONDS = 1.0
-KILL_CONFIRM_SECONDS = 1.0
+#: 强杀后的"组已退出"确认窗口（与 Agent Terminal 的 KILL_CONFIRM_SECONDS=2.0 对齐）
+KILL_CONFIRM_SECONDS = 2.0
+
+
+def _live_group_members(pgid: int) -> list[str] | None:
+    """Linux：列出进程组里仍"存活"（非僵尸）的成员；None 表示当前平台无法核对状态。
+
+    为什么需要：`killpg(pgid, 0)` 探活会把"已死但未被回收的僵尸"算作"仍在"
+    （V1 验收 T-PROC-003 已验证过该口径问题）。僵尸不会再执行任何指令、也无法
+    再被信号杀死，按真实状态把它排除是事实判定，不是放宽判据。
+    """
+    if os.name == "nt" or not os.path.isdir("/proc"):
+        return None
+    live: list[str] = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        end = data.rfind(b")")
+        if end < 0:
+            continue
+        fields = data[end + 2 :].split()
+        if len(fields) < 3:
+            continue
+        try:
+            if int(fields[2]) != pgid:
+                continue
+        except ValueError:
+            continue
+        if fields[0] in {b"Z", b"X", b"x"}:  # 僵尸/死亡态不参与"存活"判定
+            continue
+        live.append(f"{name}({fields[0].decode()})")
+    return live
+
+
+def _group_is_gone(pgid: int) -> bool:
+    """进程组是否已无存活成员（僵尸不计；平台无法核对状态时沿用探活口径）。"""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    live = _live_group_members(pgid)
+    if live is None:
+        return False
+    return not live
 
 
 class HumanPtyService:
@@ -222,6 +276,17 @@ class HumanPtyService:
             await self._finish(key)
             return await self.get_session(session_id)
 
+        if platforms.is_self_group(pgid):
+            # `pty.fork()` 的 setsid 是在子进程里完成的：父进程可能在子进程完成
+            # setsid 之前读到「进程组 == Flux 自己的组」（本地 2000 次抽样命中 470 次）。
+            # 对这个 pgid 绝不能 killpg——那会把 Flux 自己杀掉（本地两次 pytest 被
+            # SIGKILL、exit 137 即此路径）。此刻子进程还没 exec shell、不可能有别的
+            # 组员，按 pid 终止这一个进程并等回收即可。
+            if not await self._stop_single_process(pid, force=force):
+                raise self._unconfirmed_group_error(key, pid)
+            await self._finish(key)
+            return await self.get_session(session_id)
+
         try:
             signal_value = signal.SIGKILL if force else signal.SIGTERM
             await asyncio.to_thread(os.killpg, pgid, signal_value)
@@ -234,21 +299,33 @@ class HumanPtyService:
             if not confirmed:
                 with suppress(ProcessLookupError):
                     await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
-                confirmed = await self._wait_for_group_exit(pgid, pid, KILL_CONFIRM_SECONDS)
-            if not confirmed:
-                raise ConflictError(
-                    "无法确认 Human Terminal 进程组已退出",
-                    details={"session_id": key, "pgid": pgid},
+                confirmed = await self._wait_for_group_exit(
+                    pgid, pid, KILL_CONFIRM_SECONDS, resend_signal=signal.SIGKILL
                 )
+            if not confirmed:
+                raise self._unconfirmed_group_error(key, pgid)
         else:
-            confirmed = await self._wait_for_group_exit(pgid, pid, KILL_CONFIRM_SECONDS)
+            confirmed = await self._wait_for_group_exit(
+                pgid, pid, KILL_CONFIRM_SECONDS, resend_signal=signal.SIGKILL
+            )
             if not confirmed:
-                raise ConflictError(
-                    "无法确认 Human Terminal 进程组已退出",
-                    details={"session_id": key, "pgid": pgid},
-                )
+                raise self._unconfirmed_group_error(key, pgid)
         await self._finish(key)
         return await self.get_session(session_id)
+
+    @staticmethod
+    def _unconfirmed_group_error(key: str, pgid: int) -> ConflictError:
+        """确认失败：先把组内残留成员写进日志（CI 复现时可直接定位），再给统一错误。"""
+        logger.warning(
+            "Human Terminal 进程组未能确认退出 session=%s pgid=%s 残留成员=%s",
+            key,
+            pgid,
+            _live_group_members(pgid),
+        )
+        return ConflictError(
+            "无法确认 Human Terminal 进程组已退出",
+            details={"session_id": key, "pgid": pgid},
+        )
 
     async def shutdown(self) -> None:
         """Best-effort cleanup during app shutdown.
@@ -279,10 +356,15 @@ class HumanPtyService:
         self._buffers.pop(key, None)
         try:
             pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            pgid = pid
+        if platforms.is_self_group(pgid):
+            # 尚未 setsid 的窗口期（详见 stop()）：killpg 会打到 Flux 自己，只单杀。
+            with suppress(ProcessLookupError):
+                await asyncio.to_thread(os.kill, pid, signal.SIGKILL)
+        else:
             with suppress(ProcessLookupError):
                 await asyncio.to_thread(os.killpg, pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
         with suppress(OSError):
             await asyncio.to_thread(os.close, fd)
         with suppress(ChildProcessError, ProcessLookupError):
@@ -318,11 +400,59 @@ class HumanPtyService:
             pass
 
     @staticmethod
-    async def _wait_for_group_exit(pgid: int, pid: int, timeout: float) -> bool:
-        """Confirm the leader is reaped before checking whether any process remains in the group."""
+    async def _stop_single_process(pid: int, *, force: bool) -> bool:
+        """只终止 pid 这一个进程并确认回收（绝不按进程组）。
+
+        用于「子进程尚未 setsid、仍与 Flux 同组」的窗口期：此时它还没有 exec shell，
+        不可能已有其他组员，按 pid 单杀即可，且绝不能用 killpg（会打到 Flux 自己）。
+        """
+        if not force:
+            with suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+            if await HumanPtyService._wait_for_process_exit(pid, STOP_GRACE_SECONDS):
+                return True
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        return await HumanPtyService._wait_for_process_exit(pid, KILL_CONFIRM_SECONDS)
+
+    @staticmethod
+    async def _wait_for_process_exit(pid: int, timeout: float) -> bool:
+        """确认单个子进程已被回收：以 waitpid 为准（顺带回收僵尸），不依赖组探活。"""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            try:
+                if (await asyncio.to_thread(os.waitpid, pid, os.WNOHANG))[0] == pid:
+                    return True
+            except ChildProcessError:
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+
+    @staticmethod
+    async def _wait_for_group_exit(
+        pgid: int,
+        pid: int,
+        timeout: float,
+        *,
+        resend_signal: int | None = None,
+    ) -> bool:
+        """确认组长已被回收「且」组内不再有存活成员。
+
+        `resend_signal` 给出时在等待期间周期重发该信号：登录 shell 启动阶段会在信号
+        发出之后继续 fork 新成员（子 shell / 启动辅助进程，它们收不到第一次信号），
+        只发一次就可能留下"杀不干净"的组——CI 上复现的 stop 确认失败即由这类残留
+        触发（本地探针 40 次中 25 次可见同源残留成员，存活 6~27ms）。
+
+        两个条件缺一不可：只看 `_group_is_gone` 时，组长已成僵尸（被僵尸过滤排除）
+        但尚未回收就会被误判为"已退出"；只看 waitpid 则漏掉组内残留成员。
+        """
         deadline = asyncio.get_running_loop().time() + timeout
         leader_reaped = False
         while asyncio.get_running_loop().time() < deadline:
+            if resend_signal is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(pgid, resend_signal)
             if not leader_reaped:
                 try:
                     result = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
@@ -330,15 +460,9 @@ class HumanPtyService:
                 except ChildProcessError:
                     leader_reaped = True
 
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                return leader_reaped
-            except PermissionError:
-                return False
+            if leader_reaped and _group_is_gone(pgid):
+                return True
 
-            # A zombie leader has been reaped above, so killpg(..., 0) now reflects
-            # live group membership instead of the unreaped child itself.
             await asyncio.sleep(0.05)
 
         if not leader_reaped:
@@ -349,13 +473,7 @@ class HumanPtyService:
                 leader_reaped = True
         if not leader_reaped:
             return False
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False
-        return False
+        return _group_is_gone(pgid)
 
     @staticmethod
     def _write_all(fd: int, payload: bytes) -> None:
