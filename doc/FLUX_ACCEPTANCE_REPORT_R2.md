@@ -9,8 +9,8 @@
 | 项 | 值 |
 |---|---|
 | 被测仓库 | qiuli55/flux |
-| 被测代码 | 本地 main `34e811c` + 工作区未提交改动（本轮 4 处修复在其中；**尚未提交、未推送**） |
-| 执行时间 | 2026-10-10 ~ 2026-10-11（以证据文件时间戳为准），2026-10-12 汇总成文 |
+| 被测代码 | main `33ae816`（**已提交并推送 origin/main**；含本轮 4 处修复 + 推送后 CI 修复 3 处，见 §3.5） |
+| 执行时间 | 2026-10-10 ~ 2026-10-11（以证据文件时间戳为准），2026-10-12 汇总成文；2026-10-13 推送并补跑 CI 后回填（见 §3.5、T-REG-002） |
 | 执行环境 | Linux（服务器）；Python 3.10.12（仓库 `.venv`）；Node 20.18.1；git 2.34.1 |
 | 验收实例 | `8865`（rt2：stub / real 双模式，可自由重启）、`8802`（UI 后端）、`5184`（vite dev，含本轮修复）；`5185`（git HEAD 对照，探针结束后已清理） |
 | 证据落盘 | `/tmp/flux-accept-r2/evidence/`；镜像 `/root/flux-accept-r2-backup/`（仓库外，防 /tmp 清理） |
@@ -26,14 +26,15 @@
 
 ## 2. 结论摘要
 
-- 缺口 30 个 ID（§6–§13）本轮**全部重跑**并落盘本轮证据。连同沿用项，**70 个 ID：66 PASS、1 BLOCKED、3 未执行**；本轮口径内 **0 FAIL / 0 KNOWN FAILURE**。
-- **发现并修复 4 处问题**（含 1 处竞态缺陷：会把一次成功执行改判为失败），均已修复 + 回归 + 真实链路复验（详见 §3）。
-- 变更后全量门禁：`make verify` → **664 passed, 2 warnings, exit 0**（354.43 s）；前端 `vitest` → **58 passed**（7 files）；`tsc -b && vite build` → **exit 0**（3.13 s）。
+- 缺口 30 个 ID（§6–§13）本轮**全部重跑**并落盘本轮证据。连同沿用项，**70 个 ID：67 PASS、0 BLOCKED、3 未执行**；本轮口径内 **0 FAIL / 0 KNOWN FAILURE**。
+- **发现并修复 7 处问题**（含 1 处竞态缺陷：会把一次成功执行改判为失败；另 3 处由推送后 CI 暴露，见 §3.5），均已修复 + 回归复验（详见 §3）。
+- 变更后全量门禁：`make verify` → **667 passed, 2 warnings, exit 0**（369.19 s；推送后复跑，含 §3.5 新增 3 条回归用例）；前端 `vitest` → **58 passed**（7 files）；`tsc -b && vite build` → **exit 0**（3.13 s）。
+- 推送后 CI（run `38433287356`@`33ae816`）**全绿**：后端自检（Linux ruff / 契约 / 迁移 / pytest）、前端自检、PostgreSQL 迁移往返、Windows 后端自检 **4 项全 success**（NSIS 打包作业按配置 skipped），整体 conclusion=success → **T-REG-002 解除 BLOCKED**（见 §6）。
 - 真实链路复跑：真实 **OpenCode 1.18.29** 由 Flux 拉起并 `completed`；真实 **Codex 0.157.1** 由 Flux 拉起但**因账号配额/认证限制失败**（独立 `codex exec` 同样失败——非 Flux 缺陷），Flux 如实报 `failed`、不粉饰。
 - 历史判定修正（引用 V2 轮，见 §6）：T-DIFF-003、T-ROLL-001/002、T-APPLY-008、T-AGENT-002/003、T-OPENCODE-001~004 已复核为 **PASS**。
-- 唯一 BLOCKED 为 **T-REG-002**（本轮改动未推送，无 CI 可对照，如实记录）；T-STAB-001~003 本轮**未执行**。
+- T-REG-002 已于 2026-10-13 推送后补跑 CI 并转为 **PASS**（run `38433287356` 全绿）；T-STAB-001~003 本轮**未执行**。
 
-## 3. 本轮修复清单（4 处 + 2 处测试改动）
+## 3. 本轮修复清单（修复 7 处 + 测试改动 5 处）
 
 ### 3.1 cancel 竞态：Run 已成功完成时取消，不得把任务改判为失败
 
@@ -56,14 +57,24 @@
 
 - `apps/web-dashboard/src/components/explorer/ExplorerContextMenu.tsx`：抽出 `readProject()`，**每次 contextmenu 事件重读** `.view-ide` 的 `dataset.projectId`；修复切换项目后右键操作仍指向旧/空项目。
 
-**测试改动合计 2 处**：① 新增 cancel 竞态回归 1 条；② `test_dsh_client.py` 夹具补字段 1 处（随 3.2）。**未修改任何既有测试预期。**
+### 3.5 推送后 CI 暴露并修复的 3 处（提交 `33ae816`）
+
+首轮推送 `aa348b9` 后 CI（run `38239867607`）在 Linux 后端自检暴露 1 处真实缺陷、Windows 作业暴露 1 处真实缺陷；修复过程中又发现 1 处衍生自杀隐患，一并处理：
+
+- **Human Terminal 停止确认失败**（`backend/flux/core/terminal/pty_service.py`）：CI 上 `tests/test_human_pty.py::test_human_terminal_list_excludes_stopped_sessions` 报 `ConflictError: 无法确认 Human Terminal 进程组已退出`。根因两条：① `killpg(pgid, 0)` 探活把"已死但未回收的僵尸"算作存活（V1 验收 T-PROC-003 已记录同源口径问题）；② 登录 shell 启动期会在首次信号之后继续 fork 辅助成员（子 shell / `lesspipe` / `locale`），它们收不到第一次信号——本地探针（`pty.fork` + `bash -l` + SIGKILL + 扫 `/proc`）200 次中 25/40 次可见同源残留，存活 6~27 ms，CI 负载把该窗口拉长到 >1 s。修复：确认循环期间**周期重发 SIGKILL**、**僵尸不计存活**（Linux `/proc` 核对，其余平台沿用保守口径）、确认条件收紧为「组长已回收 **且** 组内无存活成员」、确认窗口 1.0 s→2.0 s（与 Agent Terminal 对齐）、失败时把残留成员写进日志。
+- **fork 后子进程尚未 setsid 的自杀窗口**：`pty.fork()` 的 `setsid` 在子进程完成，父进程可能在子进程完成 setsid 之前读到「进程组 == Flux 自己的组」（2000 次抽样命中 **470 次**，23.5%），照此 `killpg` 会杀掉 Flux 自身（本地两次 pytest 被 SIGKILL、exit 137 即此路径；重发逻辑会使其成为必杀路径）。修复：按既有原语 `platforms.is_self_group` 判定，窗口期内**只按 pid 单杀**，绝不 `killpg`。
+- **Windows workspace replace CRLF 双重翻译**（`backend/flux/core/project_files/explorer.py`）：`replace()` 原用 `write_text`，Windows 文本模式会把写回的 `\n` 再翻译一次、破坏行尾 → 改为 `write_bytes(updated.encode("utf-8"))` 字节级写回。
+
+**回归用例 3 条**（`backend/tests/test_human_pty.py`）：① 组内只剩未回收僵尸时不得判活；② 忽略 SIGTERM 的组在窗口内不重发时确认不出来、重发 SIGKILL 后杀干净；③ `stop` 绝不向 Flux 自身进程组发信号（monkeypatch 稳定复现 pre-setsid 读数）。
+
+**测试改动合计 5 处**：① 新增 cancel 竞态回归 1 条；② `test_dsh_client.py` 夹具补字段 1 处（随 3.2）；③–⑤ §3.5 新增 3 条回归用例。**未修改任何既有测试预期。**
 
 ## 4. 判定统计（70 ID 口径）
 
 | 结果 | 数量 | 说明 |
 |---|---|---|
-| PASS | 66 | §5(1 项) + §6–§21 全部（§12 含受限说明） |
-| BLOCKED | 1 | T-REG-002：本轮改动未推送，无 CI 可对照 |
+| PASS | 67 | §5(1 项) + §6–§21 全部（§12 含受限说明）+ T-REG-002（推送后 CI run `38433287356` 全绿） |
+| BLOCKED | 0 | 无（T-REG-002 已解除） |
 | 未执行 | 3 | T-STAB-001~003：连续任务 / 循环长跑，本轮未执行 |
 | FAIL / KNOWN FAILURE | 0 | — |
 
@@ -150,12 +161,12 @@
 
 ## 7. 40 沿用 ID 判定（§5 + §14–§27）
 
-> 以下条目本轮**未逐条手工重跑**；判定依据为既有真实执行证据（V1 / V2 / `docs/UI_TEST_REPORT.md`）+ 本轮全量自动化回归（`make verify` 664 passed，覆盖 Workspace / Proposal / Diff / Apply / Git / Test / Runtime 链路）+ 本轮补充复验（T-REG-001、§21）。
+> 以下条目本轮**未逐条手工重跑**；判定依据为既有真实执行证据（V1 / V2 / `docs/UI_TEST_REPORT.md`）+ 本轮全量自动化回归（`make verify` 667 passed，覆盖 Workspace / Proposal / Diff / Apply / Git / Test / Runtime 链路）+ 本轮补充复验（T-REG-001、T-REG-002、§21）。
 
 | Test ID | 结果 | 判定依据 |
 |---|---|---|
-| T-REG-001 | PASS（本轮重跑） | `make verify`：664 passed / 2 warnings / 354.43 s / exit 0；5 环节全过（ruff check、210 files format、OpenAPI 契约、alembic 往返、pytest） |
-| T-REG-002 | **BLOCKED（本轮未执行）** | 本轮改动未提交、未推送 → 无 CI 运行可对照。历史快照（不作本轮结论）：V1 修复后 run `37214906971` success；V2 轮 windows-latest job run `37263234115` 全绿。**推送后需补跑 CI 并回填本行。** |
+| T-REG-001 | PASS（本轮重跑） | `make verify`：667 passed / 2 warnings / 369.19 s / exit 0；5 环节全过（ruff check、210 files format、OpenAPI 契约、alembic 往返、pytest） |
+| T-REG-002 | **PASS（推送后补跑）** | 2026-10-13 推送 `33ae816` → CI run **`38433287356`**：后端自检（Linux ruff / 契约 / 迁移 / pytest）、前端自检、PostgreSQL 迁移往返、Windows 后端自检 **4 项全 success**（NSIS 打包按配置 skipped），整体 conclusion=success。证据：`evidence/ci-run-33ae816.json`。 |
 | T-WS-001~004 | PASS ×4 | V1 §7 真实 API：建/用；读一致 + sha256；写入只改目标文件；边界 4/4 拒（`/etc/passwd`、`../outside.txt`、symlink、`.env`） |
 | T-PROP-001~003 | PASS ×3 | 字段完整（original_hash/status=pending/diff/attribution）；重启后仍 pending；非法跃迁 409 |
 | T-DIFF-001/002/004 | PASS ×3 | 新文件 diff 正确；+4/-1 与提案一致；proposed_hash 与落盘 sha256 一致 |
@@ -217,7 +228,8 @@
 | `kill -9` 后重启至 ready | 1656 ms | 同上 |
 | Run 取消（快路径，2 子进程） | 0.146 s | `gap-runs-stub.json` |
 | Run 取消（抗 SIGTERM → SIGKILL 升级） | 5.14 s | 同上 |
-| 全量门禁 `make verify` | 354.43 s（664 passed） | `make-verify-r2.log` |
+| 全量门禁 `make verify`（本轮首跑） | 354.43 s（664 passed） | `make-verify-r2.log` |
+| 全量门禁 `make verify`（修复后复跑） | 369.19 s（667 passed，含 §3.5 新增 3 用例） | `local-verify-after-pty-fix.log` |
 | 前端单测 / 构建 | vitest 1.18 s；vite build 3.13 s | `frontend-vitest-build.log` |
 
 计划 §26 的其余项（Proposal / Diff / Apply / Git / Test Runner 耗时、Dashboard 首屏、长任务 RAM/CPU）本轮**未系统测量**；历史零散参考：内置 DSH 真实模型往返 12.59 s（V1 §10）。
@@ -229,7 +241,7 @@
 | §24 Benchmark V2（50 任务） | 未执行 | 需真实模型长跑与额度消耗，本轮未排期 |
 | §22 七个真实项目逐项重跑 | 未执行 | 完整开发闭环证据沿用 V2 轮真实 E2E（OpenCode / DSH 全链）；本轮真实 Agent 验证为"启动到终态"级 |
 | §27 T-STAB-001~003 | 未执行 | 连续任务 / 启停循环 / Apply 循环长跑 |
-| T-REG-002 CI 对照 | BLOCKED | 改动未推送；推送后须补跑 CI 并回填 |
+| T-REG-002 CI 对照 | PASS（2026-10-13 补跑） | 推送 `33ae816` 后 run `38433287356` 全绿；变更已推送 origin/main |
 | Windows / macOS | 不在范围 | V2 轮记录：Windows CI job 全绿（历史快照）；真机验收仍待用户执行 |
 
 ## 附录 A：证据文件清单（`/tmp/flux-accept-r2/evidence/`）
@@ -247,11 +259,13 @@
 | `gap-runs-real.json` | 真实 opencode completed / 真实 codex 启动失败（配额）+ scan/connect 快照 |
 | `gap-runs-real-codex-diag.txt` | Flux 外独立 `codex exec` 复现账号配额（exit=1） |
 | `gap-cancel-race.json` | 12 次竞态窗口取消尝试（全部 409、任务保持 completed） |
-| `make-verify-r2.log` | `make verify`：664 passed / 354.43 s / exit 0 |
+| `make-verify-r2.log` | `make verify`（本轮首跑）：664 passed / 354.43 s / exit 0 |
+| `local-verify-after-pty-fix.log` | `make verify`（推送前修复复跑）：667 passed / 369.19 s / exit 0 |
+| `ci-run-33ae816.json` | 推送后 CI run `38433287356`@`33ae816`：4 作业 success、整体 conclusion=success |
 | `frontend-vitest-build.log` | vitest 58 passed / build exit 0 |
 | `ui-probe.json` + `ui-probe-fixed.png` + `ui-probe-head.png` + `head-vite.log` | UI 探针 fixed vs HEAD 对照 |
 
-镜像（仓库外）：`/root/flux-accept-r2-backup/evidence-0303/`（全部 evidence）、`/root/flux-accept-r2-backup/evidence-ui/`（UI 探针）、`/root/flux-accept-r2-backup/rt2-0303/`（rt2 基础设施快照）。
+镜像（仓库外）：`/root/flux-accept-r2-backup/evidence-0303/`（全部 evidence）、`/root/flux-accept-r2-backup/evidence-ci/`（CI 补跑证据：`ci-run-33ae816.json`、`local-verify-after-pty-fix.log`）、`/root/flux-accept-r2-backup/evidence-ui/`（UI 探针）、`/root/flux-accept-r2-backup/rt2-0303/`（rt2 基础设施快照）。
 
 ## 附录 B：复现命令
 
@@ -272,8 +286,11 @@ bash /tmp/flux-accept-r2/rt2/lifecycle.sh
 # 全量门禁与前端
 cd /root/workspace/flux && make verify
 cd /root/workspace/flux/apps/web-dashboard && npx vitest run && npm run build
+
+# 推送后 CI 对照（T-REG-002）
+gh run view 38433287356 --json status,conclusion,jobs
 ```
 
 ---
 
-**报告说明**：本报告与既有 `doc/FLUX_ACCEPTANCE_REPORT_2026-10-04.md`（V1）、`doc/FLUX_ACCEPTANCE_REPORT_V2.md`（V2）并存；`docs/UI_TEST_REPORT.md` 与 `docs/FLUX_LOGIN_SYSTEM_DESIGN.md` 为本地未提交文档，作为证据源被引用，本轮未改动、未提交。
+**报告说明**：本报告与既有 `doc/FLUX_ACCEPTANCE_REPORT_2026-10-04.md`（V1）、`doc/FLUX_ACCEPTANCE_REPORT_V2.md`（V2）并存；`docs/UI_TEST_REPORT.md` 与 `docs/FLUX_LOGIN_SYSTEM_DESIGN.md` 为本地未提交文档，作为证据源被引用，本轮未改动、未提交。本轮代码修复已于 2026-10-13 提交 `33ae816` 并推送 origin/main，CI run `38433287356` 全绿。
