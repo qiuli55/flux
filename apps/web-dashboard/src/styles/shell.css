@@ -237,6 +237,15 @@
 .fx-tip:hover .fx-tip-body { opacity: 1; }
 
 .fx-stat { padding: var(--tn-s5); border-radius: var(--tn-r-lg); border: 1px solid var(--tn-line); background: transparent; }
+/* 指标条：单框四栏，栏间发丝分隔（与设计稿 .stats 一致） */
+.fx-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--tn-line); border-radius: var(--tn-r-lg); }
+.fx-stats .fx-stat { border: 0; border-left: 1px solid var(--tn-line); border-radius: 0; }
+.fx-stats .fx-stat:first-child { border-left: 0; }
+@media (max-width: 980px) {
+  .fx-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fx-stats .fx-stat:nth-child(odd) { border-left: 0; }
+  .fx-stats .fx-stat:nth-child(n + 3) { border-top: 1px solid var(--tn-line); }
+}
 .fx-stat .fx-k { display: flex; align-items: center; gap: 6px; font-size: var(--tn-fs-xs); color: var(--tn-text-4); text-transform: uppercase; letter-spacing: var(--tn-ls-caps); }
 .fx-stat .fx-v { display: flex; align-items: baseline; gap: var(--tn-s2); margin: var(--tn-s3) 0 var(--tn-s1); font-size: var(--tn-fs-2xl); font-weight: 600; letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .fx-stat .fx-v small { font-size: var(--tn-fs-sm); font-weight: 500; color: var(--tn-text-4); }

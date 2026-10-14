@@ -82,7 +82,7 @@ export function OverviewPage({ navigate }: { navigate: (v: View) => void }) {
         </div>
       </section>
 
-      <div className="fx-grid fx-c4" style={{ marginBottom: 16 }}>
+      <div className="fx-stats" style={{ marginBottom: 16 }}>
         <Stat label="项目" value={projects.length} icon="folder" />
         <Stat label="运行中任务" value={running} unit={`/ ${tasks.length}`} icon="activity" />
         <Stat label="待决策" value={waiting} icon="bell" />
