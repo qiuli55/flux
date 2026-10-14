@@ -1,6 +1,7 @@
 /* ============================================================
    Flux · Terminal Noir —— 设计令牌（唯一真源）
-   近黑基底 + 发丝线 + 全等宽 + 直角 + 单色电光青绿
+   近黑基底 + 发丝线 + 单色电光青绿 + 柔和圆角
+   等宽只用在数据面（代码 / ID / 时间戳 / 地址），正文改用无衬线，中文更耐读
    零阴影 / 零渐变 / 零辉光（仅少量浮层允许描边 + 轻微投影）
    其余样式文件的旧令牌统一在 index.css 内做别名映射指向本文件。
    ============================================================ */
@@ -30,11 +31,11 @@
   --tn-danger-soft: rgba(255, 122, 110, 0.14);
   --tn-info: #7fb6e0;
 
-  /* ---------- 圆角（直角取向） ---------- */
-  --tn-r-xs: 2px;
-  --tn-r-sm: 2px;
-  --tn-r: 2px;
-  --tn-r-lg: 4px;
+  /* ---------- 圆角：收一档的柔和圆角（不再一味直角） ---------- */
+  --tn-r-xs: 3px;
+  --tn-r-sm: 4px;
+  --tn-r: 6px;
+  --tn-r-lg: 10px;
   --tn-r-full: 999px;
 
   /* ---------- 线 / 影：默认零阴影；--tn-shadow-pop 仅供浮层 ---------- */
@@ -67,7 +68,10 @@
   --tn-row: 34px;
   --tn-tab: 42px;
 
-  /* ---------- 字体：拉丁等宽在前、CJK 等宽在后 → 中文天然 2:1 网格 ---------- */
+  /* ---------- 字体：正文用无衬线（中文耐读）；数据面用等宽 ---------- */
+  --tn-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
   --tn-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "Fira Code", "SFMono-Regular",
     Consolas, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono",
     "WenQuanYi Micro Hei Mono", "Microsoft YaHei", ui-monospace, monospace;
@@ -80,6 +84,7 @@
   --tn-fs-2xl: 26px;
   --tn-lh: 1.75;
   --tn-lh-tight: 1.35;
+  --tn-lh-ui: 1.65;
   --tn-ls: 0.015em;
   --tn-ls-caps: 0.16em;
 

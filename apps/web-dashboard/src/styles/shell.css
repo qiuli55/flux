@@ -59,10 +59,10 @@
   overflow: hidden;
   background: var(--tn-bg);
   color: var(--tn-text);
-  font-family: var(--tn-mono);
+  font-family: var(--tn-font-ui);
   font-size: var(--tn-fs);
-  line-height: var(--tn-lh-tight);
-  letter-spacing: var(--tn-ls);
+  line-height: var(--tn-lh-ui);
+  letter-spacing: normal;
   color-scheme: dark;
 }
 .fx-root.fx-shell.fx-wide { grid-template-columns: var(--tn-rail-wide) 1fr; }

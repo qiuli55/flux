@@ -53,8 +53,8 @@
   --orange: var(--tn-warn);
   --red: var(--tn-danger);
   --mono: var(--tn-mono);
-  --ui: var(--tn-mono);
-  --r: var(--tn-r);
+  --ui: var(--tn-font-ui);
+  --r: var(--tn-r-lg);
 }
 
 /* shell.css 的旧令牌（原挂在 .fx-root 上，导致 Portal 弹层取不到值、背景透明）
@@ -85,7 +85,7 @@
   --fx-orange-soft: var(--tn-warn-soft);
   --fx-red: var(--tn-danger);
   --fx-red-soft: var(--tn-danger-soft);
-  --fx-ui: var(--tn-mono);
+  --fx-ui: var(--tn-font-ui);
   --fx-mono: var(--tn-mono);
   --fx-r-xs: var(--tn-r-xs);
   --fx-r-sm: var(--tn-r-sm);
@@ -107,23 +107,26 @@
   --fx-grad-panel: none;
 }
 
-/* ---------- 基础层：全站等宽 + 宽松字距 + Terminal Noir 滚动条 ---------- */
+/* ---------- 基础层：正文无衬线（数据面仍用等宽）+ 柔和滚动条 ---------- */
 html, body { height: 100%; }
 body {
   margin: 0;
   background: var(--tn-bg);
   color: var(--tn-text);
-  font-family: var(--tn-mono);
+  font-family: var(--tn-font-ui);
   font-size: var(--tn-fs);
-  line-height: var(--tn-lh-tight);
-  letter-spacing: var(--tn-ls);
+  line-height: var(--tn-lh-ui);
+  letter-spacing: normal;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 ::selection { background: var(--tn-accent-soft); color: var(--tn-text); }
+/* 键盘可达的焦点环：只在键盘操作时出现，鼠标点击不显示 */
+:focus-visible { outline: 1px solid var(--tn-accent-line); outline-offset: 1px; border-radius: var(--tn-r-xs); }
 
 * { scrollbar-width: thin; scrollbar-color: var(--tn-line-strong) transparent; }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
-*::-webkit-scrollbar-thumb { background-color: var(--tn-line-strong); border-radius: 0; }
+*::-webkit-scrollbar-thumb { background-color: var(--tn-line-strong); border-radius: var(--tn-r-full); }
 *::-webkit-scrollbar-thumb:hover { background-color: var(--tn-text-4); }
 *::-webkit-scrollbar-track { background-color: transparent; }
 

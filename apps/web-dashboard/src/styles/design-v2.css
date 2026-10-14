@@ -919,7 +919,7 @@ body.bottom-closed .ide-bottom { display: none; }
 
 .ag-turn { display: flex; flex-direction: column; gap: 4px; }
 .ag-turn-meta { font-size: 10.5px; color: var(--text-4); }
-.ag-bubble { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--tn-r); background: var(--panel-2); color: var(--text-2); font-size: var(--tn-fs-sm); line-height: var(--tn-lh); white-space: pre-wrap; word-break: break-word; }
+.ag-bubble { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--tn-r-sm); background: var(--panel-2); color: var(--text-2); font-size: var(--tn-fs-sm); line-height: var(--tn-lh-ui); white-space: pre-wrap; word-break: break-word; }
 .ag-turn.is-user { align-items: flex-end; }
 .ag-turn.is-user .ag-turn-meta { color: var(--text-3); }
 .ag-turn.is-user .ag-bubble { border-color: var(--tn-accent-line); background: var(--tn-accent-soft); color: var(--text); }
@@ -927,7 +927,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .ag-error { padding: 6px 12px; border-top: 1px solid rgba(255, 122, 110, 0.25); background: rgba(255, 122, 110, 0.08); color: var(--red); font-size: 11px; }
 
 .ag-compose { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
-.ag-input { width: 100%; min-height: 52px; max-height: 140px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--tn-r); background: var(--bg-2); color: var(--text); font: var(--tn-fs-sm)/var(--tn-lh) var(--tn-mono); outline: none; }
+.ag-input { width: 100%; min-height: 52px; max-height: 140px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--tn-r-sm); background: var(--bg-2); color: var(--text); font: var(--tn-fs-sm)/var(--tn-lh-ui) var(--tn-font-ui); outline: none; }
 .ag-input::placeholder { color: var(--text-4); }
 .ag-input:focus { border-color: var(--tn-accent-line); }
 .ag-input:disabled { opacity: 0.6; }
@@ -959,7 +959,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .s-task.is-active { background: var(--tn-panel-2); color: var(--tn-text); }
 .s-task.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; background: var(--tn-accent); }
 .s-task-title { font-size: var(--tn-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.s-task-meta { font-size: var(--tn-fs-xs); color: var(--tn-text-4); font-variant-numeric: tabular-nums; }
+.s-task-meta { font-size: var(--tn-fs-xs); color: var(--tn-text-4); font-family: var(--tn-mono); font-variant-numeric: tabular-nums; }
 .s-nav-foot { flex: 0 0 auto; padding: 8px; border-top: 1px solid var(--tn-line-soft); display: flex; flex-direction: column; gap: 2px; }
 .s-nav-link { text-align: left; padding: 6px 8px; border-radius: var(--tn-r); color: var(--tn-text-4); font-size: var(--tn-fs-xs); }
 .s-nav-link:hover { background: var(--tn-panel-2); color: var(--tn-text-2); }
@@ -999,7 +999,7 @@ body.bottom-closed .ide-bottom { display: none; }
 }
 .sb-tabs { flex: 0 0 auto; display: flex; align-items: stretch; border-bottom: 1px solid var(--sb-line); overflow-x: auto; scrollbar-width: none; }
 .sb-tabs::-webkit-scrollbar { display: none; }
-.sb-tab { position: relative; display: flex; align-items: center; gap: 6px; flex: 0 1 auto; max-width: 160px; padding: 0 6px 0 9px; height: 32px; border-right: 1px solid var(--sb-line); color: var(--sb-text-3); font-size: var(--tn-fs-xs); white-space: nowrap; }
+.sb-tab { position: relative; display: flex; align-items: center; gap: 6px; flex: 0 1 auto; max-width: 160px; padding: 0 6px 0 9px; height: 32px; border-right: 1px solid var(--sb-line); border-radius: var(--tn-r-xs) var(--tn-r-xs) 0 0; color: var(--sb-text-3); font-size: var(--tn-fs-xs); white-space: nowrap; }
 .sb-tab:hover { color: var(--sb-text-2); background: var(--sb-panel); }
 .sb-tab.is-active { color: var(--sb-text); background: var(--sb-panel); }
 .sb-tab.is-active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sb-accent); }
@@ -1025,7 +1025,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .sb-row:hover .sb-row-ic { border-color: var(--sb-accent-line); color: var(--sb-accent); }
 .sb-row .fx-icon { width: 14px; height: 14px; }
 .sb-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--tn-fs-sm); }
-.sb-row-sub { flex: 0 0 auto; font-size: var(--tn-fs-xs); color: var(--sb-text-3); font-variant-numeric: tabular-nums; }
+.sb-row-sub { flex: 0 0 auto; font-size: var(--tn-fs-xs); color: var(--sb-text-3); font-family: var(--tn-mono); font-variant-numeric: tabular-nums; }
 .sb-row-go { flex: 0 0 auto; color: var(--sb-text-3); }
 
 /* 右栏内的卡片与列表：跟着上面的炭灰变量走 */
