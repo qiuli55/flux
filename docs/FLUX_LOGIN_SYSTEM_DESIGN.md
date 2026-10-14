@@ -194,34 +194,68 @@ Personal MVP 可以先只有 owner；Work 版本再启用完整成员体系。
 
 ---
 
-## 5. 登录方式建议
+## 5. 登录方式：身份权威在 Flux，OAuth / Email 都是入口
 
-### Personal MVP
+> **2026-10-05 修订（用户决策）**：身份权威必须在 Flux 自己的 `users` 表里。
+> OAuth（GitHub 等）和 Email+Password 都只是"注册 / 登录的入口"——背后永远只增删
+> `users` + `user_identities`（桥表）。这是与之前 §5 草稿的关键区别。
 
-第一阶段不要同时做大量登录方式。
-
-建议：
+### 5.1 架构
 
 ```text
-Email + Password
-        ↓
-登录
-        ↓
-Access Token + Refresh Session
+                              ┌─────────────────────┐
+                              │  users（权威身份）    │
+                              │  id / email / status │
+                              │  ...                 │
+                              └─────────────────────┘
+                                   ▲          ▲
+                                   │ upsert   │ upsert
+                                   │          │
+        ┌──────────────────────┐    │          │    ┌──────────────────────┐
+        │ Email + Password     │────┘          └────│ GitHub OAuth         │
+        │ (provider=email)     │                    │ (provider=github)    │
+        └──────────────────────┘                    └──────────────────────┘
+                                   │          │
+                                   ▼          ▼
+                              ┌─────────────────────┐
+                              │ user_identities     │
+                              │ (provider,          │
+                              │  provider_uid,      │
+                              │  user_id)           │
+                              └─────────────────────┘
+                                          │
+                                          ▼
+                              ┌─────────────────────┐
+                              │ user_sessions       │
+                              │ refresh_token_hash  │
+                              └─────────────────────┘
+                                          │
+                                          ▼
+                              ┌─────────────────────┐
+                              │ personal_workspaces  │ ← 注册时自动建 1 个
+                              └─────────────────────┘
 ```
 
-后续再增加：
+**关键事实**：
 
-- GitHub OAuth
-- Google OAuth
-- 企业 SSO / OIDC
-- Passkey
+- `users.email` 唯一；OAuth 用户的 email 取自 OAuth provider 的公开 profile（GitHub 默认就有）
+- GitHub 用户没有 `password_hash`（NULL）；找回密码只对 email/password 用户开放
+- 一个 `users` 行可以有多条 `user_identities`（同一个人用 GitHub 也用 email 注册过 → 自动合并）
+- 注册流程：providers 给出"我是谁" → `users` upsert（按 email 查） → `user_identities` 写桥 → 签发 Token
 
-这样可以避免 Personal MVP 一开始就把大量精力放到 OAuth / 企业身份体系上。
+### 5.2 Personal MVP 第一批
 
-### Work
+```text
+Email + Password（provider=email）    ─┐
+                                        ├──→ 同一份 users / sessions / workspaces
+GitHub OAuth    （provider=github）    ─┘
+```
 
-Work 版本再重点支持：
+两条路径，**用户体感完全等价**——都拿到 User Access Token + Refresh Session，都进自己的 Personal Workspace。
+
+### 5.3 Work / Enterprise 后续
+
+新增 `organizations` 表 + `workspace_members`（详见 §11）：
 
 ```text
 OIDC / SSO
@@ -234,6 +268,16 @@ Membership / Role
     ↓
 Agent / Connector Permission
 ```
+
+本批不做，留到 Work 版本。
+
+### 5.4 不在第一版做
+
+- Google / 飞书 / 钉钉 OAuth（首版只接 GitHub）
+- Passkey / WebAuthn
+- 多设备 Session 管理（首版用户多半单设备，临时不强求）
+- 邮箱验证（注册时不发验证邮件，靠 OAuth 信任或邮箱+密码就放行；Work 阶段补）
+- 手机号 / 短信验证码
 
 ---
 
