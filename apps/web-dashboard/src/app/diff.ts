@@ -84,3 +84,61 @@ export function diffStat(diff: string): { added: number; removed: number } {
   }
   return { added, removed };
 }
+
+/**
+ * 把统一 diff 铺回原文件，得到「整文件 + 增删标记」视图行：hunk 之外的原文件行按原样补齐，
+ * hunk 内的新增行（add）与删除行（del）原样保留，顺序与阅读顺序一致。
+ * 行号沿用 git 口径：新增行只有新行号（newNo），删除行只有旧行号（oldNo）。
+ */
+export function mergeDiffIntoOriginal(original: string, diff: string): DiffRow[] {
+  const rows = parseUnifiedDiff(diff);
+  const lines = original ? original.split("\n") : [];
+  const out: DiffRow[] = [];
+  let oldCursor = 1;
+  let newCursor = 1;
+
+  // 补齐原文件里 hunk 没覆盖到的行（这些行新旧一致）
+  const fillTo = (oldNo: number) => {
+    while (oldCursor < oldNo) {
+      out.push({
+        kind: "same",
+        oldNo: String(oldCursor),
+        newNo: String(newCursor),
+        text: lines[oldCursor - 1] ?? "",
+      });
+      oldCursor += 1;
+      newCursor += 1;
+    }
+  };
+
+  for (const row of rows) {
+    if (row.kind === "hunk") continue;
+    if (row.kind === "add") {
+      out.push(row);
+      if (row.newNo) newCursor = Number(row.newNo) + 1;
+      continue;
+    }
+    const oldNo = Number(row.oldNo);
+    if (!Number.isFinite(oldNo) || oldNo < 1) {
+      out.push(row);
+      continue;
+    }
+    fillTo(oldNo);
+    out.push(row);
+    oldCursor = oldNo + 1;
+    // 删除行不占新文件行号；未改动行要同步推进新行号
+    if (row.kind === "same" && row.newNo) newCursor = Number(row.newNo) + 1;
+  }
+
+  while (oldCursor <= lines.length) {
+    out.push({
+      kind: "same",
+      oldNo: String(oldCursor),
+      newNo: String(newCursor),
+      text: lines[oldCursor - 1] ?? "",
+    });
+    oldCursor += 1;
+    newCursor += 1;
+  }
+  return out;
+}

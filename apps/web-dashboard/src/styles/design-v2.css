@@ -382,9 +382,6 @@ kbd {
   height: 46px; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--line);
 }
 .it-left { display: flex; align-items: center; gap: 10px; }
-.proj-pick { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 12.5px; color: var(--text-2); }
-.proj-pick i { font-style: normal; color: var(--text-3); font-size: 10px; }
-.pj-ic { width: 14px; height: 14px; border-radius: var(--tn-r-sm); background: var(--tn-accent-soft); }
 .it-search {
   flex: 1; max-width: 520px; margin: 0 auto;
   display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -471,6 +468,17 @@ ul > li:not(.open) > ul { display: none; }
 .dl.add { background: rgba(61,220,151,.09); }
 .dl.add .dc { color: #a7f3cf; }
 .dl.same .dc { color: #8b93a8; }
+/* 并排（整文件）视图里的增删行：与 .dl 同一套 diff 语言 */
+.cl.is-add { background: rgba(61,220,151,.09); }
+.cl.is-add .ln { color: #61dc97; }
+.cl.is-del { background: rgba(241,106,106,.09); }
+.cl.is-del .ln { color: #f16a6a; }
+.cl.is-del .lc { color: #ffb4b4; }
+/* 编辑器标签栏右侧的视图切换（并排 / 统一） */
+.ed-viewseg { display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 0 6px; }
+.ed-viewseg-b { height: 22px; padding: 0 9px; border-radius: var(--tn-r-sm); color: var(--tn-text-4); font-size: 11px; white-space: nowrap; transition: background var(--tn-dur-1) var(--tn-ease), color var(--tn-dur-1) var(--tn-ease); }
+.ed-viewseg-b:hover { background: var(--tn-panel-2); color: var(--tn-text-2); }
+.ed-viewseg-b.is-active { background: var(--tn-accent-soft); color: var(--tn-accent); }
 .diff-banner { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--tn-accent-soft); border-bottom: 1px solid var(--tn-accent-line); font-size: 12px; color: var(--text-2); }
 .diff-banner b { color: var(--text); }
 .diff-actions { margin-left: auto; display: flex; gap: 8px; }
@@ -812,7 +820,6 @@ body.bottom-closed .ide-bottom { display: none; }
   /* ---- IDE：顶栏精简 ---- */
   .view-ide .it-search { display: none; }
   .view-ide .ide-top { height: 48px; padding: 0 10px; gap: 8px; }
-  .view-ide .proj-pick { max-width: 44vw; overflow: hidden; }
   .view-ide .it-right { gap: 4px; }
 
   /* ---- IDE：文件 / Agent 变抽屉 ---- */

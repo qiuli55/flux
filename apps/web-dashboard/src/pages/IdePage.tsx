@@ -32,7 +32,7 @@ import type {
   TerminalEvent,
 } from "../api/types";
 import { openCommandPalette, setIdeIntentHandler, type IdeIntent } from "../app/commands";
-import { parseUnifiedDiff } from "../app/diff";
+import { mergeDiffIntoOriginal, parseUnifiedDiff } from "../app/diff";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
@@ -262,6 +262,19 @@ function highlight(line: string, kind: "md" | "py" | "code"): Token[] {
   }
   if (last < line.length) tokens.push({ text: line.slice(last) });
   return tokens.length > 0 ? tokens : [{ text: line }];
+}
+
+/** 把高亮结果渲染成 span 序列（普通代码行与整文件 diff 行共用） */
+function renderTokens(text: string, kind: "md" | "py" | "code"): ReactNode {
+  return highlight(text, kind).map((token, index) =>
+    token.cls ? (
+      <span key={index} className={token.cls}>
+        {token.text}
+      </span>
+    ) : (
+      <span key={index}>{token.text}</span>
+    ),
+  );
 }
 
 /* ---------- 文件树 ---------- */
@@ -503,6 +516,8 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     }
   });
   const [activeTab, setActiveTab] = useState<string | null>(CHANGES_TAB);
+  /** 编辑器视图：split = 整文件（AI 新增绿 / 删除红）；unified = 只看改动片段的旧新对比 */
+  const [codeView, setCodeView] = useState<"split" | "unified">("split");
   const [files, setFiles] = useState<Record<string, FileContent>>({});
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -1528,6 +1543,16 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     return numbers;
   }, [changes, activeTab]);
 
+  /** 当前打开文件对应的变更（同一文件多条时 pending 优先，与 changeByPath 同口径） */
+  const activeChange = activeTab && activeTab !== CHANGES_TAB ? changeByPath.get(activeTab) : undefined;
+  /** 统一视图：只渲染 diff 片段（旧新对比，不铺整文件） */
+  const changeRows = useMemo(() => (activeChange ? parseUnifiedDiff(activeChange.diff) : []), [activeChange]);
+  /** 并排视图：把 diff 铺回原文件，得到整文件 + 增删标记 */
+  const fileRows = useMemo(
+    () => (activeChange ? mergeDiffIntoOriginal(activeChange.original_content, activeChange.diff) : []),
+    [activeChange],
+  );
+
   const runningTask = task?.status === "running";
   const branch = gitStatus?.branch ?? null;
 
@@ -1713,38 +1738,55 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   </span>
                 </div>
               ) : null}
-              <div className="code">
-                <div className="code-lines">
-                  {activeLines.map((line, index) => (
-                    <div className={`cl${changedLines.has(index + 1) ? " is-changed" : ""}`} key={index}>
-                      <span className="ln">{index + 1}</span>
-                      <span className="lc">
-                        {highlight(line, activeKind).map((token, i) =>
-                          token.cls ? (
-                            <span key={i} className={token.cls}>
-                              {token.text}
-                            </span>
-                          ) : (
-                            <span key={i}>{token.text}</span>
-                          ),
-                        )}
-                      </span>
+              {activeChange && codeView === "unified" ? (
+                /* 统一视图：只给 AI 改动的片段，看旧新对比 */
+                <div className="diff-view">
+                  {changeRows.map((row, index) => (
+                    <div className={`dl ${row.kind}`} key={index}>
+                      <span className="lno old">{row.oldNo}</span>
+                      <span className="lno new">{row.newNo}</span>
+                      <span className="dc">{row.text}</span>
                     </div>
                   ))}
                 </div>
-                <div className="minimap">
-                  {activeLines.map((line, index) => {
-                    const length = line.length;
-                    const width = length === 0 ? "w4" : length <= 10 ? "w4" : length <= 28 ? "w2" : length <= 52 ? "w1" : "w3";
-                    return (
-                      <div
-                        className={`mm-line ${width}${changedLines.has(index + 1) ? " hl" : ""}`}
-                        key={index}
-                      />
-                    );
-                  })}
+              ) : (
+                <div className="code">
+                  <div className="code-lines">
+                    {activeChange && codeView === "split"
+                      ? /* 并排视图：整文件铺开，AI 新增绿、删除红 */
+                        fileRows.map((row, index) => (
+                          <div
+                            className={`cl${row.kind === "add" ? " is-add" : row.kind === "del" ? " is-del" : ""}`}
+                            key={index}
+                          >
+                            <span className="ln">{row.newNo || row.oldNo}</span>
+                            <span className="lc">
+                              {row.kind === "del" ? row.text : renderTokens(row.text, activeKind)}
+                            </span>
+                          </div>
+                        ))
+                      : activeLines.map((line, index) => (
+                          <div className={`cl${changedLines.has(index + 1) ? " is-changed" : ""}`} key={index}>
+                            <span className="ln">{index + 1}</span>
+                            <span className="lc">{renderTokens(line, activeKind)}</span>
+                          </div>
+                        ))}
+                  </div>
+                  <div className="minimap">
+                    {(activeChange && codeView === "split"
+                      ? fileRows.map((row) => ({ text: row.text, mark: row.kind === "add" ? " hl" : "" }))
+                      : activeLines.map((line, index) => ({
+                          text: line,
+                          mark: changedLines.has(index + 1) ? " hl" : "",
+                        }))
+                    ).map((row, index) => {
+                      const length = row.text.length;
+                      const width = length === 0 ? "w4" : length <= 10 ? "w4" : length <= 28 ? "w2" : length <= 52 ? "w1" : "w3";
+                      return <div className={`mm-line ${width}${row.mark}`} key={index} />;
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           ) : (
             <div className="ed-empty">正在准备编辑器…</div>
@@ -1971,11 +2013,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             <svg viewBox="0 0 24 24" className="logo-mark">
               <path d="M12 2 22 12 12 22 2 12Z" fill="currentColor" />
             </svg>
-          </button>
-          <button type="button" className="proj-pick" onClick={() => setProjectOpen(true)}>
-            <span className="pj-ic" />
-            {projects.find((project) => project.id === projectId)?.name ?? "未登记项目"}
-            <i>▾</i>
           </button>
         </div>
         <button type="button" className="it-search" onClick={openCommandPalette}>
@@ -2302,6 +2339,26 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               </span>
             </button>
             <span className="ed-tabs-gap" />
+            {activeChange ? (
+              <div className="ed-viewseg">
+                <button
+                  type="button"
+                  className={`ed-viewseg-b${codeView === "split" ? " is-active" : ""}`}
+                  onClick={() => setCodeView("split")}
+                  title="整文件视图：当前文件全文，AI 新增行绿色、删除行红色"
+                >
+                  并排
+                </button>
+                <button
+                  type="button"
+                  className={`ed-viewseg-b${codeView === "unified" ? " is-active" : ""}`}
+                  onClick={() => setCodeView("unified")}
+                  title="只看 AI 改动的片段，与原文对比，不展示整文件"
+                >
+                  统一
+                </button>
+              </div>
+            ) : null}
             <button
               type="button"
               className="icon-btn sm"
@@ -2605,6 +2662,14 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
 
       <footer className="ide-status">
         <div className="st-left">
+          <button
+            type="button"
+            className="st-item st-link"
+            title="切换项目"
+            onClick={() => setProjectOpen(true)}
+          >
+            {projects.find((project) => project.id === projectId)?.name ?? "未登记项目"} <i>▾</i>
+          </button>
           <button
             type="button"
             className="st-item"
