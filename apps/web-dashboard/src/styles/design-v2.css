@@ -546,14 +546,10 @@ ul > li:not(.open) > ul { display: none; }
 .st-run { color: var(--green); }
 .st-run .dot, .pill-run .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: none; }
 .br-ic { width: 11px; height: 11px; border-radius: 3px; background: #3d4a6b; }
+/* 命令面板入口：原页脚那 46px 的一行已合并进状态栏右侧 */
+.st-item.st-link { cursor: pointer; color: var(--text-3); }
+.st-item.st-link:hover { color: var(--accent); }
 
-.ide-footer { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; height: 46px; padding: 0 16px; background: #05060a; border-top: 1px solid var(--line); }
-.ft-btn { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text-2); font-size: 11.5px; }
-.ft-btn:hover { border-color: var(--tn-line-strong); color: var(--text); }
-.ft-btn.right { margin-left: auto; }
-.ft-k { color: var(--text); font-weight: 600; }
-.ft-ic { color: var(--accent); }
-.ft-center { flex: 1; text-align: center; color: var(--text-3); font-size: 12px; }
 .focus-exit { position: fixed; right: 18px; bottom: 18px; z-index: 50; height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text-2); font-size: 12px; }
 
 /* 专注模式：隐藏所有辅助面板，只留编辑器 */
@@ -561,8 +557,7 @@ body.focus-mode .ide-rail,
 body.focus-mode .ide-files,
 body.focus-mode .ide-agent,
 body.focus-mode .ide-bottom,
-body.focus-mode .ide-status,
-body.focus-mode .ide-footer { display: none; }
+body.focus-mode .ide-status { display: none; }
 body.focus-mode .focus-exit { display: inline-flex !important; align-items: center; gap: 6px; }
 /* 折叠文件树（⌘B） */
 body.files-collapsed .ide-files { display: none; }
@@ -839,7 +834,6 @@ body.bottom-closed .ide-bottom { display: none; }
   .view-ide .m-scrim.is-open { display: block; position: absolute; inset: 0; z-index: 30; background: rgba(4,5,9,.55); }
   .view-ide .agent-collapsed { display: none; }
   .view-ide .minimap { display: none; }
-  .view-ide .ide-footer { display: none; }
   .view-ide .st-right { display: none; }
   .view-ide .ide-bottom { max-height: 42vh; }
   .view-ide .bp-shell { display: none; }

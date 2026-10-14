@@ -2660,17 +2660,16 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           ) : (
             <span className="st-item">Agent 待命</span>
           )}
+          <button
+            type="button"
+            className="st-item st-link"
+            title="打开命令面板（⌘K）"
+            onClick={openCommandPalette}
+          >
+            ⌘K 命令面板
+          </button>
         </div>
       </footer>
-
-      <div className="ide-footer">
-        <span className="ft-center">Flux · IDE-first · 让 AI 真正融入你的开发工作流</span>
-        <button type="button" className="ft-btn right" onClick={openCommandPalette}>
-          <span className="ft-ic">⌘</span>
-          <span className="ft-k">Command Center</span>
-          <kbd>⌘K</kbd>
-        </button>
-      </div>
 
       <button
         type="button"
