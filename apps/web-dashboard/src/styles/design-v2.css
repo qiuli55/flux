@@ -969,3 +969,15 @@ body.bottom-closed .ide-bottom { display: none; }
 .s-head { display: flex; align-items: center; gap: 10px; }
 .s-head h1 { margin: 0; min-width: 0; font-size: var(--tn-fs-md); font-weight: 600; color: var(--tn-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-head-gap { flex: 1; min-width: 0; }
+
+/* 右栏功能区 Tab：浏览器 / 插件市场 / 连接器市场 */
+.side-tabs { flex: 0 0 auto; display: flex; align-items: stretch; border: 1px solid var(--tn-line); border-radius: var(--tn-r); overflow: hidden; }
+.side-tab { flex: 1; height: 30px; color: var(--tn-text-4); font-size: var(--tn-fs-xs); }
+.side-tab:hover { color: var(--tn-text-2); }
+.side-tab.is-active { background: var(--tn-accent-soft); color: var(--tn-accent); }
+.side-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--tn-line); border-radius: var(--tn-r); }
+.side-item .si-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.side-item .si-main b { font-size: var(--tn-fs-sm); font-weight: 500; color: var(--tn-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-item .si-main i { font-style: normal; font-size: var(--tn-fs-xs); color: var(--tn-text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-sub { margin-top: 4px; font-size: var(--tn-fs-xs); color: var(--tn-text-4); }
