@@ -54,7 +54,7 @@ function modeTools(view: View, navigate: (v: View) => void): ModeTool[] {
   return [];
 }
 
-function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => void; wide: boolean }) {
+function Rail({ view, navigate, wide, onToggleWide }: { view: View; navigate: (v: View) => void; wide: boolean; onToggleWide: () => void }) {
   const tools = modeTools(view, navigate);
   return (
     <aside className="fx-rail">
@@ -116,6 +116,15 @@ function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => voi
         ))}
       </nav>
       <div className="fx-rail-foot">
+        <button
+          type="button"
+          className="fx-nav"
+          onClick={onToggleWide}
+          title={wide ? "收起侧栏" : "展开侧栏"}
+        >
+          <Icon name={wide ? "chevron" : "grid"} />
+          <span>{wide ? "收起侧栏" : "展开侧栏"}</span>
+        </button>
         <div className="fx-user" title="本地单用户模式">
           <span className="fx-avatar fx-sm">本</span>
           <div className="fx-user-meta">
@@ -207,7 +216,7 @@ export function Shell({ view, navigate }: { view: View; navigate: (v: View) => v
 
   return (
     <div className={["fx-root", "fx-shell", prefs.wide && "fx-wide"].filter(Boolean).join(" ")}>
-      <Rail view={view} navigate={navigate} wide={prefs.wide} />
+      <Rail view={view} navigate={navigate} wide={prefs.wide} onToggleWide={toggleWide} />
       <div className="fx-main">
         <Topbar view={view} wide={prefs.wide} dsh={dsh} onToggleWide={toggleWide} />
         <Content view={view} navigate={navigate} />

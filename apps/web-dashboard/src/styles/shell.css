@@ -104,7 +104,7 @@
 .fx-nav.fx-active .fx-icon { color: var(--tn-accent); }
 .fx-nav.fx-active::before { content: ""; position: absolute; left: 0; top: 5px; bottom: 5px; width: 2px; background: var(--tn-accent); }
 .fx-nav .fx-count { margin-left: auto; font-size: var(--tn-fs-xs); color: var(--tn-text-4); background: var(--tn-panel-3); padding: 0 6px; border-radius: var(--tn-r-full); font-variant-numeric: tabular-nums; }
-.fx-rail-foot { flex: none; padding: var(--tn-s3) var(--tn-s2); border-top: 1px solid var(--tn-line); }
+.fx-rail-foot { flex: none; display: flex; flex-direction: column; gap: var(--tn-s2); padding: var(--tn-s3) var(--tn-s2); border-top: 1px solid var(--tn-line); }
 .fx-user { display: flex; align-items: center; gap: var(--tn-s3); padding: var(--tn-s2); border-radius: var(--tn-r); cursor: pointer; transition: background var(--tn-dur-1) var(--tn-ease); }
 .fx-user:hover { background: var(--tn-panel-2); }
 .fx-user-meta { min-width: 0; overflow: hidden; }
