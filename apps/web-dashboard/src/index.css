@@ -115,7 +115,7 @@ body {
   color: var(--tn-text);
   font-family: var(--tn-mono);
   font-size: var(--tn-fs);
-  line-height: var(--tn-lh);
+  line-height: var(--tn-lh-tight);
   letter-spacing: var(--tn-ls);
   -webkit-font-smoothing: antialiased;
 }

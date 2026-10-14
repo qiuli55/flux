@@ -24,8 +24,8 @@
   border-color: #33395c;
 }
 .tasks li.is-active {
-  border-color: rgba(124, 92, 255, 0.55);
-  background: rgba(124, 92, 255, 0.08);
+  border-color: var(--tn-accent-line);
+  background: var(--tn-accent-soft);
 }
 .tk-main {
   flex: 1;
@@ -229,7 +229,7 @@
 
 /* Solo 左导航的终端入口图标 */
 .n-ic.i-term {
-  background: linear-gradient(135deg, #3ddc97, #12b981);
+  background: var(--tn-accent);
 }
 
 .tw {
@@ -244,7 +244,7 @@
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--tn-shadow-pop);
   overflow: hidden;
 }
 .tw-head {
@@ -273,7 +273,7 @@
 }
 .tw-dot[data-on="1"] {
   background: var(--green);
-  box-shadow: 0 0 6px var(--green);
+  box-shadow: none;
 }
 .tw-status {
   font-size: 10.5px;
@@ -324,7 +324,7 @@
   align-items: center;
   gap: 7px;
   padding: 6px 10px;
-  background: rgba(124, 92, 255, 0.08);
+  background: var(--tn-accent-soft);
   border-bottom: 1px solid var(--line-soft);
   font: 11.5px var(--mono);
   color: var(--text);
@@ -381,8 +381,8 @@
 }
 .tw-src.ai {
   color: var(--accent);
-  border-color: rgba(124, 92, 255, 0.4);
-  background: rgba(124, 92, 255, 0.1);
+  border-color: var(--tn-accent-line);
+  background: var(--tn-accent-soft);
 }
 .tw-src.user {
   color: var(--blue);
@@ -437,7 +437,7 @@
   outline: none;
 }
 .tw-input input:focus {
-  border-color: rgba(124, 92, 255, 0.55);
+  border-color: var(--tn-accent-line);
 }
 .tw-input input:disabled {
   color: var(--text-3);

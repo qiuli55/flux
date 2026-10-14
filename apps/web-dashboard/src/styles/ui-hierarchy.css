@@ -2,7 +2,7 @@
 .view-ide .ide-files{width:208px}
 .view-ide .ide-agent{width:286px}
 .view-ide .ide-rail{width:44px}
-.view-ide .ide-rail .rail-btn[data-panel="files"]{color:var(--text);background:rgba(124,92,255,.10)}
+.view-ide .ide-rail .rail-btn[data-panel="files"]{color:var(--text);background:var(--tn-accent-soft)}
 .view-ide .ide-rail .rail-btn[data-panel="search"],
 .view-ide .ide-rail .rail-btn[data-panel="git"]{opacity:.72}
 .view-ide .ide-rail .rail-btn[data-panel="search"]:hover,
@@ -36,7 +36,7 @@
 
 /* Human terminal: VS Code-like bottom panel, independent from Agent Terminal. */
 .view-ide .human-terminal-trigger{color:var(--text-2)}
-.view-ide .human-terminal-trigger.is-active{color:var(--text);background:rgba(124,92,255,.10)}
+.view-ide .human-terminal-trigger.is-active{color:var(--text);background:var(--tn-accent-soft)}
 .view-ide .ide-bottom.has-human-terminal .bp-body{padding:0;display:flex;flex-direction:column;overflow:hidden}
 .view-ide .ide-bottom.has-human-terminal .bp-body > *:not(.human-terminal){display:none}
 .human-terminal{display:flex;flex:1;min-height:0;flex-direction:column;background:#0a0c12;color:var(--text);font-family:var(--font-mono)}
@@ -44,7 +44,7 @@
 .ht-tabs{display:flex;min-width:0;flex:1;align-self:stretch;align-items:stretch;overflow:auto}
 .ht-tab{display:flex;align-items:center;gap:7px;min-width:130px;max-width:220px;padding:0 10px;border:0;border-right:1px solid var(--line-soft);background:transparent;color:var(--text-3);font:11px var(--font-mono);cursor:pointer;white-space:nowrap}
 .ht-tab:hover,.ht-tab.is-active{color:var(--text);background:var(--panel-2)}
-.ht-dot{width:6px;height:6px;border-radius:50%;background:var(--text-3);flex:none}.ht-dot.is-live{background:var(--green);box-shadow:0 0 7px rgba(61,220,151,.45)}
+.ht-dot{width:6px;height:6px;border-radius:50%;background:var(--text-3);flex:none}.ht-dot.is-live{background:var(--green);box-shadow:none}
 .ht-state{margin-left:auto;font-size:9px;color:var(--text-3)}
 .ht-add{width:34px;border:0;background:transparent;color:var(--text-2);font-size:16px;cursor:pointer}.ht-add:hover{color:var(--text);background:var(--panel-2)}
 .ht-actions{display:flex;align-items:center;gap:3px;padding:0 5px}.ht-cwd{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-3);font-size:10px;margin-right:4px}
