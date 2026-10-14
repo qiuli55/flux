@@ -538,3 +538,52 @@ export interface DshStatus {
     agent_id: string;
   };
 }
+
+/* ---------- DSH Run（POST /api/v1/dsh/runs） ---------- */
+
+/** 一次 Run 的权威状态（后端 DshRunStatus 落库后的字符串形态，统一按小写比对待） */
+export type DshRunLifecycle =
+  | "pending"
+  | "starting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "timeout"
+  | "interrupted";
+
+/** 一条被压扁的 DSH 通知：前端只消费 event_type / text / finish_reason */
+export interface DshRunEvent {
+  method?: string;
+  session_id?: string;
+  event_type: string | null;
+  text?: string | null;
+  finish_reason?: string | null;
+  run_id: string;
+}
+
+/**
+ * 一次 DSH Agent Run 的对外快照（GET /dsh/runs、GET /dsh/runs/{run_id}）。
+ * 增量改码靠它：instruction 一条一条下发，session_id 复用即同一会话。
+ */
+export interface DshRun {
+  run_id: string;
+  session_id: string;
+  instruction: string;
+  status: string;
+  final_response: string;
+  finish_reason: string | null;
+  error: string | null;
+  events: DshRunEvent[];
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  cancel_requested: boolean;
+  pid: number | null;
+  pgid: number | null;
+  timeout_kind: string | null;
+  agent_id: string | null;
+  /** 该 Run 归属的任务；独立起 Run（IDE 右栏）时为 null */
+  task_id: string | null;
+  last_state_change_at: string | null;
+}

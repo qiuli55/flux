@@ -1,6 +1,6 @@
 /* Flux UI information hierarchy: primary coding loop stays visually dominant. */
 .view-ide .ide-files{width:208px}
-.view-ide .ide-agent{width:286px}
+.view-ide .ide-agent{width:var(--agent-w,286px)}
 .view-ide .ide-rail{width:44px}
 .view-ide .ide-rail .rail-btn[data-panel="files"]{color:var(--text);background:var(--tn-accent-soft)}
 .view-ide .ide-rail .rail-btn[data-panel="search"],

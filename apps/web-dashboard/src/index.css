@@ -1,6 +1,6 @@
 /* 顺序：令牌真源 → Tailwind → 设计稿样式基座 → 产品补充 → UI 信息层级覆盖 → 全局外壳（fx- 前缀，互不冲突） */
-@import "./styles/tokens.css";
 @import "tailwindcss";
+@import "./styles/tokens.css";
 @import "./styles/design-v2.css";
 @import "./styles/product.css";
 @import "./styles/ui-hierarchy.css";

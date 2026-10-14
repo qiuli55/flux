@@ -881,3 +881,46 @@ body.bottom-closed .ide-bottom { display: none; }
   .rec-3col { grid-template-columns: minmax(0, 1fr); }
   .rec-col pre { max-height: 26vh; }
 }
+
+/* ==========================================================================
+   IDE 右栏 · 与 Agent 的增量改码对话（一次指令 = 一次 DSH Run）
+   与 Solo 的任务流水线不同：这里不澄清、不排计划，一条指令做一小步改动，
+   改动以提案进入「变更」面板，审核后落盘。
+   ========================================================================== */
+
+/* 拖宽热区：普通流内的独立兄弟元素，不做绝对定位，避免被相邻元素截获鼠标事件 */
+.agent-resize { flex: 0 0 6px; width: 6px; align-self: stretch; cursor: col-resize; background: var(--bg-2); position: relative; }
+.agent-resize::before { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 2px; height: 30px; border-radius: var(--tn-r-full); background: var(--tn-line-strong); transition: background var(--tn-dur-1) var(--tn-ease); }
+.agent-resize:hover::before { background: var(--tn-accent); }
+.agent-resize.is-hidden, body.agent-closed .agent-resize { display: none; }
+
+.ag-chat { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ag-chat-head { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--text-4); text-transform: uppercase; letter-spacing: var(--tn-ls-caps); }
+.ag-chat-head .ag-chat-sub { font-size: 10px; text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-chat-head .link { margin-left: auto; color: var(--text-3); font-size: 11px; }
+.ag-chat-head .link:hover { color: var(--text); }
+
+.ag-turn { display: flex; flex-direction: column; gap: 4px; }
+.ag-turn-meta { font-size: 10.5px; color: var(--text-4); }
+.ag-bubble { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--tn-r); background: var(--panel-2); color: var(--text-2); font-size: var(--tn-fs-sm); line-height: var(--tn-lh); white-space: pre-wrap; word-break: break-word; }
+.ag-turn.is-user { align-items: flex-end; }
+.ag-turn.is-user .ag-turn-meta { color: var(--text-3); }
+.ag-turn.is-user .ag-bubble { border-color: var(--tn-accent-line); background: var(--tn-accent-soft); color: var(--text); }
+
+.ag-error { padding: 6px 12px; border-top: 1px solid rgba(255, 122, 110, 0.25); background: rgba(255, 122, 110, 0.08); color: var(--red); font-size: 11px; }
+
+.ag-compose { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.ag-input { width: 100%; min-height: 52px; max-height: 140px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--tn-r); background: var(--bg-2); color: var(--text); font: var(--tn-fs-sm)/var(--tn-lh) var(--tn-mono); outline: none; }
+.ag-input::placeholder { color: var(--text-4); }
+.ag-input:focus { border-color: var(--tn-accent-line); }
+.ag-input:disabled { opacity: 0.6; }
+.ag-compose-foot { display: flex; align-items: center; gap: 8px; }
+.ag-compose-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-4); }
+
+/* 任务上下文：折叠时只占一行，展开后限高并内部滚动，不挤掉对话区 */
+.ag-context { flex: 0 1 auto; border-top: 1px solid var(--line-soft); background: var(--panel-2); }
+.ag-context > summary { padding: 8px 12px; font-size: 11.5px; color: var(--text-3); cursor: pointer; list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag-context > summary::-webkit-details-marker { display: none; }
+.ag-context > summary:hover { color: var(--text-2); }
+.ag-context[open] > summary { color: var(--text-2); border-bottom: 1px solid var(--line-soft); }
+.ag-context .ag-scroll { flex: none; min-height: 0; max-height: 42vh; overflow-y: auto; }

@@ -11,12 +11,14 @@
  * AI 任务流（任务消息）· 变更（待审/已落盘）· Git（真实工作区状态）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import type {
   AgentHandle,
   Change,
+  DshRun,
+  DshStatus,
   FileContent,
   FileEntry,
   GitCommit,
@@ -41,6 +43,71 @@ import { ROLE_LABELS, STATE_LABELS } from "../data/team";
 const MAX_DEPTH = 4;
 const LS_COMMIT_TOUCHED = "flux.ide.commitTouched";
 const LS_RECENT_FILES = "flux.ide.recentFiles";
+/** Agent 对话（右栏增量改码）的本地留存：会话 id 与对话记录按项目分开存 */
+const LS_AGENT_SESSION = "flux.ide.agent.session";
+const LS_AGENT_CHAT = "flux.ide.agent.chat";
+const LS_AGENT_WIDTH = "flux.ide.agent.width";
+/** Agent 面板宽度（px）的合法区间 */
+const AGENT_W_MIN = 260;
+const AGENT_W_MAX = 720;
+
+/** 右栏对话里的一条：用户指令，或 Agent 的回执 */
+interface AgentTurn {
+  id: string;
+  role: "user" | "agent";
+  text: string;
+  status: "running" | "done" | "failed" | "stopped";
+  runId?: string;
+  durationMs?: number | null;
+}
+
+/** Run 是否已到终态（后端用字符串返回 DshRunStatus，统一按小写比对待） */
+function isRunSettled(run: DshRun): boolean {
+  return !["pending", "starting", "running"].includes(String(run.status).toLowerCase());
+}
+
+/** Run 是否成功结束 */
+function isRunOk(run: DshRun): boolean {
+  return String(run.status).toLowerCase() === "completed";
+}
+
+/** 这次 Run 要展示的文本：优先终态总结，其次累积的助手消息片段，最后才是错误原因 */
+function runText(run: DshRun): string {
+  if (run.final_response.trim()) return run.final_response.trim();
+  const joined = run.events
+    .filter((event) => event.event_type === "assistant/message" && event.text)
+    .map((event) => String(event.text))
+    .join("\n")
+    .trim();
+  if (joined) return joined;
+  return run.error ? `执行失败：${run.error}` : "";
+}
+
+function agentChatKey(projectId: string | null): string {
+  return `${LS_AGENT_CHAT}.${projectId ?? "none"}`;
+}
+
+function agentSessionKey(projectId: string | null): string {
+  return `${LS_AGENT_SESSION}.${projectId ?? "none"}`;
+}
+
+/** 读回某个项目上次的对话；上次没收尾的「执行中」在重载后不可能还在跑，按已停止落定 */
+function readAgentChat(projectId: string | null): AgentTurn[] {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(agentChatKey(projectId)) ?? "[]") as unknown;
+    if (!Array.isArray(stored)) return [];
+    return stored
+      .filter((item): item is AgentTurn => typeof item === "object" && item !== null && "role" in item && "text" in item)
+      .map((item) => (item.status === "running" ? { ...item, status: "stopped" as AgentTurn["status"] } : item));
+  } catch {
+    return [];
+  }
+}
+
+function readAgentWidth(): number {
+  const stored = Number(window.localStorage.getItem(LS_AGENT_WIDTH));
+  return Number.isFinite(stored) && stored >= AGENT_W_MIN && stored <= AGENT_W_MAX ? stored : 348;
+}
 
 type RailPanel = "files" | "search" | "git" | "debug" | "ext";
 type BottomTab = "flow" | "changes" | "problems" | "git";
@@ -324,9 +391,21 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [railPanel, setRailPanel] = useState<RailPanel>("files");
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [agentClosed, setAgentClosed] = useState(false);
+  /* 右栏：与 Agent 的增量改码对话（每次指令 = 一次 DSH Run） */
+  const [agentWidth, setAgentWidth] = useState<number>(readAgentWidth);
+  const [agentTurns, setAgentTurns] = useState<AgentTurn[]>([]);
+  const [agentDraft, setAgentDraft] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentRunId, setAgentRunId] = useState<string | null>(null);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const [dsh, setDsh] = useState<DshStatus | null>(null);
+  const agentSessionRef = useRef<string>("");
+  const agentScrollRef = useRef<HTMLDivElement | null>(null);
   const [focusMode, setFocusMode] = useState(false);
 
   const isMobile = useMediaQuery(MOBILE_QUERY);
+  /** ≤1280px 时右栏按固定紧凑宽度，忽略用户自定义宽度（避免把编辑器挤没） */
+  const narrowIde = useMediaQuery("(max-width: 1280px)");
   /** 移动端侧栏抽屉：桌面下恒为 none（不生效） */
   const [mPanel, setMPanel] = useState<MobilePanel>("none");
 
@@ -1138,6 +1217,150 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     },
     [bottomHeight],
   );
+
+  /* ---------- 右栏 Agent 对话：一次指令 = 一次 DSH Run（增量改码） ---------- */
+
+  /** DSH 运行时是否可用：不可用时右栏只提示、不下发指令 */
+  const dshReady = Boolean(dsh?.enabled);
+
+  useEffect(() => {
+    let alive = true;
+    void api.dshStatus()
+      .then((data) => { if (alive) setDsh(data); })
+      .catch(() => { if (alive) setDsh(null); });
+    return () => { alive = false; };
+  }, []);
+
+  /* 切换项目：读回该项目的对话与上次会话 id（会话 id 复用即同一会话） */
+  useEffect(() => {
+    setAgentTurns(readAgentChat(projectId));
+    agentSessionRef.current = window.localStorage.getItem(agentSessionKey(projectId)) ?? "";
+    setAgentDraft("");
+    setAgentError(null);
+    setAgentBusy(false);
+    setAgentRunId(null);
+  }, [projectId]);
+
+  /* 对话与面板宽度就地留存（只留最近 40 条，避免 localStorage 无限增长） */
+  useEffect(() => {
+    window.localStorage.setItem(agentChatKey(projectId), JSON.stringify(agentTurns.slice(-40)));
+  }, [agentTurns, projectId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LS_AGENT_WIDTH, String(agentWidth));
+  }, [agentWidth]);
+
+  /* 新消息自动贴底 */
+  useEffect(() => {
+    const node = agentScrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [agentTurns]);
+
+  /** 下发一条增量指令：起一次 DSH Run，Agent 的改动以提案进入「变更」面板等审核 */
+  const sendAgentInstruction = useCallback(async () => {
+    const text = agentDraft.trim();
+    if (!text || agentBusy) return;
+    if (!dshReady) {
+      toast("DSH 运行时未启用，无法下发指令");
+      return;
+    }
+    const stamp = Date.now();
+    const replyId = `a-${stamp}`;
+    setAgentTurns((prev) => [
+      ...prev,
+      { id: `u-${stamp}`, role: "user", text, status: "done" },
+      { id: replyId, role: "agent", text: "", status: "running" },
+    ]);
+    setAgentDraft("");
+    setAgentError(null);
+    setAgentBusy(true);
+    try {
+      const run = await api.startDshRun(text, agentSessionRef.current || undefined);
+      agentSessionRef.current = run.session_id;
+      window.localStorage.setItem(agentSessionKey(projectId), run.session_id);
+      setAgentRunId(run.run_id);
+      setAgentTurns((prev) => prev.map((turn) => (turn.id === replyId ? { ...turn, runId: run.run_id } : turn)));
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "指令下发失败";
+      setAgentError(message);
+      setAgentBusy(false);
+      setAgentTurns((prev) => prev.map((turn) => (turn.id === replyId ? { ...turn, text: message, status: "failed" } : turn)));
+    }
+  }, [agentBusy, agentDraft, dshReady, projectId]);
+
+  /** 停止当前 Run（进程树清干净才返回，见后端 interrupt 契约） */
+  const stopAgentRun = useCallback(async () => {
+    if (!agentRunId) return;
+    try {
+      await api.interruptDshRun(agentRunId);
+      toast("已请求停止当前 Run");
+    } catch (error) {
+      toast(error instanceof ApiError ? error.message : "停止失败");
+    }
+  }, [agentRunId]);
+
+  const clearAgentChat = useCallback(() => {
+    setAgentTurns([]);
+    setAgentError(null);
+  }, []);
+
+  /** 拖右栏左边缘调整 Agent 面板宽度（普通流内的独立兄弟元素，避免热区被相邻元素截获） */
+  const onAgentResizeDown = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = agentWidth;
+      document.body.style.userSelect = "none";
+      const onMove = (move: MouseEvent) => {
+        const next = Math.max(AGENT_W_MIN, Math.min(startWidth + (startX - move.clientX), AGENT_W_MAX));
+        setAgentWidth(next);
+      };
+      const onUp = () => {
+        document.body.style.userSelect = "";
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [agentWidth],
+  );
+
+  /* 轮询当前 Run：进度写在对话里；终态后刷新变更与任务，新提案立刻出现在「变更」面板 */
+  useEffect(() => {
+    if (!agentRunId) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const run = await api.getDshRun(agentRunId);
+        if (!alive) return;
+        const settled = isRunSettled(run);
+        const text = runText(run);
+        setAgentTurns((prev) => prev.map((turn) => (turn.runId === run.run_id
+          ? {
+            ...turn,
+            text: text || turn.text,
+            status: settled ? (isRunOk(run) ? "done" : "failed") : "running",
+            durationMs: run.duration_seconds,
+          }
+          : turn)));
+        if (settled) {
+          setAgentRunId(null);
+          setAgentBusy(false);
+          void loadChanges();
+          void loadTask(projectId);
+        }
+      } catch (error) {
+        if (!alive) return;
+        setAgentRunId(null);
+        setAgentBusy(false);
+        setAgentError(error instanceof ApiError ? error.message : "无法获取 Run 状态");
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => { void tick(); }, 1000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [agentRunId, loadChanges, loadTask, projectId]);
 
   /* ---------- 派生展示数据 ---------- */
 
@@ -2123,29 +2346,29 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           {renderEditor()}
         </main>
 
-        <aside className="ide-agent">
+        <div
+          className={`agent-resize${agentClosed ? " is-hidden" : ""}`}
+          title="拖动调整 Agent 面板宽度"
+          onMouseDown={onAgentResizeDown}
+        />
+
+        <aside
+          className="ide-agent"
+          style={narrowIde ? undefined : ({ "--agent-w": `${agentWidth}px` } as CSSProperties)}
+        >
           <div className="ag-head">
             <b>
               <span className="ag-ic">AI</span>Agent
             </b>
-            {runningTask ? (
-              <span className="pill pill-run sm">
-                <i className="dot" />
-                运行中
-              </span>
-            ) : (
-              <span className="pill sm">{task ? "待命" : "无任务"}</span>
-            )}
+            <span className={`pill sm${agentBusy ? " pill-run" : ""}`}>
+              {agentBusy ? <><i className="dot" />执行中</> : <>{dshReady ? "就绪" : "DSH 未启用"}</>}
+            </span>
             <span className="ag-head-gap" />
             <button
               type="button"
               className="icon-btn sm"
-              title="刷新"
-              onClick={() => {
-                void loadAgents();
-                void loadTask(projectId);
-                void loadChanges();
-              }}
+              title="刷新运行时状态"
+              onClick={() => { void api.dshStatus().then(setDsh).catch(() => setDsh(null)); }}
             >
               ⟳
             </button>
@@ -2162,6 +2385,72 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               ×
             </button>
           </div>
+
+          <div className="ag-chat" ref={agentScrollRef}>
+            <div className="ag-chat-head">
+              <span>增量改码</span>
+              <span className="ag-chat-sub">{dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "DSH 运行时未启用"}</span>
+              {agentTurns.length > 0 ? (
+                <button type="button" className="link" onClick={clearAgentChat}>清空</button>
+              ) : null}
+            </div>
+            {agentTurns.length === 0 ? (
+              <div className="ag-note">
+                这里一点一点改代码：每发一条指令就是一次真实的 DSH Run —— Agent 在同一个工作区里直接改，
+                改动会以提案进入下方「变更」面板，等你审核后落盘。
+              </div>
+            ) : (
+              agentTurns.map((turn) => (
+                <div key={turn.id} className={`ag-turn is-${turn.role}`}>
+                  <div className="ag-turn-meta">
+                    {turn.role === "user" ? "你" : "Agent"}
+                    {turn.status === "running" ? " · 执行中…" : null}
+                    {turn.status === "failed" ? " · 失败" : null}
+                    {turn.status === "stopped" ? " · 已停止" : null}
+                    {turn.status === "done" && turn.durationMs ? ` · ${turn.durationMs.toFixed(1)}s` : null}
+                  </div>
+                  <div className="ag-bubble">{turn.text || (turn.status === "running" ? "正在执行…" : "")}</div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {agentError ? <div className="ag-error">{agentError}</div> : null}
+
+          <div className="ag-compose">
+            <textarea
+              className="ag-input"
+              value={agentDraft}
+              placeholder={dshReady ? "描述这一小步要改什么…（Enter 发送 / Shift+Enter 换行）" : "DSH 运行时未启用，无法下发指令"}
+              disabled={!dshReady || agentBusy}
+              onChange={(event) => setAgentDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendAgentInstruction();
+                }
+              }}
+            />
+            <div className="ag-compose-foot">
+              <span className="ag-compose-hint">
+                {task ? `当前任务 ${task.id.slice(0, 8)}` : "未绑定任务 · DSH 直接在全局工作区改码"}
+              </span>
+              {agentBusy && agentRunId ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void stopAgentRun()}>停止</button>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!dshReady || agentBusy || !agentDraft.trim()}
+                onClick={() => void sendAgentInstruction()}
+              >
+                发送
+              </button>
+            </div>
+          </div>
+
+          <details className="ag-context">
+            <summary>任务上下文 · 计划 {planSteps.length} 步 · 变更 {taskChanges.length} 项 · Agent {agents.length} 个</summary>
           <div className="ag-scroll">
             {task ? (
               <>
@@ -2253,6 +2542,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               </div>
             )}
           </div>
+          </details>
         </aside>
 
         <button
@@ -2264,7 +2554,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           AI
         </button>
       </div>
-
       <div className="ide-bottom" style={{ height: bottomHeight }}>
         <div className="bp-resizer" title="拖动调整高度" onMouseDown={onResizerDown} />
         <div className="bp-head">

@@ -9,7 +9,7 @@
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ConfirmationItem, DecisionMode,
-  DecisionOutcome, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
+  DecisionOutcome, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
   TerminalEvent, TerminalSession,
@@ -151,6 +151,13 @@ export const api = {
   importCapability: (body: { kind: string; name: string; decision?: "keep" | "replace" }) =>
     getData<CapabilityImportOutcome>("POST", "/capabilities/import", body),
   dshStatus: () => getData<DshStatus>("GET", "/dsh/status"),
+  /** 起一次 DSH Run：instruction 必填；session_id 复用即同一会话（留空由后端生成） */
+  startDshRun: (instruction: string, sessionId?: string) =>
+    getData<DshRun>("POST", "/dsh/runs", sessionId ? { instruction, session_id: sessionId } : { instruction }),
+  getDshRun: (runId: string) => getData<DshRun>("GET", `/dsh/runs/${encodeURIComponent(runId)}`),
+  listDshRuns: () => getData<DshRun[]>("GET", "/dsh/runs"),
+  interruptDshRun: (runId: string) =>
+    getData<DshRun>("POST", `/dsh/runs/${encodeURIComponent(runId)}/interrupt`),
   listTasks: (options?: { projectId?: string; status?: string; limit?: number }) => getData<Task[]>("GET", `/tasks${query({ project_id: options?.projectId, status: options?.status, limit: options?.limit?.toString() })}`),
   createTask: (body: { description: string; project_id: string | null; decision_mode?: DecisionMode; agent_id?: string | null }) => getData<Task>("POST", "/tasks", body),
   getTask: (taskId: string) => getData<Task>("GET", `/tasks/${taskId}`),
