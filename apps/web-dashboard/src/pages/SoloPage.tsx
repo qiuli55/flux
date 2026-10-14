@@ -14,6 +14,7 @@ import type {
   AgentHandle,
   Change,
   ConfirmationItem,
+  DshStatus,
   Installation,
   Project,
   Task,
@@ -26,6 +27,7 @@ import { setSoloIntentHandler } from "../app/soloIntent";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
+import { AgentChatPanel } from "../components/agent/AgentChatPanel";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
 import { BUILTIN_ROLES, ROLE_LABELS, STATE_LABELS, toCreateRequest } from "../data/team";
 
@@ -427,6 +429,16 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [engineOpen, setEngineOpen] = useState(false);
   const [engineDown, setEngineDown] = useState(false);
 
+  // 中栏模式：流水线（任务流编排）/ 单 Agent（一点一点改），全局切换、两种会话共存
+  const [soloMode, setSoloMode] = useState<"pipeline" | "agent">(() =>
+    window.localStorage.getItem("flux.solo.mode") === "agent" ? "agent" : "pipeline",
+  );
+  // 单 Agent 模式的执行者（null = 内置 DSH）：与 IDE 右栏走同一套 DSH 通道
+  const [agentPickId, setAgentPickId] = useState<string | null>(
+    () => window.localStorage.getItem("flux.solo.agent.pick") || null,
+  );
+  const [dsh, setDsh] = useState<DshStatus | null>(null);
+
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [taskListOpen, setTaskListOpen] = useState(false);
@@ -533,6 +545,24 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     void loadChanges();
     void loadTasks();
   }, [loadProjects, loadAgents, loadInstallations, loadChanges, loadTasks]);
+
+  // 单 Agent 模式依赖 DSH 运行时：取一次状态（未启用时输入框禁用）
+  useEffect(() => {
+    let alive = true;
+    void api.dshStatus()
+      .then((data) => { if (alive) setDsh(data); })
+      .catch(() => { if (alive) setDsh(null); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("flux.solo.mode", soloMode);
+  }, [soloMode]);
+
+  useEffect(() => {
+    if (agentPickId) window.localStorage.setItem("flux.solo.agent.pick", agentPickId);
+    else window.localStorage.removeItem("flux.solo.agent.pick");
+  }, [agentPickId]);
 
   // 切换任务：拉取最近 30 条消息（向上再翻用 seq 游标）
   useEffect(() => {
@@ -1486,21 +1516,87 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </div>
         </nav>
         <main className="s-main">
-          <div className="s-scroll">
-            <div className="s-crumb">
-              <button
-                type="button"
-                className="icon-btn sm"
-                onClick={() => (isMobile ? setMScreen("solo") : setTaskListOpen(true))}
-                title="返回任务列表"
-              >
-                ←
-              </button>
-              <span className="c-dim">Solo</span>
-              <span className="c-sep">/</span>
-              <span>{task ? "任务详情" : "新任务"}</span>
-            </div>
+          <div className="s-crumb">
+            <button
+              type="button"
+              className="icon-btn sm"
+              onClick={() => (isMobile ? setMScreen("solo") : setTaskListOpen(true))}
+              title="返回任务列表"
+            >
+              ←
+            </button>
+            <span className="c-dim">Solo</span>
+            <span className="c-sep">/</span>
+            <span>{task ? "任务详情" : "新任务"}</span>
+            {!isMobile ? (
+              <div className="s-mode" role="tablist" aria-label="对话模式">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={soloMode === "pipeline"}
+                  className={`s-mode-btn${soloMode === "pipeline" ? " is-active" : ""}`}
+                  onClick={() => setSoloMode("pipeline")}
+                  title="流水线模式：需求澄清 → 计划 → 执行 → 自动落盘，由平台编排"
+                >
+                  流水线
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={soloMode === "agent"}
+                  className={`s-mode-btn${soloMode === "agent" ? " is-active" : ""}`}
+                  onClick={() => setSoloMode("agent")}
+                  title="单 Agent 模式：直接和某一个 Agent 一点一点改"
+                >
+                  单 Agent
+                </button>
+              </div>
+            ) : null}
+          </div>
 
+          {!isMobile ? (
+            <section className="s-head card">
+              <h1>{task ? taskTitle(task.description) : "新建任务"}</h1>
+              <span className="chip chip-dim">
+                {projects.find((project) => project.id === (task?.project_id ?? projectId))?.name ??
+                  "未选择项目"}
+              </span>
+              <span className="chip chip-dim">{task ? TASK_STATUS_LABELS[task.status] : "未创建"}</span>
+              <span className="s-head-gap" />
+              <span className="chip chip-dim">
+                第 {currentStep} / {flow.length} 步 · {flow[currentStep - 1]?.name ?? "待开始"}
+              </span>
+              {task && taskStarted && !taskFinal ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={cancelBusy}
+                  onClick={() => void cancelExecution()}
+                >
+                  {cancelBusy ? "正在取消…" : "取消执行"}
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+
+          {!isMobile && soloMode === "agent" ? (
+            <AgentChatPanel
+              storageKey={`flux.solo.agent.${taskId ?? "none"}`}
+              agentId={agentPickId}
+              agents={agents}
+              onAgentChange={setAgentPickId}
+              dsh={dsh}
+              emptyNote="这里是单 Agent 模式：每发一条指令就是一次真实的 DSH Run，Agent 在工作区里一点一点改，改动自动落盘并跑项目测试。"
+              placeholder="描述这一步要改什么…（Enter 发送 / Shift+Enter 换行）"
+              composeHint={task ? `当前任务 ${task.id.slice(0, 8)}` : "未绑定任务 · DSH 直接在全局工作区改码"}
+              onSettled={() => {
+                void loadChanges();
+                void loadTasks();
+              }}
+            />
+          ) : (
+            <>
+          <div className="s-scroll">
             {isMobile ? (
               <section className="card m-phases">
                 <ol className="m-phase-row">
@@ -1520,6 +1616,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               </section>
             ) : null}
 
+            {isMobile ? (
             <section className="task-head card">
               <div className="th-icon">
                 <svg viewBox="0 0 24 24" className="ic-lg">
@@ -1591,6 +1688,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 </button>
               </div>
             </section>
+            ) : null}
 
             <section className="flow card">
               <ol className="flow-steps">
@@ -1959,6 +2057,8 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               </button>
             </div>
           </div>
+            </>
+          )}
         </main>
 
         <aside className="s-side">
