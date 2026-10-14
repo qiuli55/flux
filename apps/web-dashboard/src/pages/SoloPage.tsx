@@ -722,6 +722,35 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     [reviewChange, loadChanges, loadTasks],
   );
 
+  /* ---------- 自动落盘：Solo 不做人工审核 ----------
+     本任务的提案一经产出就自动 apply（apply 顺带跑项目测试命令），不再需要「批准并落盘」这一步。
+     只处理当前任务自己的提案：工作区里可能还躺着其它任务遗留的 pending 改动，不能一起应用。 */
+  const autoAppliedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!taskId) return;
+    const mine = pendingChanges.filter((change) => change.task_id === taskId);
+    const todo = mine.filter((change) => !autoAppliedRef.current.has(change.id));
+    if (todo.length === 0) return;
+    // 先登记再提交：轮询刷新会不断产出新的 pendingChanges 数组，不登记就会重复落盘
+    for (const change of todo) autoAppliedRef.current.add(change.id);
+    let alive = true;
+    void (async () => {
+      try {
+        await api.apply(todo.map((change) => change.id));
+        if (!alive) return;
+        toast(`已自动落盘 ${todo.length} 项改动 · 已运行项目测试`);
+      } catch (error) {
+        if (!alive) return;
+        toast(errorMessage(error), "error");
+      }
+      if (!alive) return;
+      void loadChanges();
+      void loadTasks();
+    })();
+    return () => { alive = false; };
+  }, [pendingChanges, taskId, loadChanges, loadTasks]);
+
   const assembleTeam = useCallback(async () => {
     setAssembling(true);
     try {
@@ -1018,13 +1047,13 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               : "待开始",
       },
       {
-        name: "人工审核",
+        name: "自动落盘",
         state: pendingChanges.length > 0 ? "active" : changes.length > 0 ? "done" : "todo",
         note:
           pendingChanges.length > 0
-            ? `${pendingChanges.length} 项待审`
+            ? `${pendingChanges.length} 项落盘中`
             : changes.length > 0
-              ? "已全部处理"
+              ? "已全部落盘"
               : "待开始",
       },
       {
@@ -1153,7 +1182,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             type="button"
             className="icon-btn"
             title="通知"
-            onClick={() => toast(`当前有 ${pendingChanges.length} 项待人工审核`)}
+            onClick={() => toast(`当前有 ${pendingChanges.length} 项改动正在自动落盘`)}
           >
             <svg viewBox="0 0 20 20" className="ic">
               <path
@@ -1747,10 +1776,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                   {pendingChanges.length === 0 && messages.length > 0 ? "✓" : "…"}
                 </span>
                 <div>
-                  <b>{pendingChanges.length > 0 ? "有待审核的改动" : "需求澄清与确认"}</b>
+                  <b>{pendingChanges.length > 0 ? "改动正在自动落盘" : "需求澄清与确认"}</b>
                   <i>
                     {pendingChanges.length > 0
-                      ? `${pendingChanges.length} 项改动等你批准，批准后才会写入工作区`
+                      ? `${pendingChanges.length} 项改动正在自动落盘并运行项目测试`
                       : messages.length > 0
                         ? `已落库 ${messages.length} 条消息${clarifyCount > 0 ? ` · 澄清结论 ${clarifyCount} 条` : ""}`
                         : "发送第一条需求，Flux 会先澄清再给计划"}
@@ -1787,7 +1816,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           {isMobile && pendingChanges.length > 0 ? (
             <button type="button" className="m-review-bar" onClick={jumpToReview}>
               <span className="warn-tri">⚠</span>
-              <span>有 {pendingChanges.length} 个需要你审核的点</span>
+              <span>有 {pendingChanges.length} 项改动正在自动落盘</span>
               <span className="m-chev">›</span>
             </button>
           ) : null}
@@ -2066,7 +2095,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                       {pendingChanges.length > 0 ? "进行中" : changes.length > 0 ? "已完成" : "待开始"}
                     </span>
                   </div>
-                  <i>{pendingChanges.length > 0 ? `${pendingChanges.length} 项改动等你批准` : "所有改动都需人工批准后落盘"}</i>
+                  <i>{pendingChanges.length > 0 ? `${pendingChanges.length} 项改动自动落盘中` : "改动产出后自动落盘并跑项目测试"}</i>
                 </div>
                 <span className="tl-time">--</span>
               </li>
@@ -2141,7 +2170,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           <section className="card side-card" id="soloReviewCard">
             <div className="side-head">
               <b>
-                <span className="warn-tri">⚠</span> 需要人工审核 <em>({pendingChanges.length})</em>
+                <span className="warn-tri">⚠</span> 自动落盘 <em>({pendingChanges.length})</em>
               </b>
               <button
                 type="button"
