@@ -1,19 +1,63 @@
 /**
- * Solo 右栏功能区：浏览器 / 插件市场 / 连接器市场。
+ * Solo 右栏：一个「浏览器感」的功能区。
  *
- * 三个 Tab 都是真接口，只有「浏览器」诚实地标注为后续接入：
- * - 插件市场：GET /capabilities 列出已导入能力，POST /capabilities/scan 发现候选，POST /capabilities/import 导入
- * - 连接器市场：GET /installations 列本机 CLI 的安装与接入事实，scan / connect / delete
+ * 顶部是标签页 + 前进/后退/刷新/主页导航（每个标签页各自记一份浏览历史），下面是当前页面：
+ * 浏览器（诚实占位）/ 插件市场 / 扫描结果 / 插件详情 / 连接器市场 / 连接器详情。
+ * 点列表项 = 在当前标签页里跳转，前进后退可来回走，＋ 开新标签页。
  *
- * 安装状态由父级（SoloPage）持有，本组件只负责展示与触发，避免两处状态打架。
+ * 数据全是真接口：GET /capabilities · POST /capabilities/scan|import · GET /installations（scan/connect/delete）。
+ * 本机 CLI 的接入状态由父级（SoloPage）持有，这里只负责展示与触发。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../../api/client";
-import type { CapabilityCandidate, CapabilityScanReport, ImportedCapability, Installation } from "../../api/types";
+import type {
+  CapabilityCandidate,
+  CapabilityScanReport,
+  ImportedCapability,
+  Installation,
+} from "../../api/types";
 import { toast } from "../../app/toast";
 
-type SideTab = "browser" | "plugins" | "connectors";
+type PageKind = "browser" | "plugins" | "connectors" | "capability" | "connector" | "scan";
+
+interface SidePage {
+  /** 页面的唯一标识：同一 key 不会在历史里重复出现 */
+  key: string;
+  kind: PageKind;
+  title: string;
+  /** 插件详情定位 */
+  capId?: string;
+  /** 连接器详情定位 */
+  instName?: string;
+}
+
+interface SideTab {
+  id: string;
+  /** 这个标签页自己的浏览历史 */
+  pages: SidePage[];
+  /** 当前停在历史里的第几条 */
+  index: number;
+}
+
+const HOME_BROWSER: SidePage = { key: "browser", kind: "browser", title: "浏览器" };
+const HOME_PLUGINS: SidePage = { key: "plugins", kind: "plugins", title: "插件市场" };
+const HOME_CONNECTORS: SidePage = { key: "connectors", kind: "connectors", title: "连接器市场" };
+const SCAN_PAGE: SidePage = { key: "scan", kind: "scan", title: "扫描结果" };
+
+/** 地址栏里显示的伪 URL：只给「浏览器感」一个落点，不是真的网络地址 */
+function pageUrl(page: SidePage): string {
+  if (page.kind === "capability") return `flux://solo/plugins/${page.capId ?? ""}`;
+  if (page.kind === "connector") return `flux://solo/connectors/${page.instName ?? ""}`;
+  if (page.kind === "scan") return "flux://solo/plugins/scan";
+  return `flux://solo/${page.kind}`;
+}
+
+const KIND_LABELS: Record<string, string> = {
+  agent: "Agent 档案",
+  skill: "Skill 能力包",
+  connector: "连接器",
+};
 
 /** 安装状态 → 徽标文案与配色（与后端 AgentInstallStatus 对齐） */
 const INSTALL_STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -22,13 +66,6 @@ const INSTALL_STATUS_META: Record<string, { label: string; cls: string }> = {
   VERIFIED: { label: "已发现", cls: "b-run" },
   DISCOVERED: { label: "已发现", cls: "b-run" },
   NOT_INSTALLED: { label: "未安装", cls: "" },
-};
-
-/** 能力 kind → 中文标签 */
-const KIND_LABELS: Record<string, string> = {
-  agent: "Agent 档案",
-  skill: "Skill 能力包",
-  connector: "连接器",
 };
 
 interface Props {
@@ -48,7 +85,9 @@ export function SoloSidePanel({
   onRemove,
   onCreateAgent,
 }: Props) {
-  const [tab, setTab] = useState<SideTab>("browser");
+  const [tabs, setTabs] = useState<SideTab[]>([{ id: "tab-1", pages: [HOME_BROWSER], index: 0 }]);
+  const [activeId, setActiveId] = useState("tab-1");
+  const nextTab = useRef(2);
 
   // 插件市场
   const [caps, setCaps] = useState<ImportedCapability[]>([]);
@@ -56,6 +95,11 @@ export function SoloSidePanel({
   const [scanning, setScanning] = useState(false);
   const [report, setReport] = useState<CapabilityScanReport | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+
+  const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
+  const current: SidePage = activeTab?.pages[activeTab.index] ?? HOME_BROWSER;
+  const canBack = Boolean(activeTab && activeTab.index > 0);
+  const canForward = Boolean(activeTab && activeTab.index < activeTab.pages.length - 1);
 
   const loadCaps = useCallback(async () => {
     try {
@@ -100,204 +144,455 @@ export function SoloSidePanel({
     [loadCaps],
   );
 
-  return (
-    <>
-      <div className="side-tabs" role="tablist" aria-label="右侧功能区">
+  /* ---------- 导航：一个标签页 = 一份历史 + 一个游标 ---------- */
+
+  const openPage = useCallback(
+    (page: SidePage) => {
+      setTabs((prev) =>
+        prev.map((tab) => {
+          if (tab.id !== activeId) return tab;
+          const cur = tab.pages[tab.index];
+          if (cur && cur.key === page.key) return tab;
+          const pages = [...tab.pages.slice(0, tab.index + 1), page];
+          return { ...tab, pages, index: pages.length - 1 };
+        }),
+      );
+    },
+    [activeId],
+  );
+
+  const goBack = useCallback(() => {
+    setTabs((prev) => prev.map((tab) => (tab.id === activeId && tab.index > 0 ? { ...tab, index: tab.index - 1 } : tab)));
+  }, [activeId]);
+
+  const goForward = useCallback(() => {
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeId && tab.index < tab.pages.length - 1 ? { ...tab, index: tab.index + 1 } : tab,
+      ),
+    );
+  }, [activeId]);
+
+  const newTab = useCallback(() => {
+    const id = `tab-${nextTab.current++}`;
+    setTabs((prev) => [...prev, { id, pages: [HOME_BROWSER], index: 0 }]);
+    setActiveId(id);
+  }, []);
+
+  const closeTab = useCallback(
+    (id: string) => {
+      const at = tabs.findIndex((tab) => tab.id === id);
+      const rest = tabs.filter((tab) => tab.id !== id);
+      if (rest.length === 0) {
+        const fresh: SideTab = { id: `tab-${nextTab.current++}`, pages: [HOME_BROWSER], index: 0 };
+        setTabs([fresh]);
+        setActiveId(fresh.id);
+        return;
+      }
+      setTabs(rest);
+      if (id === activeId) {
+        const neighbor = rest[Math.min(at, rest.length - 1)];
+        if (neighbor) setActiveId(neighbor.id);
+      }
+    },
+    [tabs, activeId],
+  );
+
+  /** 刷新当前页面：插件相关重拉列表，扫描页重跑扫描，连接器相关回到父级扫描 */
+  const refreshPage = useCallback(() => {
+    if (current.kind === "scan") {
+      void scanCaps();
+      return;
+    }
+    if (current.kind === "connectors" || current.kind === "connector") {
+      onScan();
+      return;
+    }
+    void loadCaps();
+  }, [current.kind, scanCaps, loadCaps, onScan]);
+
+  const currentCap = useMemo(
+    () => (current.kind === "capability" ? caps.find((cap) => cap.id === current.capId) ?? null : null),
+    [current, caps],
+  );
+  const currentInst = useMemo(
+    () => (current.kind === "connector" ? installations.find((item) => item.name === current.instName) ?? null : null),
+    [current, installations],
+  );
+
+  /* ---------- 页面 ---------- */
+
+  const sitesPage = (
+    <section className="card side-card">
+      <div className="side-head">
+        <b>内置浏览器</b>
+        <span className="chip chip-dim">后续接入</span>
+      </div>
+      <div className="empty-note">
+        这里以后会是一个受控的内置浏览器，用来直接预览当前工作区跑起来的页面、边看边改。
+        现在还没有接入浏览器能力，所以先留一个诚实的位置，不做假界面。
+      </div>
+      <p className="ext-agent-note">当下要看效果：用 IDE 的终端跑起服务，再到系统浏览器里打开地址。</p>
+      <div className="side-sub">常用站点</div>
+      <ul className="side-list">
+        <li>
+          <button type="button" className="side-item is-link" onClick={() => openPage(HOME_PLUGINS)}>
+            <div className="si-main">
+              <b>插件市场</b>
+              <i>已导入 {caps.length} 项能力 · 可扫描导入</i>
+            </div>
+            <span className="tl-badge">›</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" className="side-item is-link" onClick={() => openPage(HOME_CONNECTORS)}>
+            <div className="si-main">
+              <b>连接器市场</b>
+              <i>本机 CLI {installations.length} 个 · 扫描接入</i>
+            </div>
+            <span className="tl-badge">›</span>
+          </button>
+        </li>
+      </ul>
+    </section>
+  );
+
+  const pluginsPage = (
+    <section className="card side-card">
+      <div className="side-head">
+        <b>插件市场</b>
         <button
           type="button"
-          role="tab"
-          aria-selected={tab === "browser"}
-          className={`side-tab${tab === "browser" ? " is-active" : ""}`}
-          onClick={() => setTab("browser")}
+          className="link"
+          disabled={scanning}
+          onClick={() => {
+            openPage(SCAN_PAGE);
+            void scanCaps();
+          }}
         >
-          浏览器
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "plugins"}
-          className={`side-tab${tab === "plugins" ? " is-active" : ""}`}
-          onClick={() => setTab("plugins")}
-        >
-          插件市场
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "connectors"}
-          className={`side-tab${tab === "connectors" ? " is-active" : ""}`}
-          onClick={() => setTab("connectors")}
-        >
-          连接器市场
+          {scanning ? "扫描中…" : "扫描本机"}
         </button>
       </div>
+      {capsError ? <div className="empty-note">{capsError}</div> : null}
+      {caps.length === 0 ? (
+        <div className="empty-note">
+          还没有导入任何插件能力。点「扫描本机」会从本机来源目录发现可导入的 Agent 档案 / Skill 能力包 / 连接器。
+        </div>
+      ) : (
+        <ul className="side-list">
+          {caps.map((cap) => (
+            <li key={cap.id}>
+              <button
+                type="button"
+                className="side-item is-link"
+                onClick={() => openPage({ key: `cap:${cap.id}`, kind: "capability", title: cap.name, capId: cap.id })}
+              >
+                <div className="si-main">
+                  <b>{cap.name}</b>
+                  <i>
+                    {KIND_LABELS[cap.kind] ?? cap.kind}
+                    {cap.version ? ` · v${cap.version}` : ""}
+                  </i>
+                </div>
+                <span className="tl-badge b-ok">已导入</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 
-      {tab === "browser" ? (
-        <section className="card side-card">
-          <div className="side-head">
-            <b>内置浏览器</b>
-            <span className="chip chip-dim">后续接入</span>
+  const scanPage = (
+    <section className="card side-card">
+      <div className="side-crumb">
+        <button type="button" className="link" onClick={() => openPage(HOME_PLUGINS)}>
+          ‹ 插件市场
+        </button>
+      </div>
+      <div className="side-head">
+        <b>扫描结果</b>
+        <button type="button" className="link" disabled={scanning} onClick={() => void scanCaps()}>
+          {scanning ? "扫描中…" : "重新扫描"}
+        </button>
+      </div>
+      {report ? (
+        <>
+          <div className="side-sub">
+            候选 {report.summary.total} 项 · 可导入 {report.summary.ok} · 已拦截 {report.summary.blocked}
           </div>
-          <div className="empty-note">
-            这里以后会是一个受控的内置浏览器，用来直接预览当前工作区跑起来的页面、边看边改。
-            现在还没有接入浏览器能力，所以先留一个诚实的位置，不做假界面。
-          </div>
-          <p className="ext-agent-note">
-            当下要看效果：用 IDE 的终端跑起服务，再到系统浏览器里打开地址。
-          </p>
-        </section>
-      ) : null}
-
-      {tab === "plugins" ? (
-        <section className="card side-card">
-          <div className="side-head">
-            <b>插件市场</b>
-            <button type="button" className="link" disabled={scanning} onClick={() => void scanCaps()}>
-              {scanning ? "扫描中…" : "扫描本机"}
-            </button>
-          </div>
-          {capsError ? <div className="empty-note">{capsError}</div> : null}
-          {caps.length === 0 ? (
-            <div className="empty-note">
-              还没有导入任何插件能力。点「扫描本机」会从本机来源目录发现可导入的 Agent 档案 / Skill 能力包 / 连接器。
-            </div>
+          {report.candidates.length === 0 ? (
+            <div className="empty-note">没有发现候选能力。</div>
           ) : (
             <ul className="side-list">
-              {caps.map((cap) => (
-                <li key={cap.id} className="side-item">
-                  <div className="si-main">
-                    <b>{cap.name}</b>
-                    <i>
-                      {KIND_LABELS[cap.kind] ?? cap.kind}
-                      {cap.version ? ` · v${cap.version}` : ""}
-                    </i>
-                  </div>
-                  <span className="tl-badge b-ok">已导入</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {report ? (
-            <>
-              <div className="side-sub">
-                扫描候选 {report.summary.total} 项 · 可导入 {report.summary.ok} · 已拦截 {report.summary.blocked}
-              </div>
-              {report.candidates.length === 0 ? (
-                <div className="empty-note">没有发现候选能力。</div>
-              ) : (
-                <ul className="side-list">
-                  {report.candidates.map((candidate, index) => {
-                    const blocked = candidate.status === "blocked";
-                    const key = `${candidate.kind}:${candidate.name}:${index}`;
-                    return (
-                      <li key={key} className="side-item">
-                        <div className="si-main">
-                          <b>{candidate.name}</b>
-                          <i>
-                            {KIND_LABELS[candidate.kind] ?? candidate.kind}
-                            {blocked && candidate.findings.length > 0
-                              ? ` · 拦截：${candidate.findings.map((f) => f.reason).join("；")}`
-                              : ""}
-                          </i>
-                        </div>
-                        {blocked ? (
-                          <span className="tl-badge">已拦截</span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-primary"
-                            disabled={importing === `${candidate.kind}:${candidate.name}`}
-                            onClick={() => void doImport(candidate)}
-                          >
-                            {importing === `${candidate.kind}:${candidate.name}` ? "导入中…" : "导入"}
-                          </button>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </>
-          ) : null}
-        </section>
-      ) : null}
-
-      {tab === "connectors" ? (
-        <section className="card side-card">
-          <div className="side-head">
-            <b>连接器市场</b>
-            <button type="button" className="link" disabled={installBusy === "scan"} onClick={onScan}>
-              {installBusy === "scan" ? "扫描中…" : "扫描本机"}
-            </button>
-          </div>
-          {installations.length === 0 ? (
-            <div className="empty-note">
-              还没扫描过本机 CLI。点「扫描本机」会发现 codex / opencode 的安装与凭据状态。
-            </div>
-          ) : (
-            <ul className="side-list">
-              {installations.map((item) => {
-                const meta = INSTALL_STATUS_META[item.status] ?? { label: item.status, cls: "" };
-                const ready = item.status === "READY";
-                const installed = item.status !== "NOT_INSTALLED";
+              {report.candidates.map((candidate, index) => {
+                const blocked = candidate.status === "blocked";
+                const busy = importing === `${candidate.kind}:${candidate.name}`;
                 return (
-                  <li key={item.id} className="side-item">
-                    <span className="tm-ava a3">{item.name.slice(0, 2).toUpperCase()}</span>
+                  <li key={`${candidate.kind}:${candidate.name}:${index}`} className="side-item">
                     <div className="si-main">
-                      <b>
-                        {item.name} <span className="chip chip-dim">CLI</span>
-                      </b>
+                      <b>{candidate.name}</b>
                       <i>
-                        {item.version ? `v${item.version} · ` : ""}
-                        {item.path ?? "未找到可执行文件"}
-                        {item.auth_status === "ok"
-                          ? " · 凭据 OK"
-                          : item.auth_status === "missing"
-                            ? " · 凭据缺失"
-                            : ""}
+                        {KIND_LABELS[candidate.kind] ?? candidate.kind}
+                        {blocked && candidate.findings.length > 0
+                          ? ` · 拦截：${candidate.findings.map((f) => f.reason).join("；")}`
+                          : ""}
                       </i>
                     </div>
-                    <span className={`tl-badge ${meta.cls}`}>{meta.label}</span>
-                    {ready ? (
-                      <span className="ext-agent-actions">
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-primary"
-                          disabled={installBusy === `agent:${item.name}`}
-                          onClick={() => onCreateAgent(item.name)}
-                          title={`创建一个 runtime=${item.name} 的 Agent 档案`}
-                        >
-                          {installBusy === `agent:${item.name}` ? "创建中…" : "建 Agent"}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-ghost"
-                          disabled={installBusy === item.name}
-                          onClick={() => onRemove(item.name)}
-                        >
-                          移除
-                        </button>
-                      </span>
-                    ) : installed ? (
+                    {blocked ? (
+                      <span className="tl-badge">已拦截</span>
+                    ) : (
                       <button
                         type="button"
                         className="btn btn-xs btn-primary"
-                        disabled={installBusy === item.name}
-                        onClick={() => onConnect(item.name)}
+                        disabled={busy}
+                        onClick={() => void doImport(candidate)}
                       >
-                        {installBusy === item.name ? "接入中…" : "接入"}
+                        {busy ? "导入中…" : "导入"}
                       </button>
-                    ) : null}
+                    )}
                   </li>
                 );
               })}
             </ul>
           )}
-          <p className="ext-agent-note">
-            接入 = 本机具备该 CLI 且验证通过；任务要真正走它，还需建一个该 runtime 的 Agent。
-          </p>
-        </section>
-      ) : null}
+        </>
+      ) : (
+        <div className="empty-note">{scanning ? "正在扫描本机来源目录…" : "还没有扫描结果。"}</div>
+      )}
+    </section>
+  );
+
+  const capabilityPage = (
+    <section className="card side-card">
+      <div className="side-crumb">
+        <button type="button" className="link" onClick={() => openPage(HOME_PLUGINS)}>
+          ‹ 插件市场
+        </button>
+      </div>
+      <div className="side-head">
+        <b>{currentCap?.name ?? current.title}</b>
+        <span className="tl-badge b-ok">已导入</span>
+      </div>
+      {currentCap ? (
+        <>
+          <div className="side-kv">
+            <span>类型</span>
+            <b>{KIND_LABELS[currentCap.kind] ?? currentCap.kind}</b>
+          </div>
+          <div className="side-kv">
+            <span>版本</span>
+            <b>{currentCap.version ?? "—"}</b>
+          </div>
+          <div className="side-kv">
+            <span>来源</span>
+            <b title={currentCap.source}>{currentCap.source}</b>
+          </div>
+          <div className="side-kv">
+            <span>指纹</span>
+            <b title={currentCap.fingerprint}>{currentCap.fingerprint.slice(0, 16)}</b>
+          </div>
+          <div className="side-kv">
+            <span>更新</span>
+            <b>{currentCap.updated_at ?? "—"}</b>
+          </div>
+          <div className="side-sub">能力规格</div>
+          <pre className="side-code">{JSON.stringify(currentCap.spec, null, 2)}</pre>
+        </>
+      ) : (
+        <div className="empty-note">这条能力已经不在列表里了（可能被移除或改名）。</div>
+      )}
+    </section>
+  );
+
+  const connectorsPage = (
+    <section className="card side-card">
+      <div className="side-head">
+        <b>连接器市场</b>
+        <button type="button" className="link" disabled={installBusy === "scan"} onClick={onScan}>
+          {installBusy === "scan" ? "扫描中…" : "扫描本机"}
+        </button>
+      </div>
+      {installations.length === 0 ? (
+        <div className="empty-note">
+          还没扫描过本机 CLI。点「扫描本机」会发现 codex / opencode 的安装与凭据状态。
+        </div>
+      ) : (
+        <ul className="side-list">
+          {installations.map((item) => {
+            const meta = INSTALL_STATUS_META[item.status] ?? { label: item.status, cls: "" };
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className="side-item is-link"
+                  onClick={() =>
+                    openPage({ key: `inst:${item.name}`, kind: "connector", title: item.name, instName: item.name })
+                  }
+                >
+                  <span className="tm-ava a3">{item.name.slice(0, 2).toUpperCase()}</span>
+                  <div className="si-main">
+                    <b>{item.name}</b>
+                    <i>
+                      {item.version ? `v${item.version} · ` : ""}
+                      {item.auth_status === "ok" ? "凭据 OK" : item.auth_status === "missing" ? "凭据缺失" : "凭据未知"}
+                    </i>
+                  </div>
+                  <span className={`tl-badge ${meta.cls}`}>{meta.label}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="ext-agent-note">接入 = 本机具备该 CLI 且验证通过；任务要真正走它，还需建一个该 runtime 的 Agent。</p>
+    </section>
+  );
+
+  const connectorPage = (
+    <section className="card side-card">
+      <div className="side-crumb">
+        <button type="button" className="link" onClick={() => openPage(HOME_CONNECTORS)}>
+          ‹ 连接器市场
+        </button>
+      </div>
+      <div className="side-head">
+        <b>{currentInst?.name ?? current.title}</b>
+        {currentInst ? (
+          <span className={`tl-badge ${(INSTALL_STATUS_META[currentInst.status] ?? { cls: "" }).cls}`}>
+            {(INSTALL_STATUS_META[currentInst.status] ?? { label: currentInst.status }).label}
+          </span>
+        ) : null}
+      </div>
+      {currentInst ? (
+        <>
+          <div className="side-kv">
+            <span>可执行</span>
+            <b title={currentInst.path ?? ""}>{currentInst.path ?? "未找到"}</b>
+          </div>
+          <div className="side-kv">
+            <span>版本</span>
+            <b>{currentInst.version ?? "—"}</b>
+          </div>
+          <div className="side-kv">
+            <span>适配器</span>
+            <b>{currentInst.adapter}</b>
+          </div>
+          <div className="side-kv">
+            <span>凭据</span>
+            <b>{currentInst.auth_status}</b>
+          </div>
+          <div className="side-kv">
+            <span>能力</span>
+            <b>{currentInst.capabilities.join(" · ") || "—"}</b>
+          </div>
+          <div className="side-sub">操作</div>
+          {currentInst.status === "READY" ? (
+            <div className="ext-agent-actions">
+              <button
+                type="button"
+                className="btn btn-xs btn-primary"
+                disabled={installBusy === `agent:${currentInst.name}`}
+                onClick={() => onCreateAgent(currentInst.name)}
+              >
+                {installBusy === `agent:${currentInst.name}` ? "创建中…" : "建 Agent"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                disabled={installBusy === currentInst.name}
+                onClick={() => onRemove(currentInst.name)}
+              >
+                移除接入
+              </button>
+            </div>
+          ) : currentInst.status !== "NOT_INSTALLED" ? (
+            <button
+              type="button"
+              className="btn btn-xs btn-primary"
+              disabled={installBusy === currentInst.name}
+              onClick={() => onConnect(currentInst.name)}
+            >
+              {installBusy === currentInst.name ? "接入中…" : "接入"}
+            </button>
+          ) : (
+            <div className="empty-note">本机没有找到这个 CLI 的可执行文件，先安装它再接入。</div>
+          )}
+        </>
+      ) : (
+        <div className="empty-note">这条接入记录已经不在列表里了。</div>
+      )}
+    </section>
+  );
+
+  const pageOf = (page: SidePage) => {
+    if (page.kind === "browser") return sitesPage;
+    if (page.kind === "plugins") return pluginsPage;
+    if (page.kind === "scan") return scanPage;
+    if (page.kind === "capability") return capabilityPage;
+    if (page.kind === "connectors") return connectorsPage;
+    return connectorPage;
+  };
+
+  return (
+    <>
+      <div className="sb-tabs" role="tablist" aria-label="右侧功能区标签页">
+        {tabs.map((tab) => {
+          const page: SidePage = tab.pages[tab.index] ?? HOME_BROWSER;
+          const active = tab.id === activeId;
+          return (
+            <div
+              key={tab.id}
+              role="tab"
+              tabIndex={0}
+              aria-selected={active}
+              className={`sb-tab${active ? " is-active" : ""}`}
+              title={pageUrl(page)}
+              onClick={() => setActiveId(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") setActiveId(tab.id);
+              }}
+            >
+              <span className="sb-tab-title">{page.title}</span>
+              <button
+                type="button"
+                className="sb-tab-x"
+                title="关闭标签页"
+                aria-label="关闭标签页"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeTab(tab.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        <button type="button" className="sb-new" title="新标签页" onClick={newTab}>
+          ＋
+        </button>
+      </div>
+
+      <div className="sb-nav">
+        <button type="button" className="sb-btn" title="后退" disabled={!canBack} onClick={goBack}>
+          ←
+        </button>
+        <button type="button" className="sb-btn" title="前进" disabled={!canForward} onClick={goForward}>
+          →
+        </button>
+        <button type="button" className="sb-btn" title="刷新" onClick={refreshPage}>
+          ⟳
+        </button>
+        <button type="button" className="sb-btn" title="回到浏览器首页" onClick={() => openPage(HOME_BROWSER)}>
+          ⌂
+        </button>
+        <span className="sb-addr" title={pageUrl(current)}>
+          <span>{pageUrl(current)}</span>
+        </span>
+      </div>
+
+      <div className="sb-page">{pageOf(current)}</div>
     </>
   );
 }

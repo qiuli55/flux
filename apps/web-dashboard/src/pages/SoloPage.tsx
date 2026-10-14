@@ -8,6 +8,7 @@
  * 不显示完成百分比：阶段内剩余工作量无法测量，只报事实（第几步 / 共几步）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { api } from "../api/client";
 import type {
@@ -58,6 +59,16 @@ const ROUND_STATUS_LABELS: Record<string, string> = {
 
 /** 引用前缀：形如「引用：「原文」\n\n正文」，落库后刷新仍在 */
 const QUOTE_PREFIX = "引用：";
+
+/** 右栏宽度的本机留存与合法区间（null = 用户没拖过，交给 CSS 的默认值） */
+const LS_SIDE_WIDTH = "flux.solo.sideWidth";
+const SIDE_W_MIN = 260;
+const SIDE_W_MAX = 720;
+
+function readSideWidth(): number | null {
+  const stored = Number(window.localStorage.getItem(LS_SIDE_WIDTH));
+  return Number.isFinite(stored) && stored >= SIDE_W_MIN && stored <= SIDE_W_MAX ? stored : null;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -460,6 +471,8 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     () => window.localStorage.getItem("flux.solo.agent.autoApply") === "1",
   );
   const roundBaseRef = useRef<Set<string>>(new Set());
+  /** 右栏宽度（px）：null = 用户没拖过，用样式表里的默认值 */
+  const [sideWidth, setSideWidth] = useState<number | null>(readSideWidth);
   /** 本轮改动（按 id 认领），状态从最新的 changes 里读，落盘/回滚后依然看得到 */
   const roundChanges = useMemo(
     () => changes.filter((change) => roundIds.includes(change.id)),
@@ -603,6 +616,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   useEffect(() => {
     window.localStorage.setItem("flux.solo.agent.autoApply", agentAutoApply ? "1" : "0");
   }, [agentAutoApply]);
+
+  useEffect(() => {
+    if (sideWidth === null) window.localStorage.removeItem(LS_SIDE_WIDTH);
+    else window.localStorage.setItem(LS_SIDE_WIDTH, String(sideWidth));
+  }, [sideWidth]);
 
   // 换任务/换会话时，本轮改动归属清零（避免把上一个会话的改动算进来）
   useEffect(() => {
@@ -911,6 +929,32 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       setRoundBusy(false);
     }
   }, [roundChanges, refreshRound, loadTasks]);
+
+  /** 拖右栏左边缘调宽度（普通流内的独立网格列，避免热区被相邻元素截获） */
+  const onSideResizeDown = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth =
+        sideWidth ??
+        document.querySelector<HTMLElement>(".s-side")?.getBoundingClientRect().width ??
+        336;
+      document.body.style.userSelect = "none";
+      document.body.classList.add("side-resizing");
+      const onMove = (move: MouseEvent) => {
+        setSideWidth(Math.max(SIDE_W_MIN, Math.min(startWidth + (startX - move.clientX), SIDE_W_MAX)));
+      };
+      const onUp = () => {
+        document.body.style.userSelect = "";
+        document.body.classList.remove("side-resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [sideWidth],
+  );
 
   const assembleTeam = useCallback(async () => {
     setAssembling(true);
@@ -1665,7 +1709,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
         </div>
       ) : null}
 
-      <div className={`s-body${isMobile && mScreen !== "task" ? " is-hidden" : ""}`}>
+      <div
+        className={`s-body${isMobile && mScreen !== "task" ? " is-hidden" : ""}`}
+        style={sideWidth === null ? undefined : ({ "--side-w": `${sideWidth}px` } as CSSProperties)}
+      >
         <nav className="s-nav">
           <div className="s-nav-head">
             <b>任务对话</b>
@@ -2263,6 +2310,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             </>
           )}
         </main>
+
+        <div
+          className="side-resize"
+          title="拖动调整右栏宽度"
+          onMouseDown={onSideResizeDown}
+        />
 
         <aside className="s-side">
           <SoloSidePanel
