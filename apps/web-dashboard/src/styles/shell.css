@@ -406,17 +406,12 @@
 .fx-embed > .view { height: 100%; }
 .fx-embed .s-top,
 .fx-embed .m-top { display: none !important; }
-.fx-embed .s-nav { display: none !important; }
-.fx-embed .s-body { grid-template-columns: minmax(0, 1fr) 336px; }
+/* Solo 左栏（任务对话列表）保留：三栏栅格沿用 design-v2 的 208 / 1fr / 336 */
 /* IDE：只隐掉与全局导航重复的「返回 Solo 品牌按钮」与搜索框；保留项目选择器与面板控件 */
 .fx-embed .it-left > .icon-btn { display: none !important; }
 .fx-embed .it-search { display: none !important; }
 .fx-embed .m-tabbar { display: none !important; }
-@media (max-width: 1280px) {
-  .fx-embed .s-body { grid-template-columns: minmax(0, 1fr) 300px; }
-}
 @media (max-width: 860px) {
-  .fx-embed .s-body { grid-template-columns: minmax(0, 1fr); }
   .fx-embed .s-side { display: none !important; }
 }
 

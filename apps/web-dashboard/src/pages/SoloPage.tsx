@@ -1434,95 +1434,57 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
 
       <div className={`s-body${isMobile && mScreen !== "task" ? " is-hidden" : ""}`}>
         <nav className="s-nav">
-          <a className="s-nav-item is-active">
+          <div className="s-nav-head">
+            <b>任务对话</b>
+            <span>{tasks.length}</span>
+          </div>
+          <button
+            type="button"
+            className={`s-task-new${taskId === null ? " is-active" : ""}`}
+            onClick={() => {
+              setTaskId(null);
+              inputRef.current?.focus();
+            }}
+          >
             <span className="n-ic i-solo" />
-            <span className="n-tx">
-              <b>Solo</b>
-              <i>AI 任务执行中心</i>
-            </span>
-          </a>
-          <a
-            className="s-nav-item"
-            onClick={() => setProjectListOpen(true)}
-            onKeyDown={() => undefined}
-            role="button"
-            tabIndex={0}
-          >
-            <span className="n-ic i-proj" />
-            <span className="n-tx">
-              <b>项目</b>
-              <i>{projects.length > 0 ? `已登记 ${projects.length} 个` : "Project"}</i>
-            </span>
-          </a>
-          <a
-            className="s-nav-item"
-            onClick={onOpenWorkspace}
-            onKeyDown={() => undefined}
-            role="button"
-            tabIndex={0}
-          >
-            <span className="n-ic i-ws" />
-            <span className="n-tx">
-              <b>工作区</b>
-              <i>Workspace · IDE</i>
-            </span>
-          </a>
-          <a
-            className="s-nav-item"
-            onClick={openTerminalWindow}
-            onKeyDown={() => undefined}
-            role="button"
-            tabIndex={0}
-          >
-            <span className="n-ic i-term" />
-            <span className="n-tx">
-              <b>Agent Terminal</b>
-              <i>实时观察并接管 AI 命令</i>
-            </span>
-          </a>
-          <a
-            className="s-nav-item"
-            onClick={() => setAgentOpen(true)}
-            onKeyDown={() => undefined}
-            role="button"
-            tabIndex={0}
-          >
-            <span className="n-ic i-agent" />
-            <span className="n-tx">
-              <b>Agent</b>
-              <i>{agents.length > 0 ? `${agents.length} 个已装配` : "AI 代理管理"}</i>
-            </span>
-          </a>
-          <div className="s-nav-item is-disabled" aria-disabled="true" title="即将开放">
-            <span className="n-ic i-mkt" />
-            <span className="n-tx">
-              <b>市场</b>
-              <i>扩展能力与插件</i>
-            </span>
-            <span className="m-soon">即将开放</span>
-          </div>
-          <div className="s-nav-item is-disabled" aria-disabled="true" title="即将开放">
-            <span className="n-ic i-set" />
-            <span className="n-tx">
-              <b>设置</b>
-              <i>模型与密钥在服务端 .env 配置</i>
-            </span>
-            <span className="m-soon">即将开放</span>
-          </div>
-          <div className="s-nav-card">
-            <div className="c-title">让 AI 帮你完成</div>
-            <div className="c-sub">从需求到上线的全流程</div>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => toast("Solo：说出需求，平台助手先澄清需求、再给出执行计划")}
-            >
-              了解 Solo
+            新建任务
+          </button>
+          {tasks.length === 0 ? (
+            <div className="s-task-empty">还没有任务：在下方写下第一条需求即创建</div>
+          ) : (
+            <ul className="s-tasks">
+              {tasks.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={`s-task${item.id === taskId ? " is-active" : ""}`}
+                    onClick={() => setTaskId(item.id)}
+                    title={taskTitle(item.description)}
+                  >
+                    <span className="s-task-title">{taskTitle(item.description)}</span>
+                    <span className="s-task-meta">
+                      {TASK_STATUS_LABELS[item.status]} · {item.id.slice(0, 8)} · {clockOf(item.created_at)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="s-nav-foot">
+            <button type="button" className="s-nav-link" onClick={() => setProjectListOpen(true)}>
+              项目 · {projects.length} 个
             </button>
-            <div className="c-glow" />
+            <button type="button" className="s-nav-link" onClick={onOpenWorkspace}>
+              工作区 · 打开 IDE
+            </button>
+            <button type="button" className="s-nav-link" onClick={openTerminalWindow}>
+              Agent Terminal
+            </button>
+            <button type="button" className="s-nav-link" onClick={() => setAgentOpen(true)}>
+              Agent · {agents.length} 个已装配
+            </button>
           </div>
         </nav>
-
         <main className="s-main">
           <div className="s-scroll">
             <div className="s-crumb">
