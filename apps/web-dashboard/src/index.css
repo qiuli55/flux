@@ -1,68 +1,162 @@
-/* 顺序：先 Tailwind，再设计稿样式基座，再产品补充，再 UI 信息层级覆盖，最后并入的全局外壳（fx- 前缀，互不冲突） */
+/* 顺序：令牌真源 → Tailwind → 设计稿样式基座 → 产品补充 → UI 信息层级覆盖 → 全局外壳（fx- 前缀，互不冲突） */
+@import "./styles/tokens.css";
 @import "tailwindcss";
 @import "./styles/design-v2.css";
 @import "./styles/product.css";
 @import "./styles/ui-hierarchy.css";
 @import "./styles/flux.css";
 
-/* Flux 设计令牌 v2（事实源：设计稿 v2 的 :root，色值取自设计图，无占位符）。 */
+/* Tailwind 设计令牌：键名保持不变，值统一指向 --tn-*（唯一真源 tokens.css）。
+   ⚠️ 不要补 --color-surface-*/--color-faint 等缺失键，否则会激活一批死组件。 */
 @theme {
-  --color-bg: #08090f;
-  --color-bg-2: #0b0d16;
-  --color-panel: #10121c;
-  --color-panel-2: #141726;
-  --color-panel-3: #181c2e;
-  --color-line: #232741;
-  --color-line-soft: #1c2033;
-  --color-text: #e8eaf3;
-  --color-text-2: #9aa3b8;
-  --color-text-3: #666e85;
-  --color-accent: #7c5cff;
-  --color-accent-2: #5b3df5;
-  --color-blue: #4d7cfe;
-  --color-green: #3ddc97;
-  --color-orange: #f5a623;
-  --color-red: #f16a6a;
-  --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --color-bg: var(--tn-bg);
+  --color-bg-2: var(--tn-bg-2);
+  --color-panel: var(--tn-panel);
+  --color-panel-2: var(--tn-panel-2);
+  --color-panel-3: var(--tn-panel-3);
+  --color-line: var(--tn-line);
+  --color-line-soft: var(--tn-line-soft);
+  --color-text: var(--tn-text);
+  --color-text-2: var(--tn-text-2);
+  --color-text-3: var(--tn-text-3);
+  --color-accent: var(--tn-accent);
+  --color-accent-2: var(--tn-accent-2);
+  --color-blue: var(--tn-info);
+  --color-green: var(--tn-accent);
+  --color-orange: var(--tn-warn);
+  --color-red: var(--tn-danger);
+  --font-mono: var(--tn-mono);
 }
 
-/* 暗色细滚动条，贴合 IDE 观感 */
-* { scrollbar-width: thin; scrollbar-color: #2a2f47 transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background-color: #2a2f47; border-radius: 9999px; }
+/* ============================================================
+   Terminal Noir 别名映射（P1）
+   把既有的三套令牌一次性指向 --tn-*，置于全部 @import 之后：
+   同特异性下源序靠后者胜出 —— 无需改动任何 TSX 即可换肤。
+   ============================================================ */
+:root {
+  /* design-v2.css */
+  --bg: var(--tn-bg);
+  --bg-2: var(--tn-bg-2);
+  --panel: var(--tn-panel);
+  --panel-2: var(--tn-panel-2);
+  --panel-3: var(--tn-panel-3);
+  --line: var(--tn-line);
+  --line-soft: var(--tn-line-soft);
+  --text: var(--tn-text);
+  --text-2: var(--tn-text-2);
+  --text-3: var(--tn-text-3);
+  --accent: var(--tn-accent);
+  --accent-2: var(--tn-accent-2);
+  --blue: var(--tn-info);
+  --green: var(--tn-accent);
+  --green-2: var(--tn-accent-2);
+  --orange: var(--tn-warn);
+  --red: var(--tn-danger);
+  --mono: var(--tn-mono);
+  --ui: var(--tn-mono);
+  --r: var(--tn-r);
+}
+
+/* flux.css（令牌挂在 .fx-root 上，故用同选择器覆盖） */
+.fx-root {
+  --fx-bg: var(--tn-bg);
+  --fx-bg-2: var(--tn-bg-2);
+  --fx-panel: var(--tn-panel);
+  --fx-panel-2: var(--tn-panel-2);
+  --fx-panel-3: var(--tn-panel-3);
+  --fx-line: var(--tn-line);
+  --fx-line-soft: var(--tn-line-soft);
+  --fx-line-strong: var(--tn-line-strong);
+  --fx-text: var(--tn-text);
+  --fx-text-2: var(--tn-text-2);
+  --fx-text-3: var(--tn-text-3);
+  --fx-text-4: var(--tn-text-4);
+  --fx-brand: var(--tn-accent);
+  --fx-brand-2: var(--tn-accent-2);
+  --fx-brand-3: var(--tn-accent);
+  --fx-brand-soft: var(--tn-accent-soft);
+  --fx-brand-line: var(--tn-accent-line);
+  --fx-brand-glow: transparent;
+  --fx-blue: var(--tn-info);
+  --fx-green: var(--tn-accent);
+  --fx-green-soft: var(--tn-accent-soft);
+  --fx-orange: var(--tn-warn);
+  --fx-orange-soft: var(--tn-warn-soft);
+  --fx-red: var(--tn-danger);
+  --fx-red-soft: var(--tn-danger-soft);
+  --fx-ui: var(--tn-mono);
+  --fx-mono: var(--tn-mono);
+  --fx-r-xs: var(--tn-r-xs);
+  --fx-r-sm: var(--tn-r-sm);
+  --fx-r: var(--tn-r);
+  --fx-r-lg: var(--tn-r-lg);
+  --fx-r-full: var(--tn-r-full);
+  --fx-sh-1: var(--tn-shadow-1);
+  --fx-sh-2: var(--tn-shadow-2);
+  --fx-sh-3: var(--tn-shadow-3);
+  --fx-ease: var(--tn-ease);
+  --fx-dur-1: var(--tn-dur-1);
+  --fx-dur-2: var(--tn-dur-2);
+  --fx-dur-3: var(--tn-dur-3);
+  --fx-rail: var(--tn-rail);
+  --fx-rail-wide: var(--tn-rail-wide);
+  --fx-topbar: var(--tn-topbar);
+  --fx-statusbar: var(--tn-statusbar);
+  --fx-grad-brand: var(--tn-accent);
+  --fx-grad-panel: none;
+}
+
+/* ---------- 基础层：全站等宽 + 宽松字距 + Terminal Noir 滚动条 ---------- */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--tn-bg);
+  color: var(--tn-text);
+  font-family: var(--tn-mono);
+  font-size: var(--tn-fs);
+  line-height: var(--tn-lh);
+  letter-spacing: var(--tn-ls);
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--tn-accent-soft); color: var(--tn-text); }
+
+* { scrollbar-width: thin; scrollbar-color: var(--tn-line-strong) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background-color: var(--tn-line-strong); border-radius: 0; }
+*::-webkit-scrollbar-thumb:hover { background-color: var(--tn-text-4); }
 *::-webkit-scrollbar-track { background-color: transparent; }
 
 /* Workspace code search */
 .search-hit-main { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
 .search-hit-main .search-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.search-hit-line { color: var(--text-3, #666e85); font-family: var(--mono, monospace); font-size: 10px; }
-.search-hit-preview { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9aa3b8); font-family: var(--mono, monospace); font-size: 10px; }
+.search-hit-line { color: var(--text-3, #6c7674); font-family: var(--mono, monospace); font-size: 10px; }
+.search-hit-preview { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9ca6a4); font-family: var(--mono, monospace); font-size: 10px; }
 
 .fl-search-stack { display: grid; gap: 6px; }
 .fl-search, .fl-replace { display: flex; align-items: center; gap: 4px; }
 .fl-search input, .fl-replace input { min-width: 0; flex: 1; }
-.fl-search > button { min-width: 34px; height: 30px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-2, #9aa3b8); cursor: pointer; font-size: 11px; }
-.fl-search > button:hover, .fl-search > button.is-active { border-color: var(--line, #232741); background: rgba(124,92,255,.12); color: var(--text, #e8eaf3); }
+.fl-search > button { min-width: 34px; height: 30px; padding: 0 7px; border: 1px solid transparent; border-radius: var(--tn-r-sm); background: transparent; color: var(--text-2, #9ca6a4); cursor: pointer; font-size: 11px; }
+.fl-search > button:hover, .fl-search > button.is-active { border-color: var(--line, #1b2024); background: var(--tn-accent-soft); color: var(--text, #e7ecea); }
 .fl-replace .btn { white-space: nowrap; }
 
 /* Quick Open */
-.quick-open-dialog { width: min(720px, calc(100vw - 40px)); max-height: min(640px, calc(100vh - 80px)); overflow: hidden; border: 1px solid var(--line, #232741); border-radius: 10px; background: #0f121a; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
-.quick-open-input { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line, #232741); }
-.quick-open-input > span { color: var(--text-3, #666e85); font-size: 18px; }
-.quick-open-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text, #e8eaf3); font: 14px var(--mono, monospace); }
-.quick-open-input kbd { color: var(--text-3, #666e85); font-size: 10px; }
+.quick-open-dialog { width: min(720px, calc(100vw - 40px)); max-height: min(640px, calc(100vh - 80px)); overflow: hidden; border: 1px solid var(--line, #1b2024); border-radius: var(--tn-r-lg); background: var(--tn-panel); box-shadow: var(--tn-shadow-pop); }
+.quick-open-input { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line, #1b2024); }
+.quick-open-input > span { color: var(--text-3, #6c7674); font-size: 18px; }
+.quick-open-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text, #e7ecea); font: 14px var(--mono, monospace); }
+.quick-open-input kbd { color: var(--text-3, #6c7674); font-size: 10px; }
 .quick-open-list { max-height: 560px; overflow: auto; padding: 5px; }
-.quick-open-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2, #9aa3b8); text-align: left; cursor: pointer; }
-.quick-open-item:hover, .quick-open-item.is-active { background: rgba(124,92,255,.11); color: var(--text, #e8eaf3); }
+.quick-open-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: 0; border-radius: var(--tn-r-sm); background: transparent; color: var(--text-2, #9ca6a4); text-align: left; cursor: pointer; }
+.quick-open-item:hover, .quick-open-item.is-active { background: var(--tn-accent-soft); color: var(--text, #e7ecea); }
 .quick-open-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono, monospace); }
-.quick-open-empty { padding: 24px 12px; color: var(--text-3, #666e85); text-align: center; font-size: 12px; }
+.quick-open-empty { padding: 24px 12px; color: var(--text-3, #6c7674); text-align: center; font-size: 12px; }
 
 .ag-tools li.is-clickable { cursor: pointer; }
-.ag-tools li.is-clickable:hover { background: rgba(124,92,255,.08); }
+.ag-tools li.is-clickable:hover { background: var(--tn-accent-soft); }
 
 
 /* Problems panel */
 .bp-problem { width: 100%; border: 0; text-align: left; cursor: pointer; }
-.bp-problem:hover { background: rgba(124,92,255,.08); }
-.bp-problem-message { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9aa3b8); }
-.bp-line { color: var(--text-3, #666e85); font: 11px var(--mono, monospace); }
+.bp-problem:hover { background: var(--tn-accent-soft); }
+.bp-problem-message { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, #9ca6a4); }
+.bp-line { color: var(--text-3, #6c7674); font: 11px var(--mono, monospace); }

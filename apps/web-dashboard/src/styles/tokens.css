@@ -1,0 +1,91 @@
+/* ============================================================
+   Flux · Terminal Noir —— 设计令牌（唯一真源）
+   近黑基底 + 发丝线 + 全等宽 + 直角 + 单色电光青绿
+   零阴影 / 零渐变 / 零辉光（仅少量浮层允许描边 + 轻微投影）
+   其余样式文件的旧令牌统一在 index.css 内做别名映射指向本文件。
+   ============================================================ */
+:root {
+  color-scheme: dark;
+
+  /* ---------- 色板 ---------- */
+  --tn-bg: #050608;
+  --tn-bg-2: #090b0d;
+  --tn-panel: #0b0e11;
+  --tn-panel-2: #101418;
+  --tn-panel-3: #161a1e;
+  --tn-line: #1b2024;
+  --tn-line-soft: #14181c;
+  --tn-line-strong: #2b3238;
+  --tn-text: #e7ecea;
+  --tn-text-2: #9ca6a4;
+  --tn-text-3: #6c7674;
+  --tn-text-4: #49514f;
+  --tn-accent: #3df5a8;
+  --tn-accent-2: #22c98a;
+  --tn-accent-soft: rgba(61, 245, 168, 0.12);
+  --tn-accent-line: rgba(61, 245, 168, 0.38);
+  --tn-warn: #e8b25e;
+  --tn-warn-soft: rgba(232, 178, 94, 0.15);
+  --tn-danger: #ff7a6e;
+  --tn-danger-soft: rgba(255, 122, 110, 0.14);
+  --tn-info: #7fb6e0;
+
+  /* ---------- 圆角（直角取向） ---------- */
+  --tn-r-xs: 2px;
+  --tn-r-sm: 2px;
+  --tn-r: 2px;
+  --tn-r-lg: 4px;
+  --tn-r-full: 999px;
+
+  /* ---------- 线 / 影：默认零阴影；--tn-shadow-pop 仅供浮层 ---------- */
+  --tn-border: 1px solid var(--tn-line);
+  --tn-shadow: none;
+  --tn-shadow-1: none;
+  --tn-shadow-2: none;
+  --tn-shadow-3: none;
+  --tn-shadow-pop: 0 18px 50px -16px rgba(0, 0, 0, 0.72);
+
+  /* ---------- 间距 ---------- */
+  --tn-s1: 4px;
+  --tn-s2: 8px;
+  --tn-s3: 12px;
+  --tn-s4: 16px;
+  --tn-s5: 24px;
+  --tn-s6: 32px;
+  --tn-s7: 48px;
+  --tn-s8: 64px;
+  --tn-pad-card: 24px;
+  --tn-pad-page: 32px 40px;
+  --tn-gap-block: 16px;
+  --tn-gap-row: 8px;
+
+  /* ---------- 密度 ---------- */
+  --tn-rail: 68px;
+  --tn-rail-wide: 248px;
+  --tn-topbar: 56px;
+  --tn-statusbar: 30px;
+  --tn-row: 34px;
+  --tn-tab: 42px;
+
+  /* ---------- 字体：拉丁等宽在前、CJK 等宽在后 → 中文天然 2:1 网格 ---------- */
+  --tn-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "Fira Code", "SFMono-Regular",
+    Consolas, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono",
+    "WenQuanYi Micro Hei Mono", "Microsoft YaHei", ui-monospace, monospace;
+  --tn-fs-xs: 11px;
+  --tn-fs-sm: 12px;
+  --tn-fs: 13px;
+  --tn-fs-md: 14px;
+  --tn-fs-lg: 16px;
+  --tn-fs-xl: 20px;
+  --tn-fs-2xl: 26px;
+  --tn-lh: 1.75;
+  --tn-lh-tight: 1.35;
+  --tn-ls: 0.015em;
+  --tn-ls-caps: 0.16em;
+
+  /* ---------- 动效（只动 opacity / transform / 颜色） ---------- */
+  --tn-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tn-dur-1: 120ms;
+  --tn-dur-2: 200ms;
+  --tn-dur-3: 320ms;
+}
