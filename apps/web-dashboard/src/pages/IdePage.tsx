@@ -1904,6 +1904,19 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         <div className="it-right">
           <button
             type="button"
+            className={`icon-btn m-hide${focusMode ? " is-on" : ""}`}
+            title="专注模式：隐藏所有面板，只保留编辑器（⌘\）"
+            onClick={toggleFocus}
+          >
+            <svg viewBox="0 0 20 20" className="ic">
+              <path d="M4 8V4h4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16 8V4h-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 12v4h4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16 12v4h-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
             className="icon-btn m-only"
             title="文件资源管理器"
             onClick={() => {
@@ -2651,11 +2664,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
       </footer>
 
       <div className="ide-footer">
-        <button type="button" className="ft-btn" onClick={toggleFocus}>
-          <span className="ft-k">Focus Mode</span>
-          <span className="ft-t">专注模式：隐藏所有面板，只保留 IDE</span>
-          <kbd>⌘\</kbd>
-        </button>
         <span className="ft-center">Flux · IDE-first · 让 AI 真正融入你的开发工作流</span>
         <button type="button" className="ft-btn right" onClick={openCommandPalette}>
           <span className="ft-ic">⌘</span>
