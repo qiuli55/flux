@@ -202,8 +202,8 @@ export function HumanTerminalPanel() {
     const existing = runtimesRef.current[session.id];
     if (existing) return existing;
     const terminal = new Terminal({
-      cursorBlink: true, cursorStyle: "block", fontFamily: "var(--mono)", fontSize: 13, lineHeight: 1.15, scrollback: 5000,
-      theme: { background: "#080a10", foreground: "#d9deea", cursor: "#7c5cff", selectionBackground: "rgba(124,92,255,.35)" },
+      cursorBlink: true, cursorStyle: "block", fontFamily: "var(--tn-mono)", fontSize: 13, lineHeight: 1.15, scrollback: 5000,
+      theme: { background: "#050608", foreground: "#e7ecea", cursor: "#3df5a8", selectionBackground: "rgba(61,245,168,.22)" },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);

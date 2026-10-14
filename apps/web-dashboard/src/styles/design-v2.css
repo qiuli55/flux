@@ -50,7 +50,7 @@ kbd {
 .is-hidden { display: none !important; }
 .card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r); }
 
-.logo-mark { width: 20px; height: 20px; }
+.logo-mark { width: 20px; height: 20px; color: var(--tn-accent); }
 
 /* ===== 视图容器（产品里由路由切换，一次只挂载一个视图） ===== */
 .view { display: flex; flex-direction: column; height: 100vh; }
@@ -193,7 +193,7 @@ kbd {
 .msg { display: flex; gap: 10px; position: relative; }
 .ava { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto; }
 .ava-user { background: var(--tn-panel-3); color: var(--tn-text-2); }
-.ava-flux { background: var(--tn-accent-soft); border: 1px solid var(--tn-accent-line); }
+.ava-flux { background: var(--tn-accent-soft); border: 1px solid var(--tn-accent-line); color: var(--tn-accent); }
 .ava-flux svg { width: 14px; height: 14px; }
 .msg-body { flex: 1; min-width: 0; }
 .msg-meta { color: var(--text-3); font-size: 11px; margin-bottom: 5px; }

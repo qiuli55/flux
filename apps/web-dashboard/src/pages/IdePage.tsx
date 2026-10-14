@@ -1665,13 +1665,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         <div className="it-left">
           <button type="button" className="icon-btn" title="返回 Solo" onClick={onBackToSolo}>
             <svg viewBox="0 0 24 24" className="logo-mark">
-              <path d="M12 2 22 12 12 22 2 12Z" fill="url(#lg-ide)" />
-              <defs>
-                <linearGradient id="lg-ide" x1="0" x2="1" y1="0" y2="1">
-                  <stop offset="0" stopColor="#8b6cff" />
-                  <stop offset="1" stopColor="#5b3df5" />
-                </linearGradient>
-              </defs>
+              <path d="M12 2 22 12 12 22 2 12Z" fill="currentColor" />
             </svg>
           </button>
           <button type="button" className="proj-pick" onClick={() => setProjectOpen(true)}>

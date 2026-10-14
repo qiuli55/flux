@@ -1088,13 +1088,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       {isMobile ? (
         <header className="m-top">
           <svg viewBox="0 0 24 24" className="logo-mark">
-            <path d="M12 2 22 12 12 22 2 12Z" fill="url(#lg-m)" />
-            <defs>
-              <linearGradient id="lg-m" x1="0" x2="1" y1="0" y2="1">
-                <stop offset="0" stopColor="#8b6cff" />
-                <stop offset="1" stopColor="#5b3df5" />
-              </linearGradient>
-            </defs>
+            <path d="M12 2 22 12 12 22 2 12Z" fill="currentColor" />
           </svg>
           {M_SCREEN_TITLES[mScreen] ? <b className="m-top-title">{M_SCREEN_TITLES[mScreen]}</b> : null}
           <span className="m-top-gap" />
@@ -1127,13 +1121,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       <header className={`s-top${isMobile ? " is-hidden" : ""}`}>
         <div className="s-top-left">
           <svg viewBox="0 0 24 24" className="logo-mark">
-            <path d="M12 2 22 12 12 22 2 12Z" fill="url(#lg-solo)" />
-            <defs>
-              <linearGradient id="lg-solo" x1="0" x2="1" y1="0" y2="1">
-                <stop offset="0" stopColor="#8b6cff" />
-                <stop offset="1" stopColor="#5b3df5" />
-              </linearGradient>
-            </defs>
+            <path d="M12 2 22 12 12 22 2 12Z" fill="currentColor" />
           </svg>
           <span className="s-product">Solo</span>
           <span className="s-divider" />

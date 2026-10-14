@@ -14,7 +14,7 @@ import type { TaskMessage } from "../../api/types";
 
 const FLUX_AVATAR = (
   <svg viewBox="0 0 24 24">
-    <path d="M12 2 22 12 12 22 2 12Z" fill="#7c5cff" />
+    <path d="M12 2 22 12 12 22 2 12Z" fill="currentColor" />
   </svg>
 );
 
