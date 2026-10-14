@@ -192,6 +192,8 @@ class FluxDshClient:
         )
         #: 进程内缓存的内置 Agent 令牌明文（明文只在签发时出现一次）
         self._mcp_token: str | None = None
+        #: 按 canonical agent UUID 缓存令牌明文（「单独跟某一个 agent 干活」用）
+        self._agent_tokens: dict[str, str] = {}
         #: 内置 Agent 的 canonical UUID（P3-16：令牌与 Run 归属都用它）
         self._mcp_agent_id: str | None = None
 
@@ -210,8 +212,12 @@ class FluxDshClient:
 
     # --- MCP 注入（P0-01）---
 
-    async def prepare_mcp_patch(self) -> Path | None:
-        """确保内置 Agent 有一条可用的 MCP 通道，返回 DSH loader patch 文件路径。
+    async def prepare_mcp_patch(self, agent_id: str | None = None) -> Path | None:
+        """确保目标 Agent 有一条可用的 MCP 通道，返回 DSH loader patch 文件路径。
+
+        `agent_id` 留空 = 平台配置的内置 Agent（patch 落在固定文件名，行为与既有链路一致）；
+        指定时按该 Agent 的 canonical UUID 签发令牌，并写到**该 Agent 专属**的 patch 文件名——
+        否则不同 Agent 的 Run 并发起跑会互相覆盖同一个 patch 文件。
 
         未启用 MCP 注入时返回 None（DSH 退化成裸 agent，仅用于排查）。
         patch 里含 Bearer 令牌明文，因此写在 dsh_home（仓库外）并收紧到 0600——
@@ -235,7 +241,12 @@ class FluxDshClient:
         if not url.startswith(("http://", "https://")):
             raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
 
-        token = await self._ensure_mcp_token()
+        if agent_id is None:
+            token = await self._ensure_mcp_token()
+            patch_name = MCP_PATCH_FILENAME
+        else:
+            token = await self._ensure_token_for_agent(agent_id)
+            patch_name = f"flux-mcp-{agent_id}.patch.yml"
         entries = [
             {
                 "id": f"flux-mcp-{server_name}",
@@ -251,7 +262,7 @@ class FluxDshClient:
                 },
             }
         ]
-        path = (Path(self._settings.dsh_home) / MCP_PATCH_DIRNAME / MCP_PATCH_FILENAME).expanduser()
+        path = (Path(self._settings.dsh_home) / MCP_PATCH_DIRNAME / patch_name).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render_patch(entries), encoding="utf-8")
         # 平台原语：POSIX chmod 0600 / Windows icacls 收权；失败如实记 warning，不静默降级
@@ -261,7 +272,7 @@ class FluxDshClient:
             "dsh.mcp patch 已就绪 path=%s server=%s agent=%s",
             path,
             server_name,
-            self._settings.dsh_mcp_agent_id,
+            agent_id or self._settings.dsh_mcp_agent_id,
         )
         return path
 
@@ -302,6 +313,43 @@ class FluxDshClient:
         self._mcp_agent_id = agent_id
         return raw
 
+    async def _ensure_token_for_agent(self, agent_id: str) -> str:
+        """按 canonical agent UUID 返回一枚可用的 MCP 令牌明文。
+
+        令牌的 agent_id 决定这次 Run 里 Flux MCP 调用算谁的身份，所以必须是 Agent
+        Registry 的 canonical UUID——传 display_name 会签出身份错乱的令牌，宁可直接报错。
+        与内置 Agent 同理：明文只在 issue 时出现一次，进程重启取不回，所以按 agent 缓存、
+        失效则重签，并在重签前撤销该 agent 名下的旧令牌。
+        """
+        assert self._token_service is not None  # 调用方已确保
+        try:
+            uuid.UUID(agent_id)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ConfigurationError(
+                f"agent_id 必须是 Agent Registry 的 canonical UUID：{agent_id!r}",
+                details={"agent_id": agent_id},
+            ) from exc
+        cached = self._agent_tokens.get(agent_id)
+        if cached:
+            try:
+                await self._token_service.authenticate(cached)
+            except AuthenticationError:
+                logger.warning("缓存的 MCP 令牌已失效（被撤销？），将重签一枚 agent=%s", agent_id)
+                self._agent_tokens.pop(agent_id, None)
+            else:
+                return cached
+
+        for token in await self._token_service.list(agent_id=agent_id):
+            if token.revoked_at is None:
+                await self._token_service.revoke(token.id)
+        _, raw = await self._token_service.issue(
+            agent_id=agent_id,
+            scopes=MCP_TOKEN_SCOPES,
+            label=f"DSH Agent {agent_id[:8]}（Flux 自动签发）",
+        )
+        self._agent_tokens[agent_id] = raw
+        return raw
+
     @staticmethod
     def _render_patch(entries: list[dict[str, Any]]) -> str:
         """渲染 loader patch：**必须包在 `insert` 里**。
@@ -327,6 +375,7 @@ class FluxDshClient:
         session_id: str | None = None,
         run_id: str | None = None,
         task_id: object | None = None,
+        agent_id: str | None = None,
     ) -> DshRun:
         """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
 
@@ -336,9 +385,12 @@ class FluxDshClient:
 
         `run_id` 可由调用方预先指定：任务链路要先把它登记到任务上再起 Run，
         否则 Run 结束时事件可能先到、任务还查不到自己的 Run（P0-05 的竞态）。
+
+        `agent_id` 指定则由该 Agent 执行这次 Run（canonical UUID）；留空走内置 Agent，
+        与既有链路完全一致。
         """
         self.ensure_ready()
-        patch_path = await self.prepare_mcp_patch()
+        patch_path = await self.prepare_mcp_patch(agent_id)
         run_id = run_id or uuid.uuid4().hex
         run = DshRun(
             run_id=run_id,
@@ -346,7 +398,7 @@ class FluxDshClient:
             instruction=instruction,
             status=DshRunStatus.PENDING,
             started_at=datetime.now(timezone.utc),
-            agent_id=self._mcp_agent_id,
+            agent_id=agent_id or self._mcp_agent_id,
             task_id=str(task_id) if task_id is not None else None,
         )
         self._runs[run.run_id] = run

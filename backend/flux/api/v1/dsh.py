@@ -20,7 +20,9 @@ router = APIRouter(prefix="/dsh", tags=["dsh"])
 async def start_run(
     payload: DshRunCreateRequest, container: Container = Depends(get_container)
 ) -> dict[str, object]:
-    run = await container.dsh.start_run(payload.instruction, session_id=payload.session_id)
+    run = await container.dsh.start_run(
+        payload.instruction, session_id=payload.session_id, agent_id=payload.agent_id
+    )
     return ok(run.to_dict())
 
 

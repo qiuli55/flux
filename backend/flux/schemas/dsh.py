@@ -6,10 +6,15 @@ from pydantic import BaseModel, Field
 
 
 class DshRunCreateRequest(BaseModel):
-    """起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。"""
+    """起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。
+
+    agent_id 留空 = 平台配置的内置 Agent；填 Agent Registry 的 canonical UUID
+    则由该 Agent 执行这次 Run（「单独跟某一个 agent 干活」用它）。
+    """
 
     instruction: str = Field(min_length=1)
     session_id: str | None = None
+    agent_id: str | None = None
 
 
 __all__ = ["DshRunCreateRequest"]
