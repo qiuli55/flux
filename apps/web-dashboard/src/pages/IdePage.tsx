@@ -1135,12 +1135,25 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const intentRef = useRef<(intent: IdeIntent) => void>(() => undefined);
   intentRef.current = (intent) => {
     if (intent === "focus") toggleFocus();
-    else if (intent === "files") toggleFiles();
-    else if (intent === "bottom") toggleBottom();
+    else if (intent === "files") {
+      // 移动端没有独立图标栏，面板按钮统一改走抽屉
+      if (isMobile) {
+        setRailPanel("files");
+        setFilesCollapsed(false);
+        setMPanel((prev) => (prev === "files" ? "none" : "files"));
+        return;
+      }
+      toggleFiles();
+    } else if (intent === "search" || intent === "debug" || intent === "ext") {
+      setRailPanel(intent);
+      setFilesCollapsed(false);
+      if (isMobile) setMPanel("files");
+    } else if (intent === "bottom") toggleBottom();
     else if (intent === "agent") toggleAgent();
     else if (intent === "git") {
       setRailPanel("git");
       setFilesCollapsed(false);
+      if (isMobile) setMPanel("none");
       showBottom("git");
     } else if (intent === "changes") {
       setActiveTab(CHANGES_TAB);
@@ -2024,112 +2037,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           aria-hidden="true"
           onClick={() => setMPanel("none")}
         />
-        <div className="ide-rail">
-          <button
-            type="button"
-            className={`rail-btn${railPanel === "files" && !filesCollapsed ? " is-active" : ""}`}
-            data-panel="files"
-            title="文件资源管理器 (⌘B)"
-            onClick={() => {
-              if (isMobile) {
-                setRailPanel("files");
-                setFilesCollapsed(false);
-                setMPanel((prev) => (prev === "files" ? "none" : "files"));
-                return;
-              }
-              if (railPanel === "files" && !filesCollapsed) toggleFiles();
-              else {
-                setRailPanel("files");
-                setFilesCollapsed(false);
-              }
-            }}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <path
-                d="M3 5.5A1.5 1.5 0 0 1 4.5 4h3l1.6 2H16a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 16 16H4.5A1.5 1.5 0 0 1 3 14.5Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`rail-btn${railPanel === "search" ? " is-active" : ""}`}
-            data-panel="search"
-            title="搜索"
-            onClick={() => {
-              setRailPanel("search");
-              setFilesCollapsed(false);
-              if (isMobile) setMPanel("files");
-            }}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M12.8 12.8 17 17" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`rail-btn${railPanel === "git" ? " is-active" : ""}`}
-            data-panel="git"
-            title="源代码管理"
-            onClick={() => {
-              setRailPanel("git");
-              setFilesCollapsed(false);
-              if (isMobile) setMPanel("none");
-              showBottom("git");
-            }}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <circle cx="6" cy="5" r="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <circle cx="6" cy="15" r="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <circle cx="14" cy="8" r="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M6 7v6M6 11c4 0 8-1 8-3" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`rail-btn${railPanel === "debug" ? " is-active" : ""}`}
-            data-panel="debug"
-            title="运行和调试"
-            onClick={() => {
-              setRailPanel("debug");
-              setFilesCollapsed(false);
-              if (isMobile) setMPanel("files");
-            }}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <path
-                d="M10 4a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V8a4 4 0 0 0-4-4Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.4"
-              />
-              <path d="M4 9h12M4 12h12" stroke="currentColor" strokeWidth="1.2" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={`rail-btn${railPanel === "ext" ? " is-active" : ""}`}
-            data-panel="ext"
-            title="扩展"
-            onClick={() => {
-              setRailPanel("ext");
-              setFilesCollapsed(false);
-              if (isMobile) setMPanel("files");
-            }}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <rect x="3.5" y="3.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <rect x="11.5" y="3.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <rect x="3.5" y="11.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M14 12v4M12 14h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-
         <aside className="ide-files">
           <div className="fl-head">
             <b>文件资源管理器</b>

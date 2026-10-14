@@ -14,6 +14,9 @@ import { openTerminalWindow } from "./terminalWindow";
 export type IdeIntent =
   | "focus"
   | "files"
+  | "search"
+  | "debug"
+  | "ext"
   | "bottom"
   | "agent"
   | "git"

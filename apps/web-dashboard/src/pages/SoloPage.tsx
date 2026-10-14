@@ -25,7 +25,6 @@ import type {
 import { openCommandPalette } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
 import { setSoloIntentHandler } from "../app/soloIntent";
-import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
 import { AgentChatPanel } from "../components/agent/AgentChatPanel";
@@ -1750,20 +1749,6 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               ))}
             </ul>
           )}
-          <div className="s-nav-foot">
-            <button type="button" className="s-nav-link" onClick={() => setProjectListOpen(true)}>
-              项目 · {projects.length} 个
-            </button>
-            <button type="button" className="s-nav-link" onClick={onOpenWorkspace}>
-              工作区 · 打开 IDE
-            </button>
-            <button type="button" className="s-nav-link" onClick={openTerminalWindow}>
-              Agent Terminal
-            </button>
-            <button type="button" className="s-nav-link" onClick={() => setAgentOpen(true)}>
-              Agent · {agents.length} 个已装配
-            </button>
-          </div>
         </nav>
         <main className="s-main">
           <div className="s-crumb">

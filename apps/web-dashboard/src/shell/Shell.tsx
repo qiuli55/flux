@@ -7,9 +7,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { DshStatus, HealthData } from "../api/types";
-import { openCommandPalette } from "../app/commands";
+import { openCommandPalette, queueIdeIntent } from "../app/commands";
 import type { View } from "../app/router";
 import { queueSoloIntent } from "../app/soloIntent";
+import { openTerminalWindow } from "../app/terminalWindow";
 import { IdePage } from "../pages/IdePage";
 import { SoloPage } from "../pages/SoloPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
@@ -23,7 +24,38 @@ import { setPref, usePrefs } from "./prefs";
 import { Tip } from "./ui";
 
 /* ---------------- 侧栏 ---------------- */
+
+/** 当前模式专属工具：IDE 模式是工作台侧栏面板，Solo 模式是任务台入口。 */
+interface ModeTool {
+  id: string;
+  label: string;
+  icon: string;
+  run: () => void;
+}
+
+function modeTools(view: View, navigate: (v: View) => void): ModeTool[] {
+  if (view === "ide") {
+    return [
+      { id: "files", label: "文件资源管理器", icon: "files", run: () => queueIdeIntent("files") },
+      { id: "search", label: "搜索", icon: "search", run: () => queueIdeIntent("search") },
+      { id: "git", label: "源代码管理", icon: "git", run: () => queueIdeIntent("git") },
+      { id: "debug", label: "运行和调试", icon: "debug", run: () => queueIdeIntent("debug") },
+      { id: "ext", label: "扩展", icon: "grid", run: () => queueIdeIntent("ext") },
+    ];
+  }
+  if (view === "solo") {
+    return [
+      { id: "projects", label: "项目列表", icon: "folder", run: () => queueSoloIntent("projects") },
+      { id: "workspace", label: "工作区 · 打开 IDE", icon: "code", run: () => navigate("ide") },
+      { id: "terminal", label: "Agent Terminal", icon: "terminal", run: () => openTerminalWindow() },
+      { id: "agents", label: "Agent 面板", icon: "bot", run: () => queueSoloIntent("agents") },
+    ];
+  }
+  return [];
+}
+
 function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => void; wide: boolean }) {
+  const tools = modeTools(view, navigate);
   return (
     <aside className="fx-rail">
       <div className="fx-rail-brand">
@@ -50,6 +82,22 @@ function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => voi
         </div>
       </div>
       <nav className="fx-rail-scroll">
+        {tools.length > 0 ? (
+          <div className="fx-rail-group">
+            <div className="fx-rail-label">{view === "ide" ? "IDE 面板" : "Solo 入口"}</div>
+            {tools.map((tool) => (
+              <button
+                key={tool.id}
+                className="fx-nav"
+                onClick={tool.run}
+                title={wide ? undefined : tool.label}
+              >
+                <Icon name={tool.icon} />
+                <span>{tool.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {NAV_GROUPS.map((group, gi) => (
           <div className="fx-rail-group" key={group.label || gi}>
             {group.label ? <div className="fx-rail-label">{group.label}</div> : null}
@@ -95,12 +143,6 @@ function Topbar({ view, wide, dsh, onToggleWide }: { view: View; wide: boolean; 
         <kbd className="fx-kbd">Ctrl K</kbd>
       </button>
       <div className="fx-topbar-actions">
-        {view === "solo" ? (
-          <>
-            <Tip text="项目列表"><button className="fx-iconbtn" onClick={() => queueSoloIntent("projects")} aria-label="项目列表"><Icon name="folder" /></button></Tip>
-            <Tip text="Agent 面板"><button className="fx-iconbtn" onClick={() => queueSoloIntent("agents")} aria-label="Agent 面板"><Icon name="bot" /></button></Tip>
-          </>
-        ) : null}
         {dsh ? <span className="fx-engine">引擎 <b>{dsh.provider}/{dsh.model}</b></span> : null}
         <Tip text="收起 / 展开侧栏"><button className="fx-iconbtn" onClick={onToggleWide} aria-label="侧栏宽度"><Icon name={wide ? "chevron" : "grid"} /></button></Tip>
       </div>

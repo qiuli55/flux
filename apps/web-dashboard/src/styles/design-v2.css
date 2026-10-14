@@ -396,14 +396,6 @@ kbd {
 .ic-tx { font-family: var(--mono); font-size: 12px; }
 
 .ide-body { flex: 1; min-height: 0; display: flex; position: relative; }
-.ide-rail {
-  width: 48px; flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 8px 0; background: var(--bg-2); border-right: 1px solid var(--line);
-}
-.rail-btn { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--text-3); }
-.rail-btn:hover { background: var(--panel-2); color: var(--text-2); }
-.rail-btn.is-active { color: var(--text); background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
-
 .ide-files { width: 232px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .fl-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 8px; font-size: 11px; letter-spacing: .04em; color: var(--text-2); text-transform: uppercase; }
 .fl-panel { flex: 1; min-height: 0; overflow-y: auto; }
@@ -553,7 +545,6 @@ ul > li:not(.open) > ul { display: none; }
 .focus-exit { position: fixed; right: 18px; bottom: 18px; z-index: 50; height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text-2); font-size: 12px; }
 
 /* 专注模式：隐藏所有辅助面板，只留编辑器 */
-body.focus-mode .ide-rail,
 body.focus-mode .ide-files,
 body.focus-mode .ide-agent,
 body.focus-mode .ide-bottom,
@@ -819,11 +810,9 @@ body.bottom-closed .ide-bottom { display: none; }
   .view-ide .proj-pick { max-width: 44vw; overflow: hidden; }
   .view-ide .it-right { gap: 4px; }
 
-  /* ---- IDE：rail 收窄，文件 / Agent 变抽屉 ---- */
+  /* ---- IDE：文件 / Agent 变抽屉 ---- */
   /* 关闭态的抽屉平移到视口外，必须裁掉，否则撑出横向滚动 */
   .view-ide .ide-body { overflow: hidden; }
-  .view-ide .ide-rail { width: 40px; padding: 6px 0; }
-  .view-ide .rail-btn { width: 30px; height: 30px; }
   .view-ide .ide-files,
   .view-ide .ide-agent { position: absolute; top: 0; bottom: 0; z-index: 40; transition: transform .2s ease; border-left: 1px solid var(--tn-line); }
   .view-ide .ide-files { left: 0; width: min(80vw, 300px); transform: translateX(-103%); }
@@ -955,9 +944,6 @@ body.bottom-closed .ide-bottom { display: none; }
 .s-task.is-active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; background: var(--tn-accent); }
 .s-task-title { font-size: var(--tn-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-task-meta { font-size: var(--tn-fs-xs); color: var(--tn-text-4); font-family: var(--tn-mono); font-variant-numeric: tabular-nums; }
-.s-nav-foot { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--tn-line-soft); display: flex; flex-direction: column; gap: 2px; }
-.s-nav-link { text-align: left; padding: 6px 8px; border-radius: var(--tn-r); color: var(--tn-text-4); font-size: var(--tn-fs-xs); }
-.s-nav-link:hover { background: var(--tn-panel-2); color: var(--tn-text-2); }
 
 /* ==========================================================================
    Solo 中栏 · 与 Agent 对话（流水线 / 单 Agent 两种模式共用一条对话区）

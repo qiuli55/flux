@@ -1,17 +1,6 @@
 /* Flux UI information hierarchy: primary coding loop stays visually dominant. */
 .view-ide .ide-files{width:208px}
 .view-ide .ide-agent{width:var(--agent-w,286px)}
-.view-ide .ide-rail{width:44px}
-.view-ide .ide-rail .rail-btn[data-panel="files"]{color:var(--text);background:var(--tn-accent-soft)}
-.view-ide .ide-rail .rail-btn[data-panel="search"],
-.view-ide .ide-rail .rail-btn[data-panel="git"]{opacity:.72}
-.view-ide .ide-rail .rail-btn[data-panel="search"]:hover,
-.view-ide .ide-rail .rail-btn[data-panel="git"]:hover,
-.view-ide .ide-rail .rail-btn[data-panel="search"].is-active,
-.view-ide .ide-rail .rail-btn[data-panel="git"].is-active{opacity:1}
-/* Debug/Extensions remain reachable from the command palette without occupying permanent rail space. */
-.view-ide .ide-rail .rail-btn[data-panel="debug"],
-.view-ide .ide-rail .rail-btn[data-panel="ext"]{display:none}
 /* Agent panel: current task first, secondary details quieter. */
 .view-ide .ag-scroll{padding:10px;gap:8px}
 .view-ide .ag-card{padding:9px 10px}
