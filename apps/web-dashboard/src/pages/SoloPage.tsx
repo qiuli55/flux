@@ -46,6 +46,16 @@ const STRATEGY_LABELS: Record<"auto" | "manual", string> = {
   manual: "由我决定",
 };
 
+/** 本轮改动的状态 → 中文短标签（汇总条展开时逐个文件显示） */
+const ROUND_STATUS_LABELS: Record<string, string> = {
+  pending: "待审核",
+  accepted: "已批准",
+  applied: "已落盘",
+  rolled_back: "已回滚",
+  failed: "落盘失败",
+  rejected: "已拒绝",
+};
+
 /** 引用前缀：形如「引用：「原文」\n\n正文」，落库后刷新仍在 */
 const QUOTE_PREFIX = "引用：";
 
@@ -440,6 +450,31 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   );
   const [dsh, setDsh] = useState<DshStatus | null>(null);
 
+  /* 单 Agent 模式：一轮改动的归属。Change 没有 run_id，只能在起 Run 前给「已有 pending」拍一个
+     基线快照，落定后把新冒出来的 change 认领为本轮改动。 */
+  const [roundIds, setRoundIds] = useState<string[]>([]);
+  const [roundOpen, setRoundOpen] = useState(false);
+  const [roundBusy, setRoundBusy] = useState(false);
+  // 本轮改动是留 pending 等你点「保留」，还是直接落盘（不需要审核）
+  const [agentAutoApply, setAgentAutoApply] = useState<boolean>(
+    () => window.localStorage.getItem("flux.solo.agent.autoApply") === "1",
+  );
+  const roundBaseRef = useRef<Set<string>>(new Set());
+  /** 本轮改动（按 id 认领），状态从最新的 changes 里读，落盘/回滚后依然看得到 */
+  const roundChanges = useMemo(
+    () => changes.filter((change) => roundIds.includes(change.id)),
+    [changes, roundIds],
+  );
+  const roundFiles = useMemo(() => new Set(roundChanges.map((change) => change.file_path)).size, [roundChanges]);
+  const roundAddedLines = useMemo(
+    () => roundChanges.reduce((sum, change) => sum + change.added_lines, 0),
+    [roundChanges],
+  );
+  const roundRemovedLines = useMemo(
+    () => roundChanges.reduce((sum, change) => sum + change.removed_lines, 0),
+    [roundChanges],
+  );
+
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [taskListOpen, setTaskListOpen] = useState(false);
@@ -564,6 +599,17 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     if (agentPickId) window.localStorage.setItem("flux.solo.agent.pick", agentPickId);
     else window.localStorage.removeItem("flux.solo.agent.pick");
   }, [agentPickId]);
+
+  useEffect(() => {
+    window.localStorage.setItem("flux.solo.agent.autoApply", agentAutoApply ? "1" : "0");
+  }, [agentAutoApply]);
+
+  // 换任务/换会话时，本轮改动归属清零（避免把上一个会话的改动算进来）
+  useEffect(() => {
+    setRoundIds([]);
+    setRoundOpen(false);
+    roundBaseRef.current = new Set();
+  }, [taskId, agentPickId]);
 
   // 切换任务：拉取最近 30 条消息（向上再翻用 seq 游标）
   useEffect(() => {
@@ -781,6 +827,90 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     })();
     return () => { alive = false; };
   }, [pendingChanges, taskId, loadChanges, loadTasks]);
+
+  /* ---------- 单 Agent 模式：一轮改动的汇总条 ---------- */
+
+  /** 起 Run 前拍基线：把当时还没落盘的 pending 记下来，之后新出现的才算这一轮 */
+  const onAgentRunStart = useCallback(() => {
+    roundBaseRef.current = new Set(changes.filter((change) => change.status === "pending").map((change) => change.id));
+    setRoundIds([]);
+    setRoundOpen(false);
+  }, [changes]);
+
+  /** 重新拉改动并把新出现的认领进本轮（返回最新列表，便于调用方接着处理） */
+  const refreshRound = useCallback(async () => {
+    const fresh = await api.listChanges();
+    setChanges(fresh);
+    const base = roundBaseRef.current;
+    const claimed = fresh.filter((change) => !base.has(change.id)).map((change) => change.id);
+    setRoundIds((prev) => Array.from(new Set([...prev, ...claimed])));
+    return fresh;
+  }, []);
+
+  /** 一轮 Run 落定：刷新改动；「不需要审核」时把这一轮的新提案直接落盘 */
+  const onAgentSettled = useCallback(async () => {
+    try {
+      const fresh = await refreshRound();
+      if (agentAutoApply) {
+        const base = roundBaseRef.current;
+        const todo = fresh
+          .filter((change) => !base.has(change.id) && change.status === "pending")
+          .map((change) => change.id);
+        if (todo.length > 0) {
+          await api.apply(todo);
+          toast(`已自动落盘本轮 ${todo.length} 项改动 · 已运行项目测试`);
+          await refreshRound();
+        }
+      }
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+    void loadTasks();
+  }, [agentAutoApply, refreshRound, loadTasks]);
+
+  /** 全保留：本轮还挂着的提案全部落盘 */
+  const keepRound = useCallback(async () => {
+    const pending = roundChanges.filter((change) => change.status === "pending").map((change) => change.id);
+    if (pending.length === 0) {
+      toast("本轮改动已经都在工作区里了");
+      return;
+    }
+    setRoundBusy(true);
+    try {
+      await api.apply(pending);
+      toast(`已保留本轮 ${pending.length} 项改动 · 已运行项目测试`);
+      await refreshRound();
+      await loadTasks();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setRoundBusy(false);
+    }
+  }, [roundChanges, refreshRound, loadTasks]);
+
+  /** 全撤销：还挂着的提案退回；已经落盘的回滚 */
+  const undoRound = useCallback(async () => {
+    const pending = roundChanges.filter((change) => change.status === "pending").map((change) => change.id);
+    const applied = roundChanges.filter((change) => change.status === "applied").map((change) => change.id);
+    if (pending.length === 0 && applied.length === 0) {
+      toast("本轮没有可撤销的改动");
+      return;
+    }
+    setRoundBusy(true);
+    try {
+      if (pending.length > 0) await api.reject(pending, null);
+      for (const id of applied) {
+        await api.rollbackChange(id);
+      }
+      toast(`已撤销本轮改动（退回 ${pending.length} 项 · 回滚 ${applied.length} 项）`);
+      await refreshRound();
+      await loadTasks();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setRoundBusy(false);
+    }
+  }, [roundChanges, refreshRound, loadTasks]);
 
   const assembleTeam = useCallback(async () => {
     setAssembling(true);
@@ -1136,12 +1266,84 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   };
 
   const jumpToReview = () => {
-    document
-      .getElementById("soloReviewCard")
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const first = pendingChanges[0];
+    if (first) setReviewId(first.id);
   };
 
   // --- 渲染 ---
+
+  /** 单 Agent 模式：输入框上方这一轮改动的汇总条（文件数 / +行 −行 / 展开 / 全撤销 / 全保留） */
+  const roundBar =
+    roundChanges.length > 0 ? (
+      <div className="agent-round">
+        <div className="ar-row">
+          <b>本轮改动</b>
+          <span className="ar-num">{roundFiles} 个文件</span>
+          <span className="ar-add">+{roundAddedLines}</span>
+          <span className="ar-del">−{roundRemovedLines}</span>
+          <span className="s-head-gap" />
+          <button type="button" className="link" onClick={() => setRoundOpen((prev) => !prev)}>
+            {roundOpen ? "收起" : "展开"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost"
+            disabled={roundBusy}
+            onClick={() => void undoRound()}
+            title="撤回这一轮的改动：没落盘的退回，已落盘的回滚"
+          >
+            撤销
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-primary"
+            disabled={roundBusy}
+            onClick={() => void keepRound()}
+            title="把这一轮还没落盘的改动写入工作区并跑项目测试"
+          >
+            保留
+          </button>
+        </div>
+        {roundOpen ? (
+          <div className="ar-diff">
+            {roundChanges.map((change) => (
+              <div className="ar-file" key={change.id}>
+                <div className="ar-file-head">
+                  <b>{change.file_path}</b>
+                  <span className="ar-add">+{change.added_lines}</span>
+                  <span className="ar-del">−{change.removed_lines}</span>
+                  <span className="ar-state">{ROUND_STATUS_LABELS[change.status] ?? change.status}</span>
+                </div>
+                <div className="diff-view">
+                  {parseUnifiedDiff(change.diff).map((row, index) => (
+                    <div className={`dl ${row.kind}`} key={`${change.id}-${index}`}>
+                      <span className="lno old">{row.oldNo}</span>
+                      <span className="lno new">{row.newNo}</span>
+                      <span className="dc">{row.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+
+  /** 输入框容器里的「默认需要审核 / 不需要审核」开关 */
+  const roundToggle = (
+    <div className="ar-toggle">
+      <span>本轮改动</span>
+      <button
+        type="button"
+        className={`ar-switch${agentAutoApply ? " is-auto" : ""}`}
+        onClick={() => setAgentAutoApply((prev) => !prev)}
+        title={agentAutoApply ? "改完直接落盘，不问你" : "改完先给你看，等你点「保留」才落盘"}
+      >
+        {agentAutoApply ? "不需要审核 · 自动落盘" : "默认需要审核"}
+      </button>
+    </div>
+  );
 
   return (
     <div className="view view-solo">
@@ -1587,13 +1789,13 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               agents={agents}
               onAgentChange={setAgentPickId}
               dsh={dsh}
-              emptyNote="这里是单 Agent 模式：每发一条指令就是一次真实的 DSH Run，Agent 在工作区里一点一点改，改动自动落盘并跑项目测试。"
+              emptyNote="这里是单 Agent 模式：每发一条指令就是一次真实的 DSH Run，Agent 在工作区里一点一点改。默认改完先给你看，点「保留」才落盘；也可以切成「不需要审核」直接落盘。"
               placeholder="描述这一步要改什么…（Enter 发送 / Shift+Enter 换行）"
               composeHint={task ? `当前任务 ${task.id.slice(0, 8)}` : "未绑定任务 · DSH 直接在全局工作区改码"}
-              onSettled={() => {
-                void loadChanges();
-                void loadTasks();
-              }}
+              onRunStart={onAgentRunStart}
+              onSettled={() => void onAgentSettled()}
+              aboveCompose={roundBar}
+              composeTop={roundToggle}
             />
           ) : (
             <>

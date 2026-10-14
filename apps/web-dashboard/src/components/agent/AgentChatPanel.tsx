@@ -79,8 +79,12 @@ interface Props {
   composeHint: ReactNode;
   /** 一轮 Run 落定后回调（刷新改动 / 任务等）；用 ref 持有，不会引起重复轮询 */
   onSettled?: (runId: string | null) => void;
+  /** 指令下发时回调（用于在起 Run 前给改动归属拍一个基线快照） */
+  onRunStart?: () => void;
   /** 输入框上方插槽（改动汇总条等） */
   aboveCompose?: ReactNode;
+  /** 输入框容器顶部插槽（如「默认需要审核」开关） */
+  composeTop?: ReactNode;
 }
 
 export function AgentChatPanel({
@@ -93,7 +97,9 @@ export function AgentChatPanel({
   placeholder,
   composeHint,
   onSettled,
+  onRunStart,
   aboveCompose,
+  composeTop,
 }: Props) {
   const [turns, setTurns] = useState<AgentTurn[]>([]);
   const [draft, setDraft] = useState("");
@@ -104,6 +110,8 @@ export function AgentChatPanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const settledRef = useRef(onSettled);
   settledRef.current = onSettled;
+  const onRunStartRef = useRef(onRunStart);
+  onRunStartRef.current = onRunStart;
 
   const dshReady = Boolean(dsh?.enabled);
 
@@ -146,6 +154,7 @@ export function AgentChatPanel({
     setDraft("");
     setError(null);
     setBusy(true);
+    onRunStartRef.current?.();
     try {
       const run = await api.startDshRun(text, sessionRef.current || undefined, agentId);
       sessionRef.current = run.session_id;
@@ -281,6 +290,7 @@ export function AgentChatPanel({
       {aboveCompose}
 
       <div className="ag-compose">
+        {composeTop}
         <textarea
           className="ag-input"
           value={draft}
