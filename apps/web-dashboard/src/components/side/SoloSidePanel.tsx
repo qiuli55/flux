@@ -2,8 +2,8 @@
  * Solo 右栏：一个「浏览器感」的功能区。
  *
  * 顶部是标签页 + 前进/后退/刷新/主页导航（每个标签页各自记一份浏览历史），下面是当前页面：
- * 浏览器（诚实占位）/ 插件市场 / 扫描结果 / 插件详情 / 连接器市场 / 连接器详情。
- * 点列表项 = 在当前标签页里跳转，前进后退可来回走，＋ 开新标签页。
+ * 新标签页（小图标磁贴网格）/ 内置浏览器（诚实占位）/ 插件市场 / 扫描结果 / 插件详情 /
+ * 连接器市场 / 连接器详情。点磁贴或列表项 = 在当前标签页里跳转，前进后退可来回走，＋ 开新标签页。
  *
  * 数据全是真接口：GET /capabilities · POST /capabilities/scan|import · GET /installations（scan/connect/delete）。
  * 本机 CLI 的接入状态由父级（SoloPage）持有，这里只负责展示与触发。
@@ -18,8 +18,9 @@ import type {
   Installation,
 } from "../../api/types";
 import { toast } from "../../app/toast";
+import { Icon } from "../../shell/Icon";
 
-type PageKind = "browser" | "plugins" | "connectors" | "capability" | "connector" | "scan";
+type PageKind = "newtab" | "browser" | "plugins" | "connectors" | "capability" | "connector" | "scan";
 
 interface SidePage {
   /** 页面的唯一标识：同一 key 不会在历史里重复出现 */
@@ -40,18 +41,33 @@ interface SideTab {
   index: number;
 }
 
-const HOME_BROWSER: SidePage = { key: "browser", kind: "browser", title: "浏览器" };
+const NEWTAB: SidePage = { key: "newtab", kind: "newtab", title: "新标签页" };
+const HOME_BROWSER: SidePage = { key: "browser", kind: "browser", title: "内置浏览器" };
 const HOME_PLUGINS: SidePage = { key: "plugins", kind: "plugins", title: "插件市场" };
 const HOME_CONNECTORS: SidePage = { key: "connectors", kind: "connectors", title: "连接器市场" };
 const SCAN_PAGE: SidePage = { key: "scan", kind: "scan", title: "扫描结果" };
 
 /** 地址栏里显示的伪 URL：只给「浏览器感」一个落点，不是真的网络地址 */
 function pageUrl(page: SidePage): string {
+  if (page.kind === "newtab") return "flux://newtab";
   if (page.kind === "capability") return `flux://solo/plugins/${page.capId ?? ""}`;
   if (page.kind === "connector") return `flux://solo/connectors/${page.instName ?? ""}`;
   if (page.kind === "scan") return "flux://solo/plugins/scan";
   return `flux://solo/${page.kind}`;
 }
+
+/** 页面类型 → 磁贴/列表用的小图标（复用项目自带的线条图标库） */
+function iconOf(kind: PageKind): string {
+  if (kind === "newtab") return "grid";
+  if (kind === "browser") return "globe";
+  if (kind === "plugins") return "store";
+  if (kind === "scan") return "search";
+  if (kind === "capability") return "puzzle";
+  return "plug";
+}
+
+/** 新标签页上的固定磁贴（常用站点） */
+const SITE_TILES: SidePage[] = [HOME_BROWSER, HOME_PLUGINS, HOME_CONNECTORS, SCAN_PAGE];
 
 const KIND_LABELS: Record<string, string> = {
   agent: "Agent 档案",
@@ -85,9 +101,11 @@ export function SoloSidePanel({
   onRemove,
   onCreateAgent,
 }: Props) {
-  const [tabs, setTabs] = useState<SideTab[]>([{ id: "tab-1", pages: [HOME_BROWSER], index: 0 }]);
+  const [tabs, setTabs] = useState<SideTab[]>([{ id: "tab-1", pages: [NEWTAB], index: 0 }]);
   const [activeId, setActiveId] = useState("tab-1");
   const nextTab = useRef(2);
+  /** 最近访问过的页面（新标签页上的磁贴来源，按访问顺序倒排，最多 8 个） */
+  const [recents, setRecents] = useState<SidePage[]>([]);
 
   // 插件市场
   const [caps, setCaps] = useState<ImportedCapability[]>([]);
@@ -157,6 +175,9 @@ export function SoloSidePanel({
           return { ...tab, pages, index: pages.length - 1 };
         }),
       );
+      if (page.kind !== "newtab") {
+        setRecents((prev) => [page, ...prev.filter((item) => item.key !== page.key)].slice(0, 8));
+      }
     },
     [activeId],
   );
@@ -175,7 +196,7 @@ export function SoloSidePanel({
 
   const newTab = useCallback(() => {
     const id = `tab-${nextTab.current++}`;
-    setTabs((prev) => [...prev, { id, pages: [HOME_BROWSER], index: 0 }]);
+    setTabs((prev) => [...prev, { id, pages: [NEWTAB], index: 0 }]);
     setActiveId(id);
   }, []);
 
@@ -184,7 +205,7 @@ export function SoloSidePanel({
       const at = tabs.findIndex((tab) => tab.id === id);
       const rest = tabs.filter((tab) => tab.id !== id);
       if (rest.length === 0) {
-        const fresh: SideTab = { id: `tab-${nextTab.current++}`, pages: [HOME_BROWSER], index: 0 };
+        const fresh: SideTab = { id: `tab-${nextTab.current++}`, pages: [NEWTAB], index: 0 };
         setTabs([fresh]);
         setActiveId(fresh.id);
         return;
@@ -222,7 +243,37 @@ export function SoloSidePanel({
 
   /* ---------- 页面 ---------- */
 
-  const sitesPage = (
+  /** 磁贴：一个小图标 + 名称，点它在当前标签页里跳转 */
+  const tile = (page: SidePage) => (
+    <button
+      key={page.key}
+      type="button"
+      className="sb-tile"
+      title={pageUrl(page)}
+      onClick={() => openPage(page)}
+    >
+      <span className="sb-tile-ic">
+        <Icon name={iconOf(page.kind)} />
+      </span>
+      <span className="sb-tile-label">{page.title}</span>
+    </button>
+  );
+
+  /** 新标签页（默认页）：小图标磁贴网格 —— 常用站点 + 最近访问 */
+  const newtabPage = (
+    <section className="card side-card sb-home">
+      <div className="sb-sec">常用站点</div>
+      <div className="sb-tiles">{SITE_TILES.map(tile)}</div>
+      <div className="sb-sec">最近访问</div>
+      {recents.length === 0 ? (
+        <div className="empty-note">还没访问过页面：点上面的磁贴开始，去过的页面会出现在这里。</div>
+      ) : (
+        <div className="sb-tiles">{recents.map(tile)}</div>
+      )}
+    </section>
+  );
+
+  const browserPage = (
     <section className="card side-card">
       <div className="side-head">
         <b>内置浏览器</b>
@@ -233,27 +284,6 @@ export function SoloSidePanel({
         现在还没有接入浏览器能力，所以先留一个诚实的位置，不做假界面。
       </div>
       <p className="ext-agent-note">当下要看效果：用 IDE 的终端跑起服务，再到系统浏览器里打开地址。</p>
-      <div className="side-sub">常用站点</div>
-      <ul className="side-list">
-        <li>
-          <button type="button" className="side-item is-link" onClick={() => openPage(HOME_PLUGINS)}>
-            <div className="si-main">
-              <b>插件市场</b>
-              <i>已导入 {caps.length} 项能力 · 可扫描导入</i>
-            </div>
-            <span className="tl-badge">›</span>
-          </button>
-        </li>
-        <li>
-          <button type="button" className="side-item is-link" onClick={() => openPage(HOME_CONNECTORS)}>
-            <div className="si-main">
-              <b>连接器市场</b>
-              <i>本机 CLI {installations.length} 个 · 扫描接入</i>
-            </div>
-            <span className="tl-badge">›</span>
-          </button>
-        </li>
-      </ul>
     </section>
   );
 
@@ -526,7 +556,8 @@ export function SoloSidePanel({
   );
 
   const pageOf = (page: SidePage) => {
-    if (page.kind === "browser") return sitesPage;
+    if (page.kind === "newtab") return newtabPage;
+    if (page.kind === "browser") return browserPage;
     if (page.kind === "plugins") return pluginsPage;
     if (page.kind === "scan") return scanPage;
     if (page.kind === "capability") return capabilityPage;
@@ -584,7 +615,7 @@ export function SoloSidePanel({
         <button type="button" className="sb-btn" title="刷新" onClick={refreshPage}>
           ⟳
         </button>
-        <button type="button" className="sb-btn" title="回到浏览器首页" onClick={() => openPage(HOME_BROWSER)}>
+        <button type="button" className="sb-btn" title="回到新标签页" onClick={() => openPage(NEWTAB)}>
           ⌂
         </button>
         <span className="sb-addr" title={pageUrl(current)}>
