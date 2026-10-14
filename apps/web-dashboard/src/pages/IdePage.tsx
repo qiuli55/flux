@@ -120,16 +120,84 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/* ---------- 文件类型 ---------- */
+/* ---------- 文件类型图标 ---------- */
 
-/** 图标类（design-v2.css 里的 .t-ic.*）；无对应类型的文件用默认底色 */
-function iconClass(path: string): string {
+/** 文件类型：决定用哪个线描字形、以及 CSS 里按类型取哪种全局令牌配色。 */
+type FileKind =
+  | "folder"
+  | "folder-open"
+  | "code"
+  | "py"
+  | "config"
+  | "style"
+  | "markup"
+  | "doc"
+  | "shell"
+  | "image"
+  | "lock"
+  | "diff";
+
+/** 统一 16×16 线描字形，只用 currentColor 描边；颜色一律交给 CSS，不在这里写死。 */
+const FILE_GLYPHS: Record<FileKind, ReactNode> = {
+  folder: <path d="M2.4 12.6V5.6a1 1 0 0 1 1-1h2.9l1.5 2h5.2a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1z" />,
+  "folder-open": (
+    <>
+      <path d="M2.4 12.6V5.6a1 1 0 0 1 1-1h2.9l1.5 2h5.2a1 1 0 0 1 1 1v1.4" />
+      <path d="M2.4 12.6l1.4-3.4h10.4l-1.4 3.4z" />
+    </>
+  ),
+  code: <path d="M6.2 5.2 3.6 8l2.6 2.8M9.8 5.2 12.4 8l-2.6 2.8" />,
+  py: <path d="M6.2 5.2 3.6 8l2.6 2.8M9.8 5.2 12.4 8l-2.6 2.8" />,
+  config: <path d="M6.6 3.3c-1.1 0-1.3.8-1.3 1.8s-.2 2-1.2 2.5c1 .5 1.2 1.5 1.2 2.5s.2 1.8 1.3 1.8M9.4 3.3c1.1 0 1.3.8 1.3 1.8s.2 2 1.2 2.5c-1 .5-1.2 1.5-1.2 2.5s-.2 1.8-1.3 1.8" />,
+  style: <path d="M6.4 3.2 5.4 12.8M10.6 3.2 9.6 12.8M3.4 6.4h9.2M2.8 9.6h9.2" />,
+  markup: <path d="M6 4.8 3 8l3 3.2M10 4.8 13 8l-3 3.2M9.2 3.4l-2.4 9.2" />,
+  doc: (
+    <>
+      <path d="M4.2 2.6h4.6l3 3v7.8H4.2z" />
+      <path d="M8.8 2.6v3h3" />
+      <path d="M6.2 8.4h3.6M6.2 10.6h3.6" />
+    </>
+  ),
+  shell: <path d="M4.2 5.4 7 8l-2.8 2.6M8.6 12.4h3.2" />,
+  image: (
+    <>
+      <path d="M2.8 4.4h10.4v7.2H2.8z" />
+      <path d="M2.8 9.6 6 6.8l2 1.8 2.6-2.4 2.6 2.4" />
+      <circle cx="6.1" cy="6.4" r="0.9" />
+    </>
+  ),
+  lock: (
+    <>
+      <path d="M5.2 7.4h5.6v4.4H5.2z" />
+      <path d="M6.6 7.4V5.9a1.4 1.4 0 0 1 2.8 0v1.5" />
+    </>
+  ),
+  diff: <path d="M5.2 3.2v9.6M10.8 3.2v9.6M6.8 6.4h2.4M8 5.2v2.4M6.8 9.6h2.4" />,
+};
+
+/** 按扩展名判定文件类型；认不出来的一律当普通文本。 */
+function fileKind(path: string): FileKind {
   const name = path.split("/").pop() ?? path;
-  if (name.startsWith(".")) return "git";
-  if (/\.(tsx?|jsx?|mjs|cjs)$/.test(name)) return "ts";
-  if (/\.(json|jsonc)$/.test(name)) return "json";
-  if (/\.(md|markdown)$/.test(name)) return "md";
-  return "";
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (/^(tsx?|jsx?|mjs|cjs|vue|svelte)$/.test(ext)) return "code";
+  if (/^(py|pyi)$/.test(ext)) return "py";
+  if (/^(json|jsonc|json5|yml|yaml|toml|ini|cfg|conf|env)$/.test(ext)) return "config";
+  if (/^(css|scss|less|sass|styl)$/.test(ext)) return "style";
+  if (/^(html?|xml|svg)$/.test(ext)) return "markup";
+  if (/^(md|markdown|mdx|rst)$/.test(ext)) return "doc";
+  if (/^(sh|bash|zsh|fish)$/.test(ext)) return "shell";
+  if (/^(png|jpe?g|gif|webp|ico|bmp|avif)$/.test(ext)) return "image";
+  if (/^(lock|sum)$/.test(ext)) return "lock";
+  return "doc";
+}
+
+/** 文件树 / 编辑器标签 / 搜索结果 / 快速打开共用的文件图标。 */
+function FileIcon({ kind }: { kind: FileKind }) {
+  return (
+    <span className={`t-ic t-${kind}`} aria-hidden="true">
+      <svg viewBox="0 0 16 16">{FILE_GLYPHS[kind]}</svg>
+    </span>
+  );
 }
 
 /** 状态栏右下角的语言标签 */
@@ -1473,7 +1541,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
           <li key={node.path} className={isOpen ? "open" : undefined}>
             <div className="t-row" onClick={() => void toggleDir(node.path)}>
               <span className="t-chev">{isOpen ? "▾" : "▸"}</span>
-              <span className={`t-ic ${isOpen ? "folder-open" : "folder"}`} />
+              <FileIcon kind={isOpen ? "folder-open" : "folder"} />
               <span className="t-name">{node.name}</span>
             </div>
             <ul>{isOpen ? renderNodes(node.children) : null}</ul>
@@ -1488,7 +1556,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             className={`t-row is-file${isCurrent ? " is-current" : ""}`}
             onClick={() => openFile(node.path)}
           >
-            <span className={`t-ic ${iconClass(node.path)}`} />
+            <FileIcon kind={fileKind(node.path)} />
             <span className="t-name">{node.name}</span>
             {change ? (
               <span className="t-badge">
@@ -2071,7 +2139,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   <li className="t-root open">
                     <div className="t-row">
                       <span className="t-chev">▾</span>
-                      <span className="t-ic folder-open" />
+                      <FileIcon kind="folder-open" />
                       <span className="t-name">{rootName}</span>
                     </div>
                     <ul>{renderNodes(tree)}</ul>
@@ -2130,7 +2198,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                       onClick={() => openFileAtLine(entry.path, entry.line)}
                       title={`${entry.path}:${entry.line}:${entry.column}`}
                     >
-                      <span className={`t-ic ${iconClass(entry.path)}`} />
+                      <FileIcon kind={fileKind(entry.path)} />
                       <span className="search-hit-main">
                         <span className="search-path">{entry.path}</span>
                         <span className="search-hit-line">{entry.line}:{entry.column}</span>
@@ -2159,7 +2227,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                         toast(`已打开 ${file.path}${changeByPath.get(file.path) ? " 的变更 Diff" : ""}`);
                       }}
                     >
-                      <span className={`t-ic ${iconClass(file.path)}`} />
+                      <FileIcon kind={fileKind(file.path)} />
                       <span className="gc-name">{file.path}</span>
                       <span className="gc-badge">{gitLetter(file)}</span>
                     </li>
@@ -2202,7 +2270,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 className={`ed-tab${activeTab === path ? " is-active" : ""}`}
                 onClick={() => setActiveTab(path)}
               >
-                <span className={`t-ic ${iconClass(path)}`} />
+                <FileIcon kind={fileKind(path)} />
                 {path.split("/").pop() ?? path}
                 <span
                   className="tab-x"
@@ -2220,7 +2288,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               className={`ed-tab${activeTab === CHANGES_TAB ? " is-active" : ""}`}
               onClick={() => setActiveTab(CHANGES_TAB)}
             >
-              <span className="t-ic diff" />
+              <FileIcon kind="diff" />
               Changes
               <span className="tab-count">{openChanges.length}</span>
               <span
@@ -2738,7 +2806,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                     key={path}
                     onClick={() => { openFile(path); setQuickOpen(false); }}
                   >
-                    <span className={`t-ic ${iconClass(path)}`} />
+                    <FileIcon kind={fileKind(path)} />
                     <span className="quick-open-path">{path}</span>
                   </button>
                 ))

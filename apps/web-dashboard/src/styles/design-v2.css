@@ -406,14 +406,19 @@ kbd {
 .t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-name.dim { color: var(--text-3); }
 .t-chev { width: 9px; font-size: 9px; color: var(--text-3); }
-.t-ic { width: 14px; height: 14px; border-radius: 4px; flex: 0 0 auto; background: var(--panel-3); }
-.t-ic.folder { background: #3d4a6b; }
-.t-ic.folder-open { background: #4d5f8f; }
-.t-ic.ts { background: var(--tn-panel-3); }
-.t-ic.json { background: #6b7280; }
-.t-ic.md { background: #4a5568; }
-.t-ic.git { background: #5c4a3a; }
-.t-ic.diff { background: var(--tn-panel-3); }
+/* 文件图标：16×16 线描字形，颜色按文件类型取全局令牌（不再用纯色方块） */
+.t-ic { width: 14px; height: 14px; flex: 0 0 auto; display: inline-flex; color: var(--tn-text-3); }
+.t-ic svg { width: 100%; height: 100%; display: block; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.t-ic.t-folder-open { color: var(--tn-text-2); }
+.t-ic.t-code { color: var(--tn-accent); }
+.t-ic.t-py { color: var(--tn-info); }
+.t-ic.t-config { color: var(--tn-warn); }
+.t-ic.t-style { color: var(--tn-accent-2); }
+.t-ic.t-markup { color: var(--tn-warn); }
+.t-ic.t-shell { color: var(--tn-text-2); }
+.t-ic.t-image { color: var(--tn-info); }
+.t-ic.t-lock { color: var(--tn-text-4); }
+.t-ic.t-diff { color: var(--tn-accent); }
 .t-badge { margin-left: auto; font-size: 10px; color: var(--blue); }
 .t-row.is-current { background: rgba(77,124,254,.14); color: var(--text); }
 .t-row.is-file.is-current { box-shadow: inset 2px 0 0 var(--tn-accent); }
