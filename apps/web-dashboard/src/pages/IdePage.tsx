@@ -2115,26 +2115,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
               <path d="M14 12v4M12 14h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
           </button>
-          <span className="rail-gap" />
-          <button type="button" className="rail-btn" title="账户">
-            <span className="avatar sm">孟</span>
-          </button>
-          <button
-            type="button"
-            className="rail-btn"
-            title="设置"
-            onClick={() => toast("设置尚未开放：模型与密钥在服务端 .env 配置")}
-          >
-            <svg viewBox="0 0 20 20" className="ic">
-              <circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path
-                d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
         </div>
 
         <aside className="ide-files">
@@ -2344,6 +2324,86 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
             </button>
           </div>
           {renderEditor()}
+          <div className="ide-bottom" style={{ height: bottomHeight }}>
+            <div className="bp-resizer" title="拖动调整高度" onMouseDown={onResizerDown} />
+            <div className="bp-head">
+              <button
+                type="button"
+                className={`bp-tab${bottomTab === "flow" ? " is-active" : ""}`}
+                onClick={() => {
+                  setBottomTab("flow");
+                  setBottomOpen(true);
+                }}
+              >
+                AI 任务流<em>{taskMessages.length}</em>
+              </button>
+              <button
+                type="button"
+                className={`bp-tab${bottomTab === "changes" ? " is-active" : ""}`}
+                onClick={() => {
+                  setBottomTab("changes");
+                  setBottomOpen(true);
+                }}
+              >
+                变更提案<em>{openChanges.length}</em>
+              </button>
+              <button
+                type="button"
+                className={`bp-tab${bottomTab === "problems" ? " is-active" : ""}`}
+                onClick={() => {
+                  setBottomTab("problems");
+                  setBottomOpen(true);
+                }}
+              >
+                问题<em>{problems.length}</em>
+              </button>
+              <button
+                type="button"
+                className={`bp-tab${bottomTab === "git" ? " is-active" : ""}`}
+                onClick={() => {
+                  setBottomTab("git");
+                  setBottomOpen(true);
+                }}
+              >
+                Git<em>{gitStatus?.files.length ?? 0}</em>
+              </button>
+              <span className="bp-gap" />
+              <span className="bp-shell">
+                待审 {pendingChanges.length} · 失败 {failedChanges.length}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                disabled={rollbackBusy}
+                title="把最近一次落盘（Apply 批）整体回滚到落盘前内容；Flux 不自动产生 git 提交"
+                onClick={() => void rollbackLast()}
+              >
+                {rollbackBusy ? "回滚中…" : "回滚上一次"}
+              </button>
+              <button
+                type="button"
+                className="icon-btn sm"
+                title="刷新"
+                onClick={() => {
+                  if (bottomTab === "git") void loadGit();
+                  else if (bottomTab === "changes") {
+                    void loadChanges();
+                    void loadRecovery();
+                  } else if (bottomTab === "problems") {
+                    void loadChanges();
+                    void loadRecovery();
+                    void loadTerminalProblems();
+                  } else void loadTask(projectId);
+                }}
+              >
+                ⟳
+              </button>
+              <button type="button" className="icon-btn sm" id="bpClose" title="收起面板 (⌘J)" onClick={toggleBottom}>
+                ×
+              </button>
+            </div>
+            <div className="bp-body">{renderBottom()}</div>
+          </div>
         </main>
 
         <div
@@ -2553,86 +2613,6 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         >
           AI
         </button>
-      </div>
-      <div className="ide-bottom" style={{ height: bottomHeight }}>
-        <div className="bp-resizer" title="拖动调整高度" onMouseDown={onResizerDown} />
-        <div className="bp-head">
-          <button
-            type="button"
-            className={`bp-tab${bottomTab === "flow" ? " is-active" : ""}`}
-            onClick={() => {
-              setBottomTab("flow");
-              setBottomOpen(true);
-            }}
-          >
-            AI 任务流<em>{taskMessages.length}</em>
-          </button>
-          <button
-            type="button"
-            className={`bp-tab${bottomTab === "changes" ? " is-active" : ""}`}
-            onClick={() => {
-              setBottomTab("changes");
-              setBottomOpen(true);
-            }}
-          >
-            变更提案<em>{openChanges.length}</em>
-          </button>
-          <button
-            type="button"
-            className={`bp-tab${bottomTab === "problems" ? " is-active" : ""}`}
-            onClick={() => {
-              setBottomTab("problems");
-              setBottomOpen(true);
-            }}
-          >
-            问题<em>{problems.length}</em>
-          </button>
-          <button
-            type="button"
-            className={`bp-tab${bottomTab === "git" ? " is-active" : ""}`}
-            onClick={() => {
-              setBottomTab("git");
-              setBottomOpen(true);
-            }}
-          >
-            Git<em>{gitStatus?.files.length ?? 0}</em>
-          </button>
-          <span className="bp-gap" />
-          <span className="bp-shell">
-            待审 {pendingChanges.length} · 失败 {failedChanges.length}
-          </span>
-          <button
-            type="button"
-            className="btn btn-ghost btn-xs"
-            disabled={rollbackBusy}
-            title="把最近一次落盘（Apply 批）整体回滚到落盘前内容；Flux 不自动产生 git 提交"
-            onClick={() => void rollbackLast()}
-          >
-            {rollbackBusy ? "回滚中…" : "回滚上一次"}
-          </button>
-          <button
-            type="button"
-            className="icon-btn sm"
-            title="刷新"
-            onClick={() => {
-              if (bottomTab === "git") void loadGit();
-              else if (bottomTab === "changes") {
-                void loadChanges();
-                void loadRecovery();
-              } else if (bottomTab === "problems") {
-                void loadChanges();
-                void loadRecovery();
-                void loadTerminalProblems();
-              } else void loadTask(projectId);
-            }}
-          >
-            ⟳
-          </button>
-          <button type="button" className="icon-btn sm" id="bpClose" title="收起面板 (⌘J)" onClick={toggleBottom}>
-            ×
-          </button>
-        </div>
-        <div className="bp-body">{renderBottom()}</div>
       </div>
 
       <footer className="ide-status">

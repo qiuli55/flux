@@ -401,7 +401,6 @@ kbd {
 .rail-btn { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--text-3); }
 .rail-btn:hover { background: var(--panel-2); color: var(--text-2); }
 .rail-btn.is-active { color: var(--text); background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
-.rail-gap { flex: 1; }
 
 .ide-files { width: 232px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .fl-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 8px; font-size: 11px; letter-spacing: .04em; color: var(--text-2); text-transform: uppercase; }
