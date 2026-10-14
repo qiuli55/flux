@@ -56,7 +56,7 @@ function pageUrl(page: SidePage): string {
   return `flux://solo/${page.kind}`;
 }
 
-/** 页面类型 → 磁贴/列表用的小图标（复用项目自带的线条图标库） */
+/** 页面类型 → 列表行用的小图标（复用项目自带的线条图标库） */
 function iconOf(kind: PageKind): string {
   if (kind === "newtab") return "grid";
   if (kind === "browser") return "globe";
@@ -65,9 +65,6 @@ function iconOf(kind: PageKind): string {
   if (kind === "capability") return "puzzle";
   return "plug";
 }
-
-/** 新标签页上的固定磁贴（常用站点） */
-const SITE_TILES: SidePage[] = [HOME_BROWSER, HOME_PLUGINS, HOME_CONNECTORS, SCAN_PAGE];
 
 const KIND_LABELS: Record<string, string> = {
   agent: "Agent 档案",
@@ -243,32 +240,40 @@ export function SoloSidePanel({
 
   /* ---------- 页面 ---------- */
 
-  /** 磁贴：一个小图标 + 名称，点它在当前标签页里跳转 */
-  const tile = (page: SidePage) => (
-    <button
-      key={page.key}
-      type="button"
-      className="sb-tile"
-      title={pageUrl(page)}
-      onClick={() => openPage(page)}
-    >
-      <span className="sb-tile-ic">
-        <Icon name={iconOf(page.kind)} />
-      </span>
-      <span className="sb-tile-label">{page.title}</span>
-    </button>
+  /** 一行快捷入口：左边一个小方块图标，右边名称（点它在当前标签页里跳转） */
+  const siteRow = (page: SidePage, sub?: string) => (
+    <li key={page.key}>
+      <button
+        type="button"
+        className="sb-row"
+        title={pageUrl(page)}
+        onClick={() => openPage(page)}
+      >
+        <span className="sb-row-ic">
+          <Icon name={iconOf(page.kind)} />
+        </span>
+        <span className="sb-row-label">{page.title}</span>
+        {sub ? <span className="sb-row-sub">{sub}</span> : null}
+        <span className="sb-row-go">›</span>
+      </button>
+    </li>
   );
 
-  /** 新标签页（默认页）：小图标磁贴网格 —— 常用站点 + 最近访问 */
+  /** 新标签页（默认页）：竖排「小图标 + 文字」列表 —— 常用站点 + 最近访问 */
   const newtabPage = (
     <section className="card side-card sb-home">
       <div className="sb-sec">常用站点</div>
-      <div className="sb-tiles">{SITE_TILES.map(tile)}</div>
+      <ul className="sb-list">
+        {siteRow(HOME_BROWSER, "后续接入")}
+        {siteRow(HOME_PLUGINS, `已导入 ${caps.length}`)}
+        {siteRow(HOME_CONNECTORS, `本机 ${installations.length}`)}
+        {siteRow(SCAN_PAGE)}
+      </ul>
       <div className="sb-sec">最近访问</div>
       {recents.length === 0 ? (
-        <div className="empty-note">还没访问过页面：点上面的磁贴开始，去过的页面会出现在这里。</div>
+        <div className="empty-note">还没访问过页面：点上面的入口开始，去过的页面会出现在这里。</div>
       ) : (
-        <div className="sb-tiles">{recents.map(tile)}</div>
+        <ul className="sb-list">{recents.map((page) => siteRow(page))}</ul>
       )}
     </section>
   );
