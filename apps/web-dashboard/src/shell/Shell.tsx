@@ -1,7 +1,7 @@
 /**
- * 全局外壳：左侧导航 + 顶部工具栏 + 内容区 + 底部状态栏。
+ * 全局外壳：左侧导航 + 模式切换 + 顶部工具栏 + 内容区 + 底部状态栏。
  * 承载所有路由视图；Solo / IDE 的真实页面作为「嵌入视图」放进内容区（fx-embed 收敛其自带导航）。
- * 状态栏轮询后端健康与 DSH 运行时，展示引擎/模型/工作区（存在退出机制：组件卸载即清理定时器）。
+ * 状态栏轮询后端健康与 DSH 运行时，展示引擎 / 模型 / 工作区（组件卸载即清理定时器）。
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -18,7 +18,7 @@ import { SettingsPage } from "../pages/SettingsPage";
 import { SkillsPage } from "../pages/SkillsPage";
 import { TasksPage } from "../pages/TasksPage";
 import { Icon } from "./Icon";
-import { NAV_GROUPS, VIEW_GROUP, VIEW_LABEL } from "./nav";
+import { NAV_GROUPS, NAV_MODES, VIEW_GROUP, VIEW_LABEL } from "./nav";
 import { setPref, usePrefs } from "./prefs";
 import { Tip } from "./ui";
 
@@ -31,6 +31,22 @@ function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => voi
         <div className="fx-brand-text">
           <div className="fx-brand-name">Flux</div>
           <div className="fx-brand-sub">AI 研发工作台</div>
+        </div>
+      </div>
+      <div className="fx-mode">
+        <div className="fx-mode-lbl">模式</div>
+        <div className="fx-mode-seg">
+          {NAV_MODES.map((mode) => (
+            <button
+              key={mode.id}
+              className={["fx-mode-b", mode.id === view && "fx-active"].filter(Boolean).join(" ")}
+              onClick={() => navigate(mode.id)}
+              title={wide ? undefined : mode.label}
+            >
+              <Icon name={mode.icon} />
+              <span>{mode.label}</span>
+            </button>
+          ))}
         </div>
       </div>
       <nav className="fx-rail-scroll">
@@ -65,7 +81,7 @@ function Rail({ view, navigate, wide }: { view: View; navigate: (v: View) => voi
 }
 
 /* ---------------- 顶栏 ---------------- */
-function Topbar({ view, wide, onToggleWide }: { view: View; wide: boolean; onToggleWide: () => void }) {
+function Topbar({ view, wide, dsh, onToggleWide }: { view: View; wide: boolean; dsh: DshStatus | null; onToggleWide: () => void }) {
   return (
     <header className="fx-topbar">
       <div className="fx-crumb">
@@ -85,7 +101,7 @@ function Topbar({ view, wide, onToggleWide }: { view: View; wide: boolean; onTog
             <Tip text="Agent 面板"><button className="fx-iconbtn" onClick={() => queueSoloIntent("agents")} aria-label="Agent 面板"><Icon name="bot" /></button></Tip>
           </>
         ) : null}
-        <Tip text="打开命令面板"><button className="fx-iconbtn" onClick={() => openCommandPalette()} aria-label="命令面板"><Icon name="command" /></button></Tip>
+        {dsh ? <span className="fx-engine">引擎 <b>{dsh.provider}/{dsh.model}</b></span> : null}
         <Tip text="收起 / 展开侧栏"><button className="fx-iconbtn" onClick={onToggleWide} aria-label="侧栏宽度"><Icon name={wide ? "chevron" : "grid"} /></button></Tip>
       </div>
     </header>
@@ -103,7 +119,7 @@ function StatusBar({ health, dsh }: { health: HealthData | null; dsh: DshStatus 
       </span>
       {dsh ? <span className="fx-sitem">引擎 {dsh.provider}/{dsh.model}</span> : null}
       {dsh ? <span className="fx-sitem"><Icon name="folder" className="fx-icon-sm" />{dsh.workspace}</span> : null}
-      <span className="fx-sitem fx-push">Flux Console · v2</span>
+      <span className="fx-sitem fx-push">Flux Console · Terminal Noir</span>
     </footer>
   );
 }
@@ -151,7 +167,7 @@ export function Shell({ view, navigate }: { view: View; navigate: (v: View) => v
     <div className={["fx-root", "fx-shell", prefs.wide && "fx-wide"].filter(Boolean).join(" ")}>
       <Rail view={view} navigate={navigate} wide={prefs.wide} />
       <div className="fx-main">
-        <Topbar view={view} wide={prefs.wide} onToggleWide={toggleWide} />
+        <Topbar view={view} wide={prefs.wide} dsh={dsh} onToggleWide={toggleWide} />
         <Content view={view} navigate={navigate} />
         {prefs.statusbar ? <StatusBar health={health} dsh={dsh} /> : null}
       </div>

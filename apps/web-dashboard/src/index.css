@@ -4,7 +4,7 @@
 @import "./styles/design-v2.css";
 @import "./styles/product.css";
 @import "./styles/ui-hierarchy.css";
-@import "./styles/flux.css";
+@import "./styles/shell.css";
 
 /* Tailwind 设计令牌：键名保持不变，值统一指向 --tn-*（唯一真源 tokens.css）。
    ⚠️ 不要补 --color-surface-*/--color-faint 等缺失键，否则会激活一批死组件。 */
@@ -57,8 +57,9 @@
   --r: var(--tn-r);
 }
 
-/* flux.css（令牌挂在 .fx-root 上，故用同选择器覆盖） */
-.fx-root {
+/* shell.css 的旧令牌（原挂在 .fx-root 上，导致 Portal 弹层取不到值、背景透明）
+   现统一提升到 :root，弹层/命令面板/抽屉等挂到 document.body 的浮层同样可用。 */
+:root {
   --fx-bg: var(--tn-bg);
   --fx-bg-2: var(--tn-bg-2);
   --fx-panel: var(--tn-panel);
