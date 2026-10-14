@@ -978,23 +978,24 @@ body.bottom-closed .ide-bottom { display: none; }
 .s-head-gap { flex: 1; min-width: 0; }
 
 /* 右栏「浏览器感」：顶部标签页 + 前进/后退导航，下面是当前页面。
-   面板配色按参考图走中性炭灰：只用这里的局部变量，不动全局令牌，因此只影响右栏。 */
+   配色跟整页的 Terminal Noir 保持同一明度层级，只把蓝味压低一档（偏中性炭灰），
+   全部写在 .s-side 的局部变量上，不动全局令牌，因此只影响右栏。 */
 .s-side {
-  --sb-bg: #1c1c1c;
-  --sb-panel: #202020;
-  --sb-panel-2: #282830;
-  --sb-line: #303034;
-  --sb-line-soft: #262628;
-  --sb-text: #d6d6dc;
-  --sb-text-2: #a6a6ae;
-  --sb-text-3: #7a7a82;
+  --sb-bg: #0b0c11;
+  --sb-panel: #101118;
+  --sb-panel-2: #15171f;
+  --sb-line-soft: #1b1d26;
+  --sb-line: #22242f;
+  --sb-text: #e2e4ea;
+  --sb-text-2: #9aa0ae;
+  --sb-text-3: #71767f;
   --sb-accent: #3df5a8;
   --sb-accent-soft: rgba(61, 245, 168, 0.12);
   --sb-accent-line: rgba(61, 245, 168, 0.38);
   padding: 0; gap: 0; overflow: hidden;
   color: var(--sb-text-2);
   background: var(--sb-bg);
-  border-left: 1px solid var(--sb-line);
+  border-left: 1px solid var(--sb-line-soft);
 }
 .sb-tabs { flex: 0 0 auto; display: flex; align-items: stretch; border-bottom: 1px solid var(--sb-line); overflow-x: auto; scrollbar-width: none; }
 .sb-tabs::-webkit-scrollbar { display: none; }
@@ -1011,7 +1012,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .sb-btn { flex: 0 0 auto; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--tn-r); color: var(--sb-text-3); font-size: 12px; }
 .sb-btn:hover:not(:disabled) { background: var(--sb-panel); color: var(--sb-text); }
 .sb-btn:disabled { opacity: 0.35; cursor: default; }
-.sb-addr { flex: 1; min-width: 0; display: flex; align-items: center; height: 24px; padding: 0 9px; border: 1px solid var(--sb-line); border-radius: var(--tn-r-full); color: var(--sb-text-3); font-family: var(--tn-mono); font-size: var(--tn-fs-xs); }
+.sb-addr { flex: 1; min-width: 0; display: flex; align-items: center; height: 24px; padding: 0 9px; border: 1px solid var(--sb-line); border-radius: var(--tn-r-full); background: var(--sb-panel-2); color: var(--sb-text-3); font-family: var(--tn-mono); font-size: var(--tn-fs-xs); }
 .sb-addr span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-page { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 /* 新标签页：竖排「小图标 + 文字」列表（常用站点 + 最近访问） */
@@ -1019,8 +1020,8 @@ body.bottom-closed .ide-bottom { display: none; }
 .sb-sec { margin-top: 2px; font-size: var(--tn-fs-xs); color: var(--sb-text-3); text-transform: uppercase; letter-spacing: var(--tn-ls-caps); }
 .sb-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .sb-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: var(--tn-r); color: var(--sb-text-2); text-align: left; }
-.sb-row:hover { background: var(--sb-panel); color: var(--sb-text); }
-.sb-row-ic { flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-content: center; border: 1px solid var(--sb-line); border-radius: var(--tn-r); background: var(--sb-panel); color: var(--sb-text-2); }
+.sb-row:hover { background: var(--sb-panel-2); color: var(--sb-text); }
+.sb-row-ic { flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-content: center; border: 1px solid var(--sb-line); border-radius: var(--tn-r); background: var(--sb-panel-2); color: var(--sb-text-2); }
 .sb-row:hover .sb-row-ic { border-color: var(--sb-accent-line); color: var(--sb-accent); }
 .sb-row .fx-icon { width: 14px; height: 14px; }
 .sb-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--tn-fs-sm); }
@@ -1028,7 +1029,9 @@ body.bottom-closed .ide-bottom { display: none; }
 .sb-row-go { flex: 0 0 auto; color: var(--sb-text-3); }
 
 /* 右栏内的卡片与列表：跟着上面的炭灰变量走 */
-.s-side .card { background: var(--sb-bg); border-color: var(--sb-line); }
+.s-side .card { background: var(--sb-panel); border-color: var(--sb-line-soft); }
+.s-side .btn-ghost { border-color: var(--sb-line); color: var(--sb-text-2); background: var(--sb-panel-2); }
+.s-side .btn-ghost:hover { color: var(--sb-text); border-color: var(--tn-line-strong); }
 .s-side .side-head b { color: var(--sb-text); }
 .s-side .side-head .link { color: var(--sb-text-3); }
 .s-side .side-head .link:hover { color: var(--sb-accent); }
@@ -1041,7 +1044,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .s-side .chip-dim { background: var(--sb-panel); border-color: var(--sb-line); color: var(--sb-text-3); }
 .s-side .tm-ava { background: var(--sb-panel-2); color: var(--sb-text-2); }
 .s-side .side-item { border-color: var(--sb-line); }
-.s-side .side-item.is-link:hover { border-color: var(--sb-accent-line); background: var(--sb-panel); }
+.s-side .side-item.is-link:hover { border-color: var(--sb-accent-line); background: var(--sb-panel-2); }
 .s-side .side-item .si-main b { color: var(--sb-text-2); }
 .s-side .side-item .si-main i { color: var(--sb-text-3); }
 .s-side .tl-badge { border-color: var(--sb-line); color: var(--sb-text-3); }
