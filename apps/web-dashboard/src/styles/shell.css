@@ -121,8 +121,15 @@
 .fx-root.fx-shell:not(.fx-wide) .fx-rail-brand,
 .fx-root.fx-shell:not(.fx-wide) .fx-nav,
 .fx-root.fx-shell:not(.fx-wide) .fx-user { justify-content: center; padding-inline: 0; }
-.fx-root.fx-shell:not(.fx-wide) .fx-mode-seg { flex-direction: column; }
-.fx-root.fx-shell:not(.fx-wide) .fx-mode-b + .fx-mode-b { border-left: 0; border-top: 1px solid var(--tn-line); }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-seg { flex-direction: column; gap: 2px; border: 0; border-radius: 0; overflow: visible; }
+/* 收起后的模式切换：去掉外框，与左栏其它图标项用同一套尺寸与 hover / 选中样式 */
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b { flex: none; width: 100%; height: var(--fx-row); border-radius: var(--tn-r-sm); position: relative; }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b + .fx-mode-b { border-left: 0; border-top: 0; }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b .fx-icon { width: 14px; height: 14px; }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b:hover { background: var(--tn-panel-2); color: var(--tn-text-2); }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b.fx-active { background: var(--tn-panel-2); color: var(--tn-text); }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b.fx-active .fx-icon { color: var(--tn-accent); }
+.fx-root.fx-shell:not(.fx-wide) .fx-mode-b.fx-active::before { content: ""; position: absolute; left: 0; top: 5px; bottom: 5px; width: 2px; background: var(--tn-accent); }
 
 /* ---------- 主区 ---------- */
 .fx-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--tn-bg); }
