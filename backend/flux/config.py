@@ -145,9 +145,42 @@ class Settings(BaseSettings):
     # 元数据（实测警告「Model metadata not found…can degrade performance」）；空 = 不写
     codex_model_catalog: str = ""
 
+    # --- 账号云（B 机 flux.qiuli55.top，仓库 apps/cloud）---
+    # Flux 本体的登录由账号云统一签发令牌：账号的权威/后台都在那边，本机只做本地验签
+    # （见 flux.api.auth.is_cloud_access_token），不每次回源。
+    cloud_base_url: str = "https://flux.qiuli55.top"
+    # 与账号云共享的 HS256 密钥（FLUX_CLOUD_SECRET_KEY）。留空 = 不认账号云令牌，
+    # 登录闭环整体关闭，退回"FLUX_AUTH_TOKEN / 回环直连"的老口径。
+    cloud_secret_key: str | None = None
+    # 本机云会话（access / refresh token）落盘文件；留空 = ~/.flux/cloud.json。
+    cloud_session_file: str | None = None
+    # 登录完成后要回到的 Flux 工作台地址；登录页以 ?next=<它> 携带回跳目标。
+    cloud_return_url: str | None = None
+    # 运行日志落盘目录（相对路径按仓库根解析）。留空 = 不落盘、也不自动上传。
+    # 生产必须配上：Flux 启动时会把「上一轮运行日志」自动上传到账号云。
+    log_dir: str | None = None
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def log_dir_path(self) -> Path | None:
+        """运行日志目录；未配置时为 None（= 关闭落盘与自动上传）。"""
+        raw = (self.log_dir or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        return path if path.is_absolute() else (REPO_ROOT / path)
+
+    @property
+    def cloud_session_path(self) -> Path:
+        """本机云会话文件路径。"""
+        raw = (self.cloud_session_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "cloud.json"
 
 
 @lru_cache
