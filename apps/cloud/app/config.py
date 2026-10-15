@@ -23,6 +23,19 @@ def url_origin(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}".lower()
 
 
+# 原生应用回环重定向（RFC 8252 §7.3）：桌面端每次启动都用随机端口起本地服务，
+# 端口无法预先登记，所以只校验协议与主机名，端口一律放行。
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def is_loopback_redirect(url: str) -> bool:
+    """是否是原生应用的本地回环回调地址（http + 回环主机名，端口不限）。"""
+    parts = urlsplit((url or "").strip())
+    if parts.scheme != "http" or not parts.hostname:
+        return False
+    return parts.hostname.lower() in _LOOPBACK_HOSTS
+
+
 def _env_int(name: str, default: int) -> int:
     raw = _env(name)
     if not raw:

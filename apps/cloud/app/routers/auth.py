@@ -12,7 +12,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import oauth
-from ..config import settings, url_origin
+from ..config import is_loopback_redirect, settings, url_origin
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import LoginCode, RunLog, User, UserIdentity, UserSession, Workspace, utcnow
@@ -82,13 +82,13 @@ def _clear_cookie(response: Response, key: str) -> None:
 
 
 def _resolve_next(value: str) -> str:
-    """登录后跳哪里：站内相对路径放行，绝对地址必须是受信任站点，否则回账号页。"""
+    """登录后跳哪里：站内相对路径放行，绝对地址须是受信任站点或本机回环地址，否则回账号页。"""
     candidate = (value or "").strip()
     if not candidate:
         return "/account"
     if candidate.startswith("/") and not candidate.startswith("//") and "\\" not in candidate:
         return candidate
-    if settings.is_trusted_return_origin(candidate):
+    if settings.is_trusted_return_origin(candidate) or is_loopback_redirect(candidate):
         return candidate
     return "/account"
 
