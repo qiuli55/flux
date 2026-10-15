@@ -96,6 +96,9 @@ function startBackend(port, dataDir, workspaceRoot) {
     FLUX_DATA_DIR: dataDir,
     FLUX_DATABASE_URL: sqliteUrl(path.join(dataDir, "flux.db")),
     FLUX_WORKSPACE_ROOT: workspaceRoot,
+    // 桌面端要求账号云登录：共享密钥不进安装包，只靠这个开关打开登录闸门。
+    FLUX_CLOUD_LOGIN_REQUIRED: "1",
+    FLUX_LOG_DIR: path.join(dataDir, "logs"),
   };
   const options = { cwd: spec.cwd, env, stdio: ["ignore", "pipe", "pipe"] };
   if (process.platform !== "win32") options.detached = true;

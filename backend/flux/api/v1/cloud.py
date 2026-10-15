@@ -84,7 +84,8 @@ def _token_payload(session: CloudSession) -> dict[str, object]:
 @router.get("/session", summary="查询本机账号云登录状态与登录入口")
 async def cloud_session(settings: Settings = Depends(get_settings_dep)) -> dict[str, object]:
     payload = _user_payload(settings)
-    payload["configured"] = bool((settings.cloud_secret_key or "").strip())
+    secret_ok = bool((settings.cloud_secret_key or "").strip())
+    payload["configured"] = secret_ok or settings.cloud_login_required
     payload["login_url"] = _login_url(settings)
     return ok(payload)
 

@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     # 与账号云共享的 HS256 密钥（FLUX_CLOUD_SECRET_KEY）。留空 = 不认账号云令牌，
     # 登录闭环整体关闭，退回"FLUX_AUTH_TOKEN / 回环直连"的老口径。
     cloud_secret_key: str | None = None
+    # 是否要求走账号云登录（FLUX_CLOUD_LOGIN_REQUIRED）。桌面端安装包用：它不
+    # 携带共享密钥（随包分发就等于泄露签名密钥），但产品上必须要求登录，于是把
+    # 「要不要登录」与「能不能本地验签」拆开——置 True 时前端会跳账号云登录页。
+    cloud_login_required: bool = False
     # 本机云会话（access / refresh token）落盘文件；留空 = ~/.flux/cloud.json。
     cloud_session_file: str | None = None
     # 登录完成后要回到的 Flux 工作台地址；登录页以 ?next=<它> 携带回跳目标。
