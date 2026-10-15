@@ -8,10 +8,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def url_origin(url: str) -> str:
+    """取 URL 的 scheme://host[:port]，非 http(s) 或缺少主机名时返回空串。"""
+    parts = urlsplit((url or "").strip())
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}".lower()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,6 +73,20 @@ class Settings:
         )
     )
 
+    # 允许登录后回跳的外部站点（Flux 本体工作台等）；逗号分隔的 scheme://host[:port]
+    trusted_return_origins: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            origin
+            for origin in (
+                url_origin(item) for item in _env("FLUX_CLOUD_TRUSTED_RETURN_ORIGINS").split(",")
+            )
+            if origin
+        )
+    )
+
+    # 跨站回跳用的一次性登录码有效期（秒）
+    login_code_ttl_sec: int = _env_int("FLUX_CLOUD_LOGIN_CODE_TTL_SEC", 120)
+
     @property
     def database_url(self) -> str:
         explicit = _env("FLUX_CLOUD_DATABASE_URL")
@@ -77,6 +100,10 @@ class Settings:
 
     def oauth_redirect_uri(self, provider: str) -> str:
         return f"{self.public_base_url}/api/auth/oauth/{provider}/callback"
+
+    def is_trusted_return_origin(self, url: str) -> bool:
+        origin = url_origin(url)
+        return bool(origin) and origin in self.trusted_return_origins
 
     def provider_enabled(self, provider: str) -> bool:
         if provider == "github":

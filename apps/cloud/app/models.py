@@ -6,6 +6,7 @@
   user_sessions    登录会话（refresh token 只存哈希）
   workspaces       工作区（首版每个用户自动建一个 personal）
   run_logs         客户端上传的运行日志包
+  login_codes      跨站回跳用的一次性登录码（只存哈希，用后即废）
 
 时间统一存 UTC 的 naive datetime（SQLite 不做时区转换），
 对外输出时由 schemas 补上 Z 后缀。
@@ -121,3 +122,19 @@ class RunLog(Base):
     os_info: Mapped[str | None] = mapped_column(String(255))
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class LoginCode(Base):
+    """站外回跳的一次性登录码：明文只在 URL 里出现一次，库里只存 sha256。"""
+
+    __tablename__ = "login_codes"
+    __table_args__ = (Index("ix_logincode_user", "user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime)
+

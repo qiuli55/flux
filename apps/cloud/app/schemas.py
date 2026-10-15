@@ -106,6 +106,29 @@ class OkOut(BaseModel):
     message: str | None = None
 
 
+# ---------------------------------------------------------------- 跨站登录回跳
+
+class HandoffOut(BaseModel):
+    # 站内目标原样返回；站外目标会带上一次性 code
+    redirect: str
+
+
+class ExchangeIn(BaseModel):
+    code: str = Field(min_length=8, max_length=256)
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=16, max_length=256)
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int
+    user: UserOut
+
+
 # ---------------------------------------------------------------- 日志
 
 class LogOut(OrmModel):

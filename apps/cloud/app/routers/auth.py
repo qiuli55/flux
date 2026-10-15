@@ -12,18 +12,22 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import oauth
-from ..config import settings
+from ..config import settings, url_origin
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import RunLog, User, UserIdentity, UserSession, Workspace, utcnow
+from ..models import LoginCode, RunLog, User, UserIdentity, UserSession, Workspace, utcnow
 from ..schemas import (
     DeleteAccountIn,
+    ExchangeIn,
+    HandoffOut,
     IdentityOut,
     LoginIn,
     MeOut,
     OkOut,
     PasswordChangeIn,
+    RefreshIn,
     RegisterIn,
+    TokenOut,
     UserOut,
 )
 from ..security import (
@@ -38,6 +42,7 @@ from ..security import (
     decode_token,
     generate_readable_password,
     hash_password,
+    new_login_code,
     new_nonce,
     new_refresh_token,
     sha256_hex,
@@ -76,12 +81,38 @@ def _clear_cookie(response: Response, key: str) -> None:
     response.delete_cookie(key, path="/", domain=settings.cookie_domain or None)
 
 
-def _safe_next(value: str) -> str:
-    """只允许站内相对跳转，挡掉 //evil.com 之类。"""
+def _resolve_next(value: str) -> str:
+    """登录后跳哪里：站内相对路径放行，绝对地址必须是受信任站点，否则回账号页。"""
     candidate = (value or "").strip()
-    if not candidate.startswith("/") or candidate.startswith("//") or "\\" in candidate:
+    if not candidate:
         return "/account"
-    return candidate
+    if candidate.startswith("/") and not candidate.startswith("//") and "\\" not in candidate:
+        return candidate
+    if settings.is_trusted_return_origin(candidate):
+        return candidate
+    return "/account"
+
+
+def _is_external_target(target: str) -> bool:
+    return target.startswith("http://") or target.startswith("https://")
+
+
+def _handoff_target(db: Session, user: User, target: str) -> str:
+    """站外目标不能靠 cookie 带身份过去，改发一次性登录码让对方换 token。"""
+    if not _is_external_target(target):
+        return target
+    code = new_login_code()
+    db.add(
+        LoginCode(
+            user_id=user.id,
+            code_hash=sha256_hex(code),
+            redirect_uri=target[:512],
+            expires_at=utcnow() + timedelta(seconds=settings.login_code_ttl_sec),
+        )
+    )
+    db.commit()
+    log.info("签发跨站登录码 user_id=%s origin=%s", user.id, url_origin(target))
+    return _with_query(target, f"code={quote(code)}")
 
 
 def _with_query(url: str, extra: str) -> str:
@@ -98,7 +129,8 @@ def _unique_username(db: Session, base: str) -> str:
     return candidate
 
 
-def _issue_session(db: Session, user: User, request: Request, response: Response) -> None:
+def _start_session(db: Session, user: User, request: Request) -> str:
+    """建一条登录会话记录并返回 refresh token 明文。"""
     refresh = new_refresh_token()
     db.add(
         UserSession(
@@ -111,8 +143,22 @@ def _issue_session(db: Session, user: User, request: Request, response: Response
     )
     user.last_login_at = utcnow()
     db.commit()
+    return refresh
+
+
+def _issue_session(db: Session, user: User, request: Request, response: Response) -> None:
+    refresh = _start_session(db, user, request)
     _set_cookie(response, ACCESS_COOKIE, create_access_token(user.id), settings.access_ttl_min * 60)
     _set_cookie(response, REFRESH_COOKIE, refresh, settings.refresh_ttl_days * 86400)
+
+
+def _token_payload(user: User, refresh: str) -> TokenOut:
+    return TokenOut(
+        access_token=create_access_token(user.id),
+        refresh_token=refresh,
+        expires_in=settings.access_ttl_min * 60,
+        user=UserOut.model_validate(user),
+    )
 
 
 def _me_payload(db: Session, user: User) -> MeOut:
@@ -313,6 +359,7 @@ def delete_account(
     username = user.username
     # 显式逐表删除，不依赖 SQLite 的外键级联，行为更确定
     db.execute(delete(UserSession).where(UserSession.user_id == user_id))
+    db.execute(delete(LoginCode).where(LoginCode.user_id == user_id))
     db.execute(delete(RunLog).where(RunLog.user_id == user_id))
     db.execute(delete(Workspace).where(Workspace.user_id == user_id))
     db.execute(delete(UserIdentity).where(UserIdentity.user_id == user_id))
@@ -378,7 +425,7 @@ def oauth_start(provider: str, next: str = "/account") -> RedirectResponse:
     if not settings.provider_enabled(provider):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "该登录渠道未启用")
     nonce = new_nonce()
-    state = create_state_token(provider, nonce, _safe_next(next))
+    state = create_state_token(provider, nonce, _resolve_next(next))
     response = RedirectResponse(oauth.authorize_url(provider, state))
     _set_cookie(response, STATE_COOKIE, state, 600)
     return response
@@ -427,9 +474,11 @@ async def oauth_callback(
     if user is None or not user.is_active:
         return fail("账号不可用")
 
-    target = _safe_next(str(payload.get("next") or "/account"))
+    target = _resolve_next(str(payload.get("next") or "/account"))
     if created:
         target = _with_query(target, "new=1")
+    # 站外目标（Flux 工作台）走一次性登录码
+    target = _handoff_target(db, user, target)
 
     response = RedirectResponse(target)
     _clear_cookie(response, STATE_COOKIE)
@@ -439,3 +488,59 @@ async def oauth_callback(
             response, REVEAL_COOKIE, create_reveal_token(user.id, initial_password), 15 * 60
         )
     return response
+
+
+# ---------------------------------------------------------------- 跨站登录回跳
+#
+# 站外站点（Flux 本体工作台）拿不到这里的 httponly cookie，所以走三步：
+#   1. 登录成功后前端调 GET /handoff?next=<目标>，换到带一次性 code 的回跳地址；
+#   2. 目标站点拿 code 调 POST /exchange，换回 access / refresh token；
+#   3. access 过期后调 POST /token 用 refresh 续期。
+# 两边的签名密钥一致，目标站点可以本地验签，不必每次回源。
+
+@router.get("/handoff", response_model=HandoffOut)
+def handoff(
+    request: Request,
+    next: str = "/account",
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HandoffOut:
+    target = _resolve_next(next)
+    return HandoffOut(redirect=_handoff_target(db, user, target))
+
+
+@router.post("/exchange", response_model=TokenOut)
+def exchange(
+    payload: ExchangeIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenOut:
+    record = db.scalar(select(LoginCode).where(LoginCode.code_hash == sha256_hex(payload.code.strip())))
+    if record is None or record.used_at is not None or record.expires_at < utcnow():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录码无效或已过期，请重新登录")
+    user = db.get(User, record.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "账号不可用")
+    record.used_at = utcnow()
+    refresh = _start_session(db, user, request)
+    log.info("跨站登录码已兑换 user_id=%s", user.id)
+    return _token_payload(user, refresh)
+
+
+@router.post("/token", response_model=TokenOut)
+def token(
+    payload: RefreshIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenOut:
+    """用 refresh token 换新的 access token（站外客户端的续期入口）。"""
+    refresh = payload.refresh_token.strip()
+    session = db.scalar(select(UserSession).where(UserSession.refresh_hash == sha256_hex(refresh)))
+    if session is None or session.revoked_at is not None or session.expires_at < utcnow():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已过期，请重新登录")
+    user = db.get(User, session.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "账号不可用")
+    session.last_used_at = utcnow()
+    db.commit()
+    return _token_payload(user, refresh)

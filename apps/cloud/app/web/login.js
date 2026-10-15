@@ -70,6 +70,19 @@
     return payload;
   }
 
+  // 站外目标（Flux 工作台）拿不到本域 cookie，先换一次性登录码再跳
+  async function gotoNext() {
+    var target = nextUrl || "/account";
+    if (target.indexOf("http://") === 0 || target.indexOf("https://") === 0) {
+      var data = await api("/api/auth/handoff?next=" + encodeURIComponent(target));
+      if (data && data.redirect) {
+        location.href = data.redirect;
+        return;
+      }
+    }
+    location.href = target;
+  }
+
   function renderProviders(providers) {
     var row = $("oauthRow");
     var divider = $("oauthDivider");
@@ -150,7 +163,7 @@
         });
       }
       toast("登录成功，正在进入…");
-      location.href = nextUrl;
+      await gotoNext();
     } catch (err) {
       showError(err.message || "操作失败，请重试");
       button.disabled = false;
@@ -167,12 +180,21 @@
     });
     $("form").addEventListener("submit", submit);
 
+    var loggedIn = false;
     try {
       await api("/api/auth/me");
-      location.href = nextUrl;
-      return;
+      loggedIn = true;
     } catch (err) {
       /* 未登录属正常情况 */
+    }
+
+    if (loggedIn) {
+      try {
+        await gotoNext();
+      } catch (err) {
+        showError(err.message || "跳转失败，请刷新重试");
+      }
+      return;
     }
 
     try {

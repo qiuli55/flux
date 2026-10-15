@@ -119,6 +119,11 @@ def new_nonce() -> str:
     return secrets.token_urlsafe(16)
 
 
+def new_login_code() -> str:
+    """跨站回跳的一次性登录码（明文只出现在重定向 URL 里）。"""
+    return secrets.token_urlsafe(32)
+
+
 def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
