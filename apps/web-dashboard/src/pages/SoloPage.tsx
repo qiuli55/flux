@@ -62,11 +62,26 @@ const QUOTE_PREFIX = "引用：";
 /** 右栏宽度的本机留存与合法区间（null = 用户没拖过，交给 CSS 的默认值） */
 const LS_SIDE_WIDTH = "flux.solo.sideWidth";
 const SIDE_W_MIN = 260;
-const SIDE_W_MAX = 720;
+/** 绝对上限：量不到容器宽度时的兜底。正常拖拽上限由 maxSideWidth() 按容器换算 */
+const SIDE_W_MAX = 1600;
+/** 右栏与中栏之间的拖拽热区宽度（与 design-v2.css 的网格列一致） */
+const SIDE_RESIZER_W = 6;
+/** 中栏（与 Agent 对话）至少保留的宽度，右栏再宽也不把它压没 */
+const MAIN_W_MIN = 320;
 
 function readSideWidth(): number | null {
   const stored = Number(window.localStorage.getItem(LS_SIDE_WIDTH));
   return Number.isFinite(stored) && stored >= SIDE_W_MIN && stored <= SIDE_W_MAX ? stored : null;
+}
+
+/** 右栏可拖到的上限：容器宽度 −（左任务栏 + 热区 + 中栏最小宽度），再夹到全局上限 */
+function maxSideWidth(): number {
+  const body = document.querySelector<HTMLElement>(".s-body");
+  if (!body) return SIDE_W_MAX;
+  const nav = document.querySelector<HTMLElement>(".s-nav");
+  const navW = nav && nav.offsetParent !== null ? nav.getBoundingClientRect().width : 0;
+  const room = body.getBoundingClientRect().width - navW - SIDE_RESIZER_W - MAIN_W_MIN;
+  return Math.max(SIDE_W_MIN, Math.min(SIDE_W_MAX, room));
 }
 
 function errorMessage(error: unknown): string {
@@ -940,8 +955,9 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
         336;
       document.body.style.userSelect = "none";
       document.body.classList.add("side-resizing");
+      const maxWidth = maxSideWidth();
       const onMove = (move: MouseEvent) => {
-        setSideWidth(Math.max(SIDE_W_MIN, Math.min(startWidth + (startX - move.clientX), SIDE_W_MAX)));
+        setSideWidth(Math.max(SIDE_W_MIN, Math.min(startWidth + (startX - move.clientX), maxWidth)));
       };
       const onUp = () => {
         document.body.style.userSelect = "";

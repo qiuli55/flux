@@ -99,7 +99,7 @@ kbd {
 }
 .avatar.sm { width: 22px; height: 22px; font-size: 10px; }
 
-.s-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 208px minmax(0,1fr) 6px var(--side-w, 336px); }
+.s-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 208px minmax(0,1fr) 6px min(var(--side-w, 336px), calc(100% - 534px)); }
 
 /* 左导航 */
 .s-nav { padding: 10px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
@@ -614,7 +614,7 @@ body.bottom-closed .ide-bottom { display: none; }
 .toast-tx { min-width: 0; }
 
 @media (max-width: 1280px) {
-  .s-body { grid-template-columns: 176px minmax(0,1fr) 6px var(--side-w, 300px); }
+  .s-body { grid-template-columns: 176px minmax(0,1fr) 6px min(var(--side-w, 300px), calc(100% - 502px)); }
   .ide-files { width: 200px; }
   .ide-agent { width: 290px; }
   .strategy { grid-template-columns: 1fr; }
