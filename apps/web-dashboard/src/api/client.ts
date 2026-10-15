@@ -2,10 +2,15 @@
  * API 客户端：只发同源 /api 请求（Vite 已把 /api 代理到后端，默认 127.0.0.1:8000，
  * 可用 FLUX_VITE_BACKEND_ORIGIN 覆盖，见 vite.config.ts）。
  *
+ * 鉴权：已登录时带上账号云签发的 access token（`Authorization: Bearer`）；
+ * 收到 401 先尝试续期一次再重放，续不动就交给 AuthGate 把用户送回登录页。
+ *
  * 统一处理 {success, code, message, data, metadata} 信封：
  * - success=false 或 HTTP 非 2xx → 抛 ApiError（message 优先取后端原文）；
  * - 422 校验失败 → 提取 FastAPI 的 details（字段级），拼成可读文本。
  */
+import { getAccessToken, getAuth, refreshAuth } from "./auth";
+import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ConfirmationItem, DecisionMode,
@@ -15,7 +20,7 @@ import type {
   TerminalEvent, TerminalSession,
 } from "./types";
 
-export const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api/v1").replace(/\/$/, "");
+export { API_BASE } from "./base";
 
 export function terminalStreamUrl(sessionId: string, afterSeq = 0): string {
   const suffix = afterSeq > 0 ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
@@ -43,8 +48,7 @@ function formatValidationDetails(details: unknown): string | null {
   return lines.length > 0 ? lines.join("；") : null;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<Envelope<T>> {
-  let response: Response;
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (
@@ -53,14 +57,25 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   ) {
     headers["X-Flux-Desktop"] = "1";
   }
+  const token = getAccessToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    return await fetch(`${API_BASE}${path}`, {
       method,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
     throw new ApiError("无法连接后端服务，请确认 Flux 后端已启动", "network_error", 0);
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<Envelope<T>> {
+  let response = await send(method, path, body);
+  // access token 到期（默认 30 分钟）：续期一次再重放，别让用着的人突然被判未登录。
+  if (response.status === 401 && getAuth()) {
+    const renewed = await refreshAuth();
+    if (renewed) response = await send(method, path, body);
   }
   let envelope: Envelope<T> | null = null;
   try { envelope = (await response.json()) as Envelope<T>; }

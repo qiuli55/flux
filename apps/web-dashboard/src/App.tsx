@@ -12,6 +12,7 @@
  *
  * 命令面板（⌘K）与全局提示在壳层挂载，跨视图命令通过 IDE 意图队列传递。
  */
+import { AuthGate } from "./app/AuthGate";
 import { CommandPalette } from "./app/commands";
 import { useView } from "./app/router";
 import { ToastHost } from "./app/toast";
@@ -23,6 +24,14 @@ import { WorkspacePicker } from "./components/workspace/WorkspacePicker";
 import { Shell } from "./shell/Shell";
 
 export default function App() {
+  return (
+    <AuthGate>
+      <AppContent />
+    </AuthGate>
+  );
+}
+
+function AppContent() {
   const [view, navigate] = useView();
 
   if (readWindowMode() === "terminal") {
