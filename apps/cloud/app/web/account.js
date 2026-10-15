@@ -216,44 +216,6 @@
     }
   }
 
-  function toIsoOrEmpty(value) {
-    if (!value) return "";
-    var date = new Date(value);
-    return isNaN(date.getTime()) ? "" : date.toISOString();
-  }
-
-  async function submitUpload(event) {
-    event.preventDefault();
-    pageError("");
-    var file = $("file").files[0];
-    if (!file) { toast("请先选择日志文件", true); return; }
-
-    var form = new FormData();
-    form.append("file", file);
-    form.append("run_started_at", toIsoOrEmpty($("runStartedAt").value));
-    form.append("prev_run_started_at", toIsoOrEmpty($("prevRunStartedAt").value));
-    form.append("client_version", $("clientVersion").value.trim());
-    form.append("os_info", $("osInfo").value.trim());
-    form.append("note", $("note").value.trim());
-
-    var button = $("uploadBtn");
-    button.disabled = true;
-    button.textContent = "上传中…";
-    try {
-      await api("/api/logs/upload", { method: "POST", body: form });
-      toast("日志已上传");
-      $("dropName").hidden = true;
-      $("uploadForm").reset();
-      $("file").value = "";
-      await refreshLogs();
-    } catch (err) {
-      toast(err.message || "上传失败", true);
-    } finally {
-      button.disabled = false;
-      button.textContent = "上传日志";
-    }
-  }
-
   async function submitPassword(event) {
     event.preventDefault();
     pageError("");
@@ -304,38 +266,6 @@
     }
   }
 
-  function bindDropZone() {
-    var drop = $("drop");
-    var input = $("file");
-    drop.addEventListener("click", function () { input.click(); });
-    input.addEventListener("change", function () {
-      var name = input.files[0] ? input.files[0].name : "";
-      if (!name) { $("dropName").hidden = true; return; }
-      $("dropName").textContent = name;
-      $("dropName").hidden = false;
-    });
-    ["dragenter", "dragover"].forEach(function (type) {
-      drop.addEventListener(type, function (event) {
-        event.preventDefault();
-        drop.classList.add("over");
-      });
-    });
-    ["dragleave", "drop"].forEach(function (type) {
-      drop.addEventListener(type, function (event) {
-        event.preventDefault();
-        drop.classList.remove("over");
-      });
-    });
-    drop.addEventListener("drop", function (event) {
-      var files = event.dataTransfer && event.dataTransfer.files;
-      if (files && files.length) {
-        input.files = files;
-        $("dropName").textContent = files[0].name;
-        $("dropName").hidden = false;
-      }
-    });
-  }
-
   async function boot() {
     if (!document.getElementById("logList")) return;
 
@@ -346,12 +276,6 @@
       return;
     }
 
-    var now = new Date();
-    var local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    $("runStartedAt").value = local;
-
-    bindDropZone();
-    $("uploadForm").addEventListener("submit", submitUpload);
     $("passwordForm").addEventListener("submit", submitPassword);
     $("logout").addEventListener("click", async function () {
       try { await api("/api/auth/logout", { method: "POST" }); } catch (err) { /* 忽略 */ }

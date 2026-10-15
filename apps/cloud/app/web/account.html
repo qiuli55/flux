@@ -64,43 +64,13 @@
 
   <section class="card" style="margin-top:16px">
     <div class="card-head">
-      <h2 class="card-title">上传运行日志</h2>
-      <span class="card-sub">上一次启动 → 本次启动</span>
+      <h2 class="card-title">运行日志</h2>
+      <span class="card-sub">客户端自动上传</span>
     </div>
-    <form id="uploadForm">
-      <div class="drop" id="drop">
-        <div>把日志包拖到这里，或<strong> 点击选择文件</strong></div>
-        <div class="hint">支持 .log / .txt / .zip / .gz / .tar / .json，单个不超过 <span id="maxMb">64</span> MB</div>
-        <div class="drop-name" id="dropName" hidden></div>
-        <input type="file" id="file" accept=".log,.txt,.zip,.gz,.tar,.json">
-      </div>
-      <div class="grid grid-2">
-        <div class="field">
-          <label for="runStartedAt">本次启动时间</label>
-          <input id="runStartedAt" type="datetime-local">
-        </div>
-        <div class="field">
-          <label for="prevRunStartedAt">上次启动时间</label>
-          <input id="prevRunStartedAt" type="datetime-local">
-          <span class="hint">留空表示客户端上传时自行填写。</span>
-        </div>
-        <div class="field">
-          <label for="clientVersion">Flux 版本</label>
-          <input id="clientVersion" type="text" placeholder="例如 0.1.0">
-        </div>
-        <div class="field">
-          <label for="osInfo">系统环境</label>
-          <input id="osInfo" type="text" placeholder="例如 Windows 11 / macOS 15">
-        </div>
-      </div>
-      <div class="field">
-        <label for="note">问题描述 <span class="dim">（可选）</span></label>
-        <textarea id="note" placeholder="什么时候出现的、点了什么、期望是什么"></textarea>
-      </div>
-      <div>
-        <button class="btn btn-primary" id="uploadBtn" type="submit">上传日志</button>
-      </div>
-    </form>
+    <p class="hint">
+      Flux 客户端每次启动时，会自动把<strong>上一次启动 → 本次启动</strong>之间的运行日志上传到这里，无需手动操作。
+      在下面的「日志记录」里可以查看、下载或删除。
+    </p>
   </section>
 
   <div class="grid grid-2" style="margin-top:16px">
