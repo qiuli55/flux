@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · Flux Cloud</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-head">
+      <div class="brand">
+        <span class="brand-mark">&gt;_</span>
+        <span class="brand-name">Flux</span>
+        <span class="brand-sub">CLOUD</span>
+      </div>
+      <h1 class="auth-title" id="authTitle">登录 Flux 账号</h1>
+      <p class="auth-desc">一个账号通用于桌面端登录、诊断日志上传与后续的云端能力。</p>
+    </div>
+
+    <div class="alert alert-error" id="alert"></div>
+
+    <div class="oauth-row" id="oauthRow"></div>
+    <div class="divider" id="oauthDivider">或使用邮箱</div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" type="button" role="tab" data-mode="login" aria-selected="true">登录</button>
+      <button class="tab" type="button" role="tab" data-mode="register" aria-selected="false">注册</button>
+    </div>
+
+    <form id="form" novalidate>
+      <div class="field" id="fieldEmail">
+        <label for="email">邮箱</label>
+        <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com">
+      </div>
+      <div class="field" id="fieldIdentifier" hidden>
+        <label for="identifier">邮箱或用户名</label>
+        <input id="identifier" name="identifier" type="text" autocomplete="username" placeholder="you@example.com">
+      </div>
+      <div class="field" id="fieldUsername" hidden>
+        <label for="username">用户名 <span class="dim">（可选）</span></label>
+        <input id="username" name="username" type="text" autocomplete="off" placeholder="3-64 位字母、数字、点、下划线">
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="至少 8 位">
+      </div>
+      <button class="btn btn-primary btn-block" id="submit" type="submit">登录</button>
+      <p class="hint" id="formHint">用邮箱注册后，桌面端可直接用同一账号登录。</p>
+    </form>
+
+    <div class="auth-foot">
+      <span>Flux Cloud · qiuli55.top</span>
+      <span class="mono" id="providerNote"></span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/login.js"></script>
+</body>
+</html>
