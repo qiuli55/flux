@@ -218,6 +218,17 @@ class Container:
         self.dsh.supervisor.add_reconcile_hook(self.task_runs.reconcile_orphan_tasks)
         # MCP 工具调用成功 = 一次有效进展（P2-15 §2.4）：接线到看护器，避免 idle timeout 误杀
         self.bus.subscribe(Events.MCP_TOOL_CALLED, self._on_mcp_tool_called)
+        # Run 落终态 → 回收该 Run 经 terminal.execute 派生的终端会话/命令进程（FINDING-1）：
+        # 否则会出现"Run 已结束、命令进程还在跑、会话还 active"的泄漏。终态唯一汇合点见
+        # RunSupervisor._record_terminal，5 个终态事件都带上 run_id。
+        for _terminal_event in (
+            Events.DSH_RUN_COMPLETED,
+            Events.DSH_RUN_FAILED,
+            Events.DSH_RUN_CANCELLED,
+            Events.DSH_RUN_TIMEOUT,
+            Events.DSH_RUN_INTERRUPTED,
+        ):
+            self.bus.subscribe(_terminal_event, self._on_run_terminal)
         # P2-1 §6.2：任务「开始执行」的编排收口——按 agent.config["runtime"] 分发
         # dsh / codex / opencode。CLI runtime 复用同一个 RunSupervisor 与令牌服务，不新建生命周期。
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
@@ -259,6 +270,12 @@ class Container:
         agent_id = payload.get("agent_id")
         if isinstance(agent_id, str):
             await self.dsh.supervisor.note_mcp_activity(agent_id)
+
+    async def _on_run_terminal(self, _event: str, payload: dict[str, object]) -> None:
+        """Run 落终态后，回收它名下派生的终端会话与命令进程（FINDING-1 防泄漏）。"""
+        run_id = payload.get("run_id")
+        if isinstance(run_id, str):
+            await self.terminal.stop_run_sessions(run_id)
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:

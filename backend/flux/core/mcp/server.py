@@ -12,6 +12,7 @@ JSON-RPC 层 → 工具层 → Flux 既有服务。**无状态**——不返回 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -198,6 +199,8 @@ async def mcp_endpoint(request: Request, container: Container = Depends(get_cont
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    identity = await _attach_run_id(request, container, identity)
+
     raw = await request.body()
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -221,6 +224,26 @@ def _bearer_token(header: str | None) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return value.strip() or None
+
+
+async def _attach_run_id(
+    request: Request, container: Container, identity: AgentIdentity
+) -> AgentIdentity:
+    """把 `X-Flux-Run-Id`（若确属本 Agent 的 Run）附加到身份上，供终端会话绑定 Run。
+
+    该头由 Flux 起 Run 时注入到 DSH 的 MCP patch；用于把 Agent 经 `terminal.execute`
+    派生的终端会话绑到具体 Run，Run 终态时据此回收（避免命令进程泄漏）。它**不是权威身份**：
+    查不到该 Run、或归属与令牌身份不匹配，一律静默忽略（不 401）——Run 维度的小错误不该
+    升级成鉴权失败。校验依据是"该 Run 的 agent_id 与令牌 agent_id 相等"，杜绝跨 Agent 冒充。
+    """
+    run_id = (request.headers.get("x-flux-run-id") or "").strip()
+    if not run_id:
+        return identity
+    row = await container.run_repo.get(run_id)
+    if row is None or not row.agent_id or row.agent_id != identity.agent_id:
+        logger.warning("mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id)
+        return identity
+    return replace(identity, run_id=run_id)
 
 
 def _safe_id(message: Any) -> Any:

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from flux.core.mcp.tools.base import (
@@ -44,6 +45,15 @@ TERMINAL_EXECUTE_SCHEMA: dict[str, Any] = {
 }
 
 
+def _run_uuid(ctx: ToolContext) -> uuid.UUID | None:
+    """本次 MCP 调用所属的 Run（来自服务端校验过的 `X-Flux-Run-Id`）；无则 None。
+
+    终端会话落上 run_id 后，Run 终态时才能被定向回收——否则 Agent 派生的命令进程会泄漏。
+    """
+    raw = ctx.identity.run_id
+    return uuid.UUID(raw) if raw else None
+
+
 async def terminal_execute(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"command", "session_id"})
     command = require_str(params, "command")
@@ -51,7 +61,7 @@ async def terminal_execute(ctx: ToolContext, params: dict[str, Any]) -> dict[str
     service = ctx.container.terminal
 
     if session_id is None:
-        session = await service.create_session()
+        session = await service.create_session(run_id=_run_uuid(ctx))
         session_id = str(session.id)
     else:
         session = await service.get_session(session_id)

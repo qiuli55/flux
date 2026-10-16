@@ -555,8 +555,11 @@ async def test_start_run_injects_the_patch_into_the_harness(tmp_path: Path) -> N
     run = await client.start_run("看下项目", session_id="mcp-1")
     await _wait_terminal(client, run.run_id)  # harness 在 Run 执行协程里创建，等它跑完再断言
 
-    patch = Path(settings.dsh_home) / "patches" / "flux-mcp.patch.yml"
+    # patch 文件名带 run_id：同一 Agent 的并发 Run 各用各的 patch，不互相覆盖归属
+    patch = Path(settings.dsh_home) / "patches" / f"flux-mcp-{run.run_id}.patch.yml"
     assert factory.created[0].kwargs["patches"] == (str(patch),)
+    # 且该 patch 的 MCP header 里带上 X-Flux-Run-Id，供端点把终端会话绑到本次 Run
+    assert _patch_payload(patch)["config"]["headers"]["X-Flux-Run-Id"] == run.run_id
     client.close()
     await engine.dispose()
 

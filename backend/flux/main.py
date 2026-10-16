@@ -39,10 +39,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 与 Run 的 startup_recovery 并列——崩在落盘中途的提案不能永远停在 applying。
         await container.workspace.recover_interrupted_applies()
         await container.human_pty.recover_orphaned_sessions()
+        # FINDING-2：上一进程被 SIGKILL 后，命令进程组 id 还留在库里——据此核实并回收
+        # 遗留的孤儿命令进程（比对 /proc cmdline 才动手，避免误杀复用 id 的无关进程）。
+        await container.terminal.recover_orphan_commands()
         if app_settings.dsh_enabled:
             # P2-15 §2.7：对账上一轮遗留的非终态 Run（属主已死的孤儿进程一并清理），
             # 再拉起心跳/对账循环——否则重启后卡死的 Run 永远停在 running。
-            await container.dsh.supervisor.startup_recovery()
+            recovered_runs = await container.dsh.supervisor.startup_recovery()
+            # FINDING-1：对账出来的终态 Run 名下若有派生终端会话，一并收摊（幂等；事件订阅
+            # 也会触发一次，这里显式补一遍以覆盖订阅时序边界）。
+            for run_id in recovered_runs:
+                await container.terminal.stop_run_sessions(run_id)
             # P2-04 / TC-502：Run 对完账后收尾"没有活 Run 支撑的 running 任务"，
             # 崩溃遗留的僵尸任务在重启后立刻退回待执行或落终态，不再永久 running。
             await container.task_runs.reconcile_orphan_tasks()

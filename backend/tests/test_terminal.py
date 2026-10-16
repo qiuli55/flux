@@ -12,12 +12,19 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import subprocess
 import sys
+import uuid
 
 import pytest
 
 from flux.container import Container
+from flux.core.agent_runtime import platforms
+from flux.core.mcp.auth import AgentIdentity
+from flux.core.mcp.tools.base import ToolContext
+from flux.core.mcp.tools.terminal_tools import terminal_execute
 from flux.enums import (
+    Capability,
     TerminalEventKind,
     TerminalSessionKind,
     TerminalSessionStatus,
@@ -381,3 +388,143 @@ def test_agent_terminal_list_excludes_human_pty_sessions(apply_client) -> None:
     ids = {item["id"] for item in listed["data"]}
     assert agent["data"]["id"] in ids
     assert human["data"]["id"] not in ids
+
+
+# --- FINDING-1 / FINDING-2：终端会话随 Run 回收 + 重启回收孤儿命令进程 ---
+
+#: 一条会跑很久的命令：用于制造"会话 active 且命令进程在跑"的状态
+_LONG_CMD = _py("import time; time.sleep(30)")
+
+POSIX_ONLY = pytest.mark.skipif(platforms.IS_WINDOWS, reason="POSIX /proc 与进程组语义")
+
+
+def _identity(run_id: str | None) -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=str(uuid.uuid4()),
+        token_id="tok",
+        scopes=frozenset({Capability.TERMINAL_EXECUTE}),
+        run_id=run_id,
+    )
+
+
+async def test_terminal_execute_binds_session_to_identity_run_id(
+    apply_container: Container,
+) -> None:
+    """Agent 经 terminal.execute 建的会话必须落上 run_id（服务端校验过的 X-Flux-Run-Id）。"""
+    run_id = uuid.uuid4()
+    ctx = ToolContext(
+        container=apply_container,
+        identity=_identity(str(run_id)),
+        tool_name="terminal.execute",
+    )
+
+    result = await terminal_execute(ctx, {"command": _py("print('bound')")})
+
+    session = await apply_container.terminal.get_session(result["session_id"])
+    assert session.run_id == run_id
+    assert session.to_dict()["run_id"] == str(run_id)
+
+
+async def test_terminal_execute_without_run_id_leaves_session_unbound(
+    apply_container: Container,
+) -> None:
+    ctx = ToolContext(
+        container=apply_container, identity=_identity(None), tool_name="terminal.execute"
+    )
+    result = await terminal_execute(ctx, {"command": _py("print('x')")})
+    session = await apply_container.terminal.get_session(result["session_id"])
+    assert session.run_id is None
+
+
+async def test_stop_run_sessions_stops_only_that_run(apply_container: Container) -> None:
+    """Run 终态回收：只停该 Run 名下会话，其它 Run 的会话不受影响，命令进程被清掉。"""
+    run_a, run_b = uuid.uuid4(), uuid.uuid4()
+    a = await apply_container.terminal.create_session(run_id=run_a)
+    b = await apply_container.terminal.create_session(run_id=run_b)
+
+    task = asyncio.create_task(
+        apply_container.terminal.run_command(a.id, _LONG_CMD, source=TerminalSource.AI)
+    )
+    # 等命令真正起进程（cmd_pgid 落库）再回收，否则测不到"进程被停"这一环
+    for _ in range(100):
+        if str(a.id) in apply_container.terminal._processes:
+            break
+        await asyncio.sleep(0.1)
+    assert str(a.id) in apply_container.terminal._processes
+
+    stopped = await apply_container.terminal.stop_run_sessions(run_a)
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert stopped == 1
+    assert (await apply_container.terminal.get_session(a.id)).status == (
+        TerminalSessionStatus.STOPPED.value
+    )
+    assert (await apply_container.terminal.get_session(b.id)).status == (
+        TerminalSessionStatus.ACTIVE.value
+    )
+
+
+@POSIX_ONLY
+async def test_recover_orphan_commands_kills_matching_process(
+    apply_container: Container,
+) -> None:
+    """重启回收：cmd_pgid 与事件里的命令一致（确认是本会话那条命令）才强杀。"""
+    session = await apply_container.terminal.create_session(run_id=uuid.uuid4())
+    process = subprocess.Popen(  # noqa: S602 - 用例本身就是要造一条真实命令进程
+        _LONG_CMD, shell=True, start_new_session=True
+    )
+    try:
+        await apply_container.terminal._repo.append_event(
+            session.id,
+            kind=TerminalEventKind.COMMAND_STARTED,
+            source=TerminalSource.AI,
+            command=_LONG_CMD,
+        )
+        await apply_container.terminal._repo.set_cmd_pgid(session.id, os.getpgid(process.pid))
+
+        reclaimed = await apply_container.terminal.recover_orphan_commands()
+
+        assert reclaimed == 1
+        assert process.wait(timeout=5) is not None  # 进程已被杀（wait 返回退出码）
+        recovered = await apply_container.terminal.get_session(session.id)
+        assert recovered.status == TerminalSessionStatus.CLOSED.value
+        assert recovered.cmd_pgid is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+@POSIX_ONLY
+async def test_recover_orphan_commands_leaves_foreign_process(
+    apply_container: Container,
+) -> None:
+    """命令文本与进程 argv 不一致（模拟 pgid 被复用）→ 绝不误杀，只清跟踪并标 closed。"""
+    session = await apply_container.terminal.create_session(run_id=uuid.uuid4())
+    process = subprocess.Popen(_LONG_CMD, shell=True, start_new_session=True)  # noqa: S602
+    try:
+        await apply_container.terminal._repo.append_event(
+            session.id,
+            kind=TerminalEventKind.COMMAND_STARTED,
+            source=TerminalSource.AI,
+            command="echo nothing-like-this",
+        )
+        await apply_container.terminal._repo.set_cmd_pgid(session.id, os.getpgid(process.pid))
+
+        assert await apply_container.terminal.recover_orphan_commands() == 0
+        assert process.poll() is None  # 未被误杀
+        recovered = await apply_container.terminal.get_session(session.id)
+        assert recovered.status == TerminalSessionStatus.CLOSED.value
+        assert recovered.cmd_pgid is None
+    finally:
+        process.kill()
+        process.wait()
+
+
+@POSIX_ONLY
+def test_can_reclaim_refuses_self_group_and_missing_command() -> None:
+    """安全护栏：Flux 自身进程组绝不动手；没有命令文本也不动手。"""
+    from flux.core.terminal.service import TerminalService
+
+    assert TerminalService._can_reclaim(os.getpgrp(), "anything") is False
+    assert TerminalService._can_reclaim(os.getpid(), None) is False

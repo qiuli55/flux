@@ -22,8 +22,14 @@ class TerminalSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "terminal_sessions"
 
-    # 关联的 Run（T2 起 Agent 命令带上；T1 的用户会话为空）
+    # 关联的 Run：Agent 经 `terminal.execute` 建会话时由 MCP 层带上（来自 X-Flux-Run-Id，
+    # 服务端已校验该 Run 归属本 Agent）；Run 终态时据此定向回收会话，避免命令进程泄漏。
+    # 人审（用户）直接开的会话无 Run，为 NULL。
     run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), index=True, nullable=True)
+    # 正在执行的命令进程组 id（POSIX pgid；Windows 为组长 pid）。命令结束即清空。
+    # 持久化它的意义：Flux 被 SIGKILL 后重启时，DB 里还留着这个 id，能据此识别并回收
+    # 遗留的孤儿命令进程（否则会话被标 closed 但 OS 进程永远活着）。
+    cmd_pgid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 会话执行命令的工作目录：创建时解析并固定，之后不再变（工作区根）
     workspace_root: Mapped[str] = mapped_column(String(1024))
     # 会话类型：持久化区分 Agent Terminal 与 Human Terminal，避免两个运行时互相接管。

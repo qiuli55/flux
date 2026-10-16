@@ -212,12 +212,19 @@ class FluxDshClient:
 
     # --- MCP 注入（P0-01）---
 
-    async def prepare_mcp_patch(self, agent_id: str | None = None) -> Path | None:
+    async def prepare_mcp_patch(
+        self, agent_id: str | None = None, *, run_id: str | None = None
+    ) -> Path | None:
         """确保目标 Agent 有一条可用的 MCP 通道，返回 DSH loader patch 文件路径。
 
         `agent_id` 留空 = 平台配置的内置 Agent（patch 落在固定文件名，行为与既有链路一致）；
         指定时按该 Agent 的 canonical UUID 签发令牌，并写到**该 Agent 专属**的 patch 文件名——
         否则不同 Agent 的 Run 并发起跑会互相覆盖同一个 patch 文件。
+
+        `run_id` 非空时，会在 patch 的 HTTP headers 里追加 `X-Flux-Run-Id`，并把它并进 patch
+        文件名：MCP 端点据此把头绑到本次 Run，Agent 经 `terminal.execute` 派生的终端会话也随之
+        绑到 Run，Run 终态时回收。文件名带 run_id 是为了**同一 Agent 的并发 Run 各用各的 patch**，
+        不互相覆盖对方的 run_id 归属（否则会把 A 的会话错记到 B 名下）。
 
         未启用 MCP 注入时返回 None（DSH 退化成裸 agent，仅用于排查）。
         patch 里含 Bearer 令牌明文，因此写在 dsh_home（仓库外）并收紧到 0600——
@@ -243,10 +250,17 @@ class FluxDshClient:
 
         if agent_id is None:
             token = await self._ensure_mcp_token()
-            patch_name = MCP_PATCH_FILENAME
+            stem = "flux-mcp"
         else:
             token = await self._ensure_token_for_agent(agent_id)
-            patch_name = f"flux-mcp-{agent_id}.patch.yml"
+            stem = f"flux-mcp-{agent_id}"
+        # 文件名按 (agent, run_id) 唯一：同一 Agent 的并发 Run 各用各的 patch，
+        # 不互相覆盖对方的 X-Flux-Run-Id 归属。run_id 为空时退回既有的按 Agent 命名。
+        patch_name = MCP_PATCH_FILENAME if run_id is None else f"{stem}-{run_id}.patch.yml"
+        headers = {"Authorization": f"Bearer {token}"}
+        if run_id is not None:
+            # MCP 端点据此把本次调用绑到该 Run，终端会话随之绑 Run、Run 终态时回收。
+            headers["X-Flux-Run-Id"] = run_id
         entries = [
             {
                 "id": f"flux-mcp-{server_name}",
@@ -255,7 +269,7 @@ class FluxDshClient:
                     "transport": "streamable-http",
                     "serverName": server_name,
                     "url": url,
-                    "headers": {"Authorization": f"Bearer {token}"},
+                    "headers": headers,
                     "toolCallTimeoutMs": self._settings.dsh_mcp_tool_timeout_ms,
                     # Flux 不可达时宁可起不来：起得来的裸 agent 会假装自己什么都能干
                     "failOnStartupError": True,
@@ -390,8 +404,9 @@ class FluxDshClient:
         与既有链路完全一致。
         """
         self.ensure_ready()
-        patch_path = await self.prepare_mcp_patch(agent_id)
+        # run_id 必须在准备 MCP patch 之前定下来：patch 的 X-Flux-Run-Id 头要写上它。
         run_id = run_id or uuid.uuid4().hex
+        patch_path = await self.prepare_mcp_patch(agent_id, run_id=run_id)
         run = DshRun(
             run_id=run_id,
             session_id=session_id or f"flux-{run_id}",

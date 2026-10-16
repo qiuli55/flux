@@ -60,17 +60,42 @@ class TerminalRepository:
         limit: int = 20,
         kind: TerminalSessionKind | None = None,
         status: TerminalSessionStatus | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> list[TerminalSession]:
         statement = select(TerminalSession)
         if kind is not None:
             statement = statement.where(TerminalSession.kind == kind.value)
         if status is not None:
             statement = statement.where(TerminalSession.status == status.value)
+        if run_id is not None:
+            statement = statement.where(TerminalSession.run_id == run_id)
         statement = statement.order_by(
             TerminalSession.created_at.desc(), TerminalSession.id.desc()
         ).limit(limit)
         async with self._session_factory() as db:
             return list(await db.scalars(statement))
+
+    async def list_sessions_with_cmd_pgid(self) -> list[TerminalSession]:
+        """仍未结束、且记录着命令进程组 id 的会话——重启后据此回收孤儿命令进程。"""
+        statement = select(TerminalSession).where(
+            TerminalSession.cmd_pgid.is_not(None),
+            TerminalSession.status == TerminalSessionStatus.ACTIVE.value,
+        )
+        async with self._session_factory() as db:
+            return list(await db.scalars(statement))
+
+    async def set_cmd_pgid(self, session_id: str | uuid.UUID, pgid: int | None) -> TerminalSession:
+        """记录/清空会话正在执行的命令进程组 id（命令结束时传 None 清空）。"""
+        key = self._as_uuid(session_id)
+        async with self._session_factory() as db:
+            session = await db.get(TerminalSession, key)
+            if session is None:
+                raise NotFoundError(
+                    f"终端会话 {session_id} 不存在", details={"session_id": str(session_id)}
+                )
+            session.cmd_pgid = pgid
+            await db.commit()
+            return session
 
     async def append_event(
         self,

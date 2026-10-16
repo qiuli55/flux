@@ -12,13 +12,16 @@
 from __future__ import annotations
 
 import json
+import uuid
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from flux.core.agent_runtime.protocol import RUNTIME_ENTRY, RUNTIME_RULES
-from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION
+from flux.core.mcp.auth import AgentIdentity
+from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, _attach_run_id
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
-from flux.enums import Capability
+from flux.enums import Capability, DshRunStatus
 from flux.errors import AuthenticationError
 
 from .conftest import create_agent, issue_token
@@ -626,3 +629,50 @@ def test_flux_context_rejects_malformed_task_id(mcp_client: TestClient) -> None:
     token = issue_token(mcp_client)
     result = call(mcp_client, token, "flux_context", {"task_id": "not-a-uuid"})
     assert result["isError"] is True
+
+
+# --- 5. X-Flux-Run-Id：把 MCP 调用绑到发起它的 Run（FINDING-1） ---
+
+
+def _header_request(run_id: str | None) -> SimpleNamespace:
+    headers = {"x-flux-run-id": run_id} if run_id is not None else {}
+    return SimpleNamespace(headers=headers)
+
+
+async def _seed_run(container, *, run_id: str, agent_id: str) -> None:
+    await container.run_repo.create(
+        run_id=run_id,
+        session_id="sess",
+        instruction="do it",
+        status=DshRunStatus.PENDING,
+        agent_id=agent_id,
+    )
+
+
+async def test_attach_run_id_accepts_run_owned_by_identity(apply_container) -> None:
+    """归属本 Agent 的 Run：run_id 被附加到身份上（终端会话才能绑到 Run）。"""
+    agent_id = str(uuid.uuid4())
+    run_id = uuid.uuid4().hex
+    await _seed_run(apply_container, run_id=run_id, agent_id=agent_id)
+
+    identity = AgentIdentity(agent_id=agent_id, token_id="t", scopes=frozenset())
+    result = await _attach_run_id(_header_request(run_id), apply_container, identity)
+    assert result.run_id == run_id
+
+
+async def test_attach_run_id_ignores_foreign_unknown_or_absent_run(apply_container) -> None:
+    """非权威头：归属不匹配、Run 不存在、或没带这个头，一律静默忽略（不 401）。"""
+    owner = str(uuid.uuid4())
+    run_id = uuid.uuid4().hex
+    await _seed_run(apply_container, run_id=run_id, agent_id=owner)
+
+    intruder = AgentIdentity(agent_id=str(uuid.uuid4()), token_id="t", scopes=frozenset())
+    assert (await _attach_run_id(_header_request(run_id), apply_container, intruder)).run_id is None
+
+    same_agent = AgentIdentity(agent_id=owner, token_id="t", scopes=frozenset())
+    unknown = uuid.uuid4().hex
+    assert (
+        await _attach_run_id(_header_request(unknown), apply_container, same_agent)
+    ).run_id is None
+
+    assert (await _attach_run_id(_header_request(None), apply_container, same_agent)).run_id is None

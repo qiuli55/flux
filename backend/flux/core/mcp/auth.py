@@ -85,12 +85,16 @@ class AgentIdentity:
     """一次 MCP 调用的调用方身份——每个字段都来自令牌 + 注册表，不来自请求体。
 
     `agent_id` 是 canonical UUID，`name` 是注册表里的 display_name（slug）。
+    `run_id` 不属于令牌：它来自 DSH 进程注入的 `X-Flux-Run-Id` 头，由 MCP 层校验该 Run
+    归属本身份后才附加（见 `server.mcp_endpoint`）——用于把 Agent 派生的终端会话绑到 Run 上，
+    Run 终态时据此回收，避免终端命令进程泄漏。
     """
 
     agent_id: str
     token_id: str
     scopes: frozenset[Capability]
     name: str = ""
+    run_id: str | None = None
 
     def has(self, capability: Capability) -> bool:
         return capability in self.scopes

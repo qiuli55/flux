@@ -32,7 +32,10 @@ from flux.enums import (
     TerminalSource,
 )
 from flux.errors import ConflictError, ValidationError
+from flux.logging import get_logger
 from flux.models.terminal import TerminalEvent, TerminalSession
+
+logger = get_logger(__name__)
 
 #: Stop 的宽限期：SIGTERM 后等这么久，仍不退出就升级 SIGKILL
 STOP_GRACE_SECONDS = 5.0
@@ -42,6 +45,32 @@ KILL_CONFIRM_SECONDS = 2.0
 STREAM_HEARTBEAT_SECONDS = 15.0
 #: 补历史时的分页大小
 STREAM_REPLAY_PAGE = 1000
+
+
+def _as_run_uuid(value: str | uuid.UUID) -> uuid.UUID | None:
+    """把 run_id（uuid 或 32 位 hex 字符串）规整成 UUID；非法返回 None。"""
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _read_proc_cmdline(pid: int) -> list[str] | None:
+    """读 `/proc/<pid>/cmdline`（POSIX）并 NUL 切分为 argv；读不到返回 None。
+
+    用于重启后回收孤儿命令进程前的归属核实：pid/pgid 可能被系统复用，比对 argv 才能确认
+    这确实是上次 Flux 遗留的那条命令，而不是恰好复用同一 id 的无关进程。
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:  # noqa: PTH123 - /proc 无 pathlib 语义
+            raw = handle.read()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
 
 
 class TerminalService:
@@ -268,11 +297,21 @@ class TerminalService:
                 **platforms.popen_kwargs(),  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
             )
             self._processes[key] = process
+            # 记下命令进程组 id 并落库：Flux 若被 SIGKILL，重启后据此回收这个孤儿进程。
+            try:
+                await self._repo.set_cmd_pgid(session.id, platforms.process_group_of(process)[1])
+            except Exception:  # noqa: BLE001 - 记账失败不能拖垮命令执行
+                logger.warning("记录命令进程组 id 失败 session=%s", session.id, exc_info=True)
             try:
                 await asyncio.to_thread(self._pump_output, loop, session.id, process, source)
                 exit_code = await asyncio.to_thread(process.wait)
             finally:
                 self._processes.pop(key, None)
+                # 命令已结束：清空进程组跟踪，避免重启时把已退出的 id 误当孤儿处理。
+                try:
+                    await self._repo.set_cmd_pgid(session.id, None)
+                except Exception:  # noqa: BLE001 - 清账失败不能拖垮命令收尾
+                    logger.warning("清空命令进程组 id 失败 session=%s", session.id, exc_info=True)
             finished = (
                 TerminalEventKind.COMMAND_FINISHED
                 if exit_code == 0
@@ -367,6 +406,96 @@ class TerminalService:
             return await self._repo.set_status(session.id, TerminalSessionStatus.STOPPED)
         finally:
             self._stopping.discard(key)
+
+    async def stop_run_sessions(self, run_id: str | uuid.UUID) -> int:
+        """把某个 Run 名下仍未结束的 Agent 终端会话全部 Force Stop（Run 终态时调用）。
+
+        Agent 经 `terminal.execute` 派生的会话/命令进程由此随 Run 一起收摊，杜绝
+        "Run 已结束、命令进程还在跑、会话还 active" 的泄漏（FINDING-1）。单个会话停止
+        失败只记日志、不影响其它会话。返回成功停掉的条数。
+        """
+        key = _as_run_uuid(run_id)
+        if key is None:
+            return 0
+        sessions = await self._repo.list_sessions(
+            limit=10000,
+            kind=TerminalSessionKind.AGENT,
+            status=TerminalSessionStatus.ACTIVE,
+            run_id=key,
+        )
+        stopped = 0
+        for session in sessions:
+            try:
+                await self.stop(session.id, force=True)
+                stopped += 1
+            except ConflictError:
+                logger.warning("Run 终态回收会话冲突 session=%s run=%s", session.id, key)
+            except Exception:  # noqa: BLE001 - 回收单条失败不能拖垮其它会话
+                logger.exception("Run 终态回收会话失败 session=%s run=%s", session.id, key)
+        if stopped:
+            logger.info("Run 终态已回收 %d 个终端会话 run=%s", stopped, key)
+        return stopped
+
+    async def recover_orphan_commands(self) -> int:
+        """Flux 重启后回收上一进程遗留的命令进程（FINDING-2：SIGKILL 后 OS 进程不被回收）。
+
+        逐个处理仍记录着 `cmd_pgid` 且未结束的会话：取该会话最后一条 `command.started`
+        的命令文本，与 `/proc/<pgid>/cmdline` 的 argv 比对，**只在这条进程组确为本会话那条
+        命令时**才强杀——pid/pgid 会被系统复用，比对 argv 才能避免误杀无关进程。命中后清空
+        跟踪并标 closed、发 `session.closed`。
+
+        安全护栏：pgid 若就是 Flux 自己所在进程组（`is_self_group`）绝不动手；Windows 无
+        `/proc` 无法核实，只清跟踪并标 closed、不做 kill（宁可不清理，也不能误杀）。
+        """
+        sessions = await self._repo.list_sessions_with_cmd_pgid()
+        reclaimed = 0
+        for session in sessions:
+            pgid = session.cmd_pgid
+            if pgid is None:
+                continue
+            command = await self._last_command_text(session.id)
+            if self._can_reclaim(pgid, command):
+                with contextlib.suppress(Exception):
+                    platforms.kill_group(pgid)
+                reclaimed += 1
+                logger.warning("重启回收孤儿命令进程 pgid=%s session=%s", pgid, session.id)
+            else:
+                logger.info("孤儿命令未被确认归属，仅清跟踪 pgid=%s session=%s", pgid, session.id)
+            with contextlib.suppress(Exception):
+                await self._repo.set_cmd_pgid(session.id, None)
+            with contextlib.suppress(Exception):
+                await self._emit(session.id, TerminalEventKind.SESSION_CLOSED, TerminalSource.USER)
+            with contextlib.suppress(Exception):
+                await self._repo.set_status(session.id, TerminalSessionStatus.CLOSED)
+        if reclaimed:
+            logger.warning("重启共回收 %d 个孤儿命令进程", reclaimed)
+        return reclaimed
+
+    async def _last_command_text(self, session_id: uuid.UUID) -> str | None:
+        """取会话最后一条 `command.started` 的命令文本（回收孤儿进程前的归属核实依据）。"""
+        events = await self._repo.list_events(session_id, after_seq=0)
+        for event in reversed(events):
+            if event.kind == TerminalEventKind.COMMAND_STARTED.value and event.command:
+                return event.command
+        return None
+
+    @staticmethod
+    def _can_reclaim(pgid: int, command: str | None) -> bool:
+        """能否安全回收该进程组：确为上次遗留的那条命令，且不是 Flux 自身进程组。"""
+        if not command:
+            return False
+        if platforms.IS_WINDOWS:  # 无 /proc 可核实，绝不冒险 kill 复用 id
+            return False
+        if platforms.is_self_group(pgid):
+            return False
+        if not platforms.is_group_alive(pgid):
+            return False
+        argv = _read_proc_cmdline(pgid)
+        if argv is None:
+            return False
+        # shell=True 下 POSIX 进程组长是 `sh -c <command>`，command 必是其中一个 argv 元素，
+        # 精确匹配（不做子串判断）以避免误伤。
+        return command in argv
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen[str], *, force: bool) -> bool:
