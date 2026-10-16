@@ -58,9 +58,7 @@ def test_command_yields_program_and_file_tokens() -> None:
 
 
 def test_tool_call_yields_tool_name_as_command() -> None:
-    tokens = _tokens(
-        _step(kind=StepKind.TOOL_CALL, tool="read_file", target_ref="src/auth.py")
-    )
+    tokens = _tokens(_step(kind=StepKind.TOOL_CALL, tool="read_file", target_ref="src/auth.py"))
     assert (ContextTokenKind.COMMAND.value, "read_file") in tokens
     assert (ContextTokenKind.FILE.value, "src/auth.py") in tokens
     assert (ContextTokenKind.FILE.value, "auth.py") in tokens
@@ -244,9 +242,7 @@ async def test_lookup_returns_recent_matches_in_order(repo: ContextStepRepositor
 
 
 async def test_lookup_without_token_returns_empty_for_blank(repo: ContextStepRepository) -> None:
-    await repo.append(
-        run_id="run-1", turn_id="turn-1", kind=StepKind.FACT, status=StepStatus.OK
-    )
+    await repo.append(run_id="run-1", turn_id="turn-1", kind=StepKind.FACT, status=StepStatus.OK)
     assert await repo.lookup(token="   ") == []
 
 

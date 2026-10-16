@@ -132,10 +132,7 @@ def build_symbol_table(
     # 符号名长度按上限估：序号最多到 limit，估值与实际几乎一致，且避免"边排序边变长"
     symbol_cost = len(_SIGILS[0]) + len(str(max(limit, 1)))
     ranked = sorted(
-        (
-            (_net_saving(token, count, symbol_cost), token)
-            for token, count in candidates
-        ),
+        ((_net_saving(token, count, symbol_cost), token) for token, count in candidates),
         key=lambda item: (-item[0], item[1]),
     )
     chosen = [token for saving, token in ranked[:limit] if saving > 0]

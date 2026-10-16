@@ -131,9 +131,10 @@ def classify(text: str) -> ContentForm:
     sample = lines[:_CLASSIFY_SAMPLE]
     count = len(sample)
 
-    if any(line.startswith("@@ ") for line in sample) or sum(
-        1 for line in sample if _DIFF_HEAD_RE.match(line)
-    ) >= 2:
+    if (
+        any(line.startswith("@@ ") for line in sample)
+        or sum(1 for line in sample if _DIFF_HEAD_RE.match(line)) >= 2
+    ):
         return ContentForm.DIFF
     if _try_json(text) is not _NOT_JSON:
         return ContentForm.DATA
@@ -202,9 +203,7 @@ def _extract_diff(lines: list[str]) -> Extraction:
 def _extract_source(lines: list[str]) -> Extraction:
     """文件内容：只生成大纲（符号 + 行号），正文交给 `context.fetch`（L3 仅 ref）。"""
     symbols = [
-        index
-        for index, line in enumerate(lines)
-        if _is_symbol_line(line) and _keepable_line(line)
+        index for index, line in enumerate(lines) if _is_symbol_line(line) and _keepable_line(line)
     ]
     if not symbols:
         # 认不出符号（配置 / 纯文本文件）就别硬套大纲，退回首尾窗口更好用
@@ -265,17 +264,13 @@ def _with_summary(lines: list[str], summary: list[str], form: ContentForm) -> Ex
     return Extraction(form, tuple([*summary, *rendered]), tuple(kept), dropped, len(lines))
 
 
-def _assemble(
-    lines: list[str], flags: list[bool], marker: str
-) -> tuple[list[str], list[str], int]:
+def _assemble(lines: list[str], flags: list[bool], marker: str) -> tuple[list[str], list[str], int]:
     """把"留 / 丢"标记走一遍，连续丢弃段折成一行标记行（`{n}` 换成段长）。
 
     空行与超长单行一律不留（`_keepable_line`）——留一行 200KB 的 JSON 不叫抽取，
     那种内容该走 L3 只留 ref、按需 fetch。
     """
-    keepable = [
-        flag and _keepable_line(line) for line, flag in zip(lines, flags, strict=True)
-    ]
+    keepable = [flag and _keepable_line(line) for line, flag in zip(lines, flags, strict=True)]
     keepable = _absorb_singletons(keepable, lines)
     rendered: list[str] = []
     kept: list[str] = []
@@ -313,10 +308,7 @@ def _absorb_singletons(flags: list[bool], lines: list[str]) -> list[bool]:
 
 def _window_flags(count: int, head: int, tail: int) -> list[bool]:
     """首 `head` 行与尾 `tail` 行保留，中间留待判定。"""
-    return [
-        index < head or index >= count - tail
-        for index in range(count)
-    ]
+    return [index < head or index >= count - tail for index in range(count)]
 
 
 def _keepable_line(line: str) -> bool:
@@ -394,7 +386,9 @@ _SYMBOL_RES: tuple[re.Pattern[str], ...] = (
 #: 日志模板挖掘的变量位掩码，顺序即优先级（先认出更长的结构化变量，再退到数字）
 _TEMPLATE_MASKS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+        re.compile(
+            r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+        ),
         "<UUID>",
     ),
     (
@@ -532,9 +526,7 @@ def _table_columns(lines: list[str]) -> tuple[str, int] | None:
     return best
 
 
-def _table_summary(
-    rows: list[str], delimiter: str, width: int, names: list[str]
-) -> list[str]:
+def _table_summary(rows: list[str], delimiter: str, width: int, names: list[str]) -> list[str]:
     """表格的 schema 与统计摘要（只算整列都能解析成数字的列）。"""
     summary = [f"{_SYNTHETIC_PREFIX}表格：{len(rows)} 行 × {width} 列（分隔符 {delimiter!r}）"]
     if any(names):

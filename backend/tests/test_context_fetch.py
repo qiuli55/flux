@@ -169,9 +169,7 @@ def test_fetch_rejects_bad_arguments(mcp_client: TestClient, arguments: dict) ->
     assert call(mcp_client, token, "context.fetch", arguments)["isError"] is True
 
 
-def test_fetch_requires_file_read_capability(
-    mcp_client: TestClient, settings: Settings
-) -> None:
+def test_fetch_requires_file_read_capability(mcp_client: TestClient, settings: Settings) -> None:
     step_id, _ = _seed_step(settings, text=TEXT)
     # 空的 scopes 会被签发助手补成默认值，故换成"有令牌但没给 file.read"来验越权
     token = issue_token(mcp_client, agent_id="no-read", scopes=[Capability.BROWSER_OPEN])

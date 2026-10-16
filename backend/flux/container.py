@@ -231,7 +231,8 @@ class Container:
         self.context_ledger = VerificationLedger(self.session_factory)  # type: ignore[attr-defined]
         # 入站脱敏的映射表：占位符 → 原文，单独加密；无 FLUX_REDACTION_KEY 时不落库（§10.1）
         self.context_redactions = RedactionStore(
-            self.session_factory, key=self.settings.redaction_key  # type: ignore[attr-defined]
+            self.session_factory,
+            key=self.settings.redaction_key,  # type: ignore[attr-defined]
         )
         # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
         self.context_backfill = BackfillObserver()

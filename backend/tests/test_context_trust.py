@@ -47,9 +47,7 @@ def test_no_records_is_l0() -> None:
     """新指纹：没有任何记录就是默认的"全量重验"。"""
     stats = grade([])
 
-    assert stats == TrustStats(
-        total=0, passes=0, fails=0, streak=0, pass_rate=0.0, level=L0
-    )
+    assert stats == TrustStats(total=0, passes=0, fails=0, streak=0, pass_rate=0.0, level=L0)
 
 
 def test_single_pass_reaches_l1_only() -> None:
@@ -171,9 +169,7 @@ async def test_ledger_note_only_kept_on_failure(ledger: VerificationLedger) -> N
         outcome=FAIL,
         note="测试其实没跑起来",
     )
-    await ledger.record(
-        agent_fp="a:m", claim_kind=ClaimKind.TEST, outcome=PASS, note="多余的辩解"
-    )
+    await ledger.record(agent_fp="a:m", claim_kind=ClaimKind.TEST, outcome=PASS, note="多余的辩解")
 
     rows = await ledger.records_of("a:m", ClaimKind.TEST)
 

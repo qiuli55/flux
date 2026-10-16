@@ -259,6 +259,38 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "CloudExchangeIn": {
+        "properties": {
+          "code": {
+            "description": "账号云登录页回跳时携带的一次性登录码",
+            "maxLength": 256,
+            "minLength": 8,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "CloudExchangeIn",
+        "type": "object"
+      },
+      "CloudRefreshIn": {
+        "properties": {
+          "refresh_token": {
+            "description": "账号云下发的 refresh token",
+            "maxLength": 2048,
+            "minLength": 8,
+            "title": "Refresh Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "refresh_token"
+        ],
+        "title": "CloudRefreshIn",
+        "type": "object"
+      },
       "ConfirmationItem": {
         "description": "需求确认的一项：维度 + 结论（P0-06 六个固定维度，label 由服务端校验）。",
         "properties": {
@@ -504,8 +536,19 @@
         "type": "object"
       },
       "DshRunCreateRequest": {
-        "description": "起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。",
+        "description": "起一次 DSH Run：instruction 必填，session_id 留空则由服务端生成。\n\nagent_id 留空 = 平台配置的内置 Agent；填 Agent Registry 的 canonical UUID\n则由该 Agent 执行这次 Run（「单独跟某一个 agent 干活」用它）。",
         "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
           "instruction": {
             "minLength": 1,
             "title": "Instruction",
@@ -1176,7 +1219,7 @@
     },
     "securitySchemes": {
       "HTTPBearer": {
-        "description": "Flux 访问令牌（服务端 FLUX_AUTH_TOKEN）",
+        "description": "Flux 访问令牌（服务端 FLUX_AUTH_TOKEN 或账号云签发的 access token）",
         "scheme": "bearer",
         "type": "http"
       }
@@ -1613,6 +1656,138 @@
         "summary": "Scan Capabilities",
         "tags": [
           "capabilities"
+        ]
+      }
+    },
+    "/api/v1/cloud/exchange": {
+      "post": {
+        "operationId": "cloud_exchange_api_v1_cloud_exchange_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudExchangeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cloud Exchange Api V1 Cloud Exchange Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "用一次性登录码换取本机账号云会话",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/api/v1/cloud/logout": {
+      "post": {
+        "operationId": "cloud_logout_api_v1_cloud_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cloud Logout Api V1 Cloud Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "清除本机保存的账号云会话",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/api/v1/cloud/refresh": {
+      "post": {
+        "operationId": "cloud_refresh_api_v1_cloud_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudRefreshIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cloud Refresh Api V1 Cloud Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "用 refresh token 续期本机账号云会话",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/api/v1/cloud/session": {
+      "get": {
+        "operationId": "cloud_session_api_v1_cloud_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cloud Session Api V1 Cloud Session Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "查询本机账号云登录状态与登录入口",
+        "tags": [
+          "cloud"
         ]
       }
     },

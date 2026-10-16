@@ -51,8 +51,9 @@ def _step(
 
 
 def test_command_evidence_carries_exit_code() -> None:
-    step = _step(1, kind=StepKind.COMMAND, target_ref="pytest -x", exit_code=1,
-                 status=StepStatus.FAIL)
+    step = _step(
+        1, kind=StepKind.COMMAND, target_ref="pytest -x", exit_code=1, status=StepStatus.FAIL
+    )
     assert evidence_line(step) == "pytest -x  exit=1"
 
 
@@ -79,8 +80,9 @@ def test_file_without_hash_is_not_evidence() -> None:
 
 
 def test_assertion_evidence_carries_case_name_and_result() -> None:
-    step = _step(1, kind=StepKind.ASSERTION, target_ref="test_login_expired",
-                 status=StepStatus.FAIL)
+    step = _step(
+        1, kind=StepKind.ASSERTION, target_ref="test_login_expired", status=StepStatus.FAIL
+    )
     assert evidence_line(step) == "test_login_expired  FAIL"
 
 

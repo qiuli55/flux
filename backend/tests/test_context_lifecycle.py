@@ -91,11 +91,17 @@ async def _seed(
 
 async def test_delete_turn_removes_only_that_turn(harness: Harness) -> None:
     step_a, sha_a = await _seed(
-        harness, text="turn a output\n", run_id="run-1", turn_id="turn-a",
+        harness,
+        text="turn a output\n",
+        run_id="run-1",
+        turn_id="turn-a",
         target_ref="todo_service/store.py",
     )
     await _seed(
-        harness, text="turn b output\n", run_id="run-1", turn_id="turn-b",
+        harness,
+        text="turn b output\n",
+        run_id="run-1",
+        turn_id="turn-b",
         target_ref="todo_service/store.py",
     )
 
@@ -135,12 +141,8 @@ async def test_delete_turn_keeps_shared_blob(harness: Harness) -> None:
 
 
 async def test_delete_run_removes_all_turns(harness: Harness) -> None:
-    await _seed(
-        harness, text="one\n", run_id="run-1", turn_id="turn-a", target_ref="a.py"
-    )
-    await _seed(
-        harness, text="two\n", run_id="run-1", turn_id="turn-b", target_ref="b.py"
-    )
+    await _seed(harness, text="one\n", run_id="run-1", turn_id="turn-a", target_ref="a.py")
+    await _seed(harness, text="two\n", run_id="run-1", turn_id="turn-b", target_ref="b.py")
     step_c, sha_c = await _seed(
         harness, text="three\n", run_id="run-2", turn_id="turn-c", target_ref="c.py"
     )
@@ -184,17 +186,21 @@ async def test_delete_unknown_turn_is_noop(harness: Harness) -> None:
 async def test_delete_removes_reverse_index_entries(harness: Harness) -> None:
     """§8.2 清单里的「反向索引」（五类）必须同删，否则删完还能查出幽灵 step。"""
     step_a, _ = await _seed(
-        harness, text="boom\n", run_id="run-1", turn_id="turn-a",
+        harness,
+        text="boom\n",
+        run_id="run-1",
+        turn_id="turn-a",
         target_ref="todo_service/store.py",
     )
     step_b, _ = await _seed(
-        harness, text="ok\n", run_id="run-1", turn_id="turn-b",
+        harness,
+        text="ok\n",
+        run_id="run-1",
+        turn_id="turn-b",
         target_ref="todo_service/store.py",
     )
 
-    found = await harness.steps.lookup(
-        token="todo_service/store.py", kind=ContextTokenKind.FILE
-    )
+    found = await harness.steps.lookup(token="todo_service/store.py", kind=ContextTokenKind.FILE)
     assert found == [step_a, step_b]
     assert len(await harness.steps.tokens_of(step_a)) == 3
 

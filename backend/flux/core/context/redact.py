@@ -171,9 +171,7 @@ class RedactionStore:
         """是否配了密钥——没配则映射不落库（正文仍照常打码）。"""
         return self._box is not None
 
-    async def record(
-        self, *, run_id: str, turn_id: str, matches: Sequence[RedactionMatch]
-    ) -> int:
+    async def record(self, *, run_id: str, turn_id: str, matches: Sequence[RedactionMatch]) -> int:
         """把这次打码换下来的原文加密落库，返回写入行数；无密钥或空清单返回 0。"""
         box = self._box
         if box is None or not matches:

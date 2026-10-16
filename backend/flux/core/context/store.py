@@ -77,9 +77,7 @@ class ContentStore:
         async with self._session_factory() as db:
             blob = await self._find(db, sha256)
             if blob is None:
-                raise NotFoundError(
-                    f"原文 {sha256} 不在内容寻址库中", details={"sha256": sha256}
-                )
+                raise NotFoundError(f"原文 {sha256} 不在内容寻址库中", details={"sha256": sha256})
             return self._decode(blob.codec, blob.data)
 
     async def has(self, sha256: str) -> bool:

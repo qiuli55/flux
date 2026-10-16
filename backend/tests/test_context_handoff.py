@@ -62,12 +62,28 @@ def _step(
 
 def _sample_run() -> list[ContextStep]:
     return [
-        _step(1, seq_in_turn=0, kind=StepKind.COMMAND, target_ref="pytest tests/test_auth.py -x",
-              exit_code=1, status=StepStatus.FAIL),
-        _step(2, seq_in_turn=1, kind=StepKind.FILE_OP, target_ref="src/auth/session.py",
-              result_sha256=_SHA_A),
-        _step(3, seq_in_turn=2, kind=StepKind.ASSERTION, target_ref="test_login_expired",
-              status=StepStatus.FAIL),
+        _step(
+            1,
+            seq_in_turn=0,
+            kind=StepKind.COMMAND,
+            target_ref="pytest tests/test_auth.py -x",
+            exit_code=1,
+            status=StepStatus.FAIL,
+        ),
+        _step(
+            2,
+            seq_in_turn=1,
+            kind=StepKind.FILE_OP,
+            target_ref="src/auth/session.py",
+            result_sha256=_SHA_A,
+        ),
+        _step(
+            3,
+            seq_in_turn=2,
+            kind=StepKind.ASSERTION,
+            target_ref="test_login_expired",
+            status=StepStatus.FAIL,
+        ),
         _step(4, seq_in_turn=3, kind=StepKind.MODEL_CALL, target_ref="https://docs.example/auth"),
     ]
 
@@ -121,10 +137,12 @@ def test_fact_spine_excludes_narrative_steps() -> None:
 
 def test_files_section_keeps_latest_version() -> None:
     steps = [
-        _step(1, seq_in_turn=0, kind=StepKind.FILE_OP, target_ref="src/auth.py",
-              result_sha256=_SHA_A),
-        _step(5, seq_in_turn=1, kind=StepKind.FILE_OP, target_ref="src/auth.py",
-              result_sha256=_SHA_B),
+        _step(
+            1, seq_in_turn=0, kind=StepKind.FILE_OP, target_ref="src/auth.py", result_sha256=_SHA_A
+        ),
+        _step(
+            5, seq_in_turn=1, kind=StepKind.FILE_OP, target_ref="src/auth.py", result_sha256=_SHA_B
+        ),
     ]
     doc = build_handoff("run-1", steps)
     files = doc.split("## 7.")[1].split("## 8.")[0]

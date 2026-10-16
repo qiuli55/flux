@@ -44,9 +44,7 @@ def upgrade() -> None:
         sa.Column("result_bytes", sa.BigInteger(), nullable=True),
         sa.Column("result_head", sa.Text(), nullable=True),
         sa.Column("facts", sa.JSON(), nullable=True),
-        sa.Column(
-            "unverified", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("unverified", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),

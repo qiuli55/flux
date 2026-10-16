@@ -78,16 +78,12 @@ async def test_get_missing_step_raises(repo: ContextStepRepository) -> None:
 
 
 async def test_list_by_turn_orders_by_seq(repo: ContextStepRepository) -> None:
-    await repo.append(
-        run_id="run-1", turn_id="turn-x", kind=StepKind.COMMAND, status=StepStatus.OK
-    )
+    await repo.append(run_id="run-1", turn_id="turn-x", kind=StepKind.COMMAND, status=StepStatus.OK)
     await repo.append(
         run_id="run-1", turn_id="turn-x", kind=StepKind.TOOL_CALL, status=StepStatus.OK, tool="ls"
     )
     # 别的 turn 的 step 不该混进来
-    await repo.append(
-        run_id="run-1", turn_id="turn-y", kind=StepKind.COMMAND, status=StepStatus.OK
-    )
+    await repo.append(run_id="run-1", turn_id="turn-y", kind=StepKind.COMMAND, status=StepStatus.OK)
 
     steps = await repo.list_by_turn("turn-x")
     assert [s.seq_in_turn for s in steps] == [0, 1]
@@ -96,15 +92,9 @@ async def test_list_by_turn_orders_by_seq(repo: ContextStepRepository) -> None:
 
 
 async def test_list_by_run_spans_turns(repo: ContextStepRepository) -> None:
-    await repo.append(
-        run_id="run-z", turn_id="turn-1", kind=StepKind.COMMAND, status=StepStatus.OK
-    )
-    await repo.append(
-        run_id="run-z", turn_id="turn-2", kind=StepKind.COMMAND, status=StepStatus.OK
-    )
-    await repo.append(
-        run_id="other", turn_id="turn-1", kind=StepKind.COMMAND, status=StepStatus.OK
-    )
+    await repo.append(run_id="run-z", turn_id="turn-1", kind=StepKind.COMMAND, status=StepStatus.OK)
+    await repo.append(run_id="run-z", turn_id="turn-2", kind=StepKind.COMMAND, status=StepStatus.OK)
+    await repo.append(run_id="other", turn_id="turn-1", kind=StepKind.COMMAND, status=StepStatus.OK)
 
     steps = await repo.list_by_run("run-z")
     assert len(steps) == 2
