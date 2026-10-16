@@ -32,6 +32,19 @@ PROVENANCE_NOTE = (
     "断言不等于事实，动手前请用 workspace.read / workspace.diff 核对磁盘当前状态。"
 )
 
+#: 被裁掉的引用 → 取回它的调用提示（§6.3 第三档"只给引用"的消费方）。
+#: 打包器只给引用，agent 需要细节时按提示去取，而不是要求把原文塞进投喂。
+_RETRIEVE_HINTS: dict[str, str] = {
+    "task": "context.get(task_id=<id>)",
+    "brain": "context.get(project_id=<id>)",
+    "proposals": "context.get(task_id=<id>) / workspace.diff(change_id=<提案 id>)",
+    "step": "context.fetch(step_id=<id>)",
+}
+
+
+def _retrieve_hint(ref: str) -> str:
+    return _RETRIEVE_HINTS.get(ref.split(":", 1)[0], "context.get()")
+
 
 async def package_context(
     container: Container,
@@ -156,6 +169,10 @@ def _apply_budget(
             for item in kept
         ],
         "dropped_refs": dropped[:MAX_DROPPED_REFS],
+        # 每条被裁引用配一个取回提示：第三档降级不再是"断了"的死路（§7.1 / §11）
+        "dropped": [
+            {"ref": ref, "retrieve": _retrieve_hint(ref)} for ref in dropped[:MAX_DROPPED_REFS]
+        ],
         "dropped_count": len(dropped),
         "content": content,
         "note": PROVENANCE_NOTE,

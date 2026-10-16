@@ -22,6 +22,9 @@ from flux.core.agent_runtime.runtimes.service import TaskRunService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
+from flux.core.context.lifecycle import ContextLifecycle
+from flux.core.context.repository import ContextStepRepository
+from flux.core.context.store import ContentStore
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
@@ -85,6 +88,10 @@ class Container:
     installations: InstallationService = field(init=False)
     capability_import: CapabilityImportService = field(init=False)
     task_run_service: TaskRunService = field(init=False)
+    # 上下文机制（设计文档 §8）：只追加的 step 事件日志 + 内容寻址原文库
+    context_steps: ContextStepRepository = field(init=False)
+    content_store: ContentStore = field(init=False)
+    context_lifecycle: ContextLifecycle = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -207,6 +214,12 @@ class Container:
         # P2-1 §6.2：任务「开始执行」的编排收口——按 agent.config["runtime"] 分发
         # dsh / codex / opencode。CLI runtime 复用同一个 RunSupervisor 与令牌服务，不新建生命周期。
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
+        # 上下文机制（设计文档 §8）：step 事件日志是唯一真相源（§8.1 不变量 I1），
+        # 原文单独进内容寻址库（I2 满保真）；两者都是纯存储，无副作用。
+        self.context_steps = ContextStepRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.content_store = ContentStore(self.session_factory)  # type: ignore[attr-defined]
+        # 删会话即级联删该 run / turn 的 step、索引与孤儿原文（§8.2，唯一允许丢原文的例外）
+        self.context_lifecycle = ContextLifecycle(self.session_factory)  # type: ignore[attr-defined]
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""

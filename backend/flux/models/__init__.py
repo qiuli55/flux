@@ -10,6 +10,7 @@ from flux.models.agent_token import AgentToken
 from flux.models.apply_batch import ApplyBatch
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
+from flux.models.context import ContextBlob, ContextStep, ContextStepToken
 from flux.models.imported_capability import ImportedCapability
 from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
@@ -30,6 +31,9 @@ __all__ = [
     "Base",
     "ConnectorConfig",
     "ConnectorLog",
+    "ContextBlob",
+    "ContextStep",
+    "ContextStepToken",
     "ImportedCapability",
     "MemoryEntry",
     "Organization",

@@ -56,6 +56,15 @@ SPEC_TABLES = {
     # 会话是"观察 + 控制"的载体，事件按会话内单调 seq 落库以支持历史恢复与 SSE 重连。
     "terminal_sessions",
     "terminal_events",
+    # FLUX_CONTEXT_MECHANISM §3.3 / §3.5 的上下文机制最小闭环。
+    # context_steps 是压缩 / 检索 / 原子事实的最小单元（有意用自增整数主键，
+    # 见 flux/models/context.py 的说明）；context_blobs 是内容寻址原文库
+    # （sha256 去重 + zstd/lzma 无损压缩）。
+    "context_steps",
+    "context_blobs",
+    # FLUX_CONTEXT_MECHANISM §7.2 的反向索引：文件 / 命令 / URL / 错误关键字 → step_id。
+    # 正向 fetch 需要 id，而接管 agent 手里往往只有线索；没有本表回看通道等于没有入口。
+    "context_step_tokens",
 }
 
 

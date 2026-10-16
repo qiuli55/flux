@@ -109,6 +109,7 @@ async def test_pack_carries_l1_l0_l2_with_provenance(ctx_container: Container) -
     assert pack["budget"] == DEFAULT_BUDGET_CHARS
     assert pack["used"] <= pack["budget"]
     assert pack["dropped_count"] == 0 and pack["dropped_refs"] == []
+    assert pack["dropped"] == []
     assert pack["note"] == PROVENANCE_NOTE
     assert "断言不等于事实" in pack["content"] or "断言不等于事实" in pack["note"]
 
@@ -131,6 +132,11 @@ async def test_tight_budget_truncates_the_first_entry_and_references_the_rest(
     # 被裁掉的不是"消失"，而是以 ref 形式留在清单里，Agent 知道还有什么没拿到
     assert pack["dropped_count"] >= 1
     assert pack["dropped_refs"] and all(":" in ref for ref in pack["dropped_refs"])
+    # 每条被裁引用都配一个取回提示：第三档降级有消费方，不再是断的（§7.1 / §11 / §13-3）
+    assert pack["dropped"]
+    for item in pack["dropped"]:
+        assert item["ref"] in pack["dropped_refs"]
+        assert item["retrieve"].startswith(("context.get", "context.fetch", "workspace.diff"))
 
 
 async def test_one_task_proposal_never_leaks_into_another(ctx_container: Container) -> None:

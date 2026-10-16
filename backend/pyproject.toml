@@ -18,6 +18,9 @@ dependencies = [
     "deepseek-harness-sdk==0.1.5rc1",
     # Agent Manifest 使用 YAML 声明（主规格 §6.2）
     "PyYAML>=6.0",
+    # 上下文原文库的存储层压缩（FLUX_CONTEXT_MECHANISM §3.5）：文本 3–8×、日志 10×+，
+    # 完全无损。装不上时 `flux.core.context.store` 自动退到标准库 lzma，功能不受影响。
+    "zstandard>=0.23",
 ]
 
 [project.optional-dependencies]

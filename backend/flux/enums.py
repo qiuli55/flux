@@ -312,3 +312,52 @@ class AgentRole(StrEnum):
     REVIEWER = "reviewer"
     TESTER = "tester"
     DEVOPS = "devops"
+
+
+class StepKind(StrEnum):
+    """context_steps.kind：一条 step 到底做了什么（FLUX_CONTEXT_MECHANISM §3.3）。"""
+
+    TOOL_CALL = "tool_call"
+    COMMAND = "command"
+    MODEL_CALL = "model_call"
+    FILE_OP = "file_op"
+    ASSERTION = "assertion"
+    FACT = "fact"
+
+
+class StepStatus(StrEnum):
+    """context_steps.status（§3.3）。
+
+    只有 `ok` 能被当成"这一步做成了"；`partial` 与 `timeout` 都不算，
+    否则断言会被后来的失败覆盖成假事实。
+    """
+
+    OK = "ok"
+    FAIL = "fail"
+    PARTIAL = "partial"
+    TIMEOUT = "timeout"
+
+
+class BlobCodec(StrEnum):
+    """context_blobs.codec：原文的存储编码（§3.5 / §8.4）。
+
+    三种编码都是**无损**的——I3 说的"不压缩"指语义不压缩，不含存储层编码。
+    `raw` 用于压不动或过短的输入；解码一律按本列取值，不看长度猜。
+    """
+
+    RAW = "raw"
+    ZSTD = "zstd"
+    LZMA = "lzma"
+
+
+class ContextTokenKind(StrEnum):
+    """context_step_tokens.kind：反向索引的词条类别（FLUX_CONTEXT_MECHANISM §7.2）。
+
+    对应规范里五类查询中的四类——按文件 / 命令 / URL / 错误关键字找 step；
+    第五类「按时间窗」直接查 `context_steps.created_at`，不需要词条。
+    """
+
+    FILE = "file"
+    COMMAND = "command"
+    URL = "url"
+    ERROR = "error"
