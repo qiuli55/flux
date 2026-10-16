@@ -2,7 +2,7 @@
 
 集合 agent 的 AI 软件工程操作系统：统一上下文、统一工具（agent 面：MCP 优先 + CLI 兜底）、统一 Skill，各只有一份真源，所有 agent 共享。
 
-Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话（目标架构 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) §1）。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 agent 面（MCP 优先 + CLI 兜底）**对等消费能力。
+Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话（目标架构 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) §0）。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 agent 面（MCP 优先 + CLI 兜底）**对等消费能力。
 
 核心差异化是 **Virtual Workspace**——AI 的每一次改动都以"提案 → 虚拟 diff → 人工审查 → 应用"的流程落地，**永不直接覆盖你的文件**。
 
@@ -14,30 +14,34 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 
 ## 当前进度
 
-**M0 项目基础（已完成）** —— 工程基础与契约层均已冻结并实测通过：
+> 契约规模（2026-10-16 快照）：**79 条 API 路径**（含 MCP 单入口 `/mcp`）、**28 张数据表**、**22 个 Alembic 迁移脚本**、**899 个 pytest 用例全绿**（`bash scripts/verify.sh` 第 5 步）。
 
-| 能力 | 状态 | 证据 |
+| 里程碑 | 状态 | 关键证据 |
 | --- | --- | --- |
-| 数据层：14 张表 + Alembic 迁移 | 完成 | `alembic upgrade head` / `downgrade base` 双向通过，autogenerate 无漂移 |
-| API 契约：13 条路径（规格 §12 全覆盖） | 完成 | `docs/openapi.json`，`scripts/export_openapi.py --check` 通过 |
-| Agent Runtime 状态机（含 STOPPED） | 完成 | 59 个 pytest 用例全绿（全仓现为 292 个） |
-| Model Gateway（本地 echo 供应商可离线跑通） | 完成 | 真实供应商适配器属 M1（#013–#015） |
-| Virtual Workspace 状态机 + unified diff | 完成 | M0 只做状态跃迁与审计，真实写盘属 M2 |
-| 权限策略（RBAC + Capability，fail-closed） | 完成 | — |
-| 事件总线 / 任务调度器 / 工作流编排 | 完成 | — |
-| Connector 契约与注册表 | 完成 | 五个连接器实现属 M4 |
-| 工程化入口：Makefile / verify.sh / CI / Docker | 完成 | `bash scripts/verify.sh` 五步全过；CI 双 job；容器链路未本地验证（无 Docker） |
+| M0 项目基础 | 完成 | 数据层双向迁移通过、autogenerate 无漂移；`docs/openapi.json` 契约随代码提交；权限策略 fail-closed；事件总线 / 调度器 / 工作流编排；Connector 契约与注册表；Makefile / verify.sh / CI / Docker |
+| M1 核心运行时 | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家适配器全部注册（统一薄 HTTP 层，不引官方 SDK）；超时退避重试与错误映射；**Task Engine 已由进程内字典切到 `tasks` 表**（`core/task_engine/repository.py`），任务状态唯一权威是数据库 |
+| M2 Virtual Workspace | 完成 | ApplyEngine 真实落盘 + 备份 + 回滚 + Apply 崩溃恢复对账 + 测试门禁；Git 集成（status / diff / stage / unstage / commit / branches / checkout）；`path_guard.py` symlink 逃逸防护（Apply / Backup / Explorer 三处共用）。多文件提案的**原子 Apply 仍在收口**（已提供 `apply-batches` 分组应用与按批回滚） |
+| M3 IDE 体验 | 进行中 | `apps/web-dashboard`（React 19 + Vite）已实现 Solo / IDE 双模式、并排/统一两种 diff 视图、xterm 终端；`apps/desktop` Electron 外壳 + PyInstaller sidecar，Linux（AppImage / deb）产物本机实测、Windows NSIS 走 CI。`apps/vscode-extension` 仍为空目录 |
+| M4 Connector | 未开始（仅契约） | 只有 `backend/flux/connectors/base.py`；仓库 `connectors/` 无具体实现 |
+| M5 Skill 与 Project Brain | 部分 | `project_brain` / `project_files` / `project_scanner` / `memory` / `capability_import` 已落地；`skills/{backend,frontend,security,devops}` 四个包目录仍为空 |
+| M6 成本可观测 | 未开始 | `services/cost_service` 只有 calculator；Provider 不内置价格表，`pricing=None` 时 `cost` 为 `null`（绝不用猜测值填充） |
+| M7 浏览器与环境自动化 | 未开始 | — |
+| M8 设备网络 | 部分 | `apps/mobile-controller`（Android 远程控制端）已落地；`nodes/{android_node,desktop_node}` 仍为空 |
+| M9 插件生态 | 未开始 | — |
 
 里程碑主线见规格 §19.1：M1 核心运行时 → M2 Virtual Workspace → M3 IDE → M4 Connector → M5 Skill 与 Project Brain → M6 成本可观测 → M7 浏览器与环境自动化 → M8 设备网络 → M9 插件生态。
 
+另有两条不挂在里程碑上的能力轴，已落地：**能力面（MCP Server）**、**上下文机制**（见下文各自章节）。
+
 ---
 
-## M1 核心运行时（进行中）
+## 核心运行时（M1）
 
 | 能力 | 状态 | 证据 |
 | --- | --- | --- |
-| 真实供应商适配器（Issues #013–#015） | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家全部注册，28 个离线用例全绿 |
+| 真实供应商适配器（Issues #013–#015） | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家全部注册，离线用例全绿 |
 | 供应商容错：超时、退避重试、错误映射 | 完成 | `429`/`5xx`/超时按 `0.5s × 2^n` 退避重试 2 次，耗尽后映射为领域错误码 |
+| Task Engine 落库 | 完成 | `tasks` 表已是任务状态唯一权威；`core/task_engine/` 含调度器、读写仓库、DSH 桥接（`dsh_bridge.py`）与决策（`decisions.py`） |
 | 架构对齐 Phase 1：退役 agent loop | 完成 | 删除 `AgentExecutor` / `DeveloperAgent` / `TesterAgent` / `AgentContext` / `codex_cli` provider / `virtual_workspace/flow.py`；`AgentManager` 重构为纯档案注册表（commit `45db1b9`） |
 | 架构对齐 Phase 1 收尾：symlink 逃逸防护 | 完成 | 新增 `flux/core/virtual_workspace/path_guard.py` 作唯一真源（逐段 `is_symlink()` fail-closed + realpath 包含性），Apply / Backup / File Explorer 三处共用（commit `5babc59`） |
 
@@ -45,7 +49,7 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 
 | 供应商 | 默认模型 | 覆盖变量 | 鉴权 | 备注 |
 | --- | --- | --- | --- | --- |
-| `local` | `local-echo` | `FLUX_LOCAL_MODEL_NAME` | 无 | 离线回显，零依赖，M0 起可用于跑通链路 |
+| `local` | `local-echo` | `FLUX_LOCAL_MODEL_NAME` | 无 | 离线回显，零依赖，可用于跑通链路 |
 | `openai` | `gpt-5.5` | `FLUX_OPENAI_MODEL` | `Authorization: Bearer` | 输出上限字段为 `max_completion_tokens` |
 | `anthropic` | `claude-sonnet-5-5` | `FLUX_ANTHROPIC_MODEL` | `x-api-key` + `anthropic-version: 2023-06-01` | `system` 走顶层字段；`temperature` 钳制到 `[0,1]` |
 | `deepseek` | `deepseek-flash` | `FLUX_DEEPSEEK_MODEL` | `Authorization: Bearer` | 见下方 thinking 模式注意点 |
@@ -54,7 +58,7 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 
 - 默认值实测：`{'local': 'local-echo', 'openai': 'gpt-5.5', 'anthropic': 'claude-sonnet-5-5', 'deepseek': 'deepseek-flash'}`
 - 用 `FLUX_OPENAI_MODEL` / `FLUX_ANTHROPIC_MODEL` / `FLUX_DEEPSEEK_MODEL` 覆盖后，装配出的 `model_name` 随之改变，无需改代码
-- 供应商是否可用只取决于密钥：不配密钥时 `router.available()` 为 `['local']`，加上 `FLUX_OPENAI_API_KEY` 后变为 `['local', 'openai']`——`/api/v1/health/ready` 的 `providers` 列的就是这个可用集合
+- 供应商是否可用只取决于密钥：不配密钥时 `router.available()` 为 `['local']`，加上 `FLUX_DEEPSEEK_API_KEY` 后变为 `['local', 'deepseek']`——`/api/v1/health/ready` 的 `providers` 列的就是这个可用集合
 
 **双 Provider 验证边界**（如实说明）：
 
@@ -63,9 +67,65 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 
 > **DeepSeek thinking 模式注意点（实测坑）**：`deepseek-flash` 的 thinking 默认开启，推理 token 计入 `max_tokens`。`max_tokens=32` 时输出额度会被推理吃光，`choices[0].message.content` 返回空串（内容在 `reasoning_content` 里）；`max_tokens=512` 正常。因此不要用很小的 `max_tokens` 做探活，模块默认 `1024` 是下限而非推荐值。
 >
-> **成本计价**：M1 的 Provider 不内置价格表，`pricing=None` 时 `cost` 为 `null`——绝不用猜测值填充成本，真实计价属 M6。
+> **成本计价**：Provider 不内置价格表，`pricing=None` 时 `cost` 为 `null`——绝不用猜测值填充成本，真实计价属 M6。
 
-M1 尚未完成：Task 由内存落库到 `tasks` 表（当前调度器仍是进程内实现）。
+---
+
+## 能力面：Flux MCP Server
+
+Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），同时服务内置 agent、桌面端与外部 agent（codex / claude-code / opencode …）。工具面的**唯一真源**是 `backend/flux/core/mcp/tools/__init__.py` 的 `TOOLS` 表——`tools/list` 返回什么、调用时要求什么能力，全部由它决定。
+
+当前注册的工具：
+
+| 工具 | 说明 |
+| --- | --- |
+| `context.get` / `context.fetch` | 按预算取上下文包；按需取回被引用/裁剪掉的具体片段 |
+| `workspace.read` / `workspace.diff` | 读受管工作区文件；取变更的 unified diff |
+| `proposal.create` | 提交改动提案（Agent 落改动的**唯一**入口） |
+| `memory.recall` | 回忆项目记忆条目 |
+| `flux_context` | 运行时上下文查询 |
+| `terminal.execute` | 受控放行的终端执行（Agent Terminal Console，2026-10-05 决策） |
+
+**硬禁令**（不是"忘了注册"，且没有任何开关能打开）：`workspace.apply`、`git.commit`、`git.push`、`secret.read`、`shell.exec` 一律不在工具表内——落盘、提交、推送、读密钥、裸 shell 通道都不对 agent 开放。
+
+---
+
+## 变更落地：Virtual Workspace（M2）
+
+提案 → 虚拟 diff → 人工审查 → 应用，是**唯一**的文件改动落地路径：
+
+- **状态机**：提案在 `pending → accepted/rejected → applied/expired` 之间流转；多次修改同一文件时旧提案按设计置 `expired`，过期提案无法被 Apply（`409 expired`）。
+- **落盘**：`ApplyEngine` 只在人工批准后写盘，写前做 `path_guard` 校验（symlink 逃逸 fail-closed），写时生成可追溯的备份。
+- **回滚与恢复**：支持单提案回滚、分组回滚（`apply-batches/{batch_id}/rollback`）、Apply 崩溃恢复与对账（`workspace/recovery`），不留下无法解释的半完成状态。
+- **测试门禁**：Apply 会跑配置的测试命令，失败即红灯——测试失败绝不会被报告为成功。
+- **Git 集成**：`git/status`、`git/diff`、`git/stage`、`git/unstage`、`git/commit`、`git/branches`、`git/checkout`；提交由用户在 UI 侧触发，agent 无提交能力。
+
+---
+
+## 上下文机制
+
+上下文机制的**唯一真源在 Flux 侧**，agent 的对话历史私有、可丢，切换 agent 不搬迁对话。分三个阶段落地（commit `fad9155` / `4233a27` / `7c23b0b`）：
+
+- **阶段 A**：step 事件日志、目录行与反向索引、fetch 取回、删除级联、九节交接文档。
+- **阶段 B**：压缩流水线 S1–S5（含 S5 自校验）、动态预算与度量。
+- **阶段 C**：事实脊柱、验证账本（信任分级）、入站脱敏、渐进替换。
+
+相关数据表：`context_blobs` / `context_steps` / `context_step_tokens` / `context_redactions` / `context_verifications`。设计文档见 [`docs/CONTEXT_DESIGN.md`](docs/CONTEXT_DESIGN.md)。
+
+---
+
+## 客户端与发行
+
+| 应用 | 技术栈 | 状态 |
+| --- | --- | --- |
+| `apps/web-dashboard` | React 19 + Vite（含 `@xterm/xterm`） | 工作台主界面：Solo / IDE 双模式、diff 双视图、内嵌终端 |
+| `apps/desktop` | Electron + PyInstaller sidecar | 可安装桌面端；Linux `Flux-0.1.0-x86_64.AppImage` / `Flux-0.1.0-amd64.deb` 本机实测，Windows `Flux-Setup-0.1.0-x64.exe` 由 CI 构建。详见 [apps/desktop/README.md](apps/desktop/README.md) |
+| `apps/cloud` | FastAPI | Flux 账号云服务：站外回跳登录、一次性登录码、运行日志自动上传（后端经 `/api/v1/cloud/{session,exchange,refresh,logout}` 对接） |
+| `apps/mobile-controller` | Android（Kotlin + Gradle） | 手机远程控制端 |
+| `apps/showcase-web` | React | 展示页 |
+| `apps/vscode-extension` | — | 待建 |
+
+桌面端数据落在 `~/.flux`（`flux.db` / `workspace/` / `backups/` / DSH 落盘），**卸载不删数据、重装可继续使用**。
 
 ---
 
@@ -88,12 +148,27 @@ make verify
 make run
 ```
 
-跑通后用 `curl` 冒烟：
+跑通后用 `curl` 冒烟（`providers` 与 `agents` 数随本机配置变化）：
 
 ```bash
 curl -s http://127.0.0.1:8000/api/v1/health/ready
-# {"success":true,"code":"ok","message":"","data":{"database":true,"providers":["local"],"agents":0},"metadata":{}}
+# {"success":true,"code":"ok","message":"","data":{"database":true,"providers":["local","deepseek"],"agents":1},"metadata":{}}
 ```
+
+起前端工作台（另开一个终端）：
+
+```bash
+cd apps/web-dashboard && npm ci && npm run dev
+```
+
+起桌面端（Electron 外壳会自动拉起后端 sidecar 与界面服务）：
+
+```bash
+cd apps/web-dashboard && npm ci && npm run build && cd ../..   # 主进程读取前端 dist
+cd apps/desktop && npm install && npm start
+```
+
+打包桌面端安装包（Linux）：`bash scripts/build_desktop.sh`，产物落在 `apps/desktop/release/`。
 
 用 Docker Compose 起完整三件套（PostgreSQL + pgvector / Redis / 后端）：
 
@@ -112,40 +187,49 @@ make down
 flux/
 ├── backend/                      # 后端：单一可部署单元（见规格附录 A12）
 │   ├── flux/
-│   │   ├── api/                  # HTTP 层：统一响应体、异常处理器、依赖注入
-│   │   │   └── v1/               # 规格 §12 的 13 条路由
+│   │   ├── api/v1/               # HTTP 层：agents · tasks · projects · workspace · terminal
+│   │   │                         #   connectors · models · git · dsh · memory · capabilities
+│   │   │                         #   installations · cloud · health
 │   │   ├── core/                 # 领域层（不依赖 FastAPI）
-│   │   │   ├── agent_runtime/    # 档案注册表、生命周期状态机、DSH 客户端
-│   │   │   ├── task_engine/      # 优先级调度器
+│   │   │   ├── agent_runtime/    # 档案注册表、生命周期状态机、DSH 客户端与事件映射
+│   │   │   ├── task_engine/      # 调度器 + tasks 表读写 + DSH 桥接 + 决策
+│   │   │   ├── workflow_engine/  # 工程状态机（不做 reasoning、不代 agent 调工具）
 │   │   │   ├── model_gateway/    # 供应商抽象、路由、providers/（只服务平台内部）
-│   │   │   ├── workflow_engine/  # 工程状态机（不做 reasoning、不代调工具）
-│   │   │   ├── permission_engine/# RBAC + Capability 策略
-│   │   │   ├── event/            # 进程内事件总线
-│   │   │   └── virtual_workspace/# 提案状态机 + unified diff + 入参校验器
-│   │   ├── models/               # SQLAlchemy 2.0 声明式模型（14 张表）
+│   │   │   ├── permission_engine/# RBAC + Capability 策略，fail-closed
+│   │   │   ├── virtual_workspace/# 提案状态机 + unified diff + ApplyEngine + 备份/回滚
+│   │   │   ├── context/          # 上下文机制：step 日志 / 压缩 S1–S5 / 脱敏 / 脊柱 / verify
+│   │   │   ├── terminal/         # Agent 终端 + 人类 PTY 会话
+│   │   │   ├── git_integration/  # Git 状态 / diff / 暂存 / 提交
+│   │   │   ├── memory/ project_brain/ project_files/ project_scanner/ capability_import/
+│   │   │   ├── mcp/              # MCP Server + 工具注册表（工具面唯一真源）
+│   │   │   └── event/            # 进程内事件总线
+│   │   ├── cli/ cloud/ connectors/ services/ db/
+│   │   ├── models/               # SQLAlchemy 2.0 声明式模型（28 张表）
 │   │   ├── schemas/              # Pydantic 请求/响应模型
-│   │   ├── connectors/           # Connector 契约与注册表
-│   │   ├── services/             # cost_service 等横切服务
-│   │   ├── db/                   # 异步引擎与会话
-│   │   ├── config.py             # pydantic-settings，前缀 FLUX_
-│   │   ├── errors.py             # 领域异常 → HTTP 状态码映射
-│   │   ├── logging.py            # 结构化日志
-│   │   ├── container.py          # 组合根：装配全部单例
-│   │   └── main.py               # 应用工厂 create_app()
-│   ├── migrations/               # Alembic（异步模板）
-│   ├── tests/                    # pytest：核心层 / 模型契约 / OpenAPI 契约 / API
+│   │   ├── config.py / errors.py / logging.py / container.py / main.py
+│   ├── migrations/               # Alembic（异步模板，22 个版本脚本）
+│   ├── tests/                    # pytest：核心层 / 模型契约 / OpenAPI 契约 / API（57 个测试文件）
 │   ├── Dockerfile
 │   └── requirements.txt          # 固定版本快照
-├── apps/                         # 客户端（M3 起）：desktop / vscode-extension / web-dashboard / mobile-controller
-├── connectors/                   # 具体连接器实现（M4 起）
-├── skills/                       # Skill 包（M5 起）：backend / frontend / security / devops
-├── nodes/                        # Flux Node（M8 起）：android_node / desktop_node
-├── docs/                         # 全部项目文档（规格 / 架构 / MVP / 测试与报告）+ 设计稿
+├── apps/                         # 客户端
+│   ├── web-dashboard/            # React 19 工作台（Solo / IDE）
+│   ├── desktop/                  # Electron + PyInstaller sidecar
+│   ├── cloud/                    # Flux 账号云服务
+│   ├── mobile-controller/        # Android 远程控制端
+│   ├── showcase-web/             # 展示页
+│   └── vscode-extension/         # 待建
+├── connectors/                   # 具体连接器实现（M4 起，待建）
+├── skills/                       # Skill 包（M5 起，待建）：backend / frontend / security / devops
+├── nodes/                        # Flux Node（M8 起，待建）：android_node / desktop_node
+├── docs/                         # 规格 / 架构 / 上下文 / MVP / 报告
 │   ├── openapi.json              # 接口契约，随代码一起提交
-│   └── ui-designs/               # 界面设计稿（M3 的输入素材）
+│   └── ui-designs/               # 界面设计稿（10 张）
+├── doc/                          # 发布设计、50 任务基准与阶段验收报告
 ├── scripts/
 │   ├── export_openapi.py         # 导出 / 校验契约
-│   └── verify.sh                 # 本地一条命令自检
+│   ├── verify.sh                 # 本地一条命令自检
+│   ├── build_desktop.sh          # 桌面端打包（前端 → sidecar → 安装包）
+│   └── run_fault_injection_matrix.sh
 └── Makefile
 ```
 
@@ -155,7 +239,7 @@ flux/
 
 ## 界面设计稿
 
-`docs/ui-designs/` 下是 10 张设计稿，属于 **M3（IDE 体验）** 的输入素材，不参与 M0/M1 的实现。它们统一采用深色主题 + 青绿主色（约 `#0A0E14` 底 / `#2DD4BF` 强调色）。
+`docs/ui-designs/` 下是 10 张设计稿，统一采用深色主题 + 青绿主色（约 `#0A0E14` 底 / `#2DD4BF` 强调色）；`apps/web-dashboard` 与 `apps/desktop` 的实现以其为输入素材。
 
 | 文件 | 界面 | 对应规格章节 | 交付里程碑 |
 | --- | --- | --- | --- |
@@ -170,13 +254,11 @@ flux/
 | `mobile-screens-10up.png` | 移动控制端 10 屏合集（首页 / 任务 / AI 团队 / 任务详情 / 成本 / 项目 / 通知 / Agent 详情 / 个人中心 / 侧边栏） | §13.8 | M8 |
 | `mobile-v1-20261002.png` | 移动控制端 v1 十屏（任务入口 / Solo 任务创建 / 需求澄清 / 执行方式与决策策略 / 任务执行中 / AI 自动处理 / 高风险决策 / 人工审核点 / 任务完成 / Agent 管理） | §13.8 | M8 |
 
-设计稿中存在若干待收口的用词不一致，实现前需统一：侧边栏语言（`agent-detail-desktop.png` 为英文，其余为中文）、"技能市场 / 插件市场"与"Agent 团队 / 代理团队"的称谓、以及 `agent-detail-desktop.png` 中疑似笔误的 `GRI Repository`（应为 `Git Repository`）。
-
 ---
 
 ## 接口契约
 
-`docs/openapi.json` 是前端与插件开发者依赖的唯一接口契约，**随代码一起提交**。
+`docs/openapi.json` 是前端与插件开发者依赖的唯一接口契约，**随代码一起提交**（当前 79 条路径，含 MCP 单入口 `POST /mcp`）。
 
 ```bash
 python scripts/export_openapi.py           # 重新导出
@@ -198,7 +280,8 @@ python scripts/export_openapi.py --check   # 校验是否漂移（CI 用）
 - **密钥**只由对应 Provider 在内部读取，绝不下发给 Agent，也绝不写入仓库（规格 §14.3）。
 - **事件命名** `resource.action`（如 `agent.started`、`workspace.changed`）。
 - **提交信息**用 `feat:` / `fix:` / `docs:` / `chore:` 前缀。
-- **测试**：契约优先——`tests/test_openapi_contract.py` 与 `tests/test_models_contract.py` 会断言 §12 的路径、§11 的表结构，任何偏离都会红。
+- **测试**：契约优先——`tests/test_openapi_contract.py` 与 `tests/test_models_contract.py` 会断言 API 路径与表结构，任何偏离都会红。
+- **工具面**：MCP 工具表是唯一真源；新增 agent 能力必须先进 `TOOLS` 表并过权限策略。
 
 ---
 
@@ -206,6 +289,10 @@ python scripts/export_openapi.py --check   # 校验是否漂移（CI 用）
 
 - Python 3.10 已进入仅安全修复阶段，官方计划 **2026 年 10 月 EOL**。当前本地环境与 `requirements.txt` 快照均基于 3.10，升级到 3.12 / 3.13 的路径已记入规格 §19 的待定事项。
 - 本机无 Docker，容器构建与 Compose 编排未做本地验证。
-- OpenAI / Anthropic / DeepSeek 三个 Provider 适配器已完成（M1，Issues #013–#015）；本机只有 DeepSeek 密钥做了真实调用，OpenAI / Anthropic 仅经离线 MockTransport 验证。
-- Task Engine 当前仍是进程内实现，任务未落 `tasks` 表——这是 M1 剩余的最后一项。
-- Virtual Workspace 在 M0 仅实现状态跃迁与审计记录，真实文件写盘、备份、测试回归与 Git 集成属 M2。
+- OpenAI / Anthropic 两个 Provider 适配器已完成并离线验证，但**未做真实调用**（本机无密钥）；只有 `deepseek` 做过真实调用。
+- **M2 收口项**：多文件提案的原子 Apply（Proposal / ChangeSet 级事务）仍在收口；单文件真实写盘、备份、回滚与崩溃恢复已落地。
+- **桌面端**：macOS 未交付；Windows NSIS 安装包尚需在真机逐条验收（清单见 [apps/desktop/README.md](apps/desktop/README.md)），Linux 产物已本机实测。
+- **M4 / M5 / M6 / M7 / M9 未开始**：`connectors/`、`skills/*`、`nodes/*`、`apps/vscode-extension` 目录仍为空；成本计价未接（`pricing=None` → `cost` 为 `null`）。
+- **M8 部分**：移动控制端已有 Android 端，`nodes/` 的节点实现待建。
+</content>
+</Write>
