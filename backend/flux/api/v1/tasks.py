@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.model_gateway.base import ChatMessage
 from flux.core.task_engine.assistant import validate_confirmation_items
@@ -38,8 +39,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 _FINAL_STATUSES = {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value, TaskStatus.FAILED.value}
 
-#: 一次对话请求带上的历史条数上限（上下文成本有界；够模型理解前文即可）
-_HISTORY_LIMIT = 50
+#: 一次对话请求带上的历史条数上限：由 §6.1 的字符预算折算而来（不再是固定值）
+_HISTORY_LIMIT = history_message_limit()
 
 
 def _now_iso() -> str:

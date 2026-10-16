@@ -1,10 +1,11 @@
-"""Context 打包测试（文档 §6：L0/L1/L2、裁剪、失效、任务间污染）。
+"""Context 打包测试（文档 §6：分区 / 分级、预算、失效、任务间污染）。
 
 Context 是 Flux 的基础设施，Agent 的主路径靠 `context.get` 拿工程事实，而不是把
 历史对话无条件塞进 prompt。这里验证打包器的三条底线：
 
-1. 分层清楚：任务（L1）、项目 Brain（L0）、近期提案（L2）各归各的 entry；
-2. 预算受控：放不下就截断 / 退化成引用清单，绝不"超预算也要塞进去"；
+1. 分层清楚：任务（P0/L1）、项目 Brain（P0/L1）、近期提案（P1/L2）各归各的 entry；
+2. 预算受控：必留区（P0）**一条不减**；可压区（P1）装不下先编码（L2），
+   编码后仍装不下才整条退化成引用（L3），绝不半截截断；
 3. 不串味：A 任务的提案不会出现在 B 任务的上下文里；过期提案带着状态出现，
    提醒 Agent 它是快照而不是事实。
 """
@@ -107,17 +108,35 @@ async def test_pack_carries_l1_l0_l2_with_provenance(ctx_container: Container) -
     assert "python3 -m pytest" in pack["content"]
     assert "todo_service/store.py" in pack["content"]
     assert pack["budget"] == DEFAULT_BUDGET_CHARS
+    # 分区 / 等级（§6.2 / §6.3）：任务与 Brain 是必留区原文，提案是可压区编码形态
+    assert [(entry["kind"], entry["zone"], entry["level"]) for entry in pack["entries"]] == [
+        ("task", "P0", "L1"),
+        ("brain", "P0", "L1"),
+        ("proposals", "P1", "L1"),
+    ]
+    # 预算账（§6.1）：必留区 + 余量；装得下时 used 不超预算
+    assert pack["required"] == sum(
+        entry["chars"] for entry in pack["entries"] if entry["zone"] == "P0"
+    )
+    assert pack["available"] == pack["budget"] - pack["required"]
+    assert pack["used"] == pack["required"] + sum(
+        entry["chars"] for entry in pack["entries"] if entry["zone"] == "P1"
+    )
     assert pack["used"] <= pack["budget"]
     assert pack["dropped_count"] == 0 and pack["dropped_refs"] == []
     assert pack["dropped"] == []
+    # §5.6 度量：必留项一条不漏、S5 一次不差，两条红线都在（另三项在别处量）
+    assert pack["metrics"]["required_hit_rate"] == 1.0
+    assert pack["metrics"]["reconstruction_rate"] == 1.0
+    assert pack["metrics"]["healthy"] is True
     assert pack["note"] == PROVENANCE_NOTE
     assert "断言不等于事实" in pack["content"] or "断言不等于事实" in pack["note"]
 
 
-async def test_tight_budget_truncates_the_first_entry_and_references_the_rest(
+async def test_required_zone_is_never_trimmed_even_when_budget_is_tight(
     ctx_container: Container,
 ) -> None:
-    """预算紧张时：第一条就地截断（保证调用方至少拿到东西），其余退化成引用清单。"""
+    """必留区（P0）先占预算、一条不减；可压区（P1）装不下就整条退化成引用（§6.2）。"""
     project = await _project(ctx_container)
     await _memory(ctx_container, project, "测试命令固定为 python3 -m pytest")
     task = await _task(ctx_container, project, description="给待办服务加按完成状态过滤")
@@ -125,13 +144,16 @@ async def test_tight_budget_truncates_the_first_entry_and_references_the_rest(
 
     pack = await package_context(ctx_container, task_id=str(task.id), budget=64)
 
-    assert pack["used"] <= 64
-    assert pack["entries"][0]["kind"] == "task"
-    assert pack["entries"][0]["truncated"] is True
-    assert pack["entries"][0]["chars"] <= 64
-    # 被裁掉的不是"消失"，而是以 ref 形式留在清单里，Agent 知道还有什么没拿到
-    assert pack["dropped_count"] >= 1
+    # 任务与 Brain 一条没少，即使它们自身已经把 64 字符的预算撑爆
+    assert [entry["kind"] for entry in pack["entries"]] == ["task", "brain"]
+    assert all(entry["level"] == "L1" for entry in pack["entries"])
+    assert pack["used"] == pack["required"] > 64
+    assert pack["available"] == 0
+    # 余量为零：提案既装不下原文、也无字符可供编码，于是整条退化成 L3 引用
+    assert pack["dropped_count"] == 1
+    assert pack["metrics"]["dropped_count"] == 1
     assert pack["dropped_refs"] and all(":" in ref for ref in pack["dropped_refs"])
+    assert "todo_service/store.py" not in pack["content"]
     # 每条被裁引用都配一个取回提示：第三档降级有消费方，不再是断的（§7.1 / §11 / §13-3）
     assert pack["dropped"]
     for item in pack["dropped"]:

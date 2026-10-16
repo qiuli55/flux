@@ -45,8 +45,9 @@ CONTEXT_GET_SCHEMA: dict[str, Any] = {
 
 async def context_get(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"task_id", "project_id", "budget"})
-    budget = params.get("budget", DEFAULT_BUDGET_CHARS)
-    if isinstance(budget, bool) or not isinstance(budget, int):
+    # budget 缺省交给打包器按 §6.1 推导，这里只拒绝"传了但不是整数"
+    budget = params.get("budget")
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int)):
         raise ValidationError("参数 budget 必须是整数", details={"param": "budget"})
     return await package_context(
         ctx.container,

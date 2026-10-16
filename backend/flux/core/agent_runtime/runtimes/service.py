@@ -20,6 +20,7 @@ from flux.core.agent_runtime.runtimes.base import (
 )
 from flux.core.agent_runtime.runtimes.cli import build_cli_runtime
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
+from flux.core.context.budget import history_message_limit
 from flux.core.task_engine.assistant import validate_confirmation_items
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import AgentInstallStatus, TaskMessageRole, TaskStatus
@@ -32,8 +33,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: 一次对话请求带上的历史条数上限（与 tasks.py 同口径）
-_HISTORY_LIMIT = 50
+#: 一次对话请求带上的历史条数上限（与 tasks.py 同口径，由 §6.1 的字符预算折算）
+_HISTORY_LIMIT = history_message_limit()
 
 
 @dataclass(slots=True)

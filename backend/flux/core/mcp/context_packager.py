@@ -1,11 +1,18 @@
-"""上下文打包器（目标架构 §6.2 / §6.3，Phase 2 范围：全量 + T1）。
+"""上下文打包器（FLUX_CONTEXT_MECHANISM §6.2 / §6.3）。
 
 `context.get` 的实现：把 Flux 侧已有的工程事实（任务、项目 Brain、近期提案）
 按预算拼成一段可直接投喂 agent 的文本。
 
-Phase 2 只做**规则裁剪**（T1）：按条目整条保留、放不下就退化成引用清单。
-不调模型做摘要——T2 常驻压缩器是后续 Phase 的事，先交付确定性、可复现、
-且不产生任何幻觉的打包结果。
+装配规则来自 §6.1–6.3：
+
+- **预算**由 `budget.FeedBudget` 推导（窗口 × 安全系数 − 预留输出 − 系统占用）；
+  调用方显式传 `budget` 时以传入值为上限。
+- **分区**（`Zone`）：任务与项目 Brain 是必留区（`P0`，先占预算、一条不减）；
+  近期提案是可压区（`P1`，装得下就原文，装不下才走 §5.3 流水线编码）。
+- **等级**（`Level`）：装得下 → `L1` 原文；需编码 → `L2`；落不下 → `L3` 仅 ref。
+
+全程不调模型：编码用 S2 结构抽取（+ 必要时 S3 抽取式筛选），产物先过 S5 逐字自校验
+（对不上就整条作废、降级为引用），再把 §5.6 的度量一并报出（§5.1 / §5.3）。
 """
 
 from __future__ import annotations
@@ -13,24 +20,34 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from flux.core.context.budget import DEFAULT_BUDGET_CHARS, Level, Zone
+from flux.core.context.compress import extract, select, verify
+from flux.core.context.metrics import FeedMetrics
 from flux.errors import ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - 仅为类型标注，避免容器与本模块互相导入
     from flux.container import Container
 
-#: 默认可投喂预算（字符数）。按 §6.3 的公式，真实预算应由目标模型窗口推导；
-#: Phase 2 先给一个保守常量，后续接入模型档案后改成按模型算。
-DEFAULT_BUDGET_CHARS = 24_000
 #: 打包时最多带多少条近期提案（只带元信息，正文由 workspace.read 取）
 MAX_CHANGES = 20
 #: 引用清单自身的上限，避免"被裁掉的条目"反过来把预算吃光
 MAX_DROPPED_REFS = 50
+#: S3 折算行数时的单行估算长度：把"剩余字符"换成"还能留几行"
+_ENCODED_LINE_CHARS = 120
 
 #: 固定写进每个包尾的采信规则（§6.4）
 PROVENANCE_NOTE = (
-    "本包内容全部是 Flux 侧存档的工程事实（L0–L2），历史条目为快照；"
+    "本包内容全部是 Flux 侧存档的工程事实，历史条目为快照；"
     "断言不等于事实，动手前请用 workspace.read / workspace.diff 核对磁盘当前状态。"
 )
+
+#: 每类 entry 属于哪个分区（§6.2）：必留区先占预算，可压区才能被编码，可取区只留 ref
+_ZONE_BY_KIND: dict[str, Zone] = {
+    "task": Zone.P0,
+    "brain": Zone.P0,
+    "proposals": Zone.P1,
+    "steps": Zone.P2,
+}
 
 #: 被裁掉的引用 → 取回它的调用提示（§6.3 第三档"只给引用"的消费方）。
 #: 打包器只给引用，agent 需要细节时按提示去取，而不是要求把原文塞进投喂。
@@ -51,20 +68,26 @@ async def package_context(
     *,
     task_id: str | None = None,
     project_id: str | None = None,
-    budget: int = DEFAULT_BUDGET_CHARS,
+    budget: int | None = None,
 ) -> dict[str, Any]:
-    """打一个上下文包。task_id 为空表示只按 project_id（或全工作区）打包。"""
-    if budget <= 0:
+    """打一个上下文包。task_id 为空表示只按 project_id（或全工作区）打包。
+
+    `budget` 为 `None` 时用 §6.1 推导的默认预算（`budget.DEFAULT_BUDGET_CHARS`）。
+    """
+    if budget is not None and budget <= 0:
         raise ValidationError("budget 必须是正整数", details={"budget": budget})
+    ceiling = DEFAULT_BUDGET_CHARS if budget is None else budget
     task_uuid = _parse_uuid(task_id, field="task_id")
     project_uuid = _parse_uuid(project_id, field="project_id")
 
     entries: list[dict[str, Any]] = []
+    query = ""
     if task_uuid is not None:
         task = await container.task_repo.get(task_uuid)
         # 任务自带项目归属时自动带上该项目的 Brain，省掉调用方一次显式传参
         if project_uuid is None and task.project_id is not None:
             project_uuid = task.project_id
+        query = task.description
         entries.append(
             _entry(
                 kind="task",
@@ -95,7 +118,7 @@ async def package_context(
             )
         )
 
-    # L2 只带与本次打包直接相关的提案：有任务就按任务取，否则按项目取。
+    # P1 只带与本次打包直接相关的提案：有任务就按任务取，否则按项目取。
     # 不能两个条件同时下（仓库层是 AND）——提案常常只挂了 task_id 没有 project_id，
     # 那样会被过滤成空；也不能在任务包里顺带拉全项目提案，那正是 §6 要防的跨任务污染。
     if task_uuid is not None:
@@ -106,7 +129,7 @@ async def package_context(
         changes = await container.workspace.list()
     recent = changes[-MAX_CHANGES:]
     if recent:
-        lines = ["# 近期提案（L2，人审队列）"]
+        lines = ["# 近期提案（P1 可压区，人审队列）"]
         for change in recent:
             lines.append(
                 f"- [{change.status}] {change.file_path}"
@@ -122,11 +145,13 @@ async def package_context(
             )
         )
 
-    return _apply_budget(entries, budget=budget, project_id=project_uuid, task_id=task_uuid)
+    return _apply_budget(
+        entries, budget=ceiling, project_id=project_uuid, task_id=task_uuid, query=query
+    )
 
 
 def _entry(*, kind: str, title: str, text: str, ref: str) -> dict[str, Any]:
-    return {"kind": kind, "title": title, "text": text, "ref": ref}
+    return {"kind": kind, "title": title, "text": text, "ref": ref, "zone": _ZONE_BY_KIND[kind]}
 
 
 def _apply_budget(
@@ -135,36 +160,81 @@ def _apply_budget(
     budget: int,
     project_id: uuid.UUID | None,
     task_id: uuid.UUID | None,
+    query: str,
 ) -> dict[str, Any]:
-    """整条保留；第一条就超预算时就地截断（保证调用方至少拿到东西）；其余退化成引用。"""
+    """分级装配（§6.2 / §6.3）。
+
+    必留区（`P0`）先占预算、**一条不减**；可压区（`P1`）装得下就原文（`L1`），
+    装不下才编码（`L2`），编码后仍装不下就整条退化成引用（`L3`）——不做半截截断，
+    半截历史比没有历史更容易误导。
+    """
     kept: list[dict[str, Any]] = []
     dropped: list[str] = []
+    required = sum(len(entry["text"]) for entry in entries if entry["zone"] is Zone.P0)
+    source_chars = sum(len(entry["text"]) for entry in entries)
     used = 0
+    remaining = budget - required
+    #: S5 的账（§5.6「重建一致率」）：`verified` 是跑过的自校验次数，`verified_ok` 是
+    #: 通过的次数。两者不等即为 bug——不过的产物已经作废、整条降级为引用。
+    verified = 0
+    verified_ok = 0
+
     for entry in entries:
+        zone = entry["zone"]
         size = len(entry["text"])
-        remaining = budget - used
-        if size <= remaining:
-            kept.append({**entry, "truncated": False})
+        if zone is Zone.P0:
+            kept.append({**entry, "level": Level.L1, "chars": size})
             used += size
-        elif not kept and remaining > 0:
-            kept.append({**entry, "text": entry["text"][:remaining], "truncated": True})
-            used += remaining
+            continue
+        if zone is Zone.P2:
+            # 可取区（§6.2）：只留 ref，按需 fetch
+            dropped.append(entry["ref"])
+            continue
+        if size <= remaining:
+            kept.append({**entry, "level": Level.L1, "chars": size})
+            used += size
+            remaining -= size
+            continue
+        if remaining > 0:
+            verified += 1
+        encoded = _encode(entry["text"], budget=remaining, query=query)
+        if encoded is not None:
+            verified_ok += 1
+            kept.append({**entry, "text": encoded, "level": Level.L2, "chars": len(encoded)})
+            used += len(encoded)
+            remaining -= len(encoded)
         else:
             dropped.append(entry["ref"])
 
     content = "\n\n".join(f"## {item['title']}\n{item['text']}" for item in kept)
+    metrics = FeedMetrics(
+        source_chars=source_chars,
+        fed_chars=used,
+        # 必留区一条不减（§5.4）：命中率恒 100% 的观测形式就是这两项相等
+        required_total=required,
+        required_kept=required,
+        verified=verified,
+        verified_ok=verified_ok,
+        dropped_count=len(dropped),
+    )
     return {
         "task_id": str(task_id) if task_id else None,
         "project_id": str(project_id) if project_id else None,
         "budget": budget,
+        # 必留区体积与可压区余量：§6.1 公式的账，供调用方核对与观测
+        "required": required,
+        "available": max(0, budget - required),
         "used": used,
+        # §5.6 度量：压缩率 / 必留项命中率 / 重建一致率（另三项在别处量）
+        "metrics": metrics.as_dict(),
         "entries": [
             {
                 "kind": item["kind"],
                 "title": item["title"],
                 "ref": item["ref"],
-                "chars": len(item["text"]),
-                "truncated": item["truncated"],
+                "zone": str(item["zone"]),
+                "level": str(item["level"]),
+                "chars": item["chars"],
             }
             for item in kept
         ],
@@ -177,6 +247,33 @@ def _apply_budget(
         "content": content,
         "note": PROVENANCE_NOTE,
     }
+
+
+def _encode(text: str, *, budget: int, query: str) -> str | None:
+    """P1 溢出自适应编码：S2 结构抽取 → 必要时 S3 抽取式筛选 → S5 自校验（§5.3）。
+
+    全程是**选择**而非生成：产物里每一行都逐字来自原文。三道关都过了才交回产物：
+
+    1. 结构抽取的结果装得下（`len <= budget`）就直接用它；
+    2. 装不下：再按"与当前任务的相关性"筛掉中段——温层先编码、冷层才降级（§6.5）；
+    3. **S5 逐字回验**（`verify`）：不过就作废，返回 `None`，由调用方整条降级为引用。
+
+    "作废"也包含"编码后仍装不下"：宁可不压，不可压错（§5.3 S5 / §6.2）。
+    """
+    if budget <= 0:
+        return None
+    extraction = extract(text)
+    rendered = "\n".join(extraction.lines)
+    if len(rendered) <= budget:
+        candidate = rendered
+    else:
+        limit = max(1, budget // _ENCODED_LINE_CHARS)
+        candidate = "\n".join(select(extraction.lines, query, limit=limit).items)
+    if not candidate or len(candidate) > budget:
+        return None
+    if not verify(text, candidate).ok:
+        return None
+    return candidate
 
 
 def _parse_uuid(value: str | None, *, field: str) -> uuid.UUID | None:
