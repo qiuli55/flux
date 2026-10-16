@@ -10,7 +10,7 @@
 | 1 任务与验收标准 | `HandoffBrief.goal` | 退出方显式声明 |
 | 2 约束 | `HandoffBrief.constraints` | 同上 |
 | 3 已排除方案及原因 | `HandoffBrief.excluded` | 防接管方重走死路 |
-| 4 事实脊柱 | 命令 exit / 文件 hash / 用例名 / URL | §4.3：取自日志，逐字透传 |
+| 4 事实脊柱 | 命令 exit / 文件 hash / 用例名 / URL / 结构化 facts | §4.3：取自日志，逐字透传 |
 | 5 未决问题 | `HandoffBrief.open_questions` | 退出方显式声明 |
 | 6 下一步建议 | `HandoffBrief.next_steps` | 同上 |
 | 7 涉及文件清单 | 文件类词条 → 最新一次出现的 step + hash | 从日志聚合 |
@@ -27,19 +27,17 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from flux.core.context.catalog import render_catalog
 from flux.core.context.index import extract_tokens
-from flux.enums import ContextTokenKind, StepKind
+from flux.core.context.spine import fact_spine
+from flux.enums import ContextTokenKind
 from flux.models.context import ContextStep
 
 #: 事实脊柱里 sha 只露前几位——够核对，又不把一行撑爆（与目录行同一取舍）
 _SHORT_HASH_CHARS = 12
-#: 像 URL 的词：`scheme://host/...`
-_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/?#\s]+")
 #: 未声明的小节占位——不猜、不编
 _UNDECLARED = "（未声明）"
 
@@ -108,16 +106,12 @@ def _bullet_section(number: int, title: str, items: Sequence[str]) -> str:
 
 
 def _spine_section(steps: Sequence[ContextStep]) -> str:
-    """第 4 节：事实脊柱（§4.3）——只收「自带证据」的 step，去重后按发生顺序排列。"""
-    lines: list[str] = []
-    seen: set[str] = set()
-    for step in steps:
-        evidence = _spine_line(step)
-        if evidence and evidence not in seen:
-            seen.add(evidence)
-            lines.append(f"- {evidence}")
-    if not lines:
-        lines = [_UNDECLARED]
+    """第 4 节：事实脊柱（§4.3）——由 `spine.fact_spine` 唯一产出，本文档只负责渲染。
+
+    脊柱行不在这里加工：换行、去重、前缀都在 §4.3 的纯函数里定死，交接文档与目录行
+    取的是同一份结果，第 N 代才能与第 1 代逐字一致。
+    """
+    lines = [f"- {line}" for line in fact_spine(steps)] or [_UNDECLARED]
     return "\n".join(["## 4. 事实脊柱（核对依据）", *lines])
 
 
@@ -166,36 +160,6 @@ def _step_ids_section(steps: Sequence[ContextStep]) -> str:
             "> 这些 id 指向的原文留在原会话，原会话被删即失效；核对应以第 4 节为准。",
         ]
     )
-
-
-def _spine_line(step: ContextStep) -> str | None:
-    """从一个 step 抽出事实脊柱的一行；不是「自带证据」的 step 返回 None（§4.2）。
-
-    只有命令（exit code）、文件操作（内容 hash）、断言（用例名 + 结果）与 URL 算证据；
-    `fact` 之外的叙述性 step 不进脊柱——那正是 §4.3 说的"审核对象"。
-    """
-    status = step.status.upper()
-    url = _url_target(step.target_ref)
-    if url:
-        return f"{url}  {status}"
-    if step.kind == StepKind.COMMAND.value:
-        target = step.target_ref or step.tool or "command"
-        if step.exit_code is not None:
-            return f"{target}  exit={step.exit_code}"
-        return f"{target}  {status}"
-    if step.kind == StepKind.FILE_OP.value and step.result_sha256:
-        target = step.target_ref or "file"
-        return f"{target}  sha256={step.result_sha256[:_SHORT_HASH_CHARS]}"
-    if step.kind == StepKind.ASSERTION.value:
-        return f"{step.target_ref or 'assertion'}  {status}"
-    return None
-
-
-def _url_target(value: str | None) -> str | None:
-    for word in (value or "").split():
-        if _URL_RE.match(word):
-            return word
-    return None
 
 
 def _turn_groups(steps: Sequence[ContextStep]) -> list[tuple[str, list[ContextStep]]]:

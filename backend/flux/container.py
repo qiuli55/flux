@@ -23,8 +23,11 @@ from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
 from flux.core.context.lifecycle import ContextLifecycle
+from flux.core.context.metrics import BackfillObserver
+from flux.core.context.redact import RedactionStore
 from flux.core.context.repository import ContextStepRepository
 from flux.core.context.store import ContentStore
+from flux.core.context.trust import VerificationLedger
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
@@ -92,6 +95,10 @@ class Container:
     context_steps: ContextStepRepository = field(init=False)
     content_store: ContentStore = field(init=False)
     context_lifecycle: ContextLifecycle = field(init=False)
+    context_ledger: VerificationLedger = field(init=False)
+    context_redactions: RedactionStore = field(init=False)
+    # 回补率观测（§6.7）：进程内累积打包给出去的引用数与按需取回次数
+    context_backfill: BackfillObserver = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -220,6 +227,14 @@ class Container:
         self.content_store = ContentStore(self.session_factory)  # type: ignore[attr-defined]
         # 删会话即级联删该 run / turn 的 step、索引与孤儿原文（§8.2，唯一允许丢原文的例外）
         self.context_lifecycle = ContextLifecycle(self.session_factory)  # type: ignore[attr-defined]
+        # 验证账本：按「指纹 × 断言类」记验证结论，信任分级据此判定（§4.4）
+        self.context_ledger = VerificationLedger(self.session_factory)  # type: ignore[attr-defined]
+        # 入站脱敏的映射表：占位符 → 原文，单独加密；无 FLUX_REDACTION_KEY 时不落库（§10.1）
+        self.context_redactions = RedactionStore(
+            self.session_factory, key=self.settings.redaction_key  # type: ignore[attr-defined]
+        )
+        # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
+        self.context_backfill = BackfillObserver()
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""

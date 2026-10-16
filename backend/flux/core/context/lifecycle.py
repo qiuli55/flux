@@ -10,8 +10,9 @@ I2 说"系统永不主动丢弃"，**唯一的例外**是用户删掉整个会�
 | 目录行（若物化） | 未物化：`catalog_line` 是 step 的即时投影，随 step 一起消失 |
 | 反向索引（五类） | `context_step_tokens`（五类只是 `kind` 的取值，同表同删） |
 | 压缩产物 | `context_blobs`（原文 + 编码都在这一行） |
+| 验证账本（§4.4 派生） | `context_verifications`（按 `turn_id` / `run_id` 删） |
 | 快照 / 派生视图缓存 | 无：目录行与打包结果都不落盘，没有缓存要清 |
-| 脱敏映射表 | C 阶段（信任与安全）建表后接进 `delete_turn` / `delete_run` |
+| 脱敏映射表 | `context_redactions`（按 `turn_id` / `run_id` 删；它存的正是秘密，最易漏） |
 
 **为什么不能直接 drop 分区**：§8.2 的实现建议是"按会话分区、级联删除变一次 drop"。
 `context_blobs` 却必须**全局**去重（§8.4：同一份文件 / 日志只存一次），所以 blob 的删除
@@ -28,7 +29,13 @@ from __future__ import annotations
 from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.models.context import ContextBlob, ContextStep, ContextStepToken
+from flux.models.context import (
+    ContextBlob,
+    ContextRedaction,
+    ContextStep,
+    ContextStepToken,
+    ContextVerification,
+)
 
 
 class ContextLifecycle:
@@ -43,6 +50,8 @@ class ContextLifecycle:
         return await self._cascade(
             token_filter=ContextStepToken.turn_id == turn_id,
             step_filter=ContextStep.turn_id == turn_id,
+            verification_filter=ContextVerification.turn_id == turn_id,
+            redaction_filter=ContextRedaction.turn_id == turn_id,
         )
 
     async def delete_run(self, run_id: str) -> dict[str, int]:
@@ -50,6 +59,8 @@ class ContextLifecycle:
         return await self._cascade(
             token_filter=ContextStepToken.run_id == run_id,
             step_filter=ContextStep.run_id == run_id,
+            verification_filter=ContextVerification.run_id == run_id,
+            redaction_filter=ContextRedaction.run_id == run_id,
         )
 
     async def _cascade(
@@ -57,8 +68,10 @@ class ContextLifecycle:
         *,
         token_filter: ColumnElement[bool],
         step_filter: ColumnElement[bool],
+        verification_filter: ColumnElement[bool],
+        redaction_filter: ColumnElement[bool],
     ) -> dict[str, int]:
-        """先删索引与 step，再 GC 掉因此失去引用的 blob；全程一个事务。"""
+        """先删索引、账本与 step，再 GC 掉因此失去引用的 blob；全程一个事务。"""
         async with self._session_factory() as db:
             # 先把要删的 step 引用到的原文 hash 记下来：step 一删就问不出来源了
             candidates = set(
@@ -69,10 +82,22 @@ class ContextLifecycle:
                 )
             )
             tokens = (await db.execute(delete(ContextStepToken).where(token_filter))).rowcount
+            verifications = (
+                await db.execute(delete(ContextVerification).where(verification_filter))
+            ).rowcount
+            redactions = (
+                await db.execute(delete(ContextRedaction).where(redaction_filter))
+            ).rowcount
             steps = (await db.execute(delete(ContextStep).where(step_filter))).rowcount
             blobs = await self._gc_blobs(db, candidates)
             await db.commit()
-            return {"steps": steps, "tokens": tokens, "blobs": blobs}
+            return {
+                "steps": steps,
+                "tokens": tokens,
+                "verifications": verifications,
+                "redactions": redactions,
+                "blobs": blobs,
+            }
 
     async def _gc_blobs(self, db: AsyncSession, shas: set[str | None]) -> int:
         """删除不再被任何 step 引用的 blob（去重后可能被别的 turn 共享，必须复查）。"""

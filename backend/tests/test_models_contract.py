@@ -65,6 +65,13 @@ SPEC_TABLES = {
     # FLUX_CONTEXT_MECHANISM §7.2 的反向索引：文件 / 命令 / URL / 错误关键字 → step_id。
     # 正向 fetch 需要 id，而接管 agent 手里往往只有线索；没有本表回看通道等于没有入口。
     "context_step_tokens",
+    # FLUX_CONTEXT_MECHANISM §4.4 的验证账本：一行 = 一次"某指纹在某类断言上被验证"。
+    # 派生数据（记的是别人验证的结论），随会话级联删除；自增整数主键，理由见
+    # flux/models/context.py 的 ContextVerification 说明。
+    "context_verifications",
+    # FLUX_CONTEXT_MECHANISM §10.1 的脱敏映射表：占位符 → 被换下来的原文，值单独加密。
+    # 本表本身敏感，随会话级联删除（§8.2 / §13-5）。
+    "context_redactions",
 }
 
 

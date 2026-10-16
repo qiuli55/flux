@@ -10,10 +10,15 @@
   故与 I2（原文满保真）不冲突——I3 说的"不压缩"只指语义不压缩。
 - `context_step_tokens`：反向索引词条（§7.2），把"文件 / 命令 / URL / 错误关键字"这类**线索**
   映射回 `step_id`——正向 `fetch` 需要 id，而接管 agent 手里往往只有线索。
+- `context_verifications`：验证账本（§4.4），一行 = 一次"某指纹在某类断言上被验证"。
+  它是**派生数据**（记的是别人验证的结论，不是原文），故随会话一并删除（§8.2）。
+- `context_redactions`：脱敏映射表（§10.1），占位符 → **被换下来的原文**，值单独加密。
+  它本身敏感（存的就是从正文里换下来的秘密），故随会话一并删除（§8.2 / §13-5）。
 
 主键形态（**有意偏离 §11.5**）：step 设计上要求 `step_id` 全局单调有序（§3.3），
 目录行要能写 `#0142`，因此本表用**自增整数**主键，与 `agent_runs` 用非 UUID 主键同一性质。
-契约测试只校验"存在名为 `id` 的主键 + created_at / updated_at"，本表满足。
+验证账本同样需要"按发生顺序排"才能判出连胜与最近一次，故也走自增整数（见该类文档）。
+契约测试只校验"存在名为 `id` 的主键 + created_at / updated_at"，两表都满足。
 """
 
 from __future__ import annotations
@@ -158,4 +163,94 @@ class ContextStepToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "turn_id": self.turn_id,
             "kind": self.kind,
             "token": self.token,
+        }
+
+
+class ContextVerification(TimestampMixin, Base):
+    """验证账本（§4.4）——一行 = 一次"某指纹在某类断言上被验证"。
+
+    账本粒度是**指纹 × 断言类**（§4.4）：同一个 agent 在"命令"上被证伪，不该连累它
+    在"文件 hash"上的信用。故 `agent_fp` 与 `claim_kind` 两列都建索引，判级按这对键取记录。
+
+    **主键同为自增整数**（与 `context_steps` 一样的偏离，理由更硬）：分级要判的是"最近一次
+    是过是败、连胜多长"，因此账本**必须**能按发生顺序排。`created_at` 在 SQLite 上只到秒
+    （`CURRENT_TIMESTAMP`），同一秒内记的多条会并列而排不出先后；换个单调主键，
+    "最近一次"才有唯一答案，分级才不是掷骰子。
+
+    它是**派生数据**：记的是"别人验证了什么结论"，不是原文，所以压缩 / 快照那一套全不适用，
+    只需按 §8.2 随会话级联删除（故带 `run_id` / `turn_id`，与 step / token 同一把删除钥匙）。
+    删除会话后本表必须归零（§13-5），否则"删干净了"就是假的。
+
+    `note` 只记**证伪理由**（为什么判 FAIL），不记通过理由——通过无需解释，证伪才要留痕。
+    """
+
+    __tablename__ = "context_verifications"
+
+    #: 自增主键：账本的发生顺序就是它的顺序（见类文档）
+    id: Mapped[int] = mapped_column(_STEP_ID_TYPE, primary_key=True, autoincrement=True)
+    #: 指纹 `agent_id:model_name`（§4.1），信任分级的对象
+    agent_fp: Mapped[str] = mapped_column(String(160), index=True, default="")
+    #: 取值见 flux.enums.ClaimKind，账本粒度的另一半
+    claim_kind: Mapped[str] = mapped_column(String(16), index=True)
+    #: 取值见 flux.enums.VerificationOutcome
+    outcome: Mapped[str] = mapped_column(String(16), index=True)
+    #: 归属单元：交接 / 信任链跟它走（与 ContextStep 同义）
+    run_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    #: 删除单元：删会话即删该会话所有 turn 的验证记录
+    turn_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    #: 作为证据的那条 step（可空：账本允许先记结论、后补证据）
+    step_id: Mapped[int | None] = mapped_column(_STEP_ID_TYPE, index=True, nullable=True)
+    #: 证伪理由（仅 FAIL 时有值；通过不留痕）
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verification_id": self.id,
+            "agent_fp": self.agent_fp,
+            "claim_kind": self.claim_kind,
+            "outcome": self.outcome,
+            "run_id": self.run_id,
+            "turn_id": self.turn_id,
+            "step_id": self.step_id,
+            "note": self.note,
+            "ts": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ContextRedaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """脱敏映射表（§10.1）——`placeholder → 原文`，值**单独加密**。
+
+    入站即脱敏（§10.1）：正文先打码再存档，被换下来的秘密另存本表。这张表**本身敏感**
+    ——存的正是"从正文里换下来的原文"，一旦跟打码后的正文一起裸奔，打码就白做了。
+    故 `ciphertext` 由 `core/context/secretbox.py` 的信封加密，密钥来自 `FLUX_REDACTION_KEY`；
+    无密钥时**不落库**（fail-closed）：正文照常打码，只是不可回填。
+
+    它随会话级联删除（§8.2 / §13-5）：故带 `run_id` / `turn_id`，与 step / token 同一把删除钥匙。
+    删除会话后本表必须归零——否则"删干净了"就是假的，且残留的还是秘密。
+
+    占位符只在 **turn 内**唯一（跨 turn 会重名），故回填必须同时带 `turn_id`。
+    """
+
+    __tablename__ = "context_redactions"
+
+    #: 归属单元：交接 / 信任链跟它走（与 ContextStep 同义）
+    run_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    #: 删除单元：删会话即删该会话所有 turn 的脱敏映射
+    turn_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    #: 取值见 flux.enums.RedactionKind
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    #: 正文里的占位符（如 `[REDACTED:key]`），回填的钥匙
+    placeholder: Mapped[str] = mapped_column(String(64), index=True)
+    #: 被换下来的原文，**加密存放**（信封见 core/context/secretbox.py）
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+
+    def to_dict(self) -> dict[str, Any]:
+        """刻意**不回显密文与明文**：这张表的形态信息本身就是敏感的，只给元数据。"""
+        return {
+            "redaction_id": str(self.id),
+            "run_id": self.run_id,
+            "turn_id": self.turn_id,
+            "kind": self.kind,
+            "placeholder": self.placeholder,
+            "ciphertext_bytes": len(self.ciphertext),
         }

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     auth_token: str | None = None
     # Electron 桌面端用于“打开文件夹”的一次运行期能力令牌；普通 Web 客户端不能使用。
     desktop_control_token: str | None = None
+    # 脱敏映射表（context_redactions）的加密密钥（FLUX_CONTEXT_MECHANISM §10.1）。
+    # 留空 = 映射不落库（fail-closed）：正文照常打码，只是不可回填。
+    redaction_key: str | None = None
 
     # --- 存储（主规格 §11.1）---
     database_url: str = "sqlite+aiosqlite:///./flux.db"

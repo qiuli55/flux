@@ -10,6 +10,8 @@
 - **分区**（`Zone`）：任务与项目 Brain 是必留区（`P0`，先占预算、一条不减）；
   近期提案是可压区（`P1`，装得下就原文，装不下才走 §5.3 流水线编码）。
 - **等级**（`Level`）：装得下 → `L1` 原文；需编码 → `L2`；落不下 → `L3` 仅 ref。
+- **分层**（`Tier`，§6.5）：按年资分热 / 温 / 冷——装配按**热 → 温 → 冷**占预算，
+  预算吃紧时**温层先编码、冷层最后降级为 ref**，热层永不替换（渐进替换，避免语义断层）。
 
 全程不调模型：编码用 S2 结构抽取（+ 必要时 S3 抽取式筛选），产物先过 S5 逐字自校验
 （对不上就整条作废、降级为引用），再把 §5.6 的度量一并报出（§5.1 / §5.3）。
@@ -23,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from flux.core.context.budget import DEFAULT_BUDGET_CHARS, Level, Zone
 from flux.core.context.compress import extract, select, verify
 from flux.core.context.metrics import FeedMetrics
+from flux.core.context.tiers import Tier, tier_rank
 from flux.errors import ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - 仅为类型标注，避免容器与本模块互相导入
@@ -47,6 +50,15 @@ _ZONE_BY_KIND: dict[str, Zone] = {
     "brain": Zone.P0,
     "proposals": Zone.P1,
     "steps": Zone.P2,
+}
+
+#: 每类 entry 属于哪一层（§6.5）：任务与 Brain 是当轮事实（热，永不替换）；
+#: 近期提案是中段，预算吃紧时先编码；历史 step 是远段，最后才降级为 ref。
+_TIER_BY_KIND: dict[str, Tier] = {
+    "task": Tier.HOT,
+    "brain": Tier.HOT,
+    "proposals": Tier.WARM,
+    "steps": Tier.COLD,
 }
 
 #: 被裁掉的引用 → 取回它的调用提示（§6.3 第三档"只给引用"的消费方）。
@@ -145,13 +157,26 @@ async def package_context(
             )
         )
 
-    return _apply_budget(
+    result = _apply_budget(
         entries, budget=ceiling, project_id=project_uuid, task_id=task_uuid, query=query
     )
+    # 回补率观测（§6.7）：把本次给出去的引用数记进观测账，取回时再记 fetch。
+    # 持续偏高即说明压过头，应回退装配等级——判据由观测账统一给出。
+    observer = container.context_backfill
+    observer.note_offered(result["dropped_count"])
+    result["backfill"] = observer.as_dict()
+    return result
 
 
 def _entry(*, kind: str, title: str, text: str, ref: str) -> dict[str, Any]:
-    return {"kind": kind, "title": title, "text": text, "ref": ref, "zone": _ZONE_BY_KIND[kind]}
+    return {
+        "kind": kind,
+        "title": title,
+        "text": text,
+        "ref": ref,
+        "zone": _ZONE_BY_KIND[kind],
+        "tier": _TIER_BY_KIND[kind],
+    }
 
 
 def _apply_budget(
@@ -167,7 +192,12 @@ def _apply_budget(
     必留区（`P0`）先占预算、**一条不减**；可压区（`P1`）装得下就原文（`L1`），
     装不下才编码（`L2`），编码后仍装不下就整条退化成引用（`L3`）——不做半截截断，
     半截历史比没有历史更容易误导。
+
+    装配次序按层（§6.5）：热 → 温 → 冷。这是**稳定排序**，同层保持调用方给的次序，
+    于是"温层先编码、冷层最后降级"自然成立——先装配的层先吃掉余量，轮到冷层时余量
+    已尽，只能退化成 ref；热层排在最前，故永不落到这一步。
     """
+    entries = sorted(entries, key=lambda entry: tier_rank(entry["tier"]))
     kept: list[dict[str, Any]] = []
     dropped: list[str] = []
     required = sum(len(entry["text"]) for entry in entries if entry["zone"] is Zone.P0)
@@ -233,6 +263,7 @@ def _apply_budget(
                 "title": item["title"],
                 "ref": item["ref"],
                 "zone": str(item["zone"]),
+                "tier": str(item["tier"]),
                 "level": str(item["level"]),
                 "chars": item["chars"],
             }

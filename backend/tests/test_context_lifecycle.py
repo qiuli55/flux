@@ -16,9 +16,22 @@ from dataclasses import dataclass
 import pytest
 
 from flux.config import Settings
-from flux.core.context import ContentStore, ContextLifecycle, ContextStepRepository
+from flux.core.context import (
+    ContentStore,
+    ContextLifecycle,
+    ContextStepRepository,
+    RedactionStore,
+    VerificationLedger,
+    redact,
+)
 from flux.db.session import create_engine, create_session_factory
-from flux.enums import ContextTokenKind, StepKind, StepStatus
+from flux.enums import (
+    ClaimKind,
+    ContextTokenKind,
+    StepKind,
+    StepStatus,
+    VerificationOutcome,
+)
 
 
 @dataclass
@@ -26,11 +39,13 @@ class Harness:
     lifecycle: ContextLifecycle
     steps: ContextStepRepository
     store: ContentStore
+    ledger: VerificationLedger
+    redactions: RedactionStore
 
 
 @pytest.fixture()
 async def harness(settings: Settings, db_schema: None) -> AsyncIterator[Harness]:
-    """一个共享同一 SQLite 库的三件套；用完显式 dispose（范式同 test_context_store）。"""
+    """一个共享同一 SQLite 库的五件套；用完显式 dispose（范式同 test_context_store）。"""
     engine = create_engine(settings.database_url)
     try:
         factory = create_session_factory(engine)
@@ -38,6 +53,9 @@ async def harness(settings: Settings, db_schema: None) -> AsyncIterator[Harness]
             lifecycle=ContextLifecycle(factory),
             steps=ContextStepRepository(factory),
             store=ContentStore(factory),
+            ledger=VerificationLedger(factory),
+            # settings fixture 不设 redaction_key，故这里显式给一把测试密钥
+            redactions=RedactionStore(factory, key="test-redaction-key"),
         )
     finally:
         await engine.dispose()
@@ -84,7 +102,13 @@ async def test_delete_turn_removes_only_that_turn(harness: Harness) -> None:
     counts = await harness.lifecycle.delete_turn("turn-a")
 
     # 一条 step、三条词条（全路径 + basename 的 FILE，程序名的 COMMAND）、一个孤儿 blob
-    assert counts == {"steps": 1, "tokens": 3, "blobs": 1}
+    assert counts == {
+        "steps": 1,
+        "tokens": 3,
+        "verifications": 0,
+        "redactions": 0,
+        "blobs": 1,
+    }
     assert await harness.steps.list_by_turn("turn-a") == []
     remaining = await harness.steps.list_by_turn("turn-b")
     assert len(remaining) == 1
@@ -138,13 +162,21 @@ async def test_delete_is_idempotent(harness: Harness) -> None:
     second = await harness.lifecycle.delete_turn("turn-a")
 
     assert first["steps"] == 1
-    assert second == {"steps": 0, "tokens": 0, "blobs": 0}
+    assert second == {
+        "steps": 0,
+        "tokens": 0,
+        "verifications": 0,
+        "redactions": 0,
+        "blobs": 0,
+    }
 
 
 async def test_delete_unknown_turn_is_noop(harness: Harness) -> None:
     assert await harness.lifecycle.delete_turn("never-existed") == {
         "steps": 0,
         "tokens": 0,
+        "verifications": 0,
+        "redactions": 0,
         "blobs": 0,
     }
 
@@ -185,3 +217,45 @@ async def test_delete_run_clears_reverse_index(harness: Harness) -> None:
 
     assert await harness.steps.tokens_of(step_a) == []
     assert await harness.steps.lookup(token="a.py", kind=ContextTokenKind.FILE) == []
+
+
+async def test_delete_run_clears_verification_ledger(harness: Harness) -> None:
+    """验证账本是派生数据，也必须随会话删干净（§8.2 / §13-5）。"""
+    await _seed(harness, text="a\n", run_id="run-1", turn_id="turn-a", target_ref="a.py")
+    await _seed(harness, text="b\n", run_id="run-2", turn_id="turn-b", target_ref="b.py")
+    for run_id, turn_id in (("run-1", "turn-a"), ("run-2", "turn-b")):
+        await harness.ledger.record(
+            agent_fp="claude:opus",
+            claim_kind=ClaimKind.TEST,
+            outcome=VerificationOutcome.PASS,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+
+    counts = await harness.lifecycle.delete_run("run-1")
+
+    assert counts["verifications"] == 1
+    # 别的 run 的记录不受影响
+    assert len(await harness.ledger.records_of("claude:opus", ClaimKind.TEST)) == 1
+
+
+async def test_delete_run_clears_redaction_mapping(harness: Harness) -> None:
+    """脱敏映射表存的正是秘密，也必须随会话删干净（§8.2 / §13-5）。"""
+    await _seed(harness, text="a\n", run_id="run-1", turn_id="turn-a", target_ref="a.py")
+    await _seed(harness, text="b\n", run_id="run-2", turn_id="turn-b", target_ref="b.py")
+    for run_id, turn_id, secret in (
+        ("run-1", "turn-a", "sk-abcdefghijklmnop"),
+        ("run-2", "turn-b", "sk-zyxwvutsrqponmlk"),
+    ):
+        result = redact(f"token={secret}")
+        written = await harness.redactions.record(
+            run_id=run_id, turn_id=turn_id, matches=result.matches
+        )
+        assert written == 1
+
+    counts = await harness.lifecycle.delete_run("run-1")
+
+    assert counts["redactions"] == 1
+    # turn-a 的映射随会话消失，turn-b 的原样保留
+    assert await harness.redactions.resolve("turn-a", "[REDACTED:key]") is None
+    assert await harness.redactions.resolve("turn-b", "[REDACTED:key]") == "sk-zyxwvutsrqponmlk"

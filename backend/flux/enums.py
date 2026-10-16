@@ -361,3 +361,63 @@ class ContextTokenKind(StrEnum):
     COMMAND = "command"
     URL = "url"
     ERROR = "error"
+
+
+class ClaimKind(StrEnum):
+    """被验证的断言类别（FLUX_CONTEXT_MECHANISM §4.4）。
+
+    §4.4 的账本按「**指纹 × 断言类**」记账——同一个 agent 在"我能跑通测试"上可信，
+    不代表它在"我改的文件没破坏别的模块"上也可信。分类依据是"拿什么证据核"，
+    与 §4.2 的证据四类同源，故两边可以互相转译。
+    """
+
+    COMMAND = "command"
+    TEST = "test"
+    FILE = "file"
+    URL = "url"
+
+
+class VerificationOutcome(StrEnum):
+    """一次验证的结论（§4.4）。
+
+    只有两种：通过、或**没通过**。"没通过"既包含"断言是错的"，也包含"被抓到造假"——
+    §4.4 的降级规则对两者一视同仁（都回落 L0），细分反而会让规则变糊。
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class TrustLevel(StrEnum):
+    """信任分级（§4.4）——"不信任"是默认起点，但必须是**动态量**。
+
+    常量式的不信任等于每次接手全量重验，成本一爆，人最后就干脆盲信——这是必然后果，
+    不是可能。故引入账本让信任能**长回来**，也能一次被抓就**摔回去**（回落 L0）。
+    """
+
+    #: 新指纹 / 曾被证伪 → 全量重验
+    L0 = "l0"
+    #: 最近一次验证通过，但还没到"稳定" → 抽查
+    L1 = "l1"
+    #: 稳定 → 只验关键项
+    L2 = "l2"
+    #: 长期稳定 → 采信但留痕
+    L3 = "l3"
+
+
+class RedactionKind(StrEnum):
+    """context_redactions.kind：入站脱敏的标记类别（FLUX_CONTEXT_MECHANISM §10.1）。
+
+    取值与占位符一一对应（`[REDACTED:<value>]`），也是映射表的分类键。同一类可能
+    出现多个**不同**原文，故占位符按类递增编号（`[REDACTED:key]`、`[REDACTED:key:2]`…），
+    映射因此始终 1:1。
+    """
+
+    #: `sk-…` 一类的密钥；熵检测捞到的无前缀密钥也归这里（"key"是兜底的密钥标记）
+    KEY = "key"
+    #: `-----BEGIN …-----END …-----` 的 PEM 私钥 / 证书块
+    PEM = "pem"
+    #: `Bearer …` 一类的令牌
+    TOKEN = "token"
+    #: `user:pass@host` 里的认证段（`@host` 保留，不打码）
+    CRED = "cred"

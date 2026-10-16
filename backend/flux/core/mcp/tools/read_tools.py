@@ -149,6 +149,8 @@ async def context_fetch(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
     stop = min(stop, start + budget)
     chunk = text[start:stop]
     truncated = stop < total
+    # 回补率观测（§6.7）：真的把原文交回给 agent 才算一次回补，异常路径不计
+    ctx.container.context_backfill.note_fetched()
     return {
         "step_id": step.id,
         "catalog_line": catalog_line(step),

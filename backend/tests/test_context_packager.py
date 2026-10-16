@@ -20,9 +20,13 @@ import pytest
 
 from flux.config import Settings
 from flux.container import Container
+from flux.core.context.budget import Zone
+from flux.core.context.tiers import Tier
 from flux.core.mcp.context_packager import (
     DEFAULT_BUDGET_CHARS,
     PROVENANCE_NOTE,
+    _apply_budget,
+    _entry,
     package_context,
 )
 from flux.core.virtual_workspace.service import EXPIRE_REASON_TIMEOUT
@@ -114,6 +118,8 @@ async def test_pack_carries_l1_l0_l2_with_provenance(ctx_container: Container) -
         ("brain", "P0", "L1"),
         ("proposals", "P1", "L1"),
     ]
+    # 分层（§6.5）：任务与 Brain 是当轮事实（热层，永不替换），提案是中段温层（吃紧时先编码）
+    assert [entry["tier"] for entry in pack["entries"]] == ["hot", "hot", "warm"]
     # 预算账（§6.1）：必留区 + 余量；装得下时 used 不超预算
     assert pack["required"] == sum(
         entry["chars"] for entry in pack["entries"] if entry["zone"] == "P0"
@@ -125,6 +131,8 @@ async def test_pack_carries_l1_l0_l2_with_provenance(ctx_container: Container) -
     assert pack["used"] <= pack["budget"]
     assert pack["dropped_count"] == 0 and pack["dropped_refs"] == []
     assert pack["dropped"] == []
+    # 回补率观测（§6.7）：本次一条没裁，给出去的引用数为 0
+    assert pack["backfill"] == {"offered": 0, "fetched": 0, "rate": 0.0, "rollback": False}
     # §5.6 度量：必留项一条不漏、S5 一次不差，两条红线都在（另三项在别处量）
     assert pack["metrics"]["required_hit_rate"] == 1.0
     assert pack["metrics"]["reconstruction_rate"] == 1.0
@@ -152,6 +160,9 @@ async def test_required_zone_is_never_trimmed_even_when_budget_is_tight(
     # 余量为零：提案既装不下原文、也无字符可供编码，于是整条退化成 L3 引用
     assert pack["dropped_count"] == 1
     assert pack["metrics"]["dropped_count"] == 1
+    # 回补率观测（§6.7）：裁掉 1 条即给出 1 个引用，尚无取回
+    assert pack["backfill"]["offered"] == 1
+    assert pack["backfill"]["fetched"] == 0
     assert pack["dropped_refs"] and all(":" in ref for ref in pack["dropped_refs"])
     assert "todo_service/store.py" not in pack["content"]
     # 每条被裁引用都配一个取回提示：第三档降级有消费方，不再是断的（§7.1 / §11 / §13-3）
@@ -216,3 +227,81 @@ async def test_pack_without_task_only_carries_project_facts(ctx_container: Conta
     assert [entry["kind"] for entry in pack["entries"]] == ["brain", "proposals"]
     assert "不该出现在包里的任务" not in pack["content"]
     assert "todo_service/store.py" in pack["content"]
+
+
+def test_apply_budget_orders_hot_then_warm_then_cold() -> None:
+    """装配次序按层（§6.5）：即便调用方逆序传入，输出也按 热 → 温 → 冷 归位。
+
+    这是**稳定排序**的直接判据——没有它，输出次序就会跟着调用方给的次序走。
+    """
+    entries = [
+        _entry(kind="steps", title="远段", text="c" * 10, ref="steps:1"),
+        _entry(kind="proposals", title="中段", text="w" * 10, ref="proposals:1"),
+        _entry(kind="task", title="任务", text="t" * 10, ref="task:1"),
+        _entry(kind="brain", title="项目", text="b" * 10, ref="brain:1"),
+    ]
+
+    result = _apply_budget(entries, budget=10_000, project_id=None, task_id=None, query="")
+
+    assert [(entry["kind"], entry["tier"]) for entry in result["entries"]] == [
+        ("task", "hot"),
+        ("brain", "hot"),
+        ("proposals", "warm"),
+    ]
+    # 远段是可选区（P2）：只留 ref，不占投喂
+    assert result["dropped_refs"] == ["steps:1"]
+
+
+def test_apply_budget_prefers_warm_over_cold_under_pressure() -> None:
+    """预算只够装一条时，温层先占（§6.5）：冷层最后才降级为 ref。
+
+    把温 / 冷两条都放进可压区（P1），"谁先吃预算"才由**层**而非分区决定；调用方故意
+    把冷层排在前面，证明归位靠的是排序而不是传入次序。
+    """
+    warm = {
+        "kind": "proposals",
+        "title": "中段",
+        "text": "w" * 600,
+        "ref": "proposals:warm",
+        "zone": Zone.P1,
+        "tier": Tier.WARM,
+    }
+    cold = {
+        "kind": "proposals",
+        "title": "远段",
+        "text": "c" * 600,
+        "ref": "proposals:cold",
+        "zone": Zone.P1,
+        "tier": Tier.COLD,
+    }
+
+    result = _apply_budget([cold, warm], budget=600, project_id=None, task_id=None, query="")
+
+    assert [(entry["ref"], entry["tier"], entry["level"]) for entry in result["entries"]] == [
+        ("proposals:warm", "warm", "L1")
+    ]
+    assert result["dropped_refs"] == ["proposals:cold"]
+
+
+def test_apply_budget_encodes_warm_and_drops_cold() -> None:
+    """温层装不下就先编码（L2），冷层留着最后降级为 ref——不半截截断（§5.3 / §6.5）。"""
+    sample = "\n".join(
+        f"- [proposed] todo_service/store_{index}.py（+1/-1，1 个改动块） id={index}"
+        for index in range(40)
+    )
+    entries = [
+        _entry(kind="proposals", title="中段", text=sample, ref="proposals:sample"),
+        _entry(kind="steps", title="远段", text="c" * 2_000, ref="steps:1"),
+    ]
+
+    result = _apply_budget(entries, budget=1_000, project_id=None, task_id=None, query="改 store")
+
+    # 温层过 S5 自校验后以编码形态（L2）留下；冷层是可选区，只留 ref
+    assert [(entry["kind"], entry["tier"], entry["level"]) for entry in result["entries"]] == [
+        ("proposals", "warm", "L2")
+    ]
+    assert result["entries"][0]["chars"] <= 1_000
+    assert result["dropped_refs"] == ["steps:1"]
+    # §5.6 红线：跑过的自校验一次不差
+    assert result["metrics"]["reconstruction_rate"] == 1.0
+    assert result["metrics"]["healthy"] is True
