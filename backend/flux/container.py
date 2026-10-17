@@ -245,6 +245,9 @@ class Container:
             self.session_factory,
             key=self.settings.redaction_key,  # type: ignore[attr-defined]
         )
+        # 终端事件的 command/chunk 落库前过同一套入站脱敏（§10.1）；此处补装配，
+        # 因 TerminalService 先于 RedactionStore 构造。
+        self.terminal.redactions = self.context_redactions
         # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
         self.context_backfill = BackfillObserver()
 

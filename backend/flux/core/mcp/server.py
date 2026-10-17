@@ -21,9 +21,11 @@ from fastapi.responses import JSONResponse
 from flux.api.deps import get_container
 from flux.api.response import fail
 from flux.container import Container
+from flux.core.context.redact import redact
 from flux.core.event.bus import Events
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools import ALL_TOOLS, TOOLS, ToolContext, ToolSpec
+from flux.enums import StepKind, StepStatus
 from flux.errors import AIOSError, AuthenticationError
 from flux.logging import get_logger
 from flux.version import VERSION
@@ -149,7 +151,44 @@ class McpServer:
         await self._publish(Events.MCP_TOOL_CALLED, identity, spec)
         # 审计轨迹：谁（agent/token）调了哪个工具、成没成，落一行日志（入参不落，可能含整份文件）
         logger.info("MCP 工具调用成功 agent=%s tool=%s", identity.agent_id, name)
+        # 上下文摄入（FLUX_CONTEXT_MECHANISM §3.3 / §10.1）：只有能归属到 Run 才写库，且 best-effort。
+        await self._ingest_context(identity, spec, data)
         return _result(request_id, _tool_text(data))
+
+    async def _ingest_context(
+        self, identity: AgentIdentity, spec: ToolSpec, data: dict[str, Any]
+    ) -> None:
+        """把成功的工具结果摄入上下文：redact → CAS 原文 → step 落库 → 脱敏映射（§10.1 契约）。
+
+        归属键 `run_id` 来自 `X-Flux-Run-Id`（可为 None ⇒ 无法归属到 Run，整段跳过，不写库）。
+        当前上下文机制没有 turn 粒度，`turn_id` 暂以 `run_id` 近似（占位符/删除走同一把钥匙）。
+        摄入是 **best-effort**：任何一步失败只记 warning，绝不改变工具对外结果。
+        """
+        run_id = identity.run_id
+        if run_id is None:
+            return
+        try:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+            result = redact(text)
+            body = result.text.encode("utf-8")
+            blob = await self._container.content_store.put(body)
+            await self._container.context_steps.append(
+                run_id=run_id,
+                turn_id=run_id,
+                kind=StepKind.TOOL_CALL,
+                status=StepStatus.OK,
+                tool=spec.name,
+                result_sha256=blob.sha256,
+                result_bytes=len(body),
+                result_head=result.text[:512],
+            )
+            await self._container.context_redactions.record(
+                run_id=run_id, turn_id=run_id, matches=result.matches
+            )
+        except Exception:  # noqa: BLE001 - 工具边界不允许因摄入失败而失败
+            logger.warning(
+                "MCP 上下文摄入失败 tool=%s run=%s", spec.name, run_id, exc_info=True
+            )
 
     async def _publish(
         self,

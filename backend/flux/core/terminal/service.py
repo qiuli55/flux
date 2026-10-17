@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from flux.core.agent_runtime import platforms
+from flux.core.context.redact import RedactionMatch, RedactionStore, redact
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
@@ -82,10 +83,13 @@ class TerminalService:
         bus: EventBus | None = None,
         *,
         workspace_root: str | Path | None = None,
+        redactions: RedactionStore | None = None,
     ) -> None:
         self._repo = repository
         self._bus = bus
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
+        #: 入站脱敏映射表（§10.1）：command/chunk 落库前先打码，换下来的原文进此表；无密钥时不落库
+        self._redactions = redactions
         #: 正在跑的进程（会话 ID → Popen），Stop 与 shutdown 都从这里找
         self._processes: dict[str, subprocess.Popen[str]] = {}
         #: 正在执行的命令 task；Stop 必须等它写完 command.finished/failed 再关闭会话。
@@ -107,6 +111,15 @@ class TerminalService:
     @workspace_root.setter
     def workspace_root(self, value: str | Path | None) -> None:
         self._configured_root = Path(value).expanduser() if value else None
+
+    @property
+    def redactions(self) -> RedactionStore | None:
+        """入站脱敏映射表；由 Container 装配注入（构造顺序在 TerminalService 之后）。"""
+        return self._redactions
+
+    @redactions.setter
+    def redactions(self, value: RedactionStore | None) -> None:
+        self._redactions = value
 
     # --- 会话 ---
 
@@ -282,9 +295,20 @@ class TerminalService:
         if task is None:
             raise RuntimeError("Terminal command must run inside an asyncio task")
         key = str(session.id)
+        # 会话级一次性取值：run_id 可能为 None → 回退用会话 id；turn_id 即会话 id。
+        # 逐行输出的热路径（_pump_output）只转发这两个值，不再查库（§10.1）。
+        run_id = str(session.run_id) if session.run_id is not None else key
+        turn_id = key
         self._command_tasks[key] = task
         try:
-            await self._emit(session.id, TerminalEventKind.COMMAND_STARTED, source, command=command)
+            await self._emit(
+                session.id,
+                TerminalEventKind.COMMAND_STARTED,
+                source,
+                command=command,
+                run_id=run_id,
+                turn_id=turn_id,
+            )
             loop = asyncio.get_running_loop()
             process = subprocess.Popen(  # noqa: S602 - 终端本身就是为了执行命令（用户/Agent 主动发起）
                 command,
@@ -303,7 +327,9 @@ class TerminalService:
             except Exception:  # noqa: BLE001 - 记账失败不能拖垮命令执行
                 logger.warning("记录命令进程组 id 失败 session=%s", session.id, exc_info=True)
             try:
-                await asyncio.to_thread(self._pump_output, loop, session.id, process, source)
+                await asyncio.to_thread(
+                    self._pump_output, loop, session.id, process, source, run_id, turn_id
+                )
                 exit_code = await asyncio.to_thread(process.wait)
             finally:
                 self._processes.pop(key, None)
@@ -323,6 +349,8 @@ class TerminalService:
                 source,
                 command=command,
                 exit_code=exit_code,
+                run_id=run_id,
+                turn_id=turn_id,
             )
         finally:
             self._command_tasks.pop(key, None)
@@ -333,6 +361,8 @@ class TerminalService:
         session_id: uuid.UUID,
         process: subprocess.Popen[str],
         source: TerminalSource,
+        run_id: str,
+        turn_id: str,
     ) -> None:
         """工作线程按行读输出 → 回事件循环落库（保证输出顺序与 seq 一致）。"""
         stream = process.stdout
@@ -341,7 +371,15 @@ class TerminalService:
         try:
             for line in iter(stream.readline, ""):
                 future = asyncio.run_coroutine_threadsafe(
-                    self._emit(session_id, TerminalEventKind.OUTPUT, source, chunk=line), loop
+                    self._emit(
+                        session_id,
+                        TerminalEventKind.OUTPUT,
+                        source,
+                        chunk=line,
+                        run_id=run_id,
+                        turn_id=turn_id,
+                    ),
+                    loop,
                 )
                 future.result()
         finally:
@@ -582,7 +620,20 @@ class TerminalService:
         command: str | None = None,
         chunk: str | None = None,
         exit_code: int | None = None,
+        run_id: str | None = None,
+        turn_id: str | None = None,
     ) -> TerminalEvent:
+        # 入站脱敏（§10.1）：落库与广播共用同一份打码后的文本，杜绝"历史已打码、实时未打码"。
+        # 打码是纯函数、零模型依赖；无密钥时只是换下来的原文不落映射表（fail-closed）。
+        matches: list[RedactionMatch] = []
+        if command is not None:
+            command_result = redact(command)
+            command = command_result.text
+            matches.extend(command_result.matches)
+        if chunk is not None:
+            chunk_result = redact(chunk)
+            chunk = chunk_result.text
+            matches.extend(chunk_result.matches)
         async with self._emit_lock:
             event = await self._repo.append_event(
                 session_id,
@@ -594,4 +645,12 @@ class TerminalService:
             )
         if self._bus is not None:
             await self._bus.publish(Events.TERMINAL_EVENT, event.to_dict())
+        if matches and self._redactions is not None:
+            # 映射留痕 best-effort：失败不影响事件已经落库/广播（无密钥时 record 返回 0）。
+            with contextlib.suppress(Exception):
+                await self._redactions.record(
+                    run_id=run_id or str(session_id),
+                    turn_id=turn_id or str(session_id),
+                    matches=matches,
+                )
         return event

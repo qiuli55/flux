@@ -29,6 +29,8 @@ node_modules/
 dist/
 build/
 out/
+# TypeScript 增量构建缓存（tsc --incremental 产物，不入库）
+*.tsbuildinfo
 
 # --- 编辑器与系统 ---
 .idea/
