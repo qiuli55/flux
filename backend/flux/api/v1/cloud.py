@@ -83,11 +83,33 @@ def _token_payload(session: CloudSession) -> dict[str, object]:
 
 @router.get("/session", summary="查询本机账号云登录状态与登录入口")
 async def cloud_session(settings: Settings = Depends(get_settings_dep)) -> dict[str, object]:
+    await _refresh_if_expired(settings)
     payload = _user_payload(settings)
     secret_ok = bool((settings.cloud_secret_key or "").strip())
     payload["configured"] = secret_ok or settings.cloud_login_required
     payload["login_url"] = _login_url(settings)
     return ok(payload)
+
+
+async def _refresh_if_expired(settings: Settings) -> None:
+    """本机存有 refresh token 时，access token 一过期就先续期再回报状态。
+
+    账号云的 access token 只有 30 分钟有效期；不续期的话，用户每半小时就会被
+    桌面端踢回登录闸门。refresh token 是本机持有的一次性凭据，续期不改变
+    /cloud/exchange 的语义。续期失败（凭据失效 / 账号云不可达）则保持原样，
+    让前端走重新登录。
+    """
+    session = load_session(settings.cloud_session_path)
+    if session is None or not session.expired or not session.refresh_token:
+        return
+
+    try:
+        client = CloudClient(settings.cloud_base_url)
+        refreshed = await client.refresh(session.refresh_token)
+    except (CloudError, httpx.HTTPError):
+        return
+
+    save_session(settings.cloud_session_path, refreshed)
 
 
 @router.post("/exchange", summary="用一次性登录码换取本机账号云会话")
