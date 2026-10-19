@@ -27,4 +27,5 @@ public sealed record DshStatus(
     string? Home,
     string? Workspace,
     string? Provider,
-    string? Model);
+    string? Model,
+    DshMcp? Mcp);

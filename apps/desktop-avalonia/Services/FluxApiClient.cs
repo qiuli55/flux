@@ -43,6 +43,27 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<DshStatus>?> DshStatusAsync(CancellationToken ct = default)
         => GetAsync<DshStatus>("/api/v1/dsh/status", ct);
 
+    public Task<ApiEnvelope<ReadyInfo>?> ReadyAsync(CancellationToken ct = default)
+        => GetAsync<ReadyInfo>("/api/v1/health/ready", ct);
+
+    public Task<ApiEnvelope<WorkspaceRootInfo>?> WorkspaceRootAsync(CancellationToken ct = default)
+        => GetAsync<WorkspaceRootInfo>("/api/v1/workspace/root", ct);
+
+    public Task<ApiEnvelope<List<Installation>>?> ListInstallationsAsync(CancellationToken ct = default)
+        => GetAsync<List<Installation>>("/api/v1/installations", ct);
+
+    public Task<ApiEnvelope<List<ImportedCapability>>?> ListCapabilitiesAsync(CancellationToken ct = default)
+        => GetAsync<List<ImportedCapability>>("/api/v1/capabilities", ct);
+
+    public Task<ApiEnvelope<CapabilityScanReport>?> ScanCapabilitiesAsync(CancellationToken ct = default)
+        => PostAsync<CapabilityScanReport>("/api/v1/capabilities/scan", new { }, ct);
+
+    public Task<ApiEnvelope<CapabilityImportResult>?> ImportCapabilityAsync(
+        string kind,
+        string name,
+        CancellationToken ct = default)
+        => PostAsync<CapabilityImportResult>("/api/v1/capabilities/import", new { kind, name }, ct);
+
     public Task<ApiEnvelope<List<Project>>?> ListProjectsAsync(CancellationToken ct = default)
         => GetAsync<List<Project>>("/api/v1/projects", ct);
 

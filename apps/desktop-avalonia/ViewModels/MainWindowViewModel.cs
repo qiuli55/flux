@@ -93,6 +93,14 @@ public partial class MainWindowViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(IsIdeMode))]
     private bool _isSoloMode = true;
 
+    /// <summary>显示底部状态栏（web 端 prefs.statusbar）。</summary>
+    [ObservableProperty]
+    private bool _isStatusBarVisible = true;
+
+    /// <summary>减少动效：关掉状态栏脉冲动画（web 端 prefs.reduceMotion）。</summary>
+    [ObservableProperty]
+    private bool _isReduceMotion;
+
     [ObservableProperty]
     private bool _isPaletteOpen;
 
@@ -107,6 +115,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel()
     {
+        // 界面偏好先读盘再建导航，避免首帧闪一下再切换
+        var prefs = UiPrefs.Load();
+        _isRailWide = prefs.RailWide;
+        _isStatusBarVisible = prefs.StatusBar;
+        _isReduceMotion = prefs.ReduceMotion;
+
         Account = new AccountViewModel
         {
             LoginCommand = LoginCommand,
@@ -315,9 +329,9 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, new TasksViewModel(() => _api, NavigateTo), "layers") { ActivateCommand = ActivateCommand });
-        NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, Placeholder("Skills", "Skills 管理将在 M2 实现。"), "puzzle") { ActivateCommand = ActivateCommand });
-        NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, Placeholder("系统诊断", "系统诊断将在 M2 实现。"), "activity") { ActivateCommand = ActivateCommand });
-        NavItems.Add(new NavItem("settings", "设置", GroupPlatform, Placeholder("设置", "设置页将在 M2 实现。"), "settings") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, new SkillsViewModel(() => _api), "puzzle") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, new DiagnosticsViewModel(() => _api), "activity") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("settings", "设置", GroupPlatform, new SettingsViewModel(() => _api, this), "settings") { ActivateCommand = ActivateCommand });
     }
 
     private void BuildTools()
@@ -394,6 +408,15 @@ public partial class MainWindowViewModel : ViewModelBase
             case TasksViewModel tasks:
                 _ = tasks.RefreshAsync();
                 break;
+            case SkillsViewModel skills:
+                _ = skills.RefreshAsync();
+                break;
+            case DiagnosticsViewModel diagnostics:
+                _ = diagnostics.RefreshAsync();
+                break;
+            case SettingsViewModel settings:
+                _ = settings.RefreshAsync();
+                break;
         }
     }
 
@@ -431,7 +454,27 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand]
     private void ToggleRailWide() => IsRailWide = !IsRailWide;
 
-    partial void OnIsRailWideChanged(bool value) => ApplyRailCompact();
+    partial void OnIsRailWideChanged(bool value)
+    {
+        ApplyRailCompact();
+        SavePrefs();
+    }
+
+    partial void OnIsStatusBarVisibleChanged(bool value) => SavePrefs();
+
+    partial void OnIsReduceMotionChanged(bool value) => SavePrefs();
+
+    /// <summary>把三个界面偏好恢复默认（设置页的「重置」用）。</summary>
+    [RelayCommand]
+    public void ResetPrefs()
+    {
+        IsRailWide = UiPrefs.Defaults.RailWide;
+        IsStatusBarVisible = UiPrefs.Defaults.StatusBar;
+        IsReduceMotion = UiPrefs.Defaults.ReduceMotion;
+    }
+
+    private void SavePrefs() =>
+        UiPrefs.Save(new UiPrefsData(IsRailWide, IsStatusBarVisible, IsReduceMotion));
 
     [RelayCommand]
     private void OpenPalette()

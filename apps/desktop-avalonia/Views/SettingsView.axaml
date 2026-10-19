@@ -1,0 +1,183 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:v="using:Flux.Desktop.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.SettingsView"
+             x:DataType="vm:SettingsViewModel">
+
+    <Panel>
+        <ScrollViewer>
+            <StackPanel Margin="32,32,40,32">
+
+                <StackPanel Margin="0,0,0,24">
+                    <TextBlock Classes="page-title" Text="设置" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="界面偏好即时生效并保存在本机；工作区信息来自后端，只读。" />
+                </StackPanel>
+
+                <Grid ColumnDefinitions="190,*" ColumnSpacing="24">
+
+                    <!-- 左侧分栏 -->
+                    <StackPanel Grid.Column="0">
+                        <Grid>
+                            <Button Classes="set-nav" Classes.active="{Binding IsAppearance}"
+                                    Content="外观" Command="{Binding SelectTabCommand}" CommandParameter="appearance" />
+                            <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="{DynamicResource TnAccent}"
+                                    IsVisible="{Binding IsAppearance}" />
+                        </Grid>
+                        <Grid>
+                            <Button Classes="set-nav" Classes.active="{Binding IsWorkspace}"
+                                    Content="工作区" Command="{Binding SelectTabCommand}" CommandParameter="workspace" />
+                            <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="{DynamicResource TnAccent}"
+                                    IsVisible="{Binding IsWorkspace}" />
+                        </Grid>
+                        <Grid>
+                            <Button Classes="set-nav" Classes.active="{Binding IsAbout}"
+                                    Content="关于" Command="{Binding SelectTabCommand}" CommandParameter="about" />
+                            <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="{DynamicResource TnAccent}"
+                                    IsVisible="{Binding IsAbout}" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- 外观 -->
+                    <Border Grid.Column="1" Classes="card pad" IsVisible="{Binding IsAppearance}">
+                        <StackPanel>
+                            <StackPanel Margin="0,0,0,8">
+                                <TextBlock Classes="section-title" Text="外观" />
+                                <TextBlock Text="这些选项会立即作用到当前界面。" FontSize="12" Margin="0,3,0,0"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+                            <StackPanel>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="展开侧栏" FontSize="12" FontWeight="SemiBold" />
+                                        <TextBlock Text="显示导航项文字；关闭则只显示图标。" FontSize="11"
+                                                   Margin="0,3,0,0" Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <v:FluxSwitch Grid.Column="1" VerticalAlignment="Center"
+                                                  IsOn="{Binding RailWide, Mode=TwoWay}" />
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="显示底部状态栏" FontSize="12" FontWeight="SemiBold" />
+                                        <TextBlock Text="展示后端健康、引擎模型与工作区路径。" FontSize="11"
+                                                   Margin="0,3,0,0" Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <v:FluxSwitch Grid.Column="1" VerticalAlignment="Center"
+                                                  IsOn="{Binding StatusBar, Mode=TwoWay}" />
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="减少动效" FontSize="12" FontWeight="SemiBold" />
+                                        <TextBlock Text="关闭状态栏脉冲等动画，适合弱设备或晕动敏感。" FontSize="11"
+                                                   Margin="0,3,0,0" Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <v:FluxSwitch Grid.Column="1" VerticalAlignment="Center"
+                                                  IsOn="{Binding ReduceMotion, Mode=TwoWay}" />
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 工作区 -->
+                    <Border Grid.Column="1" Classes="card pad" IsVisible="{Binding IsWorkspace}">
+                        <StackPanel>
+                            <StackPanel Margin="0,0,0,16">
+                                <TextBlock Classes="section-title" Text="工作区" />
+                                <TextBlock Text="由后端环境变量决定，前端只读。" FontSize="12" Margin="0,3,0,0"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+                            <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="工作区根" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding WorkspaceRoot}"
+                                           Classes="mono" FontSize="12" Margin="0,0,0,12"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="API 前缀" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ApiPrefix}"
+                                           Classes="mono" FontSize="12" Margin="0,0,0,12"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="认证方式" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="单一共享 Token（本地单用户）"
+                                           Classes="mono" FontSize="12" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 关于 -->
+                    <Border Grid.Column="1" Classes="card pad" IsVisible="{Binding IsAbout}">
+                        <StackPanel>
+                            <StackPanel Margin="0,0,0,16">
+                                <TextBlock Classes="section-title" Text="关于" />
+                                <TextBlock Text="Flux · AI 研发工作台（desktop-avalonia / 全局外壳 v2）。"
+                                           FontSize="12" Margin="0,3,0,0"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+                            <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="界面" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="Flux Console v2"
+                                           Classes="mono" FontSize="12" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="客户端" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="C# · Avalonia"
+                                           Classes="mono" FontSize="12" Margin="0,0,0,12" />
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="默认视图" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1"
+                                           Text="概览 / Solo 执行 / IDE 工作台 / 任务 / Skills / 系统诊断"
+                                           Classes="mono" FontSize="12" TextWrapping="Wrap" />
+                            </Grid>
+
+                            <Grid ColumnDefinitions="*,Auto" Margin="0,24,0,0">
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="重置本地界面偏好" FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Text="清除本机保存的侧栏宽度、状态栏与动效设置，恢复默认。"
+                                               FontSize="11" Margin="0,3,0,0"
+                                               Foreground="{DynamicResource TnText4}" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Classes="btn danger" Content="重置"
+                                        VerticalAlignment="Center"
+                                        Command="{Binding OpenResetConfirmCommand}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 重置确认（web 端 Modal） -->
+        <Border IsVisible="{Binding IsResetConfirmOpen}">
+            <Panel>
+                <Border Background="{DynamicResource TnScrim}" />
+                <Border Width="480" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Background="{DynamicResource TnPanel}"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
+                        CornerRadius="10">
+                    <StackPanel>
+                        <Border Padding="16" BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                            <TextBlock Text="重置界面偏好" FontSize="14" FontWeight="SemiBold" />
+                        </Border>
+                        <TextBlock Margin="16" TextWrapping="Wrap" FontSize="12"
+                                   Text="将清除本机保存的界面偏好设置（不影响任务、项目或任何后端数据）。"
+                                   Foreground="{DynamicResource TnText2}" />
+                        <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right"
+                                    Margin="16">
+                            <Button Classes="btn" Content="取消" Command="{Binding CancelResetCommand}" />
+                            <Button Classes="btn danger" Content="确认重置"
+                                    Command="{Binding ConfirmResetCommand}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Panel>
+        </Border>
+    </Panel>
+</UserControl>

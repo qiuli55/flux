@@ -231,7 +231,7 @@
             </Border>
 
             <!-- 主区 -->
-            <Grid Grid.Column="1" RowDefinitions="56,*,30" Background="{DynamicResource TnBg}">
+            <Grid Grid.Column="1" RowDefinitions="56,*,Auto" Background="{DynamicResource TnBg}">
 
                 <!-- 顶栏（web 端 fx-topbar） -->
                 <Border Grid.Row="0" Background="{DynamicResource TnBg2}" Padding="24,0"
@@ -284,13 +284,16 @@
                 <!-- 内容区 -->
                 <ContentControl Grid.Row="1" Content="{Binding CurrentPage}" />
 
-                <!-- 状态栏（web 端 fx-status） -->
+                <!-- 状态栏（web 端 fx-status；可在设置里关掉） -->
                 <Border Grid.Row="2" Background="{DynamicResource TnBg2}" Padding="24,0"
+                        Height="30"
+                        IsVisible="{Binding IsStatusBarVisible}"
                         BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
                     <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
                         <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="5"
                                     VerticalAlignment="Center">
                             <Ellipse Width="6" Height="6" Fill="{DynamicResource TnAccent}"
+                                     Classes.pulse="{Binding !IsReduceMotion}"
                                      IsVisible="{Binding IsHealthOk}" />
                             <Ellipse Width="6" Height="6" Fill="{DynamicResource TnWarn}"
                                      IsVisible="{Binding !IsHealthOk}" />

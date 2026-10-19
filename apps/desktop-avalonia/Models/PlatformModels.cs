@@ -3,6 +3,60 @@ namespace Flux.Desktop.Models;
 /// <summary>GET /api/v1/projects 的元素。</summary>
 public sealed record Project(string Id, string Name, string? Repository);
 
+/// <summary>DSH 状态里的 MCP 注入配置（不含密钥）。</summary>
+public sealed record DshMcp(bool Enabled, string? Url, string? ServerName);
+
+/// <summary>GET /api/v1/health/ready 的 data。</summary>
+public sealed record ReadyInfo(bool Database, int Agents, string[] Providers);
+
+/// <summary>GET /api/v1/workspace/root 的 data。</summary>
+public sealed record WorkspaceRootInfo(string Root);
+
+/// <summary>GET /api/v1/installations 的元素（本机 CLI Agent 的事实快照）。</summary>
+public sealed record Installation(
+    string Id,
+    string Name,
+    string Adapter,
+    string? Path,
+    string? Version,
+    string? AuthStatus,
+    string Status);
+
+/// <summary>GET /api/v1/capabilities 的元素（已导入的能力）。</summary>
+public sealed record ImportedCapability(
+    string Id,
+    string Kind,
+    string Name,
+    string? Version,
+    string? Source,
+    string? UpdatedAt);
+
+/// <summary>扫描结果汇总。</summary>
+public sealed record CapabilitySummary(int Total, int Ok, int Blocked);
+
+/// <summary>扫描来源目录（path 是目录路径，与能力的 source 不同）。</summary>
+public sealed record CapabilitySource(string Path, string Status, int Candidates);
+
+/// <summary>安全扫描的发现项。</summary>
+public sealed record CapabilityFinding(string Reason);
+
+/// <summary>扫描候选能力。</summary>
+public sealed record CapabilityCandidate(
+    string Kind,
+    string Name,
+    string Status,
+    string? Source,
+    CapabilityFinding[] Findings);
+
+/// <summary>POST /api/v1/capabilities/scan 的 data。</summary>
+public sealed record CapabilityScanReport(
+    CapabilitySummary Summary,
+    CapabilitySource[] Sources,
+    CapabilityCandidate[] Candidates);
+
+/// <summary>POST /api/v1/capabilities/import 的 data。</summary>
+public sealed record CapabilityImportResult(string Name, string? Outcome);
+
 /// <summary>GET /api/v1/workspace/changes 的元素（只取外壳概览用得到的字段）。</summary>
 public sealed record Change(
     string Id,

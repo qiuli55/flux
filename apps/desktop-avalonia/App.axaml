@@ -318,6 +318,76 @@
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
+        <!-- 设置页左栏分栏（web 端 fx-set-nav） -->
+        <Style Selector="Button.set-nav">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.set-nav /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.set-nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.set-nav:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.set-nav.active">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.set-nav.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+
+        <!-- 分段控件按钮（web 端 fx-segmented > button） -->
+        <Style Selector="Button.seg">
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.seg /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.seg:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="Button.seg.active">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.seg.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel3}" />
+        </Style>
+
+        <!-- 状态栏脉冲（web 端 fx-pulse；「减少动效」打开时不挂这个类） -->
+        <Style Selector="Ellipse.pulse">
+            <Style.Animations>
+                <Animation Duration="0:0:2" IterationCount="Infinite">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="1" />
+                    </KeyFrame>
+                    <KeyFrame Cue="50%">
+                        <Setter Property="Opacity" Value="0.35" />
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1" />
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
         <!-- 顶栏图标按钮 -->
         <Style Selector="Button.iconbtn">
             <Setter Property="Width" Value="30" />
