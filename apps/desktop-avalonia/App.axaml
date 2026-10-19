@@ -1,0 +1,419 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Flux.Desktop.App"
+             xmlns:local="using:Flux.Desktop"
+             RequestedThemeVariant="Dark">
+
+    <Application.DataTemplates>
+        <local:ViewLocator />
+    </Application.DataTemplates>
+
+    <Application.Resources>
+        <ResourceDictionary>
+            <!-- 设计令牌：与 web 端 apps/web-dashboard/src/styles/tokens.css 的 tn 变量一一对应。
+                 近黑基底 + 发丝线 + 单色电光青绿；零阴影 / 零渐变 / 零辉光。 -->
+            <SolidColorBrush x:Key="TnBg" Color="#050608" />
+            <SolidColorBrush x:Key="TnBg2" Color="#090B0D" />
+            <SolidColorBrush x:Key="TnPanel" Color="#0B0E11" />
+            <SolidColorBrush x:Key="TnPanel2" Color="#101418" />
+            <SolidColorBrush x:Key="TnPanel3" Color="#161A1E" />
+            <SolidColorBrush x:Key="TnLine" Color="#1B2024" />
+            <SolidColorBrush x:Key="TnLineSoft" Color="#14181C" />
+            <SolidColorBrush x:Key="TnLineStrong" Color="#2B3238" />
+            <SolidColorBrush x:Key="TnText" Color="#E7ECEA" />
+            <SolidColorBrush x:Key="TnText2" Color="#9CA6A4" />
+            <SolidColorBrush x:Key="TnText3" Color="#6C7674" />
+            <SolidColorBrush x:Key="TnText4" Color="#49514F" />
+            <SolidColorBrush x:Key="TnAccent" Color="#3DF5A8" />
+            <SolidColorBrush x:Key="TnAccent2" Color="#22C98A" />
+            <SolidColorBrush x:Key="TnAccentSoft" Color="#1F3DF5A8" />
+            <SolidColorBrush x:Key="TnAccentLine" Color="#613DF5A8" />
+            <SolidColorBrush x:Key="TnWarn" Color="#E8B25E" />
+            <SolidColorBrush x:Key="TnDanger" Color="#FF7A6E" />
+            <SolidColorBrush x:Key="TnInfo" Color="#7FB6E0" />
+            <SolidColorBrush x:Key="TnScrim" Color="#B8050608" />
+
+            <FontFamily x:Key="TnUiFont">Microsoft YaHei UI,Segoe UI,Microsoft YaHei</FontFamily>
+            <FontFamily x:Key="TnMonoFont">Cascadia Mono,Consolas,Microsoft YaHei UI</FontFamily>
+        </ResourceDictionary>
+    </Application.Resources>
+
+    <Application.Styles>
+        <FluentTheme />
+
+        <!-- ===================== 文本 ===================== -->
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+        </Style>
+        <Style Selector="TextBlock.t2">
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="TextBlock.t3">
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+        </Style>
+        <Style Selector="TextBlock.t4">
+            <Setter Property="Foreground" Value="{DynamicResource TnText4}" />
+        </Style>
+        <Style Selector="TextBlock.accent">
+            <Setter Property="Foreground" Value="{DynamicResource TnAccent}" />
+        </Style>
+        <Style Selector="TextBlock.danger">
+            <Setter Property="Foreground" Value="{DynamicResource TnDanger}" />
+        </Style>
+        <Style Selector="TextBlock.mono">
+            <Setter Property="FontFamily" Value="{DynamicResource TnMonoFont}" />
+        </Style>
+        <Style Selector="TextBlock.caps">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText4}" />
+            <Setter Property="LetterSpacing" Value="1.6" />
+        </Style>
+        <Style Selector="TextBlock.page-title">
+            <Setter Property="FontSize" Value="20" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="TextBlock.page-desc">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="LineHeight" Value="21" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+        </Style>
+        <Style Selector="TextBlock.section-title">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="TextBlock.kbd">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnMonoFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText4}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- ===================== 图标 ===================== -->
+        <Style Selector="Viewbox.icon">
+            <Setter Property="Width" Value="14" />
+            <Setter Property="Height" Value="14" />
+            <Setter Property="Stretch" Value="Uniform" />
+        </Style>
+        <Style Selector="Viewbox.icon-lg">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Stretch" Value="Uniform" />
+        </Style>
+        <Style Selector="Viewbox.icon Path">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Stretch" Value="None" />
+            <Setter Property="StrokeThickness" Value="1.8" />
+            <Setter Property="StrokeLineCap" Value="Round" />
+            <Setter Property="StrokeJoin" Value="Round" />
+            <Setter Property="Stroke" Value="{DynamicResource TnText3}" />
+        </Style>
+
+        <!-- ===================== 导航条目 ===================== -->
+        <Style Selector="Button.nav">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.nav /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="Button.nav:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.nav:pointerover Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="Button.nav.active">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.nav.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.nav.active Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnAccent}" />
+        </Style>
+
+        <!-- 收起态：图标居中 -->
+        <Style Selector="Button.nav.compact">
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+
+        <!-- ===================== 模式切换 ===================== -->
+        <Style Selector="Button.mode">
+            <Setter Property="Height" Value="26" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.mode /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="Button.mode:pointerover Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="Button.mode:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="Button.mode:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.mode.active">
+            <Setter Property="Foreground" Value="{DynamicResource TnAccent}" />
+        </Style>
+        <Style Selector="Button.mode.active Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnAccent}" />
+        </Style>
+        <Style Selector="Button.mode.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnAccentSoft}" />
+        </Style>
+        <Style Selector="Button.mode.compact">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.mode.compact.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.mode.compact.active">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+
+        <!-- ===================== 按钮原子 ===================== -->
+        <Style Selector="Button.btn">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.btn /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.btn:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineStrong}" />
+        </Style>
+        <Style Selector="Button.btn.primary">
+            <Setter Property="Foreground" Value="#04231F" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.btn.primary /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnAccent}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccent}" />
+        </Style>
+        <Style Selector="Button.btn.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnAccent2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccent2}" />
+        </Style>
+        <Style Selector="Button.btn.subtle">
+            <Setter Property="Foreground" Value="{DynamicResource TnAccent}" />
+        </Style>
+        <Style Selector="Button.btn.subtle /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnAccentSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccentLine}" />
+        </Style>
+        <Style Selector="Button.btn.danger">
+            <Setter Property="Foreground" Value="{DynamicResource TnDanger}" />
+        </Style>
+        <Style Selector="Button.btn.danger /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnDanger}" />
+        </Style>
+        <Style Selector="Button.btn:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Opacity" Value="0.45" />
+        </Style>
+
+        <!-- 顶栏图标按钮 -->
+        <Style Selector="Button.iconbtn">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.iconbtn /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.iconbtn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+        </Style>
+        <Style Selector="Button.iconbtn:pointerover Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnText}" />
+        </Style>
+
+        <!-- 顶栏搜索框（点击开命令面板） -->
+        <Style Selector="Button.searchbox">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="220" />
+            <Setter Property="MaxWidth" Value="520" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.searchbox /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.searchbox:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText2}" />
+        </Style>
+        <Style Selector="Button.searchbox:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineStrong}" />
+        </Style>
+        <Style Selector="Button.searchbox:pointerover Path">
+            <Setter Property="Stroke" Value="{DynamicResource TnText2}" />
+        </Style>
+
+        <!-- 底部账户入口（fx-user） -->
+        <Style Selector="Button.user">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="8,7" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.user /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.user:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+
+        <!-- ===================== 容器原子 ===================== -->
+        <Style Selector="Border.card">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Border.card.pad">
+            <Setter Property="Padding" Value="24" />
+        </Style>
+        <Style Selector="Border.hairline-b">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+        </Style>
+        <Style Selector="Border.hairline-t">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="0,1,0,0" />
+        </Style>
+        <Style Selector="Border.hairline-r">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="0,0,1,0" />
+        </Style>
+
+        <!-- 头像 -->
+        <Style Selector="Border.avatar">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineStrong}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+        </Style>
+        <Style Selector="Border.avatar.sm">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="22" />
+        </Style>
+        <Style Selector="Border.avatar.lg">
+            <Setter Property="Width" Value="44" />
+            <Setter Property="Height" Value="44" />
+        </Style>
+
+        <!-- 徽标 / 引擎胶囊 / kbd -->
+        <Style Selector="Border.badge">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="7,0" />
+            <Setter Property="Height" Value="20" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.kbd">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="6,0" />
+            <Setter Property="Height" Value="18" />
+        </Style>
+        <Style Selector="Border.pill">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="8,3" />
+        </Style>
+
+        <!-- 分隔线 -->
+        <Style Selector="Rectangle.rule">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Fill" Value="{DynamicResource TnLine}" />
+        </Style>
+        <Style Selector="Rectangle.rule-soft">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Fill" Value="{DynamicResource TnLineSoft}" />
+        </Style>
+
+        <!-- ===================== 文本框 ===================== -->
+        <Style Selector="TextBox.input">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background" Value="{DynamicResource TnBg2}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource TnAccentSoft}" />
+        </Style>
+        <Style Selector="TextBox.input:focus">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccentLine}" />
+        </Style>
+    </Application.Styles>
+</Application>

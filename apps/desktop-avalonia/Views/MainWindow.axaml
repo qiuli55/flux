@@ -1,0 +1,409 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Flux.Desktop.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="900"
+        x:Class="Flux.Desktop.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="Flux"
+        Width="1440" Height="900" MinWidth="1024" MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource TnBg}">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel />
+    </Design.DataContext>
+
+    <Window.KeyBindings>
+        <KeyBinding Gesture="Ctrl+K" Command="{Binding OpenPaletteCommand}" />
+        <KeyBinding Gesture="Escape" Command="{Binding ClosePaletteCommand}" />
+    </Window.KeyBindings>
+
+    <Window.Resources>
+        <!-- 侧栏条目模板：fx-nav —— 图标 + 文字 + 左侧 2px 青绿指示条（收起态只画图标） -->
+        <DataTemplate x:Key="RailItemTemplate" DataType="vm:NavItem">
+            <Grid>
+                <Button Classes="nav"
+                        Classes.compact="{Binding IsCompact}"
+                        Classes.active="{Binding IsActive}"
+                        Command="{Binding ActivateCommand}"
+                        CommandParameter="{Binding}"
+                        ToolTip.Tip="{Binding Label}">
+                    <Grid ColumnDefinitions="Auto,*">
+                        <Viewbox Grid.Column="0" Classes="icon">
+                            <Path Data="{Binding IconGeometry}" />
+                        </Viewbox>
+                        <TextBlock Grid.Column="1" Margin="8,0,0,0" Text="{Binding Label}"
+                                   FontSize="12" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"
+                                   IsVisible="{Binding !IsCompact}" />
+                    </Grid>
+                </Button>
+                <Border Width="2" Height="16" HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Background="{DynamicResource TnAccent}"
+                        IsVisible="{Binding IsActive}" />
+            </Grid>
+        </DataTemplate>
+
+        <!-- 命令面板条目模板 -->
+        <DataTemplate x:Key="PaletteItemTemplate" DataType="vm:NavItem">
+            <Button Classes="nav" Height="30" Command="{Binding ActivateCommand}" CommandParameter="{Binding}">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <Viewbox Grid.Column="0" Classes="icon">
+                        <Path Data="{Binding IconGeometry}" />
+                    </Viewbox>
+                    <TextBlock Grid.Column="1" Margin="8,0,0,0" Text="{Binding Label}"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="2" Text="{Binding Group}" FontSize="11"
+                               Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                </Grid>
+            </Button>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Panel>
+        <!-- ================= 工作台外壳（对齐 web 端 fx-shell） ================= -->
+        <Grid IsVisible="{Binding IsShellVisible}"
+              ColumnDefinitions="Auto,*"
+              Background="{DynamicResource TnBg}">
+
+            <!-- 左侧导航 -->
+            <Border Grid.Column="0"
+                    Width="{Binding RailWidth}"
+                    Background="{DynamicResource TnBg2}"
+                    BorderBrush="{DynamicResource TnLine}"
+                    BorderThickness="0,0,1,0">
+                <DockPanel>
+
+                    <!-- 底部：收起/展开 + 账户入口（web 端 fx-rail-foot） -->
+                    <StackPanel DockPanel.Dock="Bottom"
+                                Spacing="8"
+                                Margin="8,12"
+                                Background="{DynamicResource TnBg2}">
+                        <Rectangle Classes="rule" Margin="-8,0,-8,0" />
+                        <Button Classes="nav"
+                                Classes.compact="{Binding IsRailCompact}"
+                                Command="{Binding ToggleRailWideCommand}"
+                                ToolTip.Tip="{Binding RailToggleTip}">
+                            <Grid ColumnDefinitions="Auto,*">
+                                <Viewbox Grid.Column="0" Classes="icon">
+                                    <Path Data="{Binding RailToggleIconGeometry}" />
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Margin="8,0,0,0" Text="{Binding RailToggleTip}"
+                                           VerticalAlignment="Center" IsVisible="{Binding IsRailWide}" />
+                            </Grid>
+                        </Button>
+                        <Button Classes="user" Command="{Binding OpenAccountCommand}"
+                                ToolTip.Tip="账户 · 本地后端与工作区">
+                            <Grid ColumnDefinitions="Auto,*">
+                                <Border Grid.Column="0" Classes="avatar sm">
+                                    <TextBlock Text="{Binding Account.AvatarText}"
+                                               FontSize="11" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TnText2}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                                            IsVisible="{Binding IsRailWide}">
+                                    <TextBlock Text="{Binding Account.Username}"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TnText2}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Account.Subtitle}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TnText4}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Grid>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- 顶部：品牌（web 端 fx-rail-brand） -->
+                    <Border DockPanel.Dock="Top" Height="56" Padding="16,0"
+                            BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                        <Grid ColumnDefinitions="Auto,*">
+                            <Border Grid.Column="0" Width="30" Height="30" CornerRadius="6"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    BorderBrush="{DynamicResource TnAccentLine}" BorderThickness="1">
+                                <TextBlock Text="F" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TnAccent}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                                        IsVisible="{Binding IsRailWide}">
+                                <TextBlock Text="Flux" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="AI 研发工作台" FontSize="11"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- 模式切换（web 端 fx-mode） -->
+                    <Border DockPanel.Dock="Top" Padding="8,12"
+                            BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                        <StackPanel>
+                            <TextBlock Classes="caps" Text="模式" Margin="4,0,0,4"
+                                       IsVisible="{Binding IsRailWide}" />
+
+                            <!-- 展开态：分段控件（SOLO | IDE） -->
+                            <Border IsVisible="{Binding IsRailWide}"
+                                    BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
+                                    CornerRadius="6" ClipToBounds="True">
+                                <Grid ColumnDefinitions="*,Auto,*">
+                                    <Button Grid.Column="0" Classes="mode"
+                                            Classes.active="{Binding ModeItems[0].IsActive}"
+                                            Command="{Binding SwitchModeCommand}" CommandParameter="Solo">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Viewbox Classes="icon">
+                                                <Path Data="{Binding ModeItems[0].IconGeometry}" />
+                                            </Viewbox>
+                                            <TextBlock Text="{Binding ModeItems[0].Label}" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Rectangle Grid.Column="1" Width="1" Fill="{DynamicResource TnLine}" />
+                                    <Button Grid.Column="2" Classes="mode"
+                                            Classes.active="{Binding ModeItems[1].IsActive}"
+                                            Command="{Binding SwitchModeCommand}" CommandParameter="IDE">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Viewbox Classes="icon">
+                                                <Path Data="{Binding ModeItems[1].IconGeometry}" />
+                                            </Viewbox>
+                                            <TextBlock Text="{Binding ModeItems[1].Label}" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </Border>
+
+                            <!-- 收起态：与左栏其它图标项同一套尺寸与选中样式 -->
+                            <StackPanel Spacing="2" IsVisible="{Binding IsRailCompact}">
+                                <Grid>
+                                    <Button Classes="mode compact"
+                                            Classes.active="{Binding ModeItems[0].IsActive}"
+                                            Command="{Binding SwitchModeCommand}" CommandParameter="Solo"
+                                            ToolTip.Tip="Solo">
+                                        <Viewbox Classes="icon">
+                                            <Path Data="{Binding ModeItems[0].IconGeometry}" />
+                                        </Viewbox>
+                                    </Button>
+                                    <Border Width="2" Height="16" HorizontalAlignment="Left"
+                                            VerticalAlignment="Center" Background="{DynamicResource TnAccent}"
+                                            IsVisible="{Binding ModeItems[0].IsActive}" />
+                                </Grid>
+                                <Grid>
+                                    <Button Classes="mode compact"
+                                            Classes.active="{Binding ModeItems[1].IsActive}"
+                                            Command="{Binding SwitchModeCommand}" CommandParameter="IDE"
+                                            ToolTip.Tip="IDE">
+                                        <Viewbox Classes="icon">
+                                            <Path Data="{Binding ModeItems[1].IconGeometry}" />
+                                        </Viewbox>
+                                    </Button>
+                                    <Border Width="2" Height="16" HorizontalAlignment="Left"
+                                            VerticalAlignment="Center" Background="{DynamicResource TnAccent}"
+                                            IsVisible="{Binding ModeItems[1].IsActive}" />
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 导航（web 端 fx-rail-scroll） -->
+                    <ScrollViewer Padding="8,12">
+                        <StackPanel>
+                            <StackPanel>
+                                <TextBlock Classes="caps" Text="{Binding ToolGroupLabel}" Margin="8,0,8,4"
+                                           IsVisible="{Binding IsRailWide}" />
+                                <ItemsControl ItemsSource="{Binding ToolItems}"
+                                              ItemTemplate="{StaticResource RailItemTemplate}" />
+                            </StackPanel>
+
+                            <Rectangle Classes="rule-soft" Margin="-8,12,-8,0" />
+
+                            <StackPanel>
+                                <TextBlock Classes="caps" Text="平台" Margin="8,12,8,4"
+                                           IsVisible="{Binding IsRailWide}" />
+                                <ItemsControl ItemsSource="{Binding NavItems}"
+                                              ItemTemplate="{StaticResource RailItemTemplate}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- 主区 -->
+            <Grid Grid.Column="1" RowDefinitions="56,*,30" Background="{DynamicResource TnBg}">
+
+                <!-- 顶栏（web 端 fx-topbar） -->
+                <Border Grid.Row="0" Background="{DynamicResource TnBg2}" Padding="24,0"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
+
+                        <!-- 面包屑 -->
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8"
+                                    VerticalAlignment="Center">
+                            <TextBlock Text="{Binding BreadcrumbGroup}" FontSize="12"
+                                       Foreground="{DynamicResource TnText4}" />
+                            <TextBlock Text="/" FontSize="12" Foreground="{DynamicResource TnText4}" />
+                            <TextBlock Text="{Binding Breadcrumb}" FontSize="12" />
+                        </StackPanel>
+
+                        <!-- 搜索命令或页面（打开命令面板） -->
+                        <Button Grid.Column="2" Margin="16,0,0,0" Width="380"
+                                Classes="searchbox"
+                                Command="{Binding OpenPaletteCommand}">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                                <Viewbox Grid.Column="0" Classes="icon">
+                                    <Path Data="{Binding SearchIconGeometry}" />
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                                           Text="搜索命令或页面…" />
+                                <Border Grid.Column="2" Classes="kbd">
+                                    <TextBlock Classes="kbd" Text="Ctrl K" />
+                                </Border>
+                            </Grid>
+                        </Button>
+
+                        <!-- 右侧动作 -->
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="12"
+                                    VerticalAlignment="Center">
+                            <Border Classes="pill" IsVisible="{Binding HasEngine}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource TnText3}"
+                                           Text="{Binding EngineText}" />
+                            </Border>
+                            <Button Classes="iconbtn"
+                                    Command="{Binding ToggleRailWideCommand}"
+                                    ToolTip.Tip="{Binding RailToggleTip}">
+                                <Viewbox Classes="icon-lg">
+                                    <Path Data="{Binding RailToggleIconGeometry}" />
+                                </Viewbox>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- 内容区 -->
+                <ContentControl Grid.Row="1" Content="{Binding CurrentPage}" />
+
+                <!-- 状态栏（web 端 fx-status） -->
+                <Border Grid.Row="2" Background="{DynamicResource TnBg2}" Padding="24,0"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="5"
+                                    VerticalAlignment="Center">
+                            <Ellipse Width="6" Height="6" Fill="{DynamicResource TnAccent}"
+                                     IsVisible="{Binding IsHealthOk}" />
+                            <Ellipse Width="6" Height="6" Fill="{DynamicResource TnWarn}"
+                                     IsVisible="{Binding !IsHealthOk}" />
+                            <TextBlock Text="{Binding BackendText}" FontSize="11"
+                                       Foreground="{DynamicResource TnAccent}"
+                                       IsVisible="{Binding IsHealthOk}" />
+                            <TextBlock Text="{Binding BackendText}" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}"
+                                       IsVisible="{Binding !IsHealthOk}" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Margin="24,0,0,0" FontSize="11"
+                                   Foreground="{DynamicResource TnText3}"
+                                   VerticalAlignment="Center"
+                                   Text="{Binding EngineText}" IsVisible="{Binding HasEngine}" />
+                        <TextBlock Grid.Column="2" Margin="24,0,0,0" FontSize="11"
+                                   Foreground="{DynamicResource TnText3}"
+                                   VerticalAlignment="Center"
+                                   Text="{Binding WorkspaceText}" IsVisible="{Binding HasWorkspace}" />
+                        <TextBlock Grid.Column="4" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}"
+                                   VerticalAlignment="Center"
+                                   Text="Flux Console · Terminal Noir" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- ================= 启动中 ================= -->
+        <StackPanel IsVisible="{Binding IsBooting}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14">
+            <ProgressBar IsIndeterminate="True" Width="220" />
+            <TextBlock Text="{Binding StatusMessage}" MaxWidth="560" TextWrapping="Wrap"
+                       TextAlignment="Center" FontSize="12"
+                       Foreground="{DynamicResource TnText3}" />
+        </StackPanel>
+
+        <!-- ================= 云登录闸门 ================= -->
+        <Border IsVisible="{Binding IsGateVisible}" Background="{DynamicResource TnBg}">
+            <Border Width="440" Classes="card pad"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{DynamicResource TnPanel}">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="登录 Flux" FontSize="20" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Classes="page-desc" />
+                    <TextBlock Text="{Binding ErrorMessage}" IsVisible="{Binding HasError}"
+                               TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource TnDanger}" />
+                    <Button Content="使用浏览器登录"
+                            Classes="btn primary"
+                            HorizontalAlignment="Stretch"
+                            IsEnabled="{Binding !IsBusy}"
+                            Command="{Binding LoginCommand}" />
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <!-- ================= 启动失败 ================= -->
+        <Border IsVisible="{Binding IsFailed}" Background="{DynamicResource TnBg}">
+            <Border Width="600" Classes="card pad"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{DynamicResource TnPanel}">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="启动失败" FontSize="20" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TnDanger}" />
+                    <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" Classes="page-desc" />
+                    <Button Content="重试" Classes="btn primary" HorizontalAlignment="Left"
+                            Command="{Binding RetryCommand}" />
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <!-- ================= 命令面板（web 端 fx-cmdk） ================= -->
+        <Border IsVisible="{Binding IsPaletteOpen}">
+            <Panel>
+                <Border Background="{DynamicResource TnScrim}" />
+                <Border Width="560" MaxHeight="420" Margin="0,120,0,0"
+                        VerticalAlignment="Top" HorizontalAlignment="Center"
+                        Background="{DynamicResource TnPanel}"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
+                        CornerRadius="10">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <Grid Grid.Row="0" ColumnDefinitions="Auto,*" Margin="16,12">
+                            <TextBlock Grid.Column="0" Text="›" FontSize="14" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TnAccent}"
+                                       FontFamily="{DynamicResource TnMonoFont}" />
+                            <TextBox x:Name="PaletteInput" Grid.Column="1" Margin="8,0,0,0"
+                                     Text="{Binding PaletteQuery, Mode=TwoWay}"
+                                     Background="Transparent" BorderThickness="0"
+                                     FontSize="14" Padding="0"
+                                     VerticalContentAlignment="Center"
+                                     Watermark="跳转到页面…" />
+                        </Grid>
+
+                        <ScrollViewer Grid.Row="1" Padding="6">
+                            <StackPanel>
+                                <ItemsControl ItemsSource="{Binding PaletteResults}"
+                                              ItemTemplate="{StaticResource PaletteItemTemplate}" />
+                                <TextBlock Text="没有匹配的命令或页面" Margin="12,10" FontSize="12"
+                                           Foreground="{DynamicResource TnText4}"
+                                           IsVisible="{Binding !HasPaletteResults}" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <Border Grid.Row="2" Padding="16,8"
+                                BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
+                            <StackPanel Orientation="Horizontal" Spacing="16">
+                                <TextBlock Classes="kbd" Text="Enter 跳转" />
+                                <TextBlock Classes="kbd" Text="Esc 关闭" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Panel>
+        </Border>
+    </Panel>
+</Window>

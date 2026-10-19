@@ -36,3 +36,6 @@ out/
 .idea/
 .vscode/
 .DS_Store
+# --- .NET 桌面端（apps/desktop-avalonia）---
+apps/desktop-avalonia/bin/
+apps/desktop-avalonia/obj/

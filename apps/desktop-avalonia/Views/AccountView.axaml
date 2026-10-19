@@ -1,0 +1,110 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+             x:Class="Flux.Desktop.Views.AccountView"
+             x:DataType="vm:AccountViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32" MaxWidth="780" HorizontalAlignment="Left">
+
+            <StackPanel Margin="0,0,0,32">
+                <TextBlock Classes="page-title" Text="账户" Margin="0,0,0,5" />
+                <TextBlock Classes="page-desc"
+                           Text="账号云登录态、本机后端与工作区路径。桌面端只保留一份本地会话，令牌由账号云签发、本机验签。"
+                           MaxWidth="760" HorizontalAlignment="Left" />
+            </StackPanel>
+
+            <!-- 身份卡片 -->
+            <Border Classes="card pad" Margin="0,0,0,16">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <Border Grid.Column="0" Classes="avatar lg">
+                        <TextBlock Text="{Binding AvatarText}" FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TnText2}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="4">
+                        <TextBlock Text="{Binding Username}" FontSize="16" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                    <Border Grid.Column="2" Classes="badge"
+                            VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                            <Ellipse Width="6" Height="6" Fill="{DynamicResource TnAccent}"
+                                     VerticalAlignment="Center"
+                                     IsVisible="{Binding IsAuthenticated}" />
+                            <TextBlock Text="已登录" FontSize="11"
+                                       Foreground="{DynamicResource TnAccent}"
+                                       IsVisible="{Binding IsAuthenticated}" />
+                            <TextBlock Text="未登录" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}"
+                                       IsVisible="{Binding !IsAuthenticated}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- 账号信息 -->
+            <Border Classes="card pad" Margin="0,0,0,16">
+                <StackPanel Spacing="16">
+                    <TextBlock Classes="section-title" Text="账号" />
+                    <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="账号 ID" FontSize="12"
+                                   Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding UserIdText}"
+                                   Classes="mono" FontSize="12" Margin="0,0,0,12" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="用户名" FontSize="12"
+                                   Foreground="{DynamicResource TnText3}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Username}"
+                                   Classes="mono" FontSize="12" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- 本机运行时 -->
+            <Border Classes="card pad" Margin="0,0,0,16">
+                <StackPanel Spacing="16">
+                    <TextBlock Classes="section-title" Text="本机运行时" />
+                    <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="本地后端" FontSize="12"
+                                   Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding BackendUrl}"
+                                   Classes="mono" FontSize="12" Margin="0,0,0,12" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="登录回跳地址" FontSize="12"
+                                   Foreground="{DynamicResource TnText3}" Margin="0,0,0,12" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CallbackUrl}"
+                                   Classes="mono" FontSize="12" Margin="0,0,0,12"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="数据目录" FontSize="12"
+                                   Foreground="{DynamicResource TnText3}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DataDir}"
+                                   Classes="mono" FontSize="12" TextWrapping="Wrap" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- 工作区 -->
+            <Border Classes="card pad" Margin="0,0,0,16">
+                <StackPanel Spacing="16">
+                    <TextBlock Classes="section-title" Text="工作区" />
+                    <TextBlock Text="{Binding WorkspaceRoot}" Classes="mono" FontSize="12"
+                               TextWrapping="Wrap" Foreground="{DynamicResource TnText2}" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="使用浏览器登录"
+                        Classes="btn primary"
+                        Command="{Binding LoginCommand}"
+                        IsVisible="{Binding !IsAuthenticated}" />
+                <Button Content="退出登录"
+                        Classes="btn danger"
+                        Command="{Binding LogoutCommand}"
+                        IsVisible="{Binding IsAuthenticated}" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

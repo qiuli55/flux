@@ -1,0 +1,32 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+             x:Class="Flux.Desktop.Views.PlaceholderPageView"
+             x:DataType="vm:PlaceholderPageViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+
+            <StackPanel Margin="0,0,0,32">
+                <TextBlock Classes="page-title" Text="{Binding Title}" Margin="0,0,0,5" />
+                <TextBlock Classes="page-desc" Text="{Binding Subtitle}"
+                           MaxWidth="760" HorizontalAlignment="Left" />
+            </StackPanel>
+
+            <Border Classes="card" Width="760" HorizontalAlignment="Left">
+                <StackPanel HorizontalAlignment="Center" Spacing="8" Margin="24,48">
+                    <Border Classes="badge" HorizontalAlignment="Center">
+                        <TextBlock Text="尚未实现" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </Border>
+                    <TextBlock Text="该页面已接入外壳，内容将在后续里程碑补齐"
+                               FontSize="12" TextAlignment="Center"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
