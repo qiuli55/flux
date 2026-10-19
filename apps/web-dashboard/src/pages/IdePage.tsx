@@ -2,7 +2,7 @@
  * IDE · 工作台（设计稿 v2 视图②）。
  *
  * 类名、结构与设计稿逐条一致；所有内容都是真实数据，没有内置示例文件：
- * - 文件树 / 编辑器：GET /projects/{id}/files(|/content)（只读，写盘一律走审核）
+ * - 文件树 / 编辑器：GET /projects/{id}/files(|/content)（只读读取；编辑器支持本地草稿与补全，不落盘）
  * - 变更 Tab：GET /workspace/changes + accept/apply/reject
  * - Git 面板与状态栏：GET /git/status、POST /git/commit
  * - Agent 面板：GET /agents + 当前任务（GET /tasks、GET /tasks/{id}/messages）
@@ -36,8 +36,10 @@ import { mergeDiffIntoOriginal, parseUnifiedDiff } from "../app/diff";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
+import { CodeArea } from "../components/ide/CodeArea";
 import { clockOf } from "../components/solo/SoloChat";
 import { ROLE_LABELS, STATE_LABELS } from "../data/team";
+import { buildCompletionMessages, type AiCompletionInput } from "../utils/completion";
 
 /** 后端允许的最大展开层数（MAX_TREE_DEPTH） */
 const MAX_DEPTH = 4;
@@ -519,6 +521,8 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   /** 编辑器视图：split = 整文件（AI 新增绿 / 删除红）；unified = 只看改动片段的旧新对比 */
   const [codeView, setCodeView] = useState<"split" | "unified">("split");
   const [files, setFiles] = useState<Record<string, FileContent>>({});
+  /** 本地草稿：后端没有「覆写既有文件」接口，编辑只留在内存，刷新即丢 */
+  const [edits, setEdits] = useState<Record<string, string>>({});
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
@@ -1519,9 +1523,13 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   useEffect(() => {
     if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
     const frame = window.requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(
-        `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
-      );
+      const row =
+        document.querySelector<HTMLElement>(
+          `.view-ide .ca-stage .ca-line:nth-child(${revealLine.line})`,
+        ) ??
+        document.querySelector<HTMLElement>(
+          `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
+        );
       row?.scrollIntoView({ block: "center", behavior: "smooth" });
       setRevealLine(null);
     });
@@ -1529,7 +1537,12 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   }, [activeFile, activeTab, revealLine]);
 
 
-  const activeLines = useMemo(() => (activeFile ? activeFile.content.split("\n") : []), [activeFile]);
+  /** 本地草稿优先于后端内容；没有草稿时用只读读到的原文 */
+  const activeDraft = activeTab && activeTab !== CHANGES_TAB ? edits[activeTab] : undefined;
+  const activeText = activeDraft ?? activeFile?.content ?? "";
+  const hasDraft = activeDraft !== undefined && activeDraft !== activeFile?.content;
+
+  const activeLines = useMemo(() => activeText.split("\n"), [activeText]);
   const activeKind = activeTab && activeTab !== CHANGES_TAB ? lexerKind(activeTab) : "code";
   const changedLines = useMemo(() => {
     if (!activeTab || activeTab === CHANGES_TAB) return new Set<number>();
@@ -1551,6 +1564,21 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const fileRows = useMemo(
     () => (activeChange ? mergeDiffIntoOriginal(activeChange.original_content, activeChange.diff) : []),
     [activeChange],
+  );
+
+  /** 路径补全用：工作区里的全部文件路径 */
+  const completionFiles = useMemo(
+    () => entries.filter((entry) => entry.kind === "file").map((entry) => entry.path),
+    [entries],
+  );
+  /** AI 补全：走统一 LLM 接口；没有配置供应商时静默降级（返回 null → 不显示 ghost） */
+  const aiComplete = useCallback(
+    (input: AiCompletionInput) =>
+      api
+        .chat({ messages: buildCompletionMessages(input), project_id: projectId ?? undefined })
+        .then((result) => result.content)
+        .catch(() => null),
+    [projectId],
   );
 
   const runningTask = task?.status === "running";
@@ -1734,8 +1762,13 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 <div className="diff-banner">
                   <b>文件较大</b>
                   <span>
-                    只显示前 256 KiB（文件真实大小 {activeFile.size} 字节）——写盘一律走审核，编辑器只读
+                    只显示前 256 KiB（文件真实大小 {activeFile.size} 字节）——内容被截断，编辑器只读
                   </span>
+                </div>
+              ) : hasDraft ? (
+                <div className="diff-banner">
+                  <b>本地草稿</b>
+                  <span>后端没有覆写既有文件的接口，编辑只留在当前会话，刷新即丢</span>
                 </div>
               ) : null}
               {activeChange && codeView === "unified" ? (
@@ -1751,27 +1784,34 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 </div>
               ) : (
                 <div className="code">
-                  <div className="code-lines">
-                    {activeChange && codeView === "split"
-                      ? /* 并排视图：整文件铺开，AI 新增绿、删除红 */
-                        fileRows.map((row, index) => (
-                          <div
-                            className={`cl${row.kind === "add" ? " is-add" : row.kind === "del" ? " is-del" : ""}`}
-                            key={index}
-                          >
-                            <span className="ln">{row.newNo || row.oldNo}</span>
-                            <span className="lc">
-                              {row.kind === "del" ? row.text : renderTokens(row.text, activeKind)}
-                            </span>
-                          </div>
-                        ))
-                      : activeLines.map((line, index) => (
-                          <div className={`cl${changedLines.has(index + 1) ? " is-changed" : ""}`} key={index}>
-                            <span className="ln">{index + 1}</span>
-                            <span className="lc">{renderTokens(line, activeKind)}</span>
-                          </div>
-                        ))}
-                  </div>
+                  {activeChange && codeView === "split" ? (
+                    /* 并排视图：整文件铺开，AI 新增绿、删除红（只读，不接受编辑） */
+                    <div className="code-lines">
+                      {fileRows.map((row, index) => (
+                        <div
+                          className={`cl${row.kind === "add" ? " is-add" : row.kind === "del" ? " is-del" : ""}`}
+                          key={index}
+                        >
+                          <span className="ln">{row.newNo || row.oldNo}</span>
+                          <span className="lc">
+                            {row.kind === "del" ? row.text : renderTokens(row.text, activeKind)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <CodeArea
+                      path={activeTab}
+                      value={activeText}
+                      kind={activeKind}
+                      onChange={(next) => setEdits((prev) => ({ ...prev, [activeTab]: next }))}
+                      renderTokens={(text) => renderTokens(text, activeKind)}
+                      changedLines={changedLines}
+                      files={completionFiles}
+                      readOnly={activeFile.truncated}
+                      aiComplete={aiComplete}
+                    />
+                  )}
                   <div className="minimap">
                     {(activeChange && codeView === "split"
                       ? fileRows.map((row) => ({ text: row.text, mark: row.kind === "add" ? " hl" : "" }))

@@ -13,7 +13,7 @@ import { getAccessToken, getAuth, refreshAuth } from "./auth";
 import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, CapabilityImportOutcome, CapabilityKind,
-  CapabilityScanReport, Change, ConfirmationItem, DecisionMode,
+  CapabilityScanReport, Change, ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
@@ -102,6 +102,9 @@ function query(params: Record<string, string | undefined>): string {
 export const api = {
   health: () => getData<HealthData>("GET", "/health"),
   ready: () => getData<ReadyData>("GET", "/health/ready"),
+  /** 统一 LLM 接口（主规格 §12.6）：未配置任何供应商时后端返回 ProviderNotConfiguredError */
+  chat: (body: { messages: ChatMessageIn[]; model?: string; provider?: string; task_id?: string; project_id?: string }) =>
+    getData<ChatResult>("POST", "/models/chat", body),
   getWorkspaceRoot: () => getData<{ root: string }>("GET", "/workspace/root"),
   createWorkspaceFile: (projectId: string, path: string, content = "") =>
     getData<{ path: string }>("POST", `/projects/${projectId}/files/file`, { path, content }),

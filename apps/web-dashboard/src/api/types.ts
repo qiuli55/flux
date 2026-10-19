@@ -587,3 +587,26 @@ export interface DshRun {
   task_id: string | null;
   last_state_change_at: string | null;
 }
+
+/** POST /api/v1/models/chat 的请求消息（role 与后端 ChatMessageIn 同口径） */
+export interface ChatMessageIn {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** POST /api/v1/models/chat 的 token 用量 */
+export interface ChatUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+/** POST /api/v1/models/chat 的 data（cost 为 null 表示该供应商未配置计价，不臆造金额） */
+export interface ChatResult {
+  content: string;
+  provider: string;
+  model: string | null;
+  usage: ChatUsage;
+  cost: number | null;
+  latency_ms: number;
+}

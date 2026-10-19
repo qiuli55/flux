@@ -4,8 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Flux · 最小 IDE 前端（React + Vite + Tailwind）",
-  "keywords": ["flux", "ide", "terminal"],
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "flux",
+    "ide",
+    "terminal"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -20,9 +26,12 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^6.4.3",

@@ -474,6 +474,28 @@ ul > li:not(.open) > ul { display: none; }
 .cl.is-del { background: rgba(241,106,106,.09); }
 .cl.is-del .ln { color: #f16a6a; }
 .cl.is-del .lc { color: #ffb4b4; }
+/* 可编辑代码区（CodeArea）：透明 textarea 叠在高亮层之上 */
+.ca { display: flex; flex: 1 1 auto; }
+.ca-gutter { flex: 0 0 auto; padding: 8px 0 40px; user-select: none; }
+.ca-ln { width: 52px; box-sizing: border-box; padding-right: 14px; text-align: right; color: #4a5068; height: 20px; line-height: 20px; }
+.ca-ln.is-changed { color: #61dc97; }
+.ca-stage { position: relative; flex: 1 1 auto; }
+.ca-hl { padding: 8px 24px 40px 0; white-space: pre; pointer-events: none; }
+.ca-line { min-height: 20px; }
+.ca-line.is-changed { background: rgba(61,220,151,.08); }
+.ca-input { position: absolute; inset: 0; margin: 0; border: 0; outline: none; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--text); padding: 8px 24px 40px 0; font: inherit; white-space: pre; tab-size: 2; }
+.ca-input::selection { background: rgba(61,245,168,.22); }
+.ca-ghost { color: var(--tn-text-4); opacity: .75; }
+.ca-ghost-more { color: var(--tn-text-4); opacity: .55; font-size: 11px; }
+.ca-metric { position: absolute; top: 0; left: 0; visibility: hidden; white-space: pre; pointer-events: none; }
+.ca-menu { position: absolute; z-index: 5; min-width: 200px; max-height: 220px; overflow-y: auto; padding: 4px; border: 1px solid var(--tn-line); border-radius: var(--tn-r-sm); background: var(--tn-panel-2); box-shadow: 0 10px 30px rgba(0,0,0,.45); font-family: var(--mono); font-size: 12px; line-height: 18px; }
+.ca-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 6px; border: 0; border-radius: 4px; background: none; color: var(--tn-text-2); text-align: left; font: inherit; cursor: pointer; }
+.ca-item:hover { background: var(--tn-panel); }
+.ca-item.is-active { background: var(--tn-accent-soft); color: var(--tn-text); }
+.ca-badge { flex: 0 0 auto; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 10px; background: var(--tn-panel); color: var(--tn-text-4); }
+.ca-item.is-active .ca-badge { color: var(--tn-accent); }
+.ca-label { flex: 1; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.ca-detail { flex: 0 0 auto; color: var(--tn-text-4); font-size: 11px; }
 /* 编辑器标签栏右侧的视图切换（并排 / 统一） */
 .ed-viewseg { display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 0 6px; }
 .ed-viewseg-b { height: 22px; padding: 0 9px; border-radius: var(--tn-r-sm); color: var(--tn-text-4); font-size: 11px; white-space: nowrap; transition: background var(--tn-dur-1) var(--tn-ease), color var(--tn-dur-1) var(--tn-ease); }
