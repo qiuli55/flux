@@ -253,6 +253,37 @@
         <Style Selector="Button.btn:disabled /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Opacity" Value="0.45" />
         </Style>
+        <Style Selector="Button.btn.quiet">
+            <Setter Property="Foreground" Value="{DynamicResource TnText3}" />
+        </Style>
+        <Style Selector="Button.btn.quiet /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.btn.quiet:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+        </Style>
+        <Style Selector="Button.btn.quiet:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+        </Style>
+
+        <!-- 列表行（web 端 fx-activity-item / fx-file-row：底部发丝线 + hover 底色） -->
+        <Style Selector="Button.row">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="0,9" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.row /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineSoft}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.row:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
 
         <!-- 顶栏图标按钮 -->
         <Style Selector="Button.iconbtn">

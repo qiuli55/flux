@@ -1,0 +1,177 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.OverviewView"
+             x:DataType="vm:OverviewViewModel">
+
+    <UserControl.Resources>
+        <!-- 概览行：徽标 + 正文 + 右侧小字（web 端 fx-row / fx-activity-item） -->
+        <DataTemplate x:Key="RowTemplate" DataType="vm:RowView">
+            <Button Classes="row" Command="{Binding Open}">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <Border Grid.Column="0" Classes="badge" BorderBrush="{Binding Tone}">
+                        <TextBlock Text="{Binding Lead}" FontSize="11" Foreground="{Binding Tone}" />
+                    </Border>
+                    <TextBlock Grid.Column="1" Margin="12,0,0,0" Text="{Binding Text}"
+                               FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TnText2}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="2" Margin="12,0,0,0" Text="{Binding Trailing}"
+                               FontSize="11" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TnText4}"
+                               FontFamily="{DynamicResource TnMonoFont}" />
+                </Grid>
+            </Button>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+
+            <!-- 页头 -->
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,32">
+                <StackPanel Grid.Column="0">
+                    <TextBlock Classes="page-title" Text="概览" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="工作区一目了然：把需求交给 AI，在真实文件树上生成变更，人工审核后落盘。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Bottom">
+                    <Button Classes="btn subtle" Content="刷新"
+                            Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                    <Button Classes="btn primary" Content="新建任务"
+                            Command="{Binding GoCommand}" CommandParameter="solo" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Hero -->
+            <Grid Margin="0,0,0,16">
+                <Border Classes="card pad" BorderThickness="0,1,1,1" />
+                <Rectangle Width="2" HorizontalAlignment="Left" Fill="{DynamicResource TnAccent}" />
+                <StackPanel Margin="24" Spacing="12">
+                    <Border Classes="badge" HorizontalAlignment="Left"
+                            BorderBrush="{DynamicResource TnAccentLine}"
+                            Background="{DynamicResource TnAccentSoft}">
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                            <Ellipse Width="6" Height="6" Fill="{DynamicResource TnAccent}"
+                                     VerticalAlignment="Center" />
+                            <TextBlock FontSize="11" Foreground="{DynamicResource TnAccent}"
+                                       Text="{Binding EngineText, StringFormat='当前引擎 {0}'}" />
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="让 Flux 接管需求到落盘的全过程"
+                               FontSize="20" FontWeight="SemiBold" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="用自然语言描述需求，Flux 会先澄清需求、产出执行计划，再在虚拟工作区生成 diff。所有改动都需你审核通过后才写入磁盘，并可随时回滚。" />
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+                        <Button Classes="btn" Content="新建 Solo 任务" Command="{Binding GoCommand}" CommandParameter="solo" />
+                        <Button Classes="btn" Content="打开 IDE 工作台" Command="{Binding GoCommand}" CommandParameter="ide" />
+                        <Button Classes="btn" Content="查看任务看板" Command="{Binding GoCommand}" CommandParameter="tasks" />
+                        <Button Classes="btn" Content="管理 Skills" Command="{Binding GoCommand}" CommandParameter="skills" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- 指标条：单框四栏 + 栏间发丝分隔（web 端 fx-stats） -->
+            <Border Classes="card" Margin="0,0,0,16">
+                <Grid ColumnDefinitions="*,1,*,1,*,1,*">
+                    <StackPanel Grid.Column="0" Margin="24" Spacing="8">
+                        <TextBlock Classes="caps" Text="项目" />
+                        <TextBlock Text="{Binding ProjectCount}" FontSize="26" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <Rectangle Grid.Column="1" Width="1" Fill="{DynamicResource TnLine}" />
+
+                    <StackPanel Grid.Column="2" Margin="24" Spacing="8">
+                        <TextBlock Classes="caps" Text="运行中任务" />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{Binding RunningCount}" FontSize="26" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding TaskUnitText}" FontSize="12"
+                                       VerticalAlignment="Bottom" Margin="0,0,0,5"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Rectangle Grid.Column="3" Width="1" Fill="{DynamicResource TnLine}" />
+
+                    <StackPanel Grid.Column="4" Margin="24" Spacing="8">
+                        <TextBlock Classes="caps" Text="待决策" />
+                        <TextBlock Text="{Binding WaitingCount}" FontSize="26" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <Rectangle Grid.Column="5" Width="1" Fill="{DynamicResource TnLine}" />
+
+                    <StackPanel Grid.Column="6" Margin="24" Spacing="8">
+                        <TextBlock Classes="caps" Text="待审变更" />
+                        <TextBlock Text="{Binding PendingChangeCount}" FontSize="26" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- 执行流程 -->
+            <Border Classes="card pad" Margin="0,0,0,16">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="section-title" Text="执行流程" />
+                    <TextBlock Text="{Binding FlowText}" FontSize="12"
+                               Foreground="{DynamicResource TnText2}" />
+                </StackPanel>
+            </Border>
+
+            <!-- 最近任务 / 待审变更 -->
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                <Border Grid.Column="0" Classes="card pad">
+                    <StackPanel>
+                        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+                            <TextBlock Grid.Column="0" Classes="section-title" Text="最近任务" />
+                            <Button Grid.Column="1" Classes="btn quiet" Content="全部"
+                                    Command="{Binding GoCommand}" CommandParameter="tasks" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding RecentTasks}"
+                                      ItemTemplate="{StaticResource RowTemplate}" />
+                        <TextBlock Text="还没有任务 · 从「新建任务」开始" FontSize="12" Margin="0,16"
+                                   Foreground="{DynamicResource TnText4}"
+                                   IsVisible="{Binding HasNoRecentTasks}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Classes="card pad">
+                    <StackPanel>
+                        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+                            <TextBlock Grid.Column="0" Classes="section-title" Text="待审变更" />
+                            <Button Grid.Column="1" Classes="btn quiet" Content="去审核"
+                                    Command="{Binding GoCommand}" CommandParameter="ide" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding PendingChanges}"
+                                      ItemTemplate="{StaticResource RowTemplate}" />
+                        <TextBlock Text="没有待审变更 · 所有改动都已处理" FontSize="12" Margin="0,16"
+                                   Foreground="{DynamicResource TnText4}"
+                                   IsVisible="{Binding HasNoPendingChanges}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Agent 运行时 -->
+            <Border Classes="card pad" Margin="0,16,0,0">
+                <StackPanel Spacing="10">
+                    <TextBlock Classes="section-title" Text="Agent 运行时" />
+                    <ItemsControl ItemsSource="{Binding Agents}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="vm:RowView">
+                                <Border Classes="badge" Margin="0,0,8,0" BorderBrush="{Binding Tone}">
+                                    <TextBlock Text="{Binding Lead}" FontSize="11" Foreground="{Binding Tone}" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="没有注册的 Agent" FontSize="12"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding HasNoAgents}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

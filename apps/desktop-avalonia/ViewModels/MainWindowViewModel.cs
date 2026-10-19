@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media;
@@ -184,6 +185,9 @@ public partial class MainWindowViewModel : ViewModelBase
             SyncAccount();
             await RefreshSessionAsync().ConfigureAwait(true);
             StartHealthTimer();
+
+            // 首屏的 Activate 发生在后端拉起之前，这里补一次拉取，否则落地页会一直停在初始空值
+            RefreshCurrentPage();
         }
         catch (Exception ex)
         {
@@ -309,7 +313,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void BuildPlatform()
     {
-        NavItems.Add(new NavItem("overview", "概览", GroupPlatform, Placeholder("概览", "工作台概览将在 M2 接入真实数据。"), "home") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, Placeholder("任务", "任务看板将在 M2 实现。"), "layers") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, Placeholder("Skills", "Skills 管理将在 M2 实现。"), "puzzle") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, Placeholder("系统诊断", "系统诊断将在 M2 实现。"), "activity") { ActivateCommand = ActivateCommand });
@@ -374,6 +378,45 @@ public partial class MainWindowViewModel : ViewModelBase
         CurrentPage = item.Page;
         BreadcrumbGroup = item.Group;
         Breadcrumb = item.Label;
+
+        // 概览是真实数据页，每次进入都重新拉一次
+        RefreshCurrentPage();
+    }
+
+    /// <summary>当前页若是真实数据页则触发一次拉取（后端未就绪时页面自己会跳过）。</summary>
+    private void RefreshCurrentPage()
+    {
+        if (CurrentPage is OverviewViewModel overview)
+        {
+            _ = overview.RefreshAsync();
+        }
+    }
+
+    /// <summary>按 key 跳转（供页面内的快捷入口使用）：solo / ide 走模式，其余走导航条目。</summary>
+    private void NavigateTo(string key)
+    {
+        switch (key)
+        {
+            case "solo":
+                IsSoloMode = true;
+                Activate(ModeItems[0]);
+                return;
+            case "ide":
+                IsSoloMode = false;
+                Activate(ModeItems[1]);
+                return;
+            case "account":
+                Activate(_accountNavItem);
+                return;
+        }
+
+        var target = NavItems.FirstOrDefault(n => n.Key == key)
+            ?? ToolItems.FirstOrDefault(n => n.Key == key);
+
+        if (target is not null)
+        {
+            Activate(target);
+        }
     }
 
     [RelayCommand]

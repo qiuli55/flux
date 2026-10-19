@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -41,6 +42,18 @@ public sealed class FluxApiClient : IDisposable
 
     public Task<ApiEnvelope<DshStatus>?> DshStatusAsync(CancellationToken ct = default)
         => GetAsync<DshStatus>("/api/v1/dsh/status", ct);
+
+    public Task<ApiEnvelope<List<Project>>?> ListProjectsAsync(CancellationToken ct = default)
+        => GetAsync<List<Project>>("/api/v1/projects", ct);
+
+    public Task<ApiEnvelope<List<Change>>?> ListPendingChangesAsync(CancellationToken ct = default)
+        => GetAsync<List<Change>>("/api/v1/workspace/changes?status=pending", ct);
+
+    public Task<ApiEnvelope<List<AgentHandle>>?> ListAgentsAsync(CancellationToken ct = default)
+        => GetAsync<List<AgentHandle>>("/api/v1/agents", ct);
+
+    public Task<ApiEnvelope<List<FluxTask>>?> ListTasksAsync(int limit = 50, CancellationToken ct = default)
+        => GetAsync<List<FluxTask>>($"/api/v1/tasks?limit={limit}", ct);
 
     public Task<ApiEnvelope<CloudSession>?> GetCloudSessionAsync(CancellationToken ct = default)
         => GetAsync<CloudSession>("/api/v1/cloud/session", ct);
