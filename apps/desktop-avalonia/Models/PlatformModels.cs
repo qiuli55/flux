@@ -20,4 +20,11 @@ public sealed record AgentHandle(string Id, string State, AgentSpec Spec);
 /// <summary>
 /// GET /api/v1/tasks 的元素。刻意不叫 Task，避免与 System.Threading.Tasks.Task 冲突。
 /// </summary>
-public sealed record FluxTask(string Id, string Description, string Status, string CreatedAt);
+public sealed record FluxTask(
+    string Id,
+    string Description,
+    string Status,
+    string DecisionMode,
+    string? AgentId,
+    string? ProjectId,
+    string CreatedAt);

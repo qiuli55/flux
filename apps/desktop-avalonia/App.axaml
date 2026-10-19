@@ -285,6 +285,39 @@
             <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
         </Style>
 
+        <!-- 看板列 / 任务卡（web 端 fx-kb-col / fx-kb-card / fx-kb-tag） -->
+        <Style Selector="Border.kb-col">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+        </Style>
+        <Style Selector="Button.kb-card">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.kb-card /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.kb-card:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineStrong}" />
+        </Style>
+        <Style Selector="Border.kb-tag">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="7,0" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
         <!-- 顶栏图标按钮 -->
         <Style Selector="Button.iconbtn">
             <Setter Property="Width" Value="30" />

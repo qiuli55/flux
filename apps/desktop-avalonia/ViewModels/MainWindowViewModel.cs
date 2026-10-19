@@ -314,7 +314,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private void BuildPlatform()
     {
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
-        NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, Placeholder("任务", "任务看板将在 M2 实现。"), "layers") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, new TasksViewModel(() => _api, NavigateTo), "layers") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, Placeholder("Skills", "Skills 管理将在 M2 实现。"), "puzzle") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, Placeholder("系统诊断", "系统诊断将在 M2 实现。"), "activity") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("settings", "设置", GroupPlatform, Placeholder("设置", "设置页将在 M2 实现。"), "settings") { ActivateCommand = ActivateCommand });
@@ -386,9 +386,14 @@ public partial class MainWindowViewModel : ViewModelBase
     /// <summary>当前页若是真实数据页则触发一次拉取（后端未就绪时页面自己会跳过）。</summary>
     private void RefreshCurrentPage()
     {
-        if (CurrentPage is OverviewViewModel overview)
+        switch (CurrentPage)
         {
-            _ = overview.RefreshAsync();
+            case OverviewViewModel overview:
+                _ = overview.RefreshAsync();
+                break;
+            case TasksViewModel tasks:
+                _ = tasks.RefreshAsync();
+                break;
         }
     }
 

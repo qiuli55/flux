@@ -1,0 +1,127 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.TasksView"
+             x:DataType="vm:TasksViewModel">
+
+    <UserControl.Resources>
+        <!-- 任务卡（web 端 fx-kb-card） -->
+        <DataTemplate x:Key="TaskCardTemplate" DataType="vm:TaskCardView">
+            <Button Classes="kb-card" Command="{Binding Open}" Margin="0,0,0,12">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="{Binding Description}" FontSize="12" LineHeight="18"
+                               TextWrapping="Wrap" Foreground="{DynamicResource TnText}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border Classes="badge" BorderBrush="{Binding StatusTone}">
+                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                <Ellipse Width="6" Height="6" Fill="{Binding StatusTone}"
+                                         VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding StatusLabel}" FontSize="11"
+                                           Foreground="{Binding StatusTone}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="kb-tag">
+                            <TextBlock Text="{Binding ModeLabel}" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}" />
+                        </Border>
+                    </StackPanel>
+                    <Grid ColumnDefinitions="Auto,Auto,*,Auto">
+                        <TextBlock Grid.Column="0" Text="{Binding IdShort}" Classes="mono"
+                                   FontSize="11" Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Grid.Column="1" Text="{Binding AgentText}" Margin="6,0,0,0"
+                                   FontSize="11" Foreground="{DynamicResource TnText4}"
+                                   IsVisible="{Binding HasAgent}" />
+                        <TextBlock Grid.Column="3" Text="{Binding TimeText}" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}"
+                                   FontFamily="{DynamicResource TnMonoFont}" />
+                    </Grid>
+                </StackPanel>
+            </Button>
+        </DataTemplate>
+
+        <!-- 看板列（web 端 fx-kb-col） -->
+        <DataTemplate x:Key="ColumnTemplate" DataType="vm:KanbanColumn">
+            <Border Classes="kb-col" Margin="0,0,16,0">
+                <StackPanel>
+                    <Grid ColumnDefinitions="Auto,*" Margin="12,14,12,10">
+                        <TextBlock Grid.Column="0" Classes="caps" Text="{Binding Label}" />
+                        <TextBlock Grid.Column="1" Text="{Binding Count}" FontSize="11"
+                                   HorizontalAlignment="Right"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </Grid>
+                    <Rectangle Classes="rule" Margin="12,0" />
+                    <ItemsControl ItemsSource="{Binding Items}" Margin="12,12,12,0"
+                                  ItemTemplate="{StaticResource TaskCardTemplate}" />
+                    <TextBlock Text="暂无" FontSize="12" Margin="12,8,12,0"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding IsEmpty}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+
+            <!-- 页头 -->
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                <StackPanel Grid.Column="0">
+                    <TextBlock Classes="page-title" Text="任务看板" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="所有任务按状态分组展示。状态由执行流程推进，此处只读；进入 Solo 执行中心可推进任务。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Bottom">
+                    <Button Classes="btn subtle" Content="刷新"
+                            Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                    <Button Classes="btn primary" Content="新建任务"
+                            Command="{Binding NewTaskCommand}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 工具条：项目筛选 + 计数 -->
+            <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,16">
+                <ComboBox Width="200" Height="34" CornerRadius="6" FontSize="12"
+                          ItemsSource="{Binding Scopes}"
+                          SelectedItem="{Binding SelectedScope, Mode=TwoWay}"
+                          Background="{DynamicResource TnBg2}"
+                          BorderBrush="{DynamicResource TnLine}"
+                          Foreground="{DynamicResource TnText}">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="vm:ScopeOption">
+                            <TextBlock Text="{Binding Label}" FontSize="12" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <TextBlock Text="{Binding TotalText}" FontSize="12" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TnText4}" />
+            </StackPanel>
+
+            <!-- 空态（web 端：整块看板换成 Empty） -->
+            <Border Classes="card" IsVisible="{Binding HasNoTasks}">
+                <StackPanel HorizontalAlignment="Center" Spacing="8" Margin="24,48">
+                    <Border Classes="badge" HorizontalAlignment="Center">
+                        <TextBlock Text="还没有任务" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </Border>
+                    <TextBlock Text="点击「新建任务」开始" FontSize="12"
+                               TextAlignment="Center"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+            </Border>
+
+            <!-- 四列看板（web 端 fx-kanban） -->
+            <ItemsControl ItemsSource="{Binding Columns}"
+                          ItemTemplate="{StaticResource ColumnTemplate}"
+                          IsVisible="{Binding !HasNoTasks}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Columns="4" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
