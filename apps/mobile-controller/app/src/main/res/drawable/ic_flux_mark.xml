@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内使用的 Flux 标记（单色，Compose 侧按需 tint）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF22D3EE"
+        android:pathData="M42,26 L80,26 L75,38 L53,38 L51,48 L70,48 L65,60 L49,60 L46,82 L30,82 Z" />
+</vector>

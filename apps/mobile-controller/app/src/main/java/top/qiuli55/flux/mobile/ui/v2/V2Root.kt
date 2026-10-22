@@ -28,7 +28,6 @@ import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ShowChart
-import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -47,12 +46,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import top.qiuli55.flux.mobile.R
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -231,6 +232,21 @@ fun FluxV2Root() {
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier
+                            .size(58.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(V2Colors.accent.copy(alpha = .10f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_flux_mark),
+                            contentDescription = null,
+                            tint = V2Colors.cyan700,
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
                     LiveDot(V2Colors.cyan500)
                     Spacer(Modifier.height(12.dp))
                     Label("正在连接 Flux…", 12f, V2Colors.ink(.45f))
@@ -591,10 +607,10 @@ private fun V2NavRail(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.Outlined.SmartToy,
+                painter = painterResource(R.drawable.ic_flux_mark),
                 contentDescription = null,
                 tint = V2Colors.cyan700,
-                modifier = Modifier.size(19.dp),
+                modifier = Modifier.size(21.dp),
             )
         }
         Spacer(Modifier.height(18.dp))

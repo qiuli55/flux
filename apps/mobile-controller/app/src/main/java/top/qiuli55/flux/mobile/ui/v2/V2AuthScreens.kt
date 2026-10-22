@@ -31,7 +31,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import top.qiuli55.flux.mobile.BuildConfig
+import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.CloudAuthBus
 import top.qiuli55.flux.mobile.data.DeviceInfo
@@ -101,10 +102,10 @@ fun V2LoginScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Outlined.SmartToy,
-                    contentDescription = null,
+                    painter = painterResource(R.drawable.ic_flux_mark),
+                    contentDescription = "Flux",
                     tint = V2Colors.cyan700,
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(32.dp),
                 )
             }
             Spacer(Modifier.height(18.dp))
