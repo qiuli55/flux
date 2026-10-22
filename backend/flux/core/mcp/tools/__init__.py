@@ -7,12 +7,16 @@
 `terminal.execute` 是**受控放行**的那一个（Agent Terminal Console §4，2026-10-05 决策）：
 它不是"打开任意 shell"，而是必须经 Flux 的 Terminal Session 执行——命令与输出都落成
 终端事件供人实时观察并 Stop，且输出只回结构化摘要、不回灌 Agent Context（§9）。
+
+`proposal.preview` 是自检通道：把提案内容应用到临时副本再跑配置的测试命令，真实工作区
+不动；它不写真实文件、也不改提案，只回答"这组改动能不能让测试通过"。
 """
 
 from __future__ import annotations
 
 from flux.core.mcp.tools.base import ToolContext, ToolSpec
 from flux.core.mcp.tools.memory_tools import memory_tools
+from flux.core.mcp.tools.preview_tools import preview_tools
 from flux.core.mcp.tools.read_tools import read_tools
 from flux.core.mcp.tools.runtime_tools import runtime_tools
 from flux.core.mcp.tools.terminal_tools import terminal_tools
@@ -24,6 +28,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     *runtime_tools(),
     *memory_tools(),
     *terminal_tools(),
+    *preview_tools(),
 )
 
 TOOLS: dict[str, ToolSpec] = {tool.name: tool for tool in ALL_TOOLS}

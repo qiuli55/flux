@@ -53,6 +53,11 @@ SERVER_INSTRUCTIONS = (
     "读取（只读）；改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 "
     "Apply Engine 执行。历史条目是快照：断言不等于事实，采信前自行验证。MCP 不可用时，"
     "可用 Flux Server CLI 兜底继续工作（例如 `flux tools call <tool>`）。"
+    "【交卷前必须自检】proposal.create 之前，先用 proposal.preview 把同一份 payload 在"
+    "临时副本里跑一遍测试命令（它会把改动落进副本再跑；直接 terminal.execute 跑的是磁盘上的"
+    "旧代码，绿了也不算数）。测试没过不许提交提案：读失败输出、改自己的改动、再 preview，"
+    "直到全绿；单轮最多重试 3 次，仍不绿就把失败输出写进 proposal 的 summary 里交人工判断，"
+    "不要假装通过。"
 )
 
 
@@ -151,7 +156,7 @@ class McpServer:
         await self._publish(Events.MCP_TOOL_CALLED, identity, spec)
         # 审计轨迹：谁（agent/token）调了哪个工具、成没成，落一行日志（入参不落，可能含整份文件）
         logger.info("MCP 工具调用成功 agent=%s tool=%s", identity.agent_id, name)
-        # 上下文摄入（FLUX_CONTEXT_MECHANISM §3.3 / §10.1）：只有能归属到 Run 才写库，且 best-effort。
+        # 上下文摄入（机制 §3.3 / §10.1）：能归属到 Run 才写库，且 best-effort。
         await self._ingest_context(identity, spec, data)
         return _result(request_id, _tool_text(data))
 
@@ -186,9 +191,7 @@ class McpServer:
                 run_id=run_id, turn_id=run_id, matches=result.matches
             )
         except Exception:  # noqa: BLE001 - 工具边界不允许因摄入失败而失败
-            logger.warning(
-                "MCP 上下文摄入失败 tool=%s run=%s", spec.name, run_id, exc_info=True
-            )
+            logger.warning("MCP 上下文摄入失败 tool=%s run=%s", spec.name, run_id, exc_info=True)
 
     async def _publish(
         self,

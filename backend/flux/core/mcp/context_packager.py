@@ -27,6 +27,9 @@ from flux.core.context.compress import extract, select, verify
 from flux.core.context.metrics import FeedMetrics
 from flux.core.context.tiers import Tier, tier_rank
 from flux.errors import ValidationError
+from flux.logging import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - 仅为类型标注，避免容器与本模块互相导入
     from flux.container import Container
@@ -35,6 +38,8 @@ if TYPE_CHECKING:  # pragma: no cover - 仅为类型标注，避免容器与本�
 MAX_CHANGES = 20
 #: 引用清单自身的上限，避免"被裁掉的条目"反过来把预算吃光
 MAX_DROPPED_REFS = 50
+#: 失败提案回灌给下一轮的失败原因上限：只留尾部（测试输出最有用的部分在末尾）
+APPLY_ERROR_CONTEXT_CHARS = 800
 #: S3 折算行数时的单行估算长度：把"剩余字符"换成"还能留几行"
 _ENCODED_LINE_CHARS = 120
 
@@ -47,6 +52,7 @@ PROVENANCE_NOTE = (
 #: 每类 entry 属于哪个分区（§6.2）：必留区先占预算，可压区才能被编码，可取区只留 ref
 _ZONE_BY_KIND: dict[str, Zone] = {
     "task": Zone.P0,
+    "verify": Zone.P0,
     "brain": Zone.P0,
     "proposals": Zone.P1,
     "steps": Zone.P2,
@@ -56,6 +62,7 @@ _ZONE_BY_KIND: dict[str, Zone] = {
 #: 近期提案是中段，预算吃紧时先编码；历史 step 是远段，最后才降级为 ref。
 _TIER_BY_KIND: dict[str, Tier] = {
     "task": Tier.HOT,
+    "verify": Tier.HOT,
     "brain": Tier.HOT,
     "proposals": Tier.WARM,
     "steps": Tier.COLD,
@@ -65,6 +72,7 @@ _TIER_BY_KIND: dict[str, Tier] = {
 #: 打包器只给引用，agent 需要细节时按提示去取，而不是要求把原文塞进投喂。
 _RETRIEVE_HINTS: dict[str, str] = {
     "task": "context.get(task_id=<id>)",
+    "verify": "context.get(task_id=<id>)",
     "brain": "context.get(project_id=<id>)",
     "proposals": "context.get(task_id=<id>) / workspace.diff(change_id=<提案 id>)",
     "step": "context.fetch(step_id=<id>)",
@@ -130,6 +138,13 @@ async def package_context(
             )
         )
 
+    # 验证命令（P0）：这是 Apply 之后平台**真会执行**的那条命令，不是建议。
+    # 提前告诉 agent，是为了让它提交提案前先自己跑一遍，而不是交卷后才发现测试挂。
+    gate = (container.settings.test_command or "").strip()
+    if gate:
+        entries.append(_verify_entry(gate, task_id=task_uuid, project_id=project_uuid))
+        logger.debug("上下文包含验证命令 task=%s gate=%s", task_uuid, gate)
+
     # P1 只带与本次打包直接相关的提案：有任务就按任务取，否则按项目取。
     # 不能两个条件同时下（仓库层是 AND）——提案常常只挂了 task_id 没有 project_id，
     # 那样会被过滤成空；也不能在任务包里顺带拉全项目提案，那正是 §6 要防的跨任务污染。
@@ -143,11 +158,10 @@ async def package_context(
     if recent:
         lines = ["# 近期提案（P1 可压区，人审队列）"]
         for change in recent:
-            lines.append(
-                f"- [{change.status}] {change.file_path}"
-                f"（+{change.added_lines}/-{change.removed_lines}，{change.hunks} 个改动块）"
-                f" id={change.id}" + (f" 说明：{change.summary}" if change.summary else "")
-            )
+            lines.append(_proposal_line(change))
+        failed = sum(1 for change in recent if (getattr(change, "apply_error", None) or ""))
+        if failed:
+            logger.info("上下文回灌失败原因 task=%s failed=%d/%d", task_uuid, failed, len(recent))
         entries.append(
             _entry(
                 kind="proposals",
@@ -177,6 +191,39 @@ def _entry(*, kind: str, title: str, text: str, ref: str) -> dict[str, Any]:
         "zone": _ZONE_BY_KIND[kind],
         "tier": _TIER_BY_KIND[kind],
     }
+
+
+def _verify_entry(gate: str, *, task_id: uuid.UUID | None, project_id: uuid.UUID | None) -> dict:
+    """把 Apply 门禁命令打进必留区，让 agent 在提交提案前先自查（§7.6）。"""
+    scope = str(task_id or project_id or "workspace")
+    text = "\n".join(
+        [
+            "# 验证命令（L1，Apply 之后平台会真跑这条）",
+            f"- 命令：{gate}",
+            "- 提交提案前用 proposal.preview 带同一份 payload 预演一遍（改动落进临时副本",
+            "  再跑这条命令）；terminal.execute 跑的是尚未落盘的旧代码，不能当自检；",
+            "  不通过就改到通过，别把没过测试的改动交进人审队列。",
+        ]
+    )
+    return _entry(kind="verify", title="验证命令（提交前自检）", text=text, ref=f"verify:{scope}")
+
+
+def _proposal_line(change: Any) -> str:
+    """一条提案的单行摘要；失败提案额外带上 Apply 的失败原因。
+
+    这是「反馈回灌」的入口：上一轮挂在测试上的提案，下一轮 agent 一读上下文就能看到
+    失败输出，而不是在同一个坑里重犯。输出按字符截断，避免一条长栈把预算吃光。
+    """
+    line = (
+        f"- [{change.status}] {change.file_path}"
+        f"（+{change.added_lines}/-{change.removed_lines}，{change.hunks} 个改动块）"
+        f" id={change.id}" + (f" 说明：{change.summary}" if change.summary else "")
+    )
+    error = (getattr(change, "apply_error", None) or "").strip()
+    if not error:
+        return line
+    tail = error[-APPLY_ERROR_CONTEXT_CHARS:]
+    return f"{line}\n  失败原因：{tail}"
 
 
 def _apply_budget(

@@ -18,6 +18,10 @@ FLUX_AGENT_PROTOCOL_VERSION = "1"
 RUNTIME_RULES: tuple[str, ...] = (
     "Submit every change through proposal.create; Flux handles validation, approval and apply.",
     "Do not assume direct workspace writes are the Flux completion path.",
+    "Verify before submitting: call proposal.preview with the same payload to apply your "
+    "changes to a throwaway copy and run the project's configured test command; running "
+    "terminal.execute instead tests the old on-disk code. Iterate until it passes.",
+    "A proposal you have not tested is not a finished change.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
