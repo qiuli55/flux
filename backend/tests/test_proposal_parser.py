@@ -74,6 +74,13 @@ def test_parse_tolerates_common_wrapping(raw: str, expected: str) -> None:
     assert parse_code_change_set(raw).paths == ("app/main.py", "tests/test_health.py"), expected
 
 
+def test_parse_accepts_raw_newlines_inside_json_strings() -> None:
+    """模型把换行直接写进 JSON 字符串时语义仍明确，宽松解析应接受。"""
+    raw = '{"summary":"换行","changes":[{"path":"a.py","content":"line1\nline2"}]}'
+    result = parse_code_change_set(raw)
+    assert result.changes[0].content == "line1\nline2"
+
+
 def test_parse_rejects_non_json() -> None:
     with pytest.raises(ValidationError) as excinfo:
         parse_code_change_set("抱歉，我需要更多信息才能完成这个需求。")

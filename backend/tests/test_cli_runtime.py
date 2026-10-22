@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,9 +29,14 @@ from flux.core.agent_runtime.manager import AgentSpec
 from flux.core.agent_runtime.runtimes.base import (
     DEFAULT_RUNTIME,
     RUNTIME_CODEX,
+    RUNTIME_OPENCODE,
     RuntimeProcess,
 )
-from flux.core.agent_runtime.runtimes.cli import _codex_config, _normalize_codex_event
+from flux.core.agent_runtime.runtimes.cli import (
+    _codex_config,
+    _normalize_codex_event,
+    _normalize_opencode_event,
+)
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.enums import AgentInstallStatus, AgentRole
 from flux.errors import ConfigurationError, ValidationError
@@ -281,6 +287,56 @@ def test_codex_event_normalisation_maps_items() -> None:
         "codex",
     )
     assert message_event.data["text"] == "结论"
+
+
+def test_opencode_event_normalisation_reads_part_payload() -> None:
+    """opencode `--format json` 的 text/tool 都在 part 里；不取 part 会把答复写成空串。"""
+    run_id = "r1"
+
+    def _event(payload: dict) -> tuple[str, dict]:
+        event = _normalize_opencode_event(payload, run_id, RUNTIME_OPENCODE)
+        return event.type, event.data
+
+    event_type, data = _event({"type": "text", "part": {"type": "text", "text": "结论"}})
+    assert event_type == "message" and data["text"] == "结论"
+    # 空文本块（工具调用前的占位）不能冒充答复
+    assert _event({"type": "text", "part": {"type": "text", "text": "  "}})[0] == "status"
+    event_type, data = _event(
+        {"type": "tool_use", "part": {"type": "tool", "tool": "flux_workspace_read"}}
+    )
+    assert event_type == "tool_call" and data["name"] == "flux_workspace_read"
+    assert _event({"type": "step_start", "part": {"type": "step-start"}})[0] == "status"
+
+
+def test_cli_prepare_sets_pwd_to_workspace(tmp_path: Path) -> None:
+    """OpenCode 用 PWD 判定项目目录；只改 cwd 不改 PWD 会让会话落到 Flux 仓库。"""
+    from flux.core.agent_runtime.runtimes.cli import CliRuntime
+
+    settings = Settings(
+        workspace_root=str(tmp_path),
+        dsh_workspace=str(tmp_path / "ws"),
+        dsh_home=str(tmp_path / "home"),
+        dsh_mcp_enabled=False,
+    )
+    runtime = CliRuntime(
+        runtime_id=RUNTIME_OPENCODE,
+        adapter=SimpleNamespace(_path="/usr/local/bin/opencode"),
+        settings=settings,
+        supervisor=None,
+    )
+
+    launch = asyncio.run(
+        runtime.prepare(
+            task=SimpleNamespace(id="t1"),
+            agent=SimpleNamespace(id_str="a1"),
+            run_id="r1",
+            instruction="hi",
+        )
+    )
+
+    assert launch.cwd == str(tmp_path)
+    assert launch.env["PWD"] == str(tmp_path)
+    assert launch.env["FLUX_WORKSPACE"] == str(tmp_path)
 
 
 def test_codex_config_writes_deepseek_provider_block(

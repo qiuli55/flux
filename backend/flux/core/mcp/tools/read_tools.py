@@ -173,12 +173,26 @@ WORKSPACE_READ_SCHEMA: dict[str, Any] = {
     "properties": {
         "path": {
             "type": "string",
-            "description": "相对工作区根的文件路径，例如 todo_service/store.py",
+            "description": (
+                "相对工作区根的路径：文件返回内容；目录（含 \".\"）返回该层条目清单，"
+                "例如 todo_service/store.py 或 backend"
+            ),
         }
     },
     "required": ["path"],
     "additionalProperties": False,
 }
+
+
+def _directory_payload(tree) -> dict[str, Any]:
+    """目录读取的统一返回：条目清单足以让 Agent 继续探索，不必再猜。"""
+    return {
+        "path": tree.path or ".",
+        "kind": "dir",
+        "entries": [entry.to_dict() for entry in tree.entries],
+        "truncated": tree.truncated,
+        "note": "这是目录清单；读取具体文件请把 path 指到文件。",
+    }
 
 
 async def workspace_read(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
@@ -187,9 +201,23 @@ async def workspace_read(ctx: ToolContext, params: dict[str, Any]) -> dict[str, 
     # Secret 与 Flux 内部数据（备份/锁）是 MCP 面的硬禁令（§3.5 / §7）：直接拒绝，
     # 不因为"只是读一下"而放行
     ensure_not_secret_path(path)
-    ensure_not_flux_internal(PurePosixPath(path.replace("\\", "/")))
+    relative = PurePosixPath(path.replace("\\", "/"))
+    ensure_not_flux_internal(relative)
     # workspace_root 不接受外部传入：能读到哪个目录由 Flux 配置决定，不由调用方指定
-    content = await asyncio.to_thread(ctx.container.files.read, path=path)
+    if not relative.parts:
+        # "." / "./" / "" 都是工作区根；safe_relative_path 会拒绝空 parts，这里直接列根目录
+        tree = await asyncio.to_thread(ctx.container.files.tree, depth=1)
+        return _directory_payload(tree)
+    try:
+        content = await asyncio.to_thread(ctx.container.files.read, path=path)
+    except ValidationError as read_error:
+        # 目录是合法探索目标：读文件失败时按目录再列一层，避免 Agent 在目录上反复试错。
+        # 真错误（二进制/超限/缺失）由 tree 再次失败后原样抛出，不吞掉真实原因。
+        try:
+            tree = await asyncio.to_thread(ctx.container.files.tree, path=path, depth=1)
+        except Exception as tree_error:  # noqa: BLE001 - 保留原始读错误
+            raise read_error from tree_error
+        return _directory_payload(tree)
     return {
         "path": content.path,
         "content": content.content,
@@ -261,7 +289,10 @@ def read_tools() -> tuple[ToolSpec, ...]:
         ToolSpec(
             name="workspace.read",
             title="读取工作区文件",
-            description="读取工作区内某个文件的当前内容及其 sha256（只读，不落盘）。",
+            description=(
+                "读取工作区内某个文件的当前内容及其 sha256（只读，不落盘）。"
+                "传入目录（含 \".\"）时返回该目录的条目清单，便于先看结构再读文件。"
+            ),
             input_schema=WORKSPACE_READ_SCHEMA,
             capability=Capability.FILE_READ,
             handler=workspace_read,
