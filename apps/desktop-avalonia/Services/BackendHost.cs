@@ -49,6 +49,8 @@ public sealed class BackendHost : IDisposable
         }
 
         var dataDir = EnsureDataDir();
+        // 全新机器上库文件可能是空的；后端不会自己建表，必须先迁移到 head
+        await RunMigrationsAsync(dataDir, ct).ConfigureAwait(false);
         Port = GetFreePort();
 
         var psi = new ProcessStartInfo
@@ -110,6 +112,45 @@ public sealed class BackendHost : IDisposable
         _process.BeginErrorReadLine();
 
         await WaitForHealthAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>用仓库内的 alembic 把用户数据目录的 SQLite 迁到 head（幂等）。</summary>
+    private static async Task RunMigrationsAsync(string dataDir, CancellationToken ct)
+    {
+        var dbUrl = $"sqlite+aiosqlite:///{ToUrlPath(dataDir)}/flux.db";
+        var psi = new ProcessStartInfo
+        {
+            FileName = AppPaths.PythonExecutable,
+            WorkingDirectory = AppPaths.BackendDir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        foreach (var arg in new[] { "-m", "alembic", "-x", $"db_url={dbUrl}", "upgrade", "head" })
+        {
+            psi.ArgumentList.Add(arg);
+        }
+
+        psi.Environment["PYTHONPATH"] = AppPaths.BackendDir;
+        psi.Environment["PYTHONIOENCODING"] = "utf-8";
+        psi.Environment["FLUX_DATA_DIR"] = dataDir;
+        psi.Environment["FLUX_DATABASE_URL"] = dbUrl;
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("无法启动数据库迁移进程");
+        var stdout = process.StandardOutput.ReadToEndAsync(ct);
+        var stderr = process.StandardError.ReadToEndAsync(ct);
+        await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"数据库迁移失败（退出码 {process.ExitCode}）。{Environment.NewLine}" +
+                $"{await stdout.ConfigureAwait(false)}{Environment.NewLine}{await stderr.ConfigureAwait(false)}");
+        }
     }
 
     public async Task WaitForHealthAsync(CancellationToken ct = default)
