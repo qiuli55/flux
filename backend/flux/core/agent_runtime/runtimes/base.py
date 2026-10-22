@@ -56,6 +56,8 @@ class RuntimeLaunch:
     session_id: str = ""
     task_id: str | None = None
     agent_id: str | None = None
+    #: Agent 档案里登记的模型名（仅用于 Run 用量归因，不参与启动）
+    model: str = ""
     #: CLI runtime 专用：run 私有目录（含该 CLI 的隔离配置）
     run_dir: Path | None = None
     #: CLI runtime 专用：完整启动 argv

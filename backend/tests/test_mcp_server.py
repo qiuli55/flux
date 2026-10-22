@@ -275,6 +275,94 @@ def test_workspace_read_lists_directory_instead_of_rejecting_dot(
     assert next(entry for entry in data["entries"] if entry["name"] == "pkg")["kind"] == "dir"
 
 
+def test_workspace_tree_returns_a_compact_map(mcp_client: TestClient, workspace_root) -> None:
+    """探索面：一次调用拿到多层目录地图，避免逐层 read(".") 的往返。"""
+    (workspace_root / "pkg").mkdir()
+    (workspace_root / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(call(mcp_client, token, "workspace.tree", {"path": ".", "depth": 2}))
+    paths = [entry["path"] for entry in data["entries"]]
+    assert any(path.endswith("pkg/mod.py") for path in paths)
+    assert data["truncated"] is False
+
+
+def test_workspace_read_many_reads_files_and_reports_per_item_errors(
+    mcp_client: TestClient, workspace_root
+) -> None:
+    """单条失败不拖垮整批：批量读取要带回每个路径的结果/原因，Agent 才能继续。"""
+    (workspace_root / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (workspace_root / "b.py").write_text("b = 2\n", encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(
+        call(
+            mcp_client,
+            token,
+            "workspace.read_many",
+            {"paths": ["a.py", "missing.py", "b.py"], "max_chars": 1000},
+        )
+    )
+    items = {item["path"]: item for item in data["items"]}
+    assert items["a.py"]["content"] == "a = 1\n"
+    assert items["b.py"]["content"] == "b = 2\n"
+    assert items["missing.py"]["error"]
+    assert data["count"] == 3
+
+
+def test_workspace_read_many_clips_large_files(mcp_client: TestClient, workspace_root) -> None:
+    (workspace_root / "big.py").write_text("x" * 5000, encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(
+        call(mcp_client, token, "workspace.read_many", {"paths": ["big.py"], "max_chars": 300})
+    )
+    item = data["items"][0]
+    assert len(item["content"]) == 300 and item["truncated"] is True
+    assert "workspace.read" in item["next_hint"]
+
+
+def test_workspace_search_finds_text_and_filters_secrets(
+    mcp_client: TestClient, workspace_root
+) -> None:
+    """搜索是独立实现，不走 read 的守卫，必须在工具层补密钥过滤（fail-closed）。"""
+    (workspace_root / "app.py").write_text("def needle():\n    return 1\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("NEEDLE=secret\n", encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(call(mcp_client, token, "workspace.search", {"query": "needle"}))
+    paths = {hit["path"] for hit in data["hits"]}
+    assert "app.py" in paths
+    assert ".env" not in paths
+    assert data["filtered_secrets"] >= 1
+    assert all(hit["line"] >= 1 for hit in data["hits"])
+
+
+def test_workspace_outline_returns_symbol_lines(mcp_client: TestClient, workspace_root) -> None:
+    (workspace_root / "mod.py").write_text(
+        "import os\n\nclass Store:\n    pass\n\ndef load(path):\n    return path\n",
+        encoding="utf-8",
+    )
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(call(mcp_client, token, "workspace.outline", {"path": "mod.py"}))
+    lines = {entry["line"]: entry["text"] for entry in data["entries"]}
+    assert lines[3].startswith("class Store")
+    assert lines[6].startswith("def load")
+    assert data["total_lines"] == 7
+
+
+def test_workspace_exploration_tools_refuse_internal_directories(
+    mcp_client: TestClient, workspace_root
+) -> None:
+    internal = workspace_root / ".flux" / "backups"
+    internal.mkdir(parents=True)
+    (internal / "store.py.bak").write_text("x", encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    for name, arguments in (
+        ("workspace.tree", {"path": ".flux"}),
+        ("workspace.search", {"query": "x", "path": ".flux"}),
+        ("workspace.outline", {"path": ".flux/backups/store.py.bak"}),
+    ):
+        result = call(mcp_client, token, name, arguments)
+        assert result["isError"] is True, name
+
+
 def test_workspace_read_refuses_to_escape_the_root(mcp_client: TestClient, workspace_root) -> None:
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     for path in ("../outside.py", "/etc/passwd"):
@@ -643,9 +731,7 @@ def test_flux_context_without_run_returns_null_run_and_task(mcp_client: TestClie
 def test_flux_context_accepts_project_id_from_execution_prompt(mcp_client: TestClient) -> None:
     """执行指令会让 Agent 同时带上 task_id/project_id；多余的项目标识不能拒绝握手。"""
     token = issue_token(mcp_client)
-    data = payload(
-        call(mcp_client, token, "flux_context", {"project_id": str(uuid.uuid4())})
-    )
+    data = payload(call(mcp_client, token, "flux_context", {"project_id": str(uuid.uuid4())}))
     assert data["protocol"] == {"name": "flux-agent", "version": "1"}
 
 

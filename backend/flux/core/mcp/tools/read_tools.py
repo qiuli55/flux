@@ -1,13 +1,17 @@
 """只读工具：`context.get` / `context.fetch` / `workspace.read` / `workspace.diff`（§3.3）。
 
-四个工具都不写盘、不改状态，因此在令牌能力层面只要 `file.read`；
+这些工具都不写盘、不改状态，因此在令牌能力层面只要 `file.read`；
 它们背后分别是打包器、内容寻址原文库、Project File Explorer（只读、含软链防护）
 与 Virtual Workspace——本层不重复实现任何文件访问，避免出现第二份"能读用户文件"的代码。
+
+`workspace.tree / read_many / search / outline` 是为减少 Agent 往返而加的探索面：
+过去 88% 的 MCP 调用是单文件 workspace.read，一次只拿一个文件，步数被读取次数撑大。
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -23,10 +27,12 @@ from flux.core.mcp.tools.base import (
 from flux.core.virtual_workspace.diff_engine import content_hash
 from flux.core.virtual_workspace.path_guard import (
     ensure_not_flux_internal,
+    ensure_not_git_internal,
     ensure_not_secret_path,
+    is_secret_path,
 )
 from flux.enums import Capability
-from flux.errors import NotFoundError, ValidationError
+from flux.errors import AIOSError, NotFoundError, ValidationError
 
 CONTEXT_GET_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -174,7 +180,7 @@ WORKSPACE_READ_SCHEMA: dict[str, Any] = {
         "path": {
             "type": "string",
             "description": (
-                "相对工作区根的路径：文件返回内容；目录（含 \".\"）返回该层条目清单，"
+                '相对工作区根的路径：文件返回内容；目录（含 "."）返回该层条目清单，'
                 "例如 todo_service/store.py 或 backend"
             ),
         }
@@ -261,6 +267,239 @@ async def workspace_diff(ctx: ToolContext, params: dict[str, Any]) -> dict[str, 
     }
 
 
+#: 单次 read_many 的路径数上限与逐文件字符预算。10 × 6000 已能覆盖一次"看一组文件"
+#: 的典型需求，又不会让一次调用把 60KB 灌进上下文。
+MAX_READ_MANY_PATHS = 10
+DEFAULT_READ_MANY_CHARS = 6_000
+MAX_READ_MANY_TOTAL_CHARS = 30_000
+#: workspace.tree 的目标是"给地图"而不是"搬目录"：条目再多也只回前 400 条。
+MAX_TREE_AGENT_ENTRIES = 400
+#: workspace.search 单次回给 Agent 的命中上限（explorer 自身允许到 1000）。
+MAX_AGENT_SEARCH_RESULTS = 100
+#: outline 最多回多少个符号行
+MAX_OUTLINE_ENTRIES = 300
+
+WORKSPACE_TREE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "相对工作区根的目录，默认根目录"},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 4, "description": "展开层数，默认 2"},
+    },
+    "additionalProperties": False,
+}
+
+WORKSPACE_READ_MANY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": MAX_READ_MANY_PATHS,
+            "description": "一次要读的相对路径清单（文件或目录）",
+        },
+        "max_chars": {
+            "type": "integer",
+            "minimum": 200,
+            "description": f"每个文件最多返回的字符数，默认 {DEFAULT_READ_MANY_CHARS}",
+        },
+    },
+    "required": ["paths"],
+    "additionalProperties": False,
+}
+
+WORKSPACE_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": "要搜索的文本或正则"},
+        "path": {"type": "string", "description": "搜索范围（相对目录），默认整个工作区"},
+        "case_sensitive": {"type": "boolean", "description": "是否区分大小写，默认否"},
+        "regex": {"type": "boolean", "description": "query 是否按正则解释，默认否（按字面量）"},
+        "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_AGENT_SEARCH_RESULTS,
+            "description": "最多返回多少条命中，默认 50",
+        },
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
+WORKSPACE_OUTLINE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "相对工作区根的文件路径"},
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+def _guarded(relative: PurePosixPath) -> None:
+    """探索面统一路径禁令：密钥、`.flux/`、`.git/` 一律不碰。"""
+    ensure_not_flux_internal(relative)
+    ensure_not_git_internal(relative)
+
+
+def _optional_bool(params: dict[str, Any], key: str, *, default: bool) -> bool:
+    if key not in params:
+        return default
+    value = params[key]
+    if not isinstance(value, bool):
+        raise ValidationError(f"参数 {key} 必须是布尔值", details={"param": key})
+    return value
+
+
+async def workspace_tree(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """给 Agent 一张紧凑目录地图，替代逐层 workspace.read(".") 的往返。"""
+    reject_unknown(params, {"path", "depth"})
+    path = optional_str(params, "path") or "."
+    depth = _optional_int(params, "depth", default=2)
+    if depth < 1 or depth > 4:
+        raise ValidationError("参数 depth 必须在 1..4 之间", details={"param": "depth"})
+    relative = PurePosixPath(path.replace("\\", "/"))
+    ensure_not_secret_path(path)
+    _guarded(relative)
+    target = None if not relative.parts else path
+    tree = await asyncio.to_thread(ctx.container.files.tree, path=target, depth=depth)
+    entries = [
+        {"path": entry.path, "kind": entry.kind, "size": entry.size}
+        for entry in tree.entries[:MAX_TREE_AGENT_ENTRIES]
+    ]
+    return {
+        "path": tree.path or ".",
+        "entries": entries,
+        "truncated": tree.truncated or len(tree.entries) > MAX_TREE_AGENT_ENTRIES,
+        "note": "紧凑目录地图；读具体文件请用 workspace.read / read_many。",
+    }
+
+
+def _clip(item: dict[str, Any], limit: int) -> dict[str, Any]:
+    """把单条读取结果裁剪到字符预算；目录清单不裁。"""
+    content = item.get("content")
+    if not isinstance(content, str) or len(content) <= limit:
+        return item
+    return {
+        **item,
+        "content": content[:limit],
+        "truncated": True,
+        "next_hint": f"已截断到 {limit} 字符；需要全文请用 workspace.read 单独读取。",
+    }
+
+
+async def workspace_read_many(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """一次读多个文件，复用 workspace.read 的守卫与目录回退语义。"""
+    reject_unknown(params, {"paths", "max_chars"})
+    paths = params.get("paths")
+    if not isinstance(paths, list) or not paths or len(paths) > MAX_READ_MANY_PATHS:
+        raise ValidationError(
+            f"参数 paths 必须是 1..{MAX_READ_MANY_PATHS} 个路径的数组",
+            details={"param": "paths"},
+        )
+    max_chars = _optional_int(params, "max_chars", default=DEFAULT_READ_MANY_CHARS)
+    if max_chars < 200:
+        raise ValidationError("参数 max_chars 不能小于 200", details={"param": "max_chars"})
+
+    items: list[dict[str, Any]] = []
+    used = 0
+    for raw_path in paths:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValidationError("paths 里的每一项都必须是非空字符串", details={"param": "paths"})
+        if used >= MAX_READ_MANY_TOTAL_CHARS:
+            items.append({"path": raw_path, "skipped": "总字符预算已用尽"})
+            continue
+        limit = min(max_chars, MAX_READ_MANY_TOTAL_CHARS - used)
+        try:
+            item = await workspace_read(ctx, {"path": raw_path})
+        except AIOSError as exc:
+            # 单条失败不拖垮整批：把原因带回，Agent 可换路径继续
+            items.append({"path": raw_path, "error": exc.message})
+            continue
+        clipped = _clip(item, limit)
+        used += len(clipped.get("content") or "")
+        items.append(clipped)
+    return {
+        "items": items,
+        "count": len(items),
+        "used_chars": used,
+        "truncated": any(item.get("truncated") or item.get("skipped") for item in items),
+    }
+
+
+async def workspace_search(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """在工作区内做文本搜索，让 Agent 先定位再读，而不是逐文件猜。"""
+    reject_unknown(params, {"query", "path", "case_sensitive", "regex", "max_results"})
+    query = require_str(params, "query")
+    path = optional_str(params, "path") or "."
+    relative = PurePosixPath(path.replace("\\", "/"))
+    ensure_not_secret_path(path)
+    _guarded(relative)
+    max_results = _optional_int(params, "max_results", default=50)
+    if max_results < 1 or max_results > MAX_AGENT_SEARCH_RESULTS:
+        raise ValidationError(
+            f"参数 max_results 必须在 1..{MAX_AGENT_SEARCH_RESULTS} 之间",
+            details={"param": "max_results"},
+        )
+    hits = await asyncio.to_thread(
+        ctx.container.files.search,
+        query=query,
+        path=None if not relative.parts else path,
+        case_sensitive=_optional_bool(params, "case_sensitive", default=False),
+        regex=_optional_bool(params, "regex", default=False),
+        max_results=max_results,
+    )
+    # 搜索是独立实现，不走 workspace.read 的守卫；这里补上密钥过滤（fail-closed）
+    safe = [hit for hit in hits if not is_secret_path(hit.path)]
+    return {
+        "query": query,
+        "hits": [hit.to_dict() for hit in safe],
+        "count": len(safe),
+        "filtered_secrets": len(hits) - len(safe),
+        "note": "命中的文本已是原文片段，可直接据此决定读哪个文件。",
+    }
+
+
+#: 顶层符号行：覆盖 Python / JS-TS / Go / Java-Kotlin / Rust / Ruby 的常见声明。
+_SYMBOL_LINE = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
+    r"(?:def|class|interface|struct|enum|type|func|fun|function|object|trait)\s+[A-Za-z_]\w*"
+)
+#: JS/TS 的箭头函数常量声明（`export const foo = async () => ...`）
+_ARROW_CONST = re.compile(
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>"
+)
+
+
+def _outline_entries(content: str) -> list[dict[str, Any]]:
+    """从文件内容抽取符号行；给行号，方便随后用 offset 精读。"""
+    entries: list[dict[str, Any]] = []
+    for number, line in enumerate(content.splitlines(), start=1):
+        if len(entries) >= MAX_OUTLINE_ENTRIES:
+            break
+        if _SYMBOL_LINE.match(line) or _ARROW_CONST.match(line):
+            entries.append({"line": number, "text": line.strip()[:200]})
+    return entries
+
+
+async def workspace_outline(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """返回文件的符号大纲（行号 + 声明），替代"整文件读进来再找定义"。"""
+    reject_unknown(params, {"path"})
+    path = require_str(params, "path")
+    relative = PurePosixPath(path.replace("\\", "/"))
+    ensure_not_secret_path(path)
+    _guarded(relative)
+    content = await asyncio.to_thread(ctx.container.files.read, path=path)
+    entries = _outline_entries(content.content)
+    return {
+        "path": content.path,
+        "total_lines": len(content.content.splitlines()),
+        "entries": entries,
+        "truncated": len(entries) >= MAX_OUTLINE_ENTRIES,
+        "note": "这是符号大纲；需要实现细节时用 workspace.read 按行号附近精读。",
+    }
+
+
 def read_tools() -> tuple[ToolSpec, ...]:
     return (
         ToolSpec(
@@ -291,7 +530,7 @@ def read_tools() -> tuple[ToolSpec, ...]:
             title="读取工作区文件",
             description=(
                 "读取工作区内某个文件的当前内容及其 sha256（只读，不落盘）。"
-                "传入目录（含 \".\"）时返回该目录的条目清单，便于先看结构再读文件。"
+                '传入目录（含 "."）时返回该目录的条目清单，便于先看结构再读文件。'
             ),
             input_schema=WORKSPACE_READ_SCHEMA,
             capability=Capability.FILE_READ,
@@ -304,5 +543,49 @@ def read_tools() -> tuple[ToolSpec, ...]:
             input_schema=WORKSPACE_DIFF_SCHEMA,
             capability=Capability.FILE_READ,
             handler=workspace_diff,
+        ),
+        ToolSpec(
+            name="workspace.tree",
+            title="查看目录地图",
+            description=(
+                "一次拿到最多 4 层的紧凑目录地图（路径 + 类型 + 大小），用于替代逐层读取目录。"
+                "先看地图、再用 read_many 读一组文件，比逐个 workspace.read 少很多往返。"
+            ),
+            input_schema=WORKSPACE_TREE_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=workspace_tree,
+        ),
+        ToolSpec(
+            name="workspace.read_many",
+            title="批量读取文件",
+            description=(
+                "一次读取最多 10 个文件（或目录），单文件默认裁剪到 6000 字符、总计 30000 字符。"
+                "探索阶段优先用它一次拿齐相关文件，避免一个文件一次调用。"
+            ),
+            input_schema=WORKSPACE_READ_MANY_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=workspace_read_many,
+        ),
+        ToolSpec(
+            name="workspace.search",
+            title="搜索工作区文本",
+            description=(
+                "按字面量或正则搜索工作区，返回文件、行号、列号和该行原文（最多 100 条）。"
+                "不确定文件路径时先搜再读；密钥类文件会被过滤。"
+            ),
+            input_schema=WORKSPACE_SEARCH_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=workspace_search,
+        ),
+        ToolSpec(
+            name="workspace.outline",
+            title="查看文件符号大纲",
+            description=(
+                "返回文件的顶层符号声明及行号（函数/类/接口/类型等），用于快速定位定义。"
+                "需要实现细节时再按行号用 workspace.read 精读，避免整文件反复读。"
+            ),
+            input_schema=WORKSPACE_OUTLINE_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=workspace_outline,
         ),
     )
