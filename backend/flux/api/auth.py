@@ -6,7 +6,7 @@ MCP 面本来就有 Agent 令牌，REST 面此前完全没有身份校验（只�
 
 规则（任一通过即放行）：
 
-0. 带的是**账号云**（B 机 `flux.qiuli55.top`，仓库 `apps/cloud`）签发的 access token
+0. 带的是**账号云**（B 机 `flux.qiuli55.top`，独立私有仓库）签发的 access token
    （`typ=access`），且与云共享的 HS256 密钥本地验签通过 → 放行。这就是 Flux 本体的
    登录闭环：令牌由唯一的账号权威签发，本机只验签、不每次回源；
 1. 请求带 `Authorization: Bearer <token>` 且与 `FLUX_AUTH_TOKEN` **常量时间**比对通过 → 放行；
@@ -49,7 +49,7 @@ bearer_scheme = HTTPBearer(
     description="Flux 访问令牌（服务端 FLUX_AUTH_TOKEN 或账号云签发的 access token）",
 )
 
-#: 账号云 access token 的 payload 类型标记（见 apps/cloud/app/security.py）。
+#: 账号云 access token 的 payload 类型标记（见云服务的 security.py）。
 _CLOUD_ACCESS_TYP = "access"
 
 

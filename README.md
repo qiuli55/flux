@@ -120,10 +120,11 @@ Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），
 | --- | --- | --- |
 | `apps/web-dashboard` | React 19 + Vite（含 `@xterm/xterm`） | 工作台主界面：Solo / IDE 双模式、diff 双视图、内嵌终端 |
 | `apps/desktop` | Electron + PyInstaller sidecar | 可安装桌面端；Linux `Flux-0.1.0-x86_64.AppImage` / `Flux-0.1.0-amd64.deb` 本机实测，Windows `Flux-Setup-0.1.0-x64.exe` 由 CI 构建。详见 [apps/desktop/README.md](apps/desktop/README.md) |
-| `apps/cloud` | FastAPI | Flux 账号云服务：站外回跳登录、一次性登录码、运行日志自动上传（后端经 `/api/v1/cloud/{session,exchange,refresh,logout}` 对接） |
 | `apps/mobile-controller` | Android（Kotlin + Gradle） | 手机远程控制端 |
 | `apps/showcase-web` | React | 展示页 |
 | `apps/vscode-extension` | — | 待建 |
+
+账号云服务（`flux.qiuli55.top`）独立维护，不随本仓库分发。
 
 桌面端数据落在 `~/.flux`（`flux.db` / `workspace/` / `backups/` / DSH 落盘），**卸载不删数据、重装可继续使用**。
 

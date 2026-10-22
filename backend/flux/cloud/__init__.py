@@ -1,4 +1,4 @@
-"""Flux 账号云接入（B 机 `flux.qiuli55.top`，仓库 `apps/cloud`）。
+"""Flux 账号云接入（B 机 `flux.qiuli55.top`，独立私有仓库）。
 
 本包只做三件事：
 - `session`：本地校验云端签发的 HS256 access token、保存/续期本机会话、调用云端接口；

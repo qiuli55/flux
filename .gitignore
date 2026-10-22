@@ -24,6 +24,9 @@ artifacts/
 # Apply Engine 的备份目录（落在被改项目根目录下，见 §7.6）
 .flux/
 
+# 账号云服务独立维护，不随个人版仓库分发
+apps/cloud/
+
 # --- Node ---
 node_modules/
 dist/
