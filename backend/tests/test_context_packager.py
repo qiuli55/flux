@@ -30,7 +30,7 @@ from flux.core.mcp.context_packager import (
     package_context,
 )
 from flux.core.virtual_workspace.service import EXPIRE_REASON_TIMEOUT
-from flux.enums import DecisionMode
+from flux.enums import DecisionMode, VirtualChangeStatus
 from flux.models.task import Task
 
 ORIGINAL = "def list_todos():\n    return None\n"
@@ -305,3 +305,45 @@ def test_apply_budget_encodes_warm_and_drops_cold() -> None:
     # §5.6 红线：跑过的自校验一次不差
     assert result["metrics"]["reconstruction_rate"] == 1.0
     assert result["metrics"]["healthy"] is True
+
+
+async def test_pack_carries_gate_command_as_p0(ctx_container: Container) -> None:
+    """配置了 test_command，就必须出现在必留区：agent 交卷前要先自己跑这一条。"""
+    ctx_container.settings.test_command = "bash scripts/test.sh"
+    project = await _project(ctx_container)
+    task = await _task(ctx_container, project, description="加筛选")
+
+    pack = await package_context(ctx_container, task_id=str(task.id))
+
+    kinds = [entry["kind"] for entry in pack["entries"]]
+    assert "verify" in kinds
+    verify = pack["entries"][kinds.index("verify")]
+    assert (verify["zone"], verify["level"], verify["tier"]) == ("P0", "L1", "hot")
+    # entry 只暴露元信息，正文在 pack["content"] 里
+    assert "# 验证命令（L1，Apply 之后平台会真跑这条）" in pack["content"]
+    assert "bash scripts/test.sh" in pack["content"]
+    assert "proposal.preview" in pack["content"]
+
+
+async def test_pack_replays_apply_error_of_failed_proposal(ctx_container: Container) -> None:
+    """上一轮挂在测试上的提案，下一轮必须看得到失败原因，否则同一个坑会重犯。"""
+    project = await _project(ctx_container)
+    task = await _task(ctx_container, project, description="加筛选")
+    change = await ctx_container.workspace.propose(
+        file_path="todo_service/store.py",
+        original_content=ORIGINAL,
+        proposed_content=PROPOSED,
+        task_id=task.id,
+        agent_source="developer-agent",
+        summary="加筛选",
+    )
+    await ctx_container.proposal_repo.set_apply_result(
+        change.id,
+        status=VirtualChangeStatus.FAILED,
+        apply_error="AssertionError: expected 2 items, got 0（exit=1，bash scripts/test.sh）",
+    )
+
+    pack = await package_context(ctx_container, task_id=str(task.id))
+
+    assert "expected 2 items, got 0" in pack["content"]
+    assert "失败原因" in pack["content"]

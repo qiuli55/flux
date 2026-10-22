@@ -93,6 +93,7 @@ def terminal_tools() -> tuple[ToolSpec, ...]:
             description=(
                 "在工作区根目录下执行一条命令，并把命令与实时输出写进终端会话（工程师可在"
                 "终端窗口观察并随时 Stop）。返回 exit_code 与输出摘要；完整输出不回灌上下文。"
+                "注意：提案落盘前磁盘上仍是旧代码，提交前自检请用 proposal.preview。"
             ),
             input_schema=TERMINAL_EXECUTE_SCHEMA,
             capability=Capability.TERMINAL_EXECUTE,
