@@ -29,6 +29,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from flux.config import Settings
 from flux.core.agent_runtime.platforms import (
@@ -281,6 +282,14 @@ class RunSupervisor:
                 continue
             monitor.last_mcp_mono = self._clock()
             await self._repo.touch_mcp_activity(monitor.run_id)
+
+    async def record_metrics(self, run_id: str, metrics: dict[str, Any]) -> None:
+        """把 Run 原生用量写进 run 记录（复用 last_event，不新增表/迁移）。
+
+        终态落定后调用；`last_event` 由此变成一条 `run_metrics` 汇总，
+        运行详情和预算报表可直接读到步数、工具成功/失败与 token。
+        """
+        await self._repo.set_last_event(run_id, metrics)
 
     async def finish(
         self,

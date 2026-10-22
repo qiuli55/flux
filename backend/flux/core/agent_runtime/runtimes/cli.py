@@ -82,6 +82,95 @@ _EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 
+def _int_of(value: Any) -> int:
+    """用量字段一律转非负整数：运行时版本差异/缺字段不能把汇总写成 None。"""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_of(value: Any) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalized_usage(raw: dict[str, Any]) -> dict[str, Any]:
+    """把各运行时的用量字段名收敛成同一套键（codex 用 input_tokens，opencode 用 input）。"""
+    cache = raw.get("cache") if isinstance(raw.get("cache"), dict) else {}
+    return {
+        "input": raw.get("input", raw.get("input_tokens")),
+        "output": raw.get("output", raw.get("output_tokens")),
+        "cache_read": cache.get(
+            "read", raw.get("cached_input_tokens", raw.get("cache_read_input_tokens"))
+        ),
+        "cache_write": cache.get("write", raw.get("cache_write_input_tokens")),
+    }
+
+
+@dataclass
+class _RunUsage:
+    """一次 Run 的原生用量累计（Flux 自己记，不依赖运行时自己的会话库）。"""
+
+    steps: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost: float = 0.0
+
+    def add_step(self, usage: dict[str, Any], cost: Any = None) -> None:
+        self.steps += 1
+        self.input_tokens += _int_of(usage.get("input"))
+        self.output_tokens += _int_of(usage.get("output"))
+        self.cache_read_tokens += _int_of(usage.get("cache_read"))
+        self.cache_write_tokens += _int_of(usage.get("cache_write"))
+        self.cost += _float_of(cost)
+
+    def add_tool(self, state: str) -> None:
+        self.tool_calls += 1
+        if state.strip().lower() in {"error", "failed"}:
+            self.tool_errors += 1
+
+    def to_dict(self, *, runtime_id: str, model: str) -> dict[str, Any]:
+        return {
+            "event_type": "run_metrics",
+            "runtime": runtime_id,
+            "model": model,
+            "steps": self.steps,
+            "tool_calls": self.tool_calls,
+            "tool_errors": self.tool_errors,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "total_tokens": self.input_tokens + self.output_tokens,
+            "cost": round(self.cost, 6),
+        }
+
+
+def _accumulate_usage(usage: _RunUsage, event: RuntimeEvent, parsed: dict[str, Any]) -> None:
+    """把一条已归一化事件折算进 Run 用量。
+
+    OpenCode 每步结束发 step-finish（带 tokens/cost）；Codex 只在 turn.completed 带 usage。
+    两者都算一步，工具状态为 error/failed 时另计一次失败。
+    """
+    if event.type == EVENT_TOOL_CALL:
+        usage.add_tool(str(event.data.get("state") or ""))
+    raw_type = str(parsed.get("type") or "").strip().lower()
+    if event.data.get("step_finished"):
+        payload = event.data.get("usage")
+        usage.add_step(payload if isinstance(payload, dict) else {}, event.data.get("cost"))
+        return
+    if raw_type in ("turn.completed", "thread.completed"):
+        payload = parsed.get("usage")
+        usage.add_step(_normalized_usage(payload) if isinstance(payload, dict) else {})
+
+
 @dataclass(frozen=True)
 class _CliSpec:
     runtime_id: str
@@ -140,6 +229,8 @@ class CliRuntime:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         #: run_id → stderr 文件句柄（进程退出、Run 落终态后关闭）
         self._stderr_files: dict[str, Any] = {}
+        #: run_id → 原生用量累计（终态时写进 run 记录，供预算报表读取）
+        self._usage: dict[str, _RunUsage] = {}
 
     # --- AgentRuntime ---
 
@@ -196,6 +287,7 @@ class CliRuntime:
             session_id=f"flux-task-{getattr(task, 'id', run_id)}",
             task_id=str(getattr(task, "id", "")) or None,
             agent_id=agent_id,
+            model=str(getattr(agent, "model_name", "") or ""),
             run_dir=run_dir,
             argv=argv,
             token_id=token_id,
@@ -239,6 +331,7 @@ class CliRuntime:
         )
         queue: asyncio.Queue[Any] = asyncio.Queue()
         self._queues[launch.run_id] = queue
+        self._usage[launch.run_id] = _RunUsage()
         if launch.token_id:
             self._tokens[launch.run_id] = launch.token_id
         self._tasks[launch.run_id] = asyncio.create_task(
@@ -344,6 +437,7 @@ class CliRuntime:
     ) -> None:
         """线程内逐行读 stdout → 统一事件；进程退出后按退出码落终态。"""
         texts: list[str] = []
+        usage = self._usage.setdefault(launch.run_id, _RunUsage())
         stream = process.popen.stdout
         if stream is not None:
             for line in stream:
@@ -351,6 +445,7 @@ class CliRuntime:
                 if parsed is None:
                     continue
                 event = self._normalize(parsed, launch.run_id)
+                _accumulate_usage(usage, event, parsed)
                 if event.type == EVENT_MESSAGE:
                     text = _text_of(event.data)
                     if text:
@@ -414,6 +509,9 @@ class CliRuntime:
         if status is DshRunStatus.FAILED:
             error = f"{self.runtime_id} CLI 进程以退出码 {exit_code} 结束"
             finish_reason = str(exit_code)
+        metrics = self._usage.pop(launch.run_id, _RunUsage()).to_dict(
+            runtime_id=self.runtime_id, model=launch.model
+        )
         try:
             final = await self._supervisor.finish(
                 launch.run_id,
@@ -429,13 +527,36 @@ class CliRuntime:
             # 看护器改写了终态（取消/超时先落定）：本线程算出的失败原因不串进结果
             error = None
             finish_reason = None
+        try:
+            await self._supervisor.record_metrics(launch.run_id, metrics)
+        except Exception:  # noqa: BLE001 - 指标写失败不能改变 Run 终态，但必须留痕
+            logger.exception("cli.run 记录用量失败 run=%s", launch.run_id)
+        logger.info(
+            "cli.run 用量 run=%s runtime=%s model=%s steps=%d tools=%d/%d "
+            "input=%d output=%d cache_read=%d cost=%s",
+            launch.run_id,
+            self.runtime_id,
+            launch.model or "unknown",
+            metrics["steps"],
+            metrics["tool_calls"],
+            metrics["tool_errors"],
+            metrics["input_tokens"],
+            metrics["output_tokens"],
+            metrics["cache_read_tokens"],
+            metrics["cost"],
+        )
         self._supervisor.release(launch.run_id)
         self._tasks.pop(launch.run_id, None)
         queue.put_nowait(
             RuntimeEvent(
                 EVENT_FINAL,
                 launch.run_id,
-                {"status": str(final), "exit_code": exit_code, "final_response": response},
+                {
+                    "status": str(final),
+                    "exit_code": exit_code,
+                    "final_response": response,
+                    "metrics": metrics,
+                },
             )
         )
         queue.put_nowait(_SENTINEL)
@@ -514,6 +635,19 @@ def _normalize_opencode_event(parsed: dict[str, Any], run_id: str, runtime_id: s
             EVENT_TOOL_CALL,
             run_id,
             {**data, "name": name, "state": str(state.get("status") or "")},
+        )
+    if part_type == "step-finish" or raw_type in ("step_finish", "step-finish"):
+        # 每步的 token 与 cost 都在这里；归一成统一键后由 Run 用量累计器汇总
+        tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+        return RuntimeEvent(
+            EVENT_STATUS,
+            run_id,
+            {
+                **data,
+                "step_finished": True,
+                "usage": _normalized_usage(tokens),
+                "cost": part.get("cost"),
+            },
         )
     if raw_type == "error" or part_type == "error":
         return RuntimeEvent(EVENT_ERROR, run_id, {**data, "message": text or "opencode error"})

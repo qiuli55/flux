@@ -176,8 +176,20 @@ async def _latest_plan(container: Container, task_uuid: uuid.UUID) -> list[str]:
 def _execution_instruction(
     task: Task, confirmation: dict[str, Any] | None, steps: list[str]
 ) -> str:
-    """拼出交给 Agent 的执行指令：任务描述 + 用户确认过的需求 + 计划 + 能力边界。"""
-    lines = [task.description.strip()]
+    """拼出交给 Agent 的执行指令。
+
+    稳定段（执行约束）放在最前、动态段（任务 / 确认 / 计划 / 身份）放在后面：
+    CLI 会话会把整个 prompt 当作前缀缓存，越早出现的内容越容易在后续 Run 里复用，
+    把随任务变化的 task_id 和描述放在前面等于每轮都从第一个 token 开始失效。
+    """
+    lines = [
+        "## 执行约束",
+        "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
+        "不要尝试直接写文件、执行 shell 或读取密钥。",
+        "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
+        "",
+        task.description.strip(),
+    ]
     items = (confirmation or {}).get("items")
     if isinstance(items, list) and items:
         lines += ["", "## 需求确认（用户已确认，以此为准）"]
@@ -192,13 +204,8 @@ def _execution_instruction(
         f"- project_id：{task.project_id or '未关联'}",
         "- 开工先调 `context.get` 并带上 task_id：它会返回项目 Brain（项目结构、技术栈、"
         "入口文件）与近期提案；不确定文件路径时以它为准，再用 workspace.read 核对内容。",
-    ]
-    lines += [
-        "",
-        "## 执行约束",
-        "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
-        "不要尝试直接写文件、执行 shell 或读取密钥。",
-        "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
+        "- 探索优先用 workspace.tree 看地图、workspace.search 定位、workspace.read_many "
+        "一次读多个文件；确定行号后再用 workspace.read 精读，减少往返。",
     ]
     return "\n".join(lines)
 

@@ -33,9 +33,11 @@ from flux.core.agent_runtime.runtimes.base import (
     RuntimeProcess,
 )
 from flux.core.agent_runtime.runtimes.cli import (
+    _accumulate_usage,
     _codex_config,
     _normalize_codex_event,
     _normalize_opencode_event,
+    _RunUsage,
 )
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.enums import AgentInstallStatus, AgentRole
@@ -59,6 +61,20 @@ _FAILED_SCRIPT = """#!/usr/bin/env python3
 import json, sys
 print(json.dumps({"type": "message", "text": "boom"}), flush=True)
 sys.exit(2)
+"""
+
+_OPENCODE_USAGE_SCRIPT = """#!/usr/bin/env python3
+import json, sys
+print(json.dumps({"type": "step_start", "part": {"type": "step-start"}}), flush=True)
+print(json.dumps({"type": "tool_use", "part": {
+    "type": "tool", "tool": "workspace.read", "state": {"status": "completed"}}}), flush=True)
+print(json.dumps({"type": "tool_use", "part": {
+    "type": "tool", "tool": "workspace.search", "state": {"status": "error"}}}), flush=True)
+print(json.dumps({"type": "step_finish", "part": {
+    "type": "step-finish", "cost": 0.0,
+    "tokens": {"input": 1000, "output": 80, "cache": {"read": 400, "write": 20}}}}), flush=True)
+print(json.dumps({"type": "text", "part": {"type": "text", "text": "done"}}), flush=True)
+sys.exit(0)
 """
 
 _CANCEL_SCRIPT = """#!/usr/bin/env python3
@@ -124,18 +140,24 @@ def _cli_settings(settings: Settings, tmp_path: Path) -> Settings:
 
 
 @contextmanager
-def _cli_app(settings: Settings, tmp_path: Path, binary: str) -> Iterator[TestClient]:
+def _cli_app(
+    settings: Settings,
+    tmp_path: Path,
+    binary: str,
+    *,
+    env_name: str = "FLUX_CODEX_CLI_BINARY",
+) -> Iterator[TestClient]:
     app = create_app(_cli_settings(settings, tmp_path))
-    previous = os.environ.get("FLUX_CODEX_CLI_BINARY")
-    os.environ["FLUX_CODEX_CLI_BINARY"] = binary
+    previous = os.environ.get(env_name)
+    os.environ[env_name] = binary
     try:
         with TestClient(app) as client:
             yield client
     finally:
         if previous is None:
-            os.environ.pop("FLUX_CODEX_CLI_BINARY", None)
+            os.environ.pop(env_name, None)
         else:
-            os.environ["FLUX_CODEX_CLI_BINARY"] = previous
+            os.environ[env_name] = previous
 
 
 def _mark_ready(container: object, name: str) -> None:
@@ -306,6 +328,80 @@ def test_opencode_event_normalisation_reads_part_payload() -> None:
     )
     assert event_type == "tool_call" and data["name"] == "flux_workspace_read"
     assert _event({"type": "step_start", "part": {"type": "step-start"}})[0] == "status"
+
+
+def test_execution_instruction_keeps_stable_prefix_before_dynamic_task() -> None:
+    """稳定约束必须排在任务描述和 task_id 之前，否则每次 Run 的前缀缓存都会失效。"""
+    from flux.core.agent_runtime.runtimes.service import _execution_instruction
+
+    text = _execution_instruction(
+        SimpleNamespace(description="TASK-BODY", id="task-1", project_id="proj-1"), None, []
+    )
+    assert text.startswith("## 执行约束")
+    assert text.index("## 执行约束") < text.index("TASK-BODY")
+    assert text.index("TASK-BODY") < text.index("## 平台身份")
+    assert text.index("## 平台身份") < text.index("task-1")
+
+
+def test_opencode_step_finish_usage_is_accumulated() -> None:
+    """每步的 tokens 必须由 Flux 自己累计，否则只能事后去翻 OpenCode 的库。"""
+    usage = _RunUsage()
+    step = _normalize_opencode_event(
+        {
+            "type": "step_finish",
+            "part": {
+                "type": "step-finish",
+                "cost": 0.5,
+                "tokens": {"input": 1000, "output": 80, "cache": {"read": 400, "write": 20}},
+            },
+        },
+        "r1",
+        RUNTIME_OPENCODE,
+    )
+    _accumulate_usage(usage, step, {"type": "step_finish"})
+    tool = _normalize_opencode_event(
+        {"type": "tool_use", "part": {"type": "tool", "tool": "x", "state": {"status": "error"}}},
+        "r1",
+        RUNTIME_OPENCODE,
+    )
+    _accumulate_usage(usage, tool, {"type": "tool_use"})
+    summary = usage.to_dict(runtime_id=RUNTIME_OPENCODE, model="m")
+    assert summary["steps"] == 1
+    assert summary["tool_calls"] == 1 and summary["tool_errors"] == 1
+    assert summary["input_tokens"] == 1000 and summary["output_tokens"] == 80
+    assert summary["cache_read_tokens"] == 400 and summary["cache_write_tokens"] == 20
+    assert summary["cost"] == 0.5
+
+
+def test_opencode_run_records_native_metrics(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """Run 终态后，Flux 自己的 run 记录里要有步数/工具/token，供预算报表使用。"""
+    binary = _write_script(tmp_path / "fake-opencode-usage", _OPENCODE_USAGE_SCRIPT)
+    with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
+        container = client.app.state.container
+        _mark_ready(container, RUNTIME_OPENCODE)
+        agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
+        started = _start_task(client, agent_id)
+        task_id = started["task"]["id"]
+        run_id = started["task"]["run_id"]
+        _wait_status(client, task_id, "completed")
+
+        # 状态落定与指标写入是两次 UPDATE，给一个很短的观察窗
+        deadline = time.monotonic() + 2.0
+        run = None
+        while time.monotonic() < deadline:
+            run = asyncio.run(container.run_repo.get(run_id))
+            if run is not None and (run.last_event or {}).get("event_type") == "run_metrics":
+                break
+            time.sleep(0.02)
+        metrics = (run.last_event or {}) if run is not None else {}
+        assert metrics["event_type"] == "run_metrics"
+        assert metrics["runtime"] == RUNTIME_OPENCODE
+        assert metrics["steps"] == 1
+        assert metrics["tool_calls"] == 2 and metrics["tool_errors"] == 1
+        assert metrics["input_tokens"] == 1000 and metrics["output_tokens"] == 80
+        assert metrics["cache_read_tokens"] == 400
 
 
 def test_cli_prepare_sets_pwd_to_workspace(tmp_path: Path) -> None:
