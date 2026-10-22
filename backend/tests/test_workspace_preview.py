@@ -106,6 +106,27 @@ async def test_preview_tests_the_proposed_code_and_leaves_the_workspace_untouche
     assert len(sandboxes) == 1 and not sandboxes[0].exists()
 
 
+async def test_preview_accepts_task_and_project_ids_from_execution_prompt(
+    tmp_path: Path, sandboxes: list[Path]
+) -> None:
+    """平台执行指令会让 Agent 一并带上 task_id/project_id；预演不能因此整次失败。"""
+    root = _project(tmp_path)
+    ctx = _ctx(_settings(tmp_path))
+
+    result = await proposal_preview(
+        ctx,
+        {
+            "payload": {"changes": [{"path": "calc.py", "content": "ok\n"}]},
+            "task_id": str(uuid.uuid4()),
+            "project_id": str(uuid.uuid4()),
+        },
+    )
+
+    assert result["passed"] is True
+    assert (root / "calc.py").read_text(encoding="utf-8") == "bad\n"
+    assert not sandboxes[0].exists()
+
+
 async def test_preview_reports_failure_with_tail_output(
     tmp_path: Path, sandboxes: list[Path]
 ) -> None:

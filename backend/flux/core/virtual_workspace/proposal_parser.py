@@ -139,7 +139,9 @@ def _decode_payload(raw: str, *, source: str) -> Any:
             continue
         tried.add(candidate)
         try:
-            return json.loads(candidate)
+            # strict=False：模型常在字符串里直接塞换行/制表符，这种"非法 JSON"语义明确，
+            # 宽松解析能接受；结构性问题仍会落到下面的 ValidationError。
+            return json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             continue
     raise ValidationError(

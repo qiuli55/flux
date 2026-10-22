@@ -6,7 +6,8 @@
 不新建第二套生命周期机制。
 
 每次 Run 有自己的私有目录 `<FLUX_DSH_HOME>/runs/<run_id>/`（0700）：里面是该 CLI 的隔离
-配置（0600），注入 Flux MCP 端点与一枚一次性 Bearer 令牌（scopes 仅 file.read / file.write）。
+配置（0600），注入 Flux MCP 端点与一枚一次性 Bearer 令牌（scopes 仅 file.read / file.write /
+terminal.execute——没有 apply / git / secret）。
 令牌明文只出现在该配置文件里，不进日志、不进任何文档/证据；Run 结束立即撤销。
 """
 
@@ -46,9 +47,14 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: CLI Agent 的 MCP 令牌能力：只读文件 + 提交提案（proposal.create 需要 file.write）。
-#: 与 DSH 一致，没有 apply / git / secret 能力——外部 CLI 无法直接落盘。
-CLI_TOKEN_SCOPES: tuple[Capability, ...] = (Capability.FILE_READ, Capability.FILE_WRITE)
+#: CLI Agent 的 MCP 令牌能力：只读文件 + 提交提案（proposal.create 需要 file.write）
+#: + 终端执行（proposal.preview 在临时副本里跑测试需要 terminal.execute）。
+#: 仍没有 apply / git / secret 能力——外部 CLI 无法直接落盘，preview 也不写真实工作区。
+CLI_TOKEN_SCOPES: tuple[Capability, ...] = (
+    Capability.FILE_READ,
+    Capability.FILE_WRITE,
+    Capability.TERMINAL_EXECUTE,
+)
 
 #: 事件流结束哨兵
 _SENTINEL = object()
@@ -177,6 +183,9 @@ class CliRuntime:
             )
         )
         env.update(runtime_env)
+        # 子进程 cwd 变了但 PWD 仍是 Flux 服务进程的旧值；OpenCode 用它判定项目目录
+        # （会话会落到错误 workspace，原生文件工具也会看错仓库），必须同步覆盖。
+        env["PWD"] = str(workspace)
         argv = self._build_argv(instruction)
         return RuntimeLaunch(
             runtime_id=self.runtime_id,
@@ -372,6 +381,8 @@ class CliRuntime:
         """按 runtime 归一化事件：codex 的 `--json` 是 item / turn 两级结构，与统一词表不同源。"""
         if self.runtime_id == RUNTIME_CODEX:
             return _normalize_codex_event(parsed, run_id, self.runtime_id)
+        if self.runtime_id == RUNTIME_OPENCODE:
+            return _normalize_opencode_event(parsed, run_id, self.runtime_id)
         return _normalize_event(parsed, run_id, self.runtime_id)
 
     def _open_stderr(self, launch: RuntimeLaunch) -> Any:
@@ -475,6 +486,38 @@ class CliRuntime:
             "last_state_change_at": None,
             "runtime": launch.runtime_id,
         }
+
+
+#: opencode `run --format json` 真实事件（1.18.29 实测，2026-10-23）：
+#:   {"type":"step_start","part":{...}}
+#:   {"type":"text","part":{"type":"text","text":"..."}}
+#:   {"type":"tool_use","part":{"type":"tool","tool":"bash","state":{...}}}
+#:   {"type":"step_finish","part":{"type":"step-finish","tokens":{...},"cost":...}}
+#: 有效载荷都在 `part` 里，顶层没有 text/tool；不按 part 归一化会把答复写成空串。
+def _normalize_opencode_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> RuntimeEvent:
+    raw_type = str(parsed.get("type") or "").strip().lower()
+    part = parsed.get("part")
+    part = part if isinstance(part, dict) else {}
+    part_type = str(part.get("type") or "").strip().lower()
+    data = {**parsed, "runtime_id": runtime_id}
+    text = str(part.get("text") or "")
+
+    if part_type == "text" or raw_type == "text":
+        # 空文本块（工具调用前的占位）只算状态，不能当成答复
+        if text.strip():
+            return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": text})
+        return RuntimeEvent(EVENT_STATUS, run_id, data)
+    if part_type == "tool" or raw_type in ("tool_use", "tool_call", "tool-call"):
+        state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        name = str(part.get("tool") or part.get("name") or "tool")
+        return RuntimeEvent(
+            EVENT_TOOL_CALL,
+            run_id,
+            {**data, "name": name, "state": str(state.get("status") or "")},
+        )
+    if raw_type == "error" or part_type == "error":
+        return RuntimeEvent(EVENT_ERROR, run_id, {**data, "message": text or "opencode error"})
+    return RuntimeEvent(EVENT_STATUS, run_id, data)
 
 
 def _normalize_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> RuntimeEvent:

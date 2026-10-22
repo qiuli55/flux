@@ -30,6 +30,10 @@ PREVIEW_SCHEMA: dict[str, Any] = {
             ),
             "anyOf": [{"type": "object"}, {"type": "string"}],
         },
+        # 预演没有副作用，也不落库归属；但平台执行指令会让 Agent 一并带上这两个标识，
+        # 与 proposal.create 保持一致地接受并忽略，避免整次预演因多余入参被拒。
+        "task_id": {"type": "string", "description": "（可空）该改动服务的任务 UUID"},
+        "project_id": {"type": "string", "description": "（可空）项目 UUID"},
     },
     "required": ["payload"],
     "additionalProperties": False,
@@ -37,7 +41,7 @@ PREVIEW_SCHEMA: dict[str, Any] = {
 
 
 async def proposal_preview(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
-    reject_unknown(params, {"payload"})
+    reject_unknown(params, {"payload", "task_id", "project_id"})
     raw = _payload_text(params.get("payload"))
     change_set = parse_code_change_set(raw, source="proposal.preview")
     settings = ctx.container.settings

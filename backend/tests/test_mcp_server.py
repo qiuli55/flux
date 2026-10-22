@@ -260,6 +260,21 @@ def test_workspace_read_returns_content_and_hash(mcp_client: TestClient, workspa
     assert data["sha256"] == hashlib.sha256(b"print('hi')\n").hexdigest()
 
 
+def test_workspace_read_lists_directory_instead_of_rejecting_dot(
+    mcp_client: TestClient, workspace_root
+) -> None:
+    """目录也是合法读取目标：`.` 返回条目清单，Agent 不会在这类探索上反复试错。"""
+    (workspace_root / "pkg").mkdir()
+    (workspace_root / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(call(mcp_client, token, "workspace.read", {"path": "."}))
+    assert data["kind"] == "dir"
+    assert data["path"] == "."
+    names = {entry["name"] for entry in data["entries"]}
+    assert "pkg" in names
+    assert next(entry for entry in data["entries"] if entry["name"] == "pkg")["kind"] == "dir"
+
+
 def test_workspace_read_refuses_to_escape_the_root(mcp_client: TestClient, workspace_root) -> None:
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     for path in ("../outside.py", "/etc/passwd"):
@@ -623,6 +638,15 @@ def test_flux_context_without_run_returns_null_run_and_task(mcp_client: TestClie
     data = payload(call(mcp_client, token, "flux_context", {}))
     assert data["run"] is None
     assert data["task"] is None
+
+
+def test_flux_context_accepts_project_id_from_execution_prompt(mcp_client: TestClient) -> None:
+    """执行指令会让 Agent 同时带上 task_id/project_id；多余的项目标识不能拒绝握手。"""
+    token = issue_token(mcp_client)
+    data = payload(
+        call(mcp_client, token, "flux_context", {"project_id": str(uuid.uuid4())})
+    )
+    assert data["protocol"] == {"name": "flux-agent", "version": "1"}
 
 
 def test_flux_context_rejects_malformed_task_id(mcp_client: TestClient) -> None:

@@ -44,6 +44,10 @@ FLUX_CONTEXT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "当前任务 UUID；不传则从 Run 推导",
         },
+        "project_id": {
+            "type": "string",
+            "description": "项目 UUID；任务/项目已由 Run 推导时传了也不影响结果",
+        },
     },
     "additionalProperties": False,
 }
@@ -51,7 +55,8 @@ FLUX_CONTEXT_SCHEMA: dict[str, Any] = {
 
 async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     """返回 Agent 当前所处的 Flux Runtime 上下文与可用能力（只读）。"""
-    reject_unknown(params, {"run_id", "task_id"})
+    # project_id 由 Run/Task 推导，Agent 按执行指令一起带上时不能因此拒绝整次调用
+    reject_unknown(params, {"run_id", "task_id", "project_id"})
     container = ctx.container
     settings = container.settings
 
