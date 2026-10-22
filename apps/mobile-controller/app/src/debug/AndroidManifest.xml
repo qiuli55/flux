@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        仅调试构建放开明文 HTTP：用于 adb reverse / 局域网内的本地 Flux 实例联调。
+        发布构建保持主 Manifest 的 usesCleartextTraffic=false。
+    -->
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+
+</manifest>

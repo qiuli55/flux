@@ -6,6 +6,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.Change
@@ -45,10 +46,10 @@ class TaskListViewModel : FluxViewModel() {
             )
             try {
                 val api = api()
-                val tasksDeferred = async { api.listTasks() }
-                val agentsDeferred = async { runCatching { api.listAgents() }.getOrDefault(emptyList()) }
-                val tasks = tasksDeferred.await()
-                val agents = agentsDeferred.await()
+                // 顺序调用：两个请求互不依赖，用 async 时任一失败会取消整组，
+                // 异常还可能绕过 catch 直接打到主线程（真机崩溃过），不如直接串行。
+                val tasks = api.listTasks()
+                val agents = runCatching { api.listAgents() }.getOrDefault(emptyList())
                 _state.value = _state.value.copy(
                     loading = false,
                     refreshing = false,
@@ -227,6 +228,37 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     fun applyChange(changeId: String) = changeAction(changeId, "apply") { api -> api.applyChanges(listOf(changeId)) }
     fun rejectChange(changeId: String) = changeAction(changeId, "reject") { api -> api.rejectChanges(listOf(changeId), reason = null) }
     fun rollbackChange(changeId: String) = changeAction(changeId, "rollback") { api -> listOf(api.rollbackChange(changeId)) }
+
+    /** 变更列表页的一次性批准：只处理当前所有待审核提案。 */
+    fun acceptAllChanges() = bulkChangeAction("accept") { api, ids -> api.acceptChanges(ids) }
+
+    /** 变更列表页的一次性拒绝：只处理当前所有待审核提案。 */
+    fun rejectAllChanges() = bulkChangeAction("reject") { api, ids -> api.rejectChanges(ids, reason = null) }
+
+    private fun bulkChangeAction(action: String, block: suspend (FluxApi, List<String>) -> List<Change>) {
+        val ids = _state.value.changes.filter { it.status == "pending" }.map { it.id }
+        if (ids.isEmpty() || _state.value.busyAction != null) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busyAction = "$action:all", error = null, notice = null)
+            try {
+                block(api(), ids)
+                val fresh = api().listChanges(taskId = taskId)
+                _state.value = _state.value.copy(
+                    busyAction = null,
+                    changes = fresh,
+                    notice = if (action == "accept") {
+                        "已批准 ${ids.size} 条提案（还需逐条应用才会落盘）"
+                    } else {
+                        "已拒绝 ${ids.size} 条提案"
+                    },
+                )
+            } catch (e: FluxApiException) {
+                _state.value = _state.value.copy(busyAction = null, error = e.message)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(busyAction = null, error = e.message ?: "操作失败")
+            }
+        }
+    }
 
     private fun changeAction(changeId: String, action: String, block: suspend (FluxApi) -> List<Change>) {
         if (_state.value.busyAction != null) return

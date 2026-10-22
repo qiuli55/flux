@@ -100,6 +100,13 @@ class Settings:
     # 跨站回跳用的一次性登录码有效期（秒）
     login_code_ttl_sec: int = _env_int("FLUX_CLOUD_LOGIN_CODE_TTL_SEC", 120)
 
+    # 原生 Android 客户端的 OAuth 回跳地址（自定义 scheme，RFC 8252 §7.1）
+    mobile_redirect_uri: str = _env("FLUX_CLOUD_MOBILE_REDIRECT", "flux://auth")
+
+    # 仅第三方登录（GitHub / Google）走的出站代理；留空 = 直连。
+    # 不让全局 HTTP_PROXY 生效：云服务其余流量（日志、健康检查）保持直连。
+    oauth_proxy: str = _env("FLUX_CLOUD_OAUTH_PROXY", "")
+
     @property
     def database_url(self) -> str:
         explicit = _env("FLUX_CLOUD_DATABASE_URL")
@@ -117,6 +124,10 @@ class Settings:
     def is_trusted_return_origin(self, url: str) -> bool:
         origin = url_origin(url)
         return bool(origin) and origin in self.trusted_return_origins
+
+    def is_mobile_redirect(self, url: str) -> bool:
+        """原生 App 的自定义 scheme 回跳（如 flux://auth）。"""
+        return bool(url) and url.rstrip("/") == self.mobile_redirect_uri.rstrip("/")
 
     def provider_enabled(self, provider: str) -> bool:
         if provider == "github":

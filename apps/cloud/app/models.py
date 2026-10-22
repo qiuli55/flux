@@ -103,6 +103,33 @@ class Workspace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class Device(Base):
+    """账号名下的一个 Flux 实例（电脑 / 服务器 / 平板）。
+
+    `device_token` 只在注册时明文下发一次，库里只存 sha256；它只用于设备侧
+    心跳与云端中转 WebSocket 的鉴权，不能当用户令牌使用。
+    """
+
+    __tablename__ = "devices"
+    __table_args__ = (
+        UniqueConstraint("device_id", name="uq_device_device_id"),
+        UniqueConstraint("user_id", "name", name="uq_device_user_name"),
+        Index("ix_device_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    version: Mapped[str | None] = mapped_column(String(64))
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="offline", nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class RunLog(Base):
     """一次「上传运行日志」的元数据；文件本体落在 settings.log_dir/<user_id>/。"""
 

@@ -197,13 +197,14 @@ class FluxApi(
         method: String,
         path: String,
         body: JsonObject?,
-    ): T {
+    ): T = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val requestBody = body?.toString()?.toRequestBody(JSON)
         val request = Request.Builder().url(url(path)).method(method, requestBody).build()
         val response = try {
             httpClient.newCall(request).execute()
         } catch (e: Exception) {
-            throw FluxApiException("network_error", e.message ?: "网络请求失败")
+            val detail = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "网络请求失败"
+            throw FluxApiException("network_error", "网络请求失败（$detail）")
         }
         response.use {
             val text = it.body?.string().orEmpty()
@@ -216,7 +217,7 @@ class FluxApi(
                 throw FluxApiException(envelope.code.ifBlank { "api_error" }, envelope.message.ifBlank { "服务端请求失败" })
             }
             val data = envelope.data ?: throw FluxApiException("empty_data", "服务端响应缺少 data")
-            return json.decodeFromJsonElement(serializer<T>(), data)
+            json.decodeFromJsonElement(serializer<T>(), data)
         }
     }
 
@@ -224,7 +225,7 @@ class FluxApi(
         put("change_ids", json.encodeToJsonElement(ListSerializer(String.serializer()), ids))
     }
 
-    private fun url(path: String): String = config.baseUrl.trimEnd("/") + "/" + path.trimStart("/")
+    private fun url(path: String): String = config.baseUrl.trimEnd('/') + "/" + path.trimStart('/')
 
     private fun apiExceptionFrom(text: String, status: Int): FluxApiException {
         val envelope = runCatching { json.decodeFromString<Envelope<JsonElement>>(text) }.getOrNull()
@@ -253,7 +254,7 @@ class FluxApi(
             require(uri.scheme.equals("https", true) || uri.scheme.equals("http", true)) { "服务器地址只支持 HTTP / HTTPS" }
             require(!uri.host.isNullOrBlank()) { "服务器地址缺少主机名" }
             require(uri.query == null && uri.fragment == null) { "服务器地址不能包含查询参数或片段" }
-            return value.trimEnd("/")
+            return value.trimEnd('/')
         }
     }
 }

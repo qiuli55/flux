@@ -23,10 +23,16 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
+import top.qiuli55.flux.mobile.data.AccountSession
+import top.qiuli55.flux.mobile.data.CloudApi
 import top.qiuli55.flux.mobile.data.ConnectionConfig
 import top.qiuli55.flux.mobile.data.FluxEnv
+import top.qiuli55.flux.mobile.ui.auth.LoginScreen
+import top.qiuli55.flux.mobile.ui.auth.LoginViewModel
 import top.qiuli55.flux.mobile.ui.changes.ChangeDetailScreen
 import top.qiuli55.flux.mobile.ui.changes.ChangeViewModel
+import top.qiuli55.flux.mobile.ui.devices.DeviceListScreen
+import top.qiuli55.flux.mobile.ui.devices.DeviceListViewModel
 import top.qiuli55.flux.mobile.ui.setup.SetupScreen
 import top.qiuli55.flux.mobile.ui.setup.SetupViewModel
 import top.qiuli55.flux.mobile.ui.tasks.TaskDetailScreen
@@ -40,6 +46,8 @@ import top.qiuli55.flux.mobile.ui.terminal.TerminalViewModel
 import top.qiuli55.flux.mobile.ui.theme.FluxColors
 
 private object Routes {
+    const val LOGIN = "login"
+    const val DEVICES = "devices"
     const val SETUP = "setup"
     const val TASKS = "tasks"
     const val TASK = "task/{taskId}"
@@ -54,7 +62,10 @@ private object Routes {
 
 private sealed interface ConfigLoadState {
     data object Loading : ConfigLoadState
-    data class Ready(val config: ConnectionConfig) : ConfigLoadState
+    data class Ready(
+        val config: ConnectionConfig,
+        val account: AccountSession?,
+    ) : ConfigLoadState
     data class Failed(val message: String) : ConfigLoadState
 }
 
@@ -66,7 +77,26 @@ fun FluxRoot() {
         key1 = reloadKey,
     ) {
         value = try {
-            ConfigLoadState.Ready(FluxEnv.settings.config.first())
+            val config = FluxEnv.settings.config.first()
+            var account = FluxEnv.settings.account.first()
+            // access token 只有 30 分钟：启动时提前续期，避免一进页面就 401。
+            if (account != null && account.isExpiringSoon && account.refreshToken.isNotBlank()) {
+                account = runCatching { CloudApi(account.cloudUrl).refresh(account.refreshToken) }
+                    .getOrNull()
+                    ?.let { refreshed ->
+                        val merged = refreshed.copy(
+                            deviceId = account.deviceId,
+                            deviceName = account.deviceName,
+                        )
+                        FluxEnv.settings.saveAccount(merged)
+                        if (merged.hasDevice) {
+                            FluxEnv.settings.save(merged.proxyBaseUrl, merged.accessToken)
+                        }
+                        merged
+                    }
+                    ?: account
+            }
+            ConfigLoadState.Ready(config, account)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -88,8 +118,14 @@ fun FluxRoot() {
             }
         }
         is ConfigLoadState.Ready -> {
-            val loaded = current.config
-            FluxNavHost(startDestination = if (loaded.isComplete) Routes.TASKS else Routes.SETUP)
+            val account = current.account
+            val start = when {
+                account != null && account.hasDevice -> Routes.TASKS
+                account != null -> Routes.DEVICES
+                current.config.isComplete -> Routes.TASKS
+                else -> Routes.LOGIN
+            }
+            FluxNavHost(startDestination = start)
         }
     }
 }
@@ -98,9 +134,37 @@ fun FluxRoot() {
 private fun FluxNavHost(startDestination: String) {
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = startDestination) {
+        composable(Routes.LOGIN) {
+            val vm: LoginViewModel = viewModel()
+            LoginScreen(
+                viewModel = vm,
+                onSignedIn = {
+                    navController.navigate(Routes.DEVICES) {
+                        popUpTo(Routes.LOGIN) { inclusive = true }
+                    }
+                },
+                onManualConnect = { navController.navigate(Routes.SETUP) },
+            )
+        }
+        composable(Routes.DEVICES) {
+            val vm: DeviceListViewModel = viewModel()
+            DeviceListScreen(
+                viewModel = vm,
+                onDeviceSelected = {
+                    navController.navigate(Routes.TASKS) {
+                        popUpTo(Routes.DEVICES) { inclusive = true }
+                    }
+                },
+                onLoggedOut = {
+                    navController.navigate(Routes.LOGIN) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                },
+            )
+        }
         composable(Routes.SETUP) {
             val vm: SetupViewModel = viewModel()
-            val firstRun = startDestination == Routes.SETUP
+            val firstRun = startDestination == Routes.SETUP || startDestination == Routes.LOGIN
             SetupScreen(
                 viewModel = vm,
                 onBack = if (firstRun) null else ({ navController.popBackStack() }),

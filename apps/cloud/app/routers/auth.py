@@ -22,6 +22,7 @@ from ..schemas import (
     HandoffOut,
     IdentityOut,
     LoginIn,
+    LoginTokenIn,
     MeOut,
     OkOut,
     PasswordChangeIn,
@@ -82,19 +83,26 @@ def _clear_cookie(response: Response, key: str) -> None:
 
 
 def _resolve_next(value: str) -> str:
-    """登录后跳哪里：站内相对路径放行，绝对地址须是受信任站点或本机回环地址，否则回账号页。"""
+    """登录后跳哪里：站内相对路径放行，绝对地址须是受信任站点、本机回环或原生 App 的回跳。"""
     candidate = (value or "").strip()
     if not candidate:
         return "/account"
     if candidate.startswith("/") and not candidate.startswith("//") and "\\" not in candidate:
         return candidate
-    if settings.is_trusted_return_origin(candidate) or is_loopback_redirect(candidate):
+    if (
+        settings.is_trusted_return_origin(candidate)
+        or is_loopback_redirect(candidate)
+        or settings.is_mobile_redirect(candidate)
+    ):
         return candidate
     return "/account"
 
 
 def _is_external_target(target: str) -> bool:
-    return target.startswith("http://") or target.startswith("https://")
+    """站外目标拿不到 Cookie，需要一次性登录码。自定义 scheme 也算站外。"""
+    if target.startswith("http://") or target.startswith("https://"):
+        return True
+    return target.startswith(f"{settings.mobile_redirect_uri.split('://')[0]}://")
 
 
 def _handoff_target(db: Session, user: User, target: str) -> str:
@@ -301,6 +309,28 @@ def login(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已被禁用")
     _issue_session(db, user, request, response)
     return _me_payload(db, user)
+
+
+@router.post("/login/token", response_model=TokenOut)
+def login_token(
+    payload: LoginTokenIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenOut:
+    """原生客户端登录：与 /login 同样的校验，但把令牌放在响应体里，不依赖 Cookie。"""
+    identifier = payload.identifier.strip()
+    user = db.scalar(
+        select(User).where(
+            (func.lower(User.email) == identifier.lower()) | (User.username == identifier)
+        )
+    )
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号或密码不正确")
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已被禁用")
+    refresh = _start_session(db, user, request)
+    log.info("原生客户端登录 user_id=%s", user.id)
+    return _token_payload(user, refresh)
 
 
 @router.post("/refresh", response_model=OkOut)

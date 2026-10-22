@@ -15,6 +15,19 @@ from .config import settings
 _TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 
 
+def _client() -> httpx.AsyncClient:
+    """第三方登录专用客户端。
+
+    trust_env=False：不读环境里的 HTTP(S)_PROXY——B 机的全局代理策略不归本服务管，
+    只有显式配了 FLUX_CLOUD_OAUTH_PROXY 时这一段才走代理。
+    """
+    return httpx.AsyncClient(
+        timeout=_TIMEOUT,
+        proxy=settings.oauth_proxy or None,
+        trust_env=False,
+    )
+
+
 @dataclass
 class ProviderProfile:
     provider: str
@@ -39,7 +52,7 @@ GITHUB_API = "https://api.github.com"
 
 async def _github_profile(code: str) -> ProviderProfile:
     redirect_uri = settings.oauth_redirect_uri("github")
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with _client() as client:
         resp = await client.post(
             GITHUB_TOKEN,
             headers={"Accept": "application/json"},
@@ -108,7 +121,7 @@ GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
 async def _google_profile(code: str) -> ProviderProfile:
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with _client() as client:
         resp = await client.post(
             GOOGLE_TOKEN,
             data={

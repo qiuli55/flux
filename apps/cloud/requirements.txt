@@ -1,5 +1,6 @@
 fastapi>=0.140
 uvicorn>=0.53
+websockets>=14
 sqlalchemy>=2.1
 pydantic>=2.13
 pyjwt>=2.10

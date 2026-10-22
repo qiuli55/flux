@@ -129,6 +129,40 @@ class TokenOut(BaseModel):
     user: UserOut
 
 
+class LoginTokenIn(BaseModel):
+    """原生客户端用账号密码直接换令牌（不依赖 Cookie）。"""
+
+    identifier: str = Field(min_length=3, max_length=255)  # 邮箱或用户名
+    password: str = Field(min_length=1, max_length=128)
+
+
+# ---------------------------------------------------------------- 设备
+
+class DeviceRegisterIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    platform: str = Field(default="unknown", max_length=32)  # windows / linux / server / android
+    version: str | None = Field(default=None, max_length=64)
+
+
+class DeviceOut(OrmModel):
+    device_id: str
+    name: str
+    platform: str
+    version: str | None = None
+    status: str
+    last_seen_at: datetime | None = None
+    created_at: datetime
+
+    @field_serializer("created_at", "last_seen_at")
+    def _s(self, v: datetime | None) -> str | None:
+        return _iso_z(v)
+
+
+class DeviceRegisteredOut(DeviceOut):
+    # 明文只回这一次；设备侧需要自己保存
+    device_token: str
+
+
 # ---------------------------------------------------------------- 日志
 
 class LogOut(OrmModel):

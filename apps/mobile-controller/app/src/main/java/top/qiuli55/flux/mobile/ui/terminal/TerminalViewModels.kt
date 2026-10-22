@@ -122,8 +122,11 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
                         _state.value = _state.value.copy(streamState = "live", streamError = null)
                     },
                     onFailure = { message ->
-                        _state.value = _state.value.copy(streamState = "error", streamError = message)
-                        scheduleReconnect()
+                        // 主动 Stop 会 cancel EventSource，此时不该把 "Socket closed" 当成错误提示。
+                        if (!suppressReconnect) {
+                            _state.value = _state.value.copy(streamState = "error", streamError = message)
+                            scheduleReconnect()
+                        }
                     },
                     onClosed = {
                         _state.value = _state.value.copy(streamState = "closed")
@@ -156,8 +159,10 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
                             _state.value = _state.value.copy(streamState = "live", streamError = null)
                         },
                         onFailure = { message ->
-                            _state.value = _state.value.copy(streamState = "error", streamError = message)
-                            scheduleReconnect()
+                            if (!suppressReconnect) {
+                                _state.value = _state.value.copy(streamState = "error", streamError = message)
+                                scheduleReconnect()
+                            }
                         },
                         onClosed = {
                             _state.value = _state.value.copy(streamState = "closed")
@@ -261,6 +266,7 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
         reconnectJob = null
         streamSource?.cancel()
         streamSource = null
+        _state.value = _state.value.copy(streamState = "closed", streamError = null)
         viewModelScope.launch {
             _state.value = _state.value.copy(error = null, notice = if (force) "正在强制停止…" else "正在停止…")
             try {

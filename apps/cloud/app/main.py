@@ -21,7 +21,7 @@ from . import __version__
 from .config import settings
 from .db import get_db, init_db
 from .deps import get_optional_user
-from .routers import auth, logs
+from .routers import auth, devices, logs
 from .schemas import HealthOut
 
 logging.basicConfig(
@@ -77,6 +77,7 @@ else:
     )
 
 app.include_router(auth.router)
+app.include_router(devices.router)
 app.include_router(logs.router)
 
 

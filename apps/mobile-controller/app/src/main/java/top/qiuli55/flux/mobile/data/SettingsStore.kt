@@ -8,6 +8,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +32,84 @@ class SettingsStore(context: Context) {
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
         val TOKEN = stringPreferencesKey("token")
+    }
+
+    /** 账号模式（与手动连接并存）：云地址、令牌、当前选中的设备。 */
+    private object AccountKeys {
+        val CLOUD_URL = stringPreferencesKey("account_cloud_url")
+        val ACCESS = stringPreferencesKey("account_access")
+        val REFRESH = stringPreferencesKey("account_refresh")
+        val USERNAME = stringPreferencesKey("account_username")
+        val DISPLAY = stringPreferencesKey("account_display")
+        val EMAIL = stringPreferencesKey("account_email")
+        val EXPIRES = longPreferencesKey("account_expires")
+        val DEVICE_ID = stringPreferencesKey("account_device_id")
+        val DEVICE_NAME = stringPreferencesKey("account_device_name")
+    }
+
+    val account: Flow<AccountSession?> = appContext.fluxSettingsStore.data
+        .catch { error ->
+            if (error is IOException) emit(emptyPreferences()) else throw error
+        }
+        .map { prefs ->
+            val access = decodeStoredToken(prefs[AccountKeys.ACCESS])
+            if (access.isBlank()) {
+                null
+            } else {
+                AccountSession(
+                    cloudUrl = prefs[AccountKeys.CLOUD_URL] ?: AccountSession.DEFAULT_CLOUD_URL,
+                    accessToken = access,
+                    refreshToken = decodeStoredToken(prefs[AccountKeys.REFRESH]),
+                    username = prefs[AccountKeys.USERNAME].orEmpty(),
+                    displayName = prefs[AccountKeys.DISPLAY].orEmpty(),
+                    email = prefs[AccountKeys.EMAIL].orEmpty(),
+                    expiresAtEpochSec = prefs[AccountKeys.EXPIRES] ?: 0L,
+                    deviceId = prefs[AccountKeys.DEVICE_ID].orEmpty(),
+                    deviceName = prefs[AccountKeys.DEVICE_NAME].orEmpty(),
+                )
+            }
+        }
+
+    suspend fun saveAccount(session: AccountSession) {
+        appContext.fluxSettingsStore.edit { prefs ->
+            prefs[AccountKeys.CLOUD_URL] = session.cloudUrl.trim()
+            prefs[AccountKeys.ACCESS] = encryptToken(session.accessToken)
+            prefs[AccountKeys.REFRESH] = encryptToken(session.refreshToken)
+            prefs[AccountKeys.USERNAME] = session.username
+            prefs[AccountKeys.DISPLAY] = session.displayName
+            prefs[AccountKeys.EMAIL] = session.email
+            prefs[AccountKeys.EXPIRES] = session.expiresAtEpochSec
+        }
+    }
+
+    suspend fun saveDevice(deviceId: String, deviceName: String) {
+        appContext.fluxSettingsStore.edit { prefs ->
+            prefs[AccountKeys.DEVICE_ID] = deviceId
+            prefs[AccountKeys.DEVICE_NAME] = deviceName
+        }
+    }
+
+    suspend fun clearDevice() {
+        appContext.fluxSettingsStore.edit { prefs ->
+            prefs.remove(AccountKeys.DEVICE_ID)
+            prefs.remove(AccountKeys.DEVICE_NAME)
+        }
+    }
+
+    suspend fun clearAccount() {
+        appContext.fluxSettingsStore.edit { prefs ->
+            listOf(
+                AccountKeys.CLOUD_URL,
+                AccountKeys.ACCESS,
+                AccountKeys.REFRESH,
+                AccountKeys.USERNAME,
+                AccountKeys.DISPLAY,
+                AccountKeys.EMAIL,
+                AccountKeys.EXPIRES,
+                AccountKeys.DEVICE_ID,
+                AccountKeys.DEVICE_NAME,
+            ).forEach { prefs.remove(it) }
+        }
     }
 
     val config: Flow<ConnectionConfig> = appContext.fluxSettingsStore.data
