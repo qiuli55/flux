@@ -29,6 +29,11 @@ private val Context.fluxSettingsStore: DataStore<Preferences> by preferencesData
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
 
+    /** PKCE verifier 是登录过程中的短时凭据，用同步写避免回跳时进程重建丢失。 */
+    private val oauthPrefs by lazy {
+        appContext.getSharedPreferences("flux_oauth", Context.MODE_PRIVATE)
+    }
+
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
         val TOKEN = stringPreferencesKey("token")
@@ -130,6 +135,16 @@ class SettingsStore(context: Context) {
         }
     }
 
+    fun saveOauthVerifier(verifier: String) {
+        oauthPrefs.edit().putString(OAUTH_VERIFIER, verifier).commit()
+    }
+
+    fun readOauthVerifier(): String = oauthPrefs.getString(OAUTH_VERIFIER, "").orEmpty()
+
+    fun clearOauthVerifier() {
+        oauthPrefs.edit().remove(OAUTH_VERIFIER).commit()
+    }
+
     private fun decodeStoredToken(raw: String?): String {
         if (raw.isNullOrBlank()) return ""
         if (!raw.startsWith(ENCRYPTED_PREFIX)) {
@@ -196,5 +211,6 @@ class SettingsStore(context: Context) {
         private const val KEY_ALIAS = "flux.mobile.token"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val ENCRYPTED_PREFIX = "v1:"
+        private const val OAUTH_VERIFIER = "pkce_verifier"
     }
 }

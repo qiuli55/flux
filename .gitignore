@@ -21,6 +21,8 @@ data/
 artifacts/
 # 例外：前端源码目录 src/data/ 是代码而不是运行期数据，必须入库
 !apps/web-dashboard/src/data/
+# 例外：Android 源码里的 data 包是代码而不是运行期数据
+!apps/mobile-controller/app/src/main/java/top/qiuli55/flux/mobile/data/
 # Apply Engine 的备份目录（落在被改项目根目录下，见 §7.6）
 .flux/
 
@@ -42,3 +44,6 @@ out/
 # --- .NET 桌面端（apps/desktop-avalonia）---
 apps/desktop-avalonia/bin/
 apps/desktop-avalonia/obj/
+# 桌面端构建产物（tar.gz 体积大，不入库）
+apps/desktop-avalonia/dist/
+apps/desktop-avalonia/release/

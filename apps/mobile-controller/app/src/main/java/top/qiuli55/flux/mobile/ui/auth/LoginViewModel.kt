@@ -10,6 +10,7 @@ import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.CloudApi
 import top.qiuli55.flux.mobile.data.CloudApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
+import top.qiuli55.flux.mobile.data.Pkce
 
 data class LoginUiState(
     val identifier: String = "",
@@ -32,7 +33,11 @@ class LoginViewModel : ViewModel() {
         _state.value = _state.value.copy(password = value, error = null)
     }
 
-    fun githubUrl(): String = cloud.oauthStartUrl("github")
+    fun githubUrl(): String {
+        val verifier = Pkce.newVerifier()
+        FluxEnv.settings.saveOauthVerifier(verifier)
+        return cloud.oauthStartUrl("github", codeChallenge = Pkce.challenge(verifier))
+    }
 
     fun login(onSignedIn: (AccountSession) -> Unit) {
         val current = _state.value
@@ -60,7 +65,8 @@ class LoginViewModel : ViewModel() {
         _state.value = _state.value.copy(busy = true, error = null)
         viewModelScope.launch {
             try {
-                val session = cloud.exchange(code)
+                val session = cloud.exchange(code, FluxEnv.settings.readOauthVerifier())
+                FluxEnv.settings.clearOauthVerifier()
                 FluxEnv.settings.saveAccount(session)
                 _state.value = _state.value.copy(busy = false)
                 onSignedIn(session)
