@@ -4,14 +4,16 @@
 
     python scripts/device_agent.py \
         --cloud https://flux.qiuli55.top \
-        --token  <账号 access token> \
+        --token  <账号 access token，仅首次注册需要> \
+        --creds  /etc/flux-device-credentials \
         --name   "我的电脑" \
         --platform windows \
         --local  http://127.0.0.1:8801 \
         --local-token <本机 FLUX_AUTH_TOKEN，可留空表示回环免鉴权>
 
 它做三件事：
-1. 用账号 access token 调 `POST /api/devices` 注册自己，拿到 device_token；
+1. 首次用账号 access token 调 `POST /api/devices` 注册自己，拿到 device_token，
+   并把 device_id / device_token 写进 --creds（0600）；之后重启直接复用，不再需要账号 token；
 2. 用 device_token 连 `WS /api/devices/{id}/relay`，断线自动重连（指数退避）；
 3. 收到云端转发的请求就打到本机 Flux，再把状态码 / 头 / body 原样回传。
 
@@ -26,6 +28,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import signal
 import sys
 
@@ -50,6 +53,34 @@ async def register(client: httpx.AsyncClient, args: argparse.Namespace) -> tuple
     payload = response.json()
     LOG.info("设备已注册 device_id=%s name=%s", payload["device_id"], payload["name"])
     return payload["device_id"], payload["device_token"]
+
+
+def load_credentials(path: str) -> tuple[str, str] | None:
+    """读取上次注册得到的设备凭据；文件不存在或内容不全时返回 None。"""
+    if not path or not os.path.exists(path):
+        return None
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    device_id = values.get("FLUX_DEVICE_ID", "")
+    device_token = values.get("FLUX_DEVICE_TOKEN", "")
+    return (device_id, device_token) if device_id and device_token else None
+
+
+def save_credentials(path: str, device_id: str, device_token: str) -> None:
+    """设备凭据落盘（0600）：后续重启不必再拿账号 token 注册。"""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    temporary = f"{path}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(f"FLUX_DEVICE_ID={device_id}\nFLUX_DEVICE_TOKEN={device_token}\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
 
 
 async def forward(local: httpx.AsyncClient, message: dict) -> dict:
@@ -147,7 +178,18 @@ async def run(args: argparse.Namespace) -> None:
         async with httpx.AsyncClient(
             base_url=args.local.rstrip("/"), headers=local_headers, timeout=60
         ) as local:
-            device_id, device_token = await register(client, args)
+            stored = load_credentials(args.creds)
+            if stored is not None:
+                device_id, device_token = stored
+                LOG.info("复用已保存的设备凭据 device_id=%s", device_id)
+            else:
+                if not args.token:
+                    LOG.error("首次运行需要 --token（账号 access token）")
+                    return
+                device_id, device_token = await register(client, args)
+                if args.creds:
+                    save_credentials(args.creds, device_id, device_token)
+                    LOG.info("设备凭据已写入 %s", args.creds)
             backoff = 2
             while True:
                 try:
@@ -162,12 +204,21 @@ async def run(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flux 设备代理（账号云中转）")
     parser.add_argument("--cloud", default="https://flux.qiuli55.top", help="账号云地址")
-    parser.add_argument("--token", required=True, help="账号 access token")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("FLUX_ACCOUNT_TOKEN", ""),
+        help="账号 access token（首次注册时必填；也可用 FLUX_ACCOUNT_TOKEN 环境变量）",
+    )
+    parser.add_argument("--creds", default="", help="设备凭据文件；文件存在时跳过注册")
     parser.add_argument("--name", required=True, help="设备名（同账号下唯一）")
     parser.add_argument("--platform", default="windows", help="windows / linux / server")
     parser.add_argument("--version", default="", help="Flux 版本，可留空")
     parser.add_argument("--local", default="http://127.0.0.1:8801", help="本机 Flux 地址")
-    parser.add_argument("--local-token", default="", help="本机 FLUX_AUTH_TOKEN，可留空")
+    parser.add_argument(
+        "--local-token",
+        default=os.environ.get("FLUX_LOCAL_TOKEN", ""),
+        help="本机 FLUX_AUTH_TOKEN；也可用 FLUX_LOCAL_TOKEN 环境变量",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
