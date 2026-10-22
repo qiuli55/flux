@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     # 元数据（实测警告「Model metadata not found…can degrade performance」）；空 = 不写
     codex_model_catalog: str = ""
 
-    # --- 账号云（B 机 flux.qiuli55.top，仓库 apps/cloud）---
+    # --- 账号云（B 机 flux.qiuli55.top，独立私有仓库）---
     # Flux 本体的登录由账号云统一签发令牌：账号的权威/后台都在那边，本机只做本地验签
     # （见 flux.api.auth.is_cloud_access_token），不每次回源。
     cloud_base_url: str = "https://flux.qiuli55.top"
