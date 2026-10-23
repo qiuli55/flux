@@ -16,8 +16,9 @@ android {
         applicationId = "top.qiuli55.flux.mobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.1.4"
+        // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装
+        versionCode = 10
+        versionName = "0.3.1"
     }
 
     buildFeatures {
