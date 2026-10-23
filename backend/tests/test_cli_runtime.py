@@ -287,6 +287,18 @@ def test_cli_mcp_config_binds_the_run_id_header(settings: Settings) -> None:
     assert f'X-Flux-Run-Id = "{run_id}"' in codex
 
 
+def test_opencode_config_applies_the_task_model_only_for_this_run() -> None:
+    """任务级模型覆盖落在按 Run 隔离的配置里：换模型不能改用户的全局默认。"""
+    default = json.loads(_opencode_config("http://127.0.0.1:8802/mcp", "tok", "r1"))
+    assert "model" not in default
+
+    override = json.loads(
+        _opencode_config("http://127.0.0.1:8802/mcp", "tok", "r1", model="deepseek/deepseek-flash")
+    )
+    assert override["model"] == "deepseek/deepseek-flash"
+    assert override["mcp"]["flux"]["headers"]["X-Flux-Run-Id"] == "r1"
+
+
 def test_codex_event_normalisation_maps_items() -> None:
     """codex `--json` 是 item / turn 两级结构：只有 agent_message 进答复，其余归类。"""
     run_id = "r1"
