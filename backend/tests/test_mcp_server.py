@@ -21,6 +21,8 @@ from flux.core.agent_runtime.protocol import RUNTIME_ENTRY, RUNTIME_RULES
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, McpServer, _attach_run_id
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
+from flux.core.mcp.tools.base import ToolContext
+from flux.core.mcp.tools.write_tools import proposal_create
 from flux.enums import Capability, DshRunStatus, StepStatus
 from flux.errors import AuthenticationError
 
@@ -802,6 +804,50 @@ async def test_attach_run_id_ignores_foreign_unknown_or_absent_run(apply_contain
     ).run_id is None
 
     assert (await _attach_run_id(_header_request(None), apply_container, same_agent)).run_id is None
+
+
+async def test_proposal_create_inherits_task_and_project_from_the_run(apply_container) -> None:
+    """提案只传 payload 时，task/project 由发起它的 Run 补上。
+
+    模型经常只传 payload（2026-10-23 基准 T02 实测），提案若落成 task_id=None：
+    人审队列看不出属于哪个任务，Apply 后的 Brain 沉淀也没有项目可写。
+    """
+    agent_id = str(uuid.uuid4())
+    project = await apply_container.brain.create_project(
+        name="bench-app", repository="/tmp/bench-app"
+    )
+    task = await apply_container.task_repo.create(
+        task_id=uuid.uuid4(),
+        description="补输入校验",
+        priority=1,
+        project_id=project.id,
+        agent_id=None,
+    )
+    run_id = uuid.uuid4().hex
+    await apply_container.run_repo.create(
+        run_id=run_id,
+        session_id="sess",
+        instruction="do it",
+        status=DshRunStatus.PENDING,
+        agent_id=agent_id,
+        task_id=task.id,
+    )
+    ctx = ToolContext(
+        container=apply_container,
+        identity=AgentIdentity(
+            agent_id=agent_id,
+            token_id="t",
+            scopes=frozenset({Capability.FILE_READ, Capability.FILE_WRITE}),
+            run_id=run_id,
+        ),
+        tool_name="proposal.create",
+    )
+
+    data = await proposal_create(ctx, {"payload": PROPOSAL})
+
+    stored = await apply_container.workspace.get(data["changes"][0]["change_id"])
+    assert str(stored.task_id) == str(task.id)
+    assert str(stored.project_id) == str(project.id)
 
 
 # --- 6. 上下文闭环：失败也摄入、step 目录可读（机制 §3.3 / §6.3）---
