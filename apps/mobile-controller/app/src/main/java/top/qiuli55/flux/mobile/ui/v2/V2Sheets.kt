@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Verified
 import androidx.compose.material.icons.outlined.Vibration
@@ -90,6 +91,9 @@ fun SettingsSheet(
     onOpenKeyVault: () -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
+    updateHint: String,
+    updateBadge: Boolean,
+    onCheckUpdate: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val displayName = account?.displayName?.takeIf { it.isNotBlank() }
@@ -256,6 +260,15 @@ fun SettingsSheet(
             Spacer(Modifier.height(12.dp))
             WhiteCard(Modifier.fillMaxWidth()) {
                 SettingsValueRow(Icons.Outlined.Info, "版本", "v${BuildConfig.VERSION_NAME}")
+                ThinDivider(V2Colors.ink(.05f))
+                SettingsActionRow(
+                    icon = Icons.Outlined.SystemUpdate,
+                    title = "检查更新",
+                    description = updateHint.ifBlank { "从 B 机分发节点获取最新版本" },
+                    danger = false,
+                    badge = updateBadge,
+                    onClick = onCheckUpdate,
+                )
             }
 
             Spacer(Modifier.height(16.dp))
@@ -313,6 +326,7 @@ private fun SettingsActionRow(
     title: String,
     description: String,
     danger: Boolean,
+    badge: Boolean = false,
     onClick: () -> Unit,
 ) {
     Row(
@@ -330,6 +344,10 @@ private fun SettingsActionRow(
             Label(title, 13.5f, if (danger) V2Colors.rose else V2Colors.ink(.90f))
             Spacer(Modifier.height(2.dp))
             Label(description, 10f, V2Colors.ink(.35f))
+        }
+        if (badge) {
+            Box(Modifier.size(7.dp).background(V2Colors.rose, CircleShape))
+            Spacer(Modifier.width(8.dp))
         }
         Icon(
             Icons.Outlined.KeyboardArrowRight,

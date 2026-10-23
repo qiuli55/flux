@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 安装包放在应用私有下载目录，FileProvider 只暴露这一处，不外泄其他文件。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="updates" path="Download/" />
+    <files-path name="updates_internal" path="." />
+</paths>
