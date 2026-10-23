@@ -82,6 +82,9 @@ public sealed class BackendHost : IDisposable
         env["FLUX_WORKSPACE_ROOT"] = Env("FLUX_WORKSPACE_ROOT") ?? Path.Combine(dataDir, "workspace");
         env["FLUX_LOG_DIR"] = Env("FLUX_LOG_DIR") ?? Path.Combine(dataDir, "logs");
         env["FLUX_CLOUD_LOGIN_REQUIRED"] = Env("FLUX_CLOUD_LOGIN_REQUIRED") ?? "1";
+        // 端口是随机分配的，DSH 的 MCP 端点默认指向 8000 会连不上自己的后端，
+        // 导致每次 Run 都以「flux-mcp 初始化失败」告终。这里显式指回本进程拉起的后端。
+        env["FLUX_DSH_MCP_URL"] = Env("FLUX_DSH_MCP_URL") ?? $"http://127.0.0.1:{Port}/mcp";
 
         // 子进程会继承当前进程的 HTTP(S)_PROXY。若它指向失效代理（本机常见）或与
         // 账号云不兼容的代理，后端回源 flux.qiuli55.top 的 httpx 调用会直接连接失败，

@@ -1,0 +1,86 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.ProjectsView"
+             x:DataType="vm:ProjectsViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                <StackPanel Grid.Column="0">
+                    <TextBlock Classes="page-title" Text="项目列表" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="已登记的工作区项目。选择一个项目进入 Solo，把需求直接交给 Flux。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                            VerticalAlignment="Bottom">
+                    <TextBlock Text="{Binding Hint}" FontSize="11"
+                               Foreground="{DynamicResource TnText4}"
+                               VerticalAlignment="Center" />
+                    <Button Classes="btn subtle" Content="刷新"
+                            Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                </StackPanel>
+            </Grid>
+
+            <ItemsControl ItemsSource="{Binding Projects}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ProjectCard">
+                        <Button Classes="kb-card" Width="304" Margin="0,0,16,16"
+                                Command="{Binding OpenCommand}" CommandParameter="{Binding}">
+                            <StackPanel Spacing="12">
+                                <Grid ColumnDefinitions="Auto,*,Auto">
+                                    <Border Width="34" Height="34" CornerRadius="8"
+                                            Background="{DynamicResource TnPanel3}">
+                                        <TextBlock Text="{Binding Initial}" FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Margin="10,0" Spacing="3"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}" FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Repository}" FontSize="10"
+                                                   FontFamily="{DynamicResource TnMonoFont}"
+                                                   Foreground="{DynamicResource TnText4}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Border Grid.Column="2" Classes="kb-tag">
+                                        <TextBlock Text="{Binding Tag}" FontSize="10"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                    <TextBlock Text="{Binding Id}" FontSize="10"
+                                               FontFamily="{DynamicResource TnMonoFont}"
+                                               Foreground="{DynamicResource TnText4}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="1" Text="进入 Solo →" FontSize="11"
+                                               Foreground="{DynamicResource TnAccent}" />
+                                </Grid>
+                            </StackPanel>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Classes="kb-col" Padding="20" IsVisible="{Binding !HasProjects}"
+                    HorizontalAlignment="Left" Width="420">
+                <StackPanel Spacing="5">
+                    <TextBlock Text="还没有登记项目" FontSize="13" FontWeight="SemiBold" />
+                    <TextBlock Classes="page-desc"
+                               Text="项目由后端工作区扫描登记。刷新后会显示在这里。" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

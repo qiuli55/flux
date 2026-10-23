@@ -1,0 +1,94 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:models="using:Flux.Desktop.Models"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.TerminalView"
+             x:DataType="vm:TerminalViewModel">
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="28,24,32,24">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,14">
+            <StackPanel Grid.Column="0">
+                <TextBlock Classes="page-title" Text="Agent Terminal" Margin="0,0,0,5" />
+                <TextBlock Classes="page-desc" MaxWidth="700" HorizontalAlignment="Left"
+                           Text="在服务器工作区里执行命令。输出按事件增量轮询，停止分优雅与强制两档。" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Bottom">
+                <ComboBox Classes="select" Width="280"
+                          ItemsSource="{Binding Sessions}"
+                          SelectedItem="{Binding SelectedSession, Mode=TwoWay}">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="models:TerminalSessionInfo">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding Id}" FontSize="10"
+                                           FontFamily="{DynamicResource TnMonoFont}"
+                                           TextTrimming="CharacterEllipsis" MaxWidth="210" />
+                                <TextBlock Text="{Binding Status}" FontSize="10"
+                                           Foreground="{DynamicResource TnText4}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Button Classes="btn subtle" Content="新建会话"
+                        Command="{Binding NewSessionCommand}" IsEnabled="{Binding !IsBusy}" />
+                <Button Classes="btn quiet" Content="刷新"
+                        Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="2,0,0,10">
+            <Ellipse Grid.Column="0" Width="7" Height="7" Fill="{Binding StatusBrush}"
+                     VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" Margin="10,0,0,0">
+                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                           Foreground="{Binding StatusBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Hint}" FontSize="10"
+                           Foreground="{DynamicResource TnText4}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <Button Classes="mini" Content="优雅停止" Command="{Binding StopCommand}"
+                        IsVisible="{Binding CanStop}" />
+                <Button Classes="mini" Content="强制停止" Command="{Binding ForceStopCommand}"
+                        IsVisible="{Binding CanStop}" />
+            </StackPanel>
+        </Grid>
+
+        <Border Grid.Row="2" Classes="term-shell">
+            <ScrollViewer Name="TerminalScroll">
+                <ItemsControl ItemsSource="{Binding Events}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:TerminalEventRow">
+                            <Grid ColumnDefinitions="38,*" Margin="0,0,0,1">
+                                <TextBlock Text="{Binding SeqText}" FontSize="10"
+                                           FontFamily="{DynamicResource TnMonoFont}"
+                                           Foreground="{DynamicResource TnText4}"
+                                           VerticalAlignment="Top" Margin="0,1,0,0" />
+                                <TextBlock Grid.Column="1" Text="{Binding Text}" FontSize="11"
+                                           FontFamily="{DynamicResource TnMonoFont}"
+                                           Foreground="{Binding Brush}" TextWrapping="Wrap"
+                                           LineHeight="17" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <Grid Grid.Row="3" ColumnDefinitions="Auto,*,Auto" Margin="0,12,0,0">
+            <TextBlock Grid.Column="0" Text="$" FontSize="14"
+                       FontFamily="{DynamicResource TnMonoFont}"
+                       Foreground="{DynamicResource TnAccent}"
+                       VerticalAlignment="Center" Margin="2,0,10,0" />
+            <TextBox Grid.Column="1" Classes="input" Height="36"
+                     Text="{Binding CommandInput, Mode=TwoWay}"
+                     Watermark="输入命令，例如 pwd、git status…" />
+            <Button Grid.Column="2" Classes="btn primary" Content="执行"
+                    Width="84" Height="36" Margin="10,0,0,0"
+                    Command="{Binding SendCommandCommand}" />
+        </Grid>
+    </Grid>
+</UserControl>

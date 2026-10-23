@@ -314,9 +314,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void BuildModes()
     {
-        var solo = Placeholder(
-            "Solo 执行",
-            "把需求交给 AI：澄清需求 → 可行性计划 → 生成变更 → 人工审核 → 落盘 / Git。Solo 任务台将在 M3 实现。");
+        var solo = new SoloViewModel(() => _api, NavigateTo);
         var ide = Placeholder(
             "IDE 工作台",
             "文件资源管理器、搜索、源代码管理、运行和调试、扩展。IDE 工作台将在 M4 实现。");
@@ -339,10 +337,10 @@ public partial class MainWindowViewModel : ViewModelBase
         ToolItems.Clear();
         if (IsSoloMode)
         {
-            ToolItems.Add(new NavItem("projects", "项目列表", GroupCore, Placeholder("项目列表", "Solo 项目列表将在 M3 实现。"), "folder") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("open-ide", "工作区 · 打开 IDE", GroupCore, Placeholder("工作区", "工作区与 IDE 切换将在 M3 / M4 实现。"), "code") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("terminal", "Agent Terminal", GroupCore, Placeholder("Agent Terminal", "Agent 终端将在 M3 实现。"), "terminal") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("agents", "Agent 面板", GroupCore, Placeholder("Agent 面板", "Agent 面板将在 M3 实现。"), "bot") { ActivateCommand = ActivateCommand });
+            ToolItems.Add(new NavItem("projects", "项目列表", GroupCore, new ProjectsViewModel(() => _api, NavigateTo), "folder") { ActivateCommand = ActivateCommand });
+            ToolItems.Add(new NavItem("open-ide", "工作区 · 打开 IDE", GroupCore, Placeholder("工作区", "工作区与 IDE 切换将在 M4 实现。"), "code") { ActivateCommand = ActivateCommand });
+            ToolItems.Add(new NavItem("terminal", "Agent Terminal", GroupCore, new TerminalViewModel(() => _api), "terminal") { ActivateCommand = ActivateCommand });
+            ToolItems.Add(new NavItem("agents", "Agent 面板", GroupCore, new AgentsViewModel(() => _api), "bot") { ActivateCommand = ActivateCommand });
         }
         else
         {
@@ -402,6 +400,18 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         switch (CurrentPage)
         {
+            case SoloViewModel solo:
+                _ = solo.RefreshAsync();
+                break;
+            case ProjectsViewModel projects:
+                _ = projects.RefreshAsync();
+                break;
+            case AgentsViewModel agents:
+                _ = agents.RefreshAsync();
+                break;
+            case TerminalViewModel terminal:
+                _ = terminal.RefreshAsync();
+                break;
             case OverviewViewModel overview:
                 _ = overview.RefreshAsync();
                 break;

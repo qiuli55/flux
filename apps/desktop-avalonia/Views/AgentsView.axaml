@@ -1,0 +1,106 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.AgentsView"
+             x:DataType="vm:AgentsViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                <StackPanel Grid.Column="0">
+                    <TextBlock Classes="page-title" Text="Agent 面板" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="注册表里的 Agent 与可用模型。Solo 单 Agent 模式会从这里取可选执行者。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                            VerticalAlignment="Bottom">
+                    <TextBlock Text="{Binding Hint}" FontSize="11"
+                               Foreground="{DynamicResource TnText4}"
+                               VerticalAlignment="Center" />
+                    <Button Classes="btn subtle" Content="刷新"
+                            Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                </StackPanel>
+            </Grid>
+
+            <Border Classes="solo-card" Padding="14" Margin="0,0,0,16">
+                <Grid ColumnDefinitions="Auto,*">
+                    <Ellipse Width="7" Height="7" Fill="{DynamicResource TnInfo}"
+                             VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding DshText}" Margin="10,0,0,0"
+                               FontSize="11" Foreground="{DynamicResource TnText3}"
+                               TextWrapping="Wrap" />
+                </Grid>
+            </Border>
+
+            <ItemsControl ItemsSource="{Binding Agents}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:AgentCard">
+                        <Border Classes="solo-card" Width="336" Margin="0,0,16,16" Padding="16">
+                            <StackPanel Spacing="12">
+                                <Grid ColumnDefinitions="Auto,*,Auto">
+                                    <Border Width="36" Height="36" CornerRadius="9"
+                                            Background="{DynamicResource TnPanel3}">
+                                        <TextBlock Text="{Binding Initial}" FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Margin="10,0" Spacing="3"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}" FontSize="13"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Role}" FontSize="10"
+                                                   Foreground="{DynamicResource TnText4}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Border Grid.Column="2" Classes="badge"
+                                            BorderBrush="{Binding StateBrush}">
+                                        <TextBlock Text="{Binding StateText}" FontSize="10"
+                                                   Foreground="{Binding StateBrush}" />
+                                    </Border>
+                                </Grid>
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <Border Classes="kb-tag">
+                                        <TextBlock Text="{Binding Runtime}" FontSize="10"
+                                                   FontFamily="{DynamicResource TnMonoFont}"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                    <Border Grid.Column="1" Classes="kb-tag">
+                                        <TextBlock Text="{Binding ModelsText}" FontSize="10"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                </Grid>
+                                <StackPanel Spacing="3">
+                                    <TextBlock Classes="caps" Text="默认模型" />
+                                    <TextBlock Text="{Binding ModelText}" FontSize="11"
+                                               FontFamily="{DynamicResource TnMonoFont}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding Id}" FontSize="10"
+                                           FontFamily="{DynamicResource TnMonoFont}"
+                                           Foreground="{DynamicResource TnText4}" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Classes="kb-col" Padding="20" IsVisible="{Binding !HasAgents}"
+                    HorizontalAlignment="Left" Width="460">
+                <StackPanel Spacing="5">
+                    <TextBlock Text="没有可用 Agent" FontSize="13" FontWeight="SemiBold" />
+                    <TextBlock Classes="page-desc"
+                               Text="先在能力中心导入 Agent，刷新后即可在 Solo 里选择。" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

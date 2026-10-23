@@ -2,8 +2,7 @@
 # 构建 Flux 原生桌面客户端（Avalonia / .NET 8）。
 #
 # 用法: bash scripts/build_desktop_avalonia_linux.sh [linux-x64|linux-arm64]
-# macOS 需在 macOS 上构建（RID 传 osx-x64 / osx-arm64），命令与 Linux 相同。
-# Windows 仍由原 csproj 以 WinExe 构建，不受此脚本影响。
+# 只交付 Windows + Linux；Windows 包用 scripts/build_desktop_avalonia_win.ps1。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
