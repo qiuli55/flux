@@ -54,6 +54,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import top.qiuli55.flux.mobile.R
+import top.qiuli55.flux.mobile.update.UpdateCenter
+import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -94,6 +96,7 @@ private fun nowMinute(): String = nowTime().take(5)
 fun FluxV2Root() {
     val vm: V2AppViewModel = viewModel()
     val app by vm.state.collectAsState()
+    val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var taskOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
@@ -134,6 +137,8 @@ fun FluxV2Root() {
             route = V2Route.Home
             chat = null
             chatMessages.clear()
+        } else {
+            UpdateCenter.onForeground()
         }
     }
 
@@ -154,6 +159,7 @@ fun FluxV2Root() {
                 Lifecycle.Event.ON_RESUME -> {
                     vm.setForeground(true)
                     vm.refresh(quiet = true)
+                    UpdateCenter.onForeground()
                 }
                 Lifecycle.Event.ON_PAUSE -> vm.setForeground(false)
                 else -> Unit
@@ -221,11 +227,13 @@ fun FluxV2Root() {
         }
     }
 
-    val hasBack = confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
+    val hasBack = update.kind != UpdateKind.HIDDEN ||
+        confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
         groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home
 
     BackHandler(enabled = hasBack) {
         when {
+            update.kind != UpdateKind.HIDDEN -> UpdateCenter.dismiss()
             manualConnectOpen -> manualConnectOpen = false
             confirmDecision != null -> confirmDecision = null
             agentPickerOpen -> agentPickerOpen = false
@@ -539,6 +547,9 @@ fun FluxV2Root() {
                                 settingsOpen = false
                                 vm.logout()
                             },
+                            updateHint = if (update.checking) "正在检查…" else update.hint,
+                            updateBadge = update.kind != UpdateKind.HIDDEN,
+                            onCheckUpdate = { UpdateCenter.checkManually() },
                             onDismiss = { settingsOpen = false },
                         )
                     }
@@ -624,6 +635,20 @@ fun FluxV2Root() {
                                 agentPickerOpen = false
                             },
                             onDismiss = { agentPickerOpen = false },
+                        )
+                    }
+
+                    // 更新弹层放最后，保证盖在其他面板之上。
+                    if (update.kind != UpdateKind.HIDDEN) {
+                        UpdateSheet(
+                            state = update,
+                            onDownload = { UpdateCenter.download() },
+                            onInstall = { UpdateCenter.installApk() },
+                            onOpenPermission = { UpdateCenter.openInstallPermission() },
+                            onCancelDownload = { UpdateCenter.cancelDownload() },
+                            onLater = { UpdateCenter.later() },
+                            onSkip = { UpdateCenter.skipVersion() },
+                            onDismiss = { UpdateCenter.dismiss() },
                         )
                     }
                 }
