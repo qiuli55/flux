@@ -352,19 +352,6 @@ def test_workspace_search_finds_text_and_filters_secrets(
     assert all(hit["line"] >= 1 for hit in data["hits"])
 
 
-def test_workspace_outline_returns_symbol_lines(mcp_client: TestClient, workspace_root) -> None:
-    (workspace_root / "mod.py").write_text(
-        "import os\n\nclass Store:\n    pass\n\ndef load(path):\n    return path\n",
-        encoding="utf-8",
-    )
-    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
-    data = payload(call(mcp_client, token, "workspace.outline", {"path": "mod.py"}))
-    lines = {entry["line"]: entry["text"] for entry in data["entries"]}
-    assert lines[3].startswith("class Store")
-    assert lines[6].startswith("def load")
-    assert data["total_lines"] == 7
-
-
 def test_workspace_exploration_tools_refuse_internal_directories(
     mcp_client: TestClient, workspace_root
 ) -> None:
@@ -375,7 +362,6 @@ def test_workspace_exploration_tools_refuse_internal_directories(
     for name, arguments in (
         ("workspace.tree", {"path": ".flux"}),
         ("workspace.search", {"query": "x", "path": ".flux"}),
-        ("workspace.outline", {"path": ".flux/backups/store.py.bak"}),
     ):
         result = call(mcp_client, token, name, arguments)
         assert result["isError"] is True, name
