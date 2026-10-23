@@ -4,14 +4,13 @@
 它们背后分别是打包器、内容寻址原文库、Project File Explorer（只读、含软链防护）
 与 Virtual Workspace——本层不重复实现任何文件访问，避免出现第二份"能读用户文件"的代码。
 
-`workspace.tree / read_many / search / outline` 是为减少 Agent 往返而加的探索面：
+`workspace.tree / read_many / search` 是为减少 Agent 往返而加的探索面：
 过去 88% 的 MCP 调用是单文件 workspace.read，一次只拿一个文件，步数被读取次数撑大。
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -355,8 +354,6 @@ MAX_READ_MANY_TOTAL_CHARS = 30_000
 MAX_TREE_AGENT_ENTRIES = 400
 #: workspace.search 单次回给 Agent 的命中上限（explorer 自身允许到 1000）。
 MAX_AGENT_SEARCH_RESULTS = 100
-#: outline 最多回多少个符号行
-MAX_OUTLINE_ENTRIES = 300
 
 WORKSPACE_TREE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -402,15 +399,6 @@ WORKSPACE_SEARCH_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["query"],
-    "additionalProperties": False,
-}
-
-WORKSPACE_OUTLINE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {"type": "string", "description": "相对工作区根的文件路径"},
-    },
-    "required": ["path"],
     "additionalProperties": False,
 }
 
@@ -540,46 +528,6 @@ async def workspace_search(ctx: ToolContext, params: dict[str, Any]) -> dict[str
     }
 
 
-#: 顶层符号行：覆盖 Python / JS-TS / Go / Java-Kotlin / Rust / Ruby 的常见声明。
-_SYMBOL_LINE = re.compile(
-    r"^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
-    r"(?:def|class|interface|struct|enum|type|func|fun|function|object|trait)\s+[A-Za-z_]\w*"
-)
-#: JS/TS 的箭头函数常量声明（`export const foo = async () => ...`）
-_ARROW_CONST = re.compile(
-    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>"
-)
-
-
-def _outline_entries(content: str) -> list[dict[str, Any]]:
-    """从文件内容抽取符号行；给行号，方便随后用 offset 精读。"""
-    entries: list[dict[str, Any]] = []
-    for number, line in enumerate(content.splitlines(), start=1):
-        if len(entries) >= MAX_OUTLINE_ENTRIES:
-            break
-        if _SYMBOL_LINE.match(line) or _ARROW_CONST.match(line):
-            entries.append({"line": number, "text": line.strip()[:200]})
-    return entries
-
-
-async def workspace_outline(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
-    """返回文件的符号大纲（行号 + 声明），替代"整文件读进来再找定义"。"""
-    reject_unknown(params, {"path"})
-    path = require_str(params, "path")
-    relative = PurePosixPath(path.replace("\\", "/"))
-    ensure_not_secret_path(path)
-    _guarded(relative)
-    content = await asyncio.to_thread(ctx.container.files.read, path=path)
-    entries = _outline_entries(content.content)
-    return {
-        "path": content.path,
-        "total_lines": len(content.content.splitlines()),
-        "entries": entries,
-        "truncated": len(entries) >= MAX_OUTLINE_ENTRIES,
-        "note": "这是符号大纲；需要实现细节时用 workspace.read 按行号附近精读。",
-    }
-
-
 def read_tools() -> tuple[ToolSpec, ...]:
     return (
         ToolSpec(
@@ -667,16 +615,5 @@ def read_tools() -> tuple[ToolSpec, ...]:
             input_schema=WORKSPACE_SEARCH_SCHEMA,
             capability=Capability.FILE_READ,
             handler=workspace_search,
-        ),
-        ToolSpec(
-            name="workspace.outline",
-            title="查看文件符号大纲",
-            description=(
-                "返回文件的顶层符号声明及行号（函数/类/接口/类型等），用于快速定位定义。"
-                "需要实现细节时再按行号用 workspace.read 精读，避免整文件反复读。"
-            ),
-            input_schema=WORKSPACE_OUTLINE_SCHEMA,
-            capability=Capability.FILE_READ,
-            handler=workspace_outline,
         ),
     )
