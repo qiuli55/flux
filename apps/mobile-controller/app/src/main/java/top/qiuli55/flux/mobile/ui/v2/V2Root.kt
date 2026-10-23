@@ -161,7 +161,10 @@ fun FluxV2Root() {
                     vm.refresh(quiet = true)
                     UpdateCenter.onForeground()
                 }
-                Lifecycle.Event.ON_PAUSE -> vm.setForeground(false)
+                Lifecycle.Event.ON_PAUSE -> {
+                    vm.setForeground(false)
+                    UpdateCenter.onBackground()
+                }
                 else -> Unit
             }
         }

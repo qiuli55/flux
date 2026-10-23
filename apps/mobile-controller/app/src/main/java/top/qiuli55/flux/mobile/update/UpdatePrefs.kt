@@ -30,9 +30,27 @@ class UpdatePrefs(context: Context) {
         prefs.edit().remove(KEY_SKIPPED).apply()
     }
 
+    /** 记录正在进行的系统下载任务，进程被杀后回到应用还能接管进度。 */
+    fun savePendingDownload(downloadId: Long, manifestJson: String) {
+        prefs.edit()
+            .putLong(KEY_DOWNLOAD_ID, downloadId)
+            .putString(KEY_MANIFEST, manifestJson)
+            .apply()
+    }
+
+    fun pendingDownloadId(): Long = prefs.getLong(KEY_DOWNLOAD_ID, 0L)
+
+    fun pendingManifest(): String? = prefs.getString(KEY_MANIFEST, null)
+
+    fun clearPendingDownload() {
+        prefs.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_MANIFEST).apply()
+    }
+
     companion object {
         private const val KEY_SKIPPED = "skipped_version_code"
         private const val KEY_PROMPT_DAY = "last_prompt_day"
         private const val KEY_PROMPT_CODE = "last_prompt_code"
+        private const val KEY_DOWNLOAD_ID = "pending_download_id"
+        private const val KEY_MANIFEST = "pending_manifest"
     }
 }

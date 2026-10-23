@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.update
 
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,22 +8,20 @@ import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import top.qiuli55.flux.mobile.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 import java.time.LocalDate
-import java.util.concurrent.TimeUnit
 
 /** 更新弹层当前所处的阶段。 */
 enum class UpdateKind { HIDDEN, AVAILABLE, DOWNLOADING, PERMISSION, READY, FAILED }
@@ -41,31 +40,47 @@ data class UpdateState(
     val checking: Boolean = false,
     /** 设置页「检查更新」行的状态文案。 */
     val hint: String = "",
+    /**
+     * 下载完成后是否直接调起安装器。
+     * 用户中途点了「稍后」说明不想被打断，此时只把弹层停在待安装。
+     */
+    val installOnReady: Boolean = true,
+    /** 已经请求过一次安装，避免用户取消安装后每次回前台又被弹起来。 */
+    val installRequested: Boolean = false,
 )
+
+private data class DownloadInfo(val status: Int, val done: Long, val total: Long)
 
 /**
  * 应用级更新中心。
  *
- * 生命周期跟进程走（而不是 Composable 或 Activity），所以转屏、退到后台都不会打断下载。
- * 只做三件事：查清单、下载到应用私有目录、交给系统安装器；所有异常都落日志并转成可读提示。
+ * 下载交给系统 DownloadManager：任务在系统进程里跑，退到后台、划掉应用都不会中断，
+ * 通知栏会显示进度；应用回到前台时按保存的 downloadId 接管进度并继续校验与安装。
+ * 只做四件事：查清单、提交/接管下载、SHA-256 校验、交给系统安装器；异常都落日志并转成可读提示。
  */
 object UpdateCenter {
     private const val TAG = "FluxUpdate"
+    private const val APK_MIME = "application/vnd.android.package-archive"
+
+    /** 下载任务超过该时长仍未结束即判失败，避免轮询协程无限挂着。 */
+    private const val MAX_DOWNLOAD_MS = 15 * 60 * 1000L
+    private const val POLL_INTERVAL_MS = 700L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(UpdateState())
     val state = _state.asStateFlow()
 
     private val checker = UpdateChecker()
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     private lateinit var appContext: Context
     private var prefs: UpdatePrefs? = null
-    private var downloadJob: Job? = null
+    private var pollJob: Job? = null
+    private var downloadId = 0L
+    private var foreground = false
     private var lastCheckAt = 0L
+
+    private val manager: DownloadManager
+        get() = appContext.getSystemService(DownloadManager::class.java)
 
     fun install(context: Context) {
         if (::appContext.isInitialized) return
@@ -73,18 +88,37 @@ object UpdateCenter {
         prefs = UpdatePrefs(appContext)
     }
 
-    // ------------------------------------------------------------ 检查
+    // ------------------------------------------------------------ 前后台
 
-    /** 冷启动与回前台：先补完上次的安装授权，再安静地查一次版本。 */
+    /** 冷启动与回前台：先补完上次的安装授权或下载，再安静地查一次版本。 */
     fun onForeground() {
         if (!::appContext.isInitialized) return
+        foreground = true
         val current = _state.value
-        if (current.kind == UpdateKind.PERMISSION && canInstall()) {
-            installApk()
-            return
+        when (current.kind) {
+            UpdateKind.READY -> {
+                if (current.installOnReady && !current.installRequested) installApk()
+                return
+            }
+            UpdateKind.PERMISSION -> {
+                if (canInstall()) installApk()
+                return
+            }
+            UpdateKind.DOWNLOADING -> return
+            else -> Unit
         }
+        // 下载仍在本次进程里跟进时（用户只是点了「稍后」收起弹层），不再重复接管或检查。
+        if (pollJob?.isActive == true) return
+        if (resumePending()) return
         check(auto = true)
     }
+
+    /** 退到后台只记状态：下载由系统继续，完成时不从后台拉起安装器。 */
+    fun onBackground() {
+        foreground = false
+    }
+
+    // ------------------------------------------------------------ 检查
 
     /** 手动检查：不管跳过与每日限制，有新版本就打开弹层。 */
     fun checkManually() {
@@ -149,86 +183,215 @@ object UpdateCenter {
 
     // ------------------------------------------------------------ 下载
 
+    /** 提交系统下载任务；任务本身在系统进程里执行，应用退到后台不影响。 */
     fun download() {
         if (!::appContext.isInitialized) return
         val manifest = _state.value.manifest ?: return
-        if (downloadJob?.isActive == true) return
+        if (pollJob?.isActive == true) return
         val target = apkFile(manifest)
-        downloadJob = scope.launch {
+        runCatching { target.delete() }
+        val request = DownloadManager.Request(Uri.parse(manifest.apkUrl))
+            .setTitle("Flux Mobile ${manifest.versionName}")
+            .setDescription("Flux 更新包")
+            .setMimeType(APK_MIME)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, target.name)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(false)
+        val id = runCatching { manager.enqueue(request) }.getOrElse { error ->
+            Log.w(TAG, "提交下载任务失败: ${error.message}")
             _state.update {
-                it.copy(
-                    kind = UpdateKind.DOWNLOADING,
-                    progress = 0,
-                    downloaded = 0L,
-                    total = manifest.sizeBytes,
-                    error = null,
-                    hint = "正在下载 v${manifest.versionName}",
-                )
+                it.copy(kind = UpdateKind.FAILED, error = "无法开始下载", hint = "下载失败")
             }
-            val result = runCatching { fetchToFile(manifest, target) }
-            result.onSuccess {
-                Log.i(TAG, "更新包下载完成: ${target.name} (${target.length()} bytes)")
-                _state.update { it.copy(kind = UpdateKind.READY, progress = 100, hint = "待安装") }
-                installApk()
-            }.onFailure { error ->
-                target.delete()
-                if (error is CancellationException) {
-                    Log.i(TAG, "下载已取消")
-                    return@onFailure
-                }
-                Log.w(TAG, "更新包下载失败: ${error.message}")
-                _state.update {
-                    it.copy(
-                        kind = UpdateKind.FAILED,
-                        error = error.message ?: "下载失败",
-                        hint = "下载失败",
-                    )
-                }
-            }
+            return
         }
+        downloadId = id
+        prefs?.savePendingDownload(id, UpdateJson.encodeToString(UpdateManifest.serializer(), manifest))
+        Log.i(TAG, "下载任务已提交: id=$id ${manifest.apkUrl}")
+        _state.update {
+            it.copy(
+                kind = UpdateKind.DOWNLOADING,
+                progress = 0,
+                downloaded = 0L,
+                total = manifest.sizeBytes,
+                error = null,
+                hint = "正在后台下载 v${manifest.versionName}",
+                installOnReady = true,
+                installRequested = false,
+            )
+        }
+        startPolling(manifest)
     }
 
-    /** 边下边算 SHA-256，落盘后与清单比对；不一致直接删掉重来。 */
-    private fun fetchToFile(manifest: UpdateManifest, target: File) {
-        val request = Request.Builder().url(manifest.apkUrl).build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("下载失败 HTTP ${response.code}")
-            val body = response.body ?: error("下载响应为空")
-            val total = body.contentLength().takeIf { it > 0 } ?: manifest.sizeBytes
-            val digest = MessageDigest.getInstance("SHA-256")
-            var done = 0L
-            body.byteStream().use { input ->
-                target.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        digest.update(buffer, 0, read)
-                        done += read
-                        val percent = if (total > 0) (done * 100 / total).toInt().coerceIn(0, 99) else 0
+    /**
+     * 进程被杀后重新进入应用时接管上次的系统下载。
+     * 返回 true 表示已有下载在跟进，本次不再检查新版本。
+     */
+    private fun resumePending(): Boolean {
+        val store = prefs ?: return false
+        val id = store.pendingDownloadId()
+        if (id <= 0) return false
+        val manifest = store.pendingManifest()?.let { raw ->
+            runCatching { UpdateJson.decodeFromString<UpdateManifest>(raw) }.getOrNull()
+        }
+        if (manifest == null) {
+            Log.w(TAG, "上次下载的清单无法解析，放弃接管")
+            store.clearPendingDownload()
+            return false
+        }
+        downloadId = id
+        Log.i(TAG, "接管上次未完成的下载: id=$id")
+        _state.update {
+            it.copy(
+                kind = UpdateKind.DOWNLOADING,
+                manifest = manifest,
+                forced = manifest.isForcedFor(BuildConfig.VERSION_CODE),
+                progress = 0,
+                downloaded = 0L,
+                total = manifest.sizeBytes,
+                error = null,
+                hint = "正在后台下载 v${manifest.versionName}",
+            )
+        }
+        startPolling(manifest)
+        return true
+    }
+
+    /** 轮询系统下载进度直到成功或失败；超过 MAX_DOWNLOAD_MS 主动取消。 */
+    private fun startPolling(manifest: UpdateManifest) {
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            val deadline = System.currentTimeMillis() + MAX_DOWNLOAD_MS
+            while (isActive) {
+                val info = query(downloadId)
+                if (info == null) {
+                    onDownloadFailed("下载任务丢失，请重试")
+                    return@launch
+                }
+                when (info.status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        finishDownload(manifest)
+                        return@launch
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        onDownloadFailed(failureReason(downloadId))
+                        return@launch
+                    }
+                    else -> {
+                        val total = info.total.takeIf { it > 0 } ?: manifest.sizeBytes
                         _state.update {
-                            it.copy(kind = UpdateKind.DOWNLOADING, progress = percent, downloaded = done, total = total)
+                            it.copy(
+                                kind = UpdateKind.DOWNLOADING,
+                                progress = downloadPercent(info.done, total),
+                                downloaded = info.done.coerceAtLeast(0L),
+                                total = total,
+                            )
                         }
                     }
                 }
-            }
-            val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (manifest.sha256.isNotBlank() && !actual.equals(manifest.sha256, ignoreCase = true)) {
-                error("安装包校验失败，请重新下载")
+                if (System.currentTimeMillis() > deadline) {
+                    cancelDownload()
+                    onDownloadFailed("下载超时，请重试")
+                    return@launch
+                }
+                delay(POLL_INTERVAL_MS)
             }
         }
     }
 
-    fun cancelDownload() {
-        downloadJob?.cancel()
-        downloadJob = null
-        val manifest = _state.value.manifest
-        if (manifest != null) runCatching { apkFile(manifest).delete() }
+    private fun query(id: Long): DownloadInfo? {
+        val cursor = runCatching {
+            manager.query(DownloadManager.Query().setFilterById(id))
+        }.getOrNull() ?: return null
+        cursor.use {
+            if (!it.moveToFirst()) return null
+            return DownloadInfo(
+                status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
+                done = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
+                total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
+            )
+        }
+    }
+
+    private fun failureReason(id: Long): String {
+        val cursor = runCatching {
+            manager.query(DownloadManager.Query().setFilterById(id))
+        }.getOrNull() ?: return "下载失败，请重试"
+        cursor.use {
+            if (!it.moveToFirst()) return "下载任务已丢失"
+            return when (it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))) {
+                DownloadManager.ERROR_INSUFFICIENT_SPACE -> "手机存储空间不足"
+                DownloadManager.ERROR_FILE_ERROR -> "写入安装包失败"
+                DownloadManager.ERROR_HTTP_DATA_ERROR,
+                DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "下载服务器返回异常"
+                DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "下载地址跳转异常"
+                DownloadManager.ERROR_CANNOT_RESUME -> "网络中断，请重试"
+                else -> "下载失败，请重试"
+            }
+        }
+    }
+
+    private fun finishDownload(manifest: UpdateManifest) {
+        val file = apkFile(manifest)
+        if (!file.exists() || !matchesSha(file, manifest.sha256)) {
+            Log.w(TAG, "下载完成但校验失败: ${file.absolutePath}")
+            runCatching { file.delete() }
+            onDownloadFailed("安装包校验失败，请重新下载")
+            return
+        }
+        prefs?.clearPendingDownload()
+        downloadId = 0L
+        Log.i(TAG, "后台下载完成并校验通过: ${file.name} (${file.length()} bytes)")
+        _state.update { it.copy(kind = UpdateKind.READY, progress = 100, downloaded = file.length(), hint = "待安装") }
+        if (foreground && _state.value.installOnReady) {
+            installApk()
+        } else {
+            Log.i(TAG, "应用不在前台，回到应用后再调起安装")
+        }
+    }
+
+    private fun onDownloadFailed(message: String) {
+        Log.w(TAG, "更新下载失败: $message")
+        prefs?.clearPendingDownload()
+        downloadId = 0L
         _state.update {
-            it.copy(kind = if (it.manifest != null) UpdateKind.AVAILABLE else UpdateKind.HIDDEN, progress = 0)
+            it.copy(kind = UpdateKind.FAILED, error = message, hint = "下载失败")
+        }
+    }
+
+    /** 取消并清掉系统下载任务与半截安装包。 */
+    fun cancelDownload() {
+        val id = downloadId.takeIf { it > 0 } ?: prefs?.pendingDownloadId() ?: 0L
+        if (id > 0) runCatching { manager.remove(id) }
+        pollJob?.cancel()
+        pollJob = null
+        downloadId = 0L
+        prefs?.clearPendingDownload()
+        _state.value.manifest?.let { runCatching { apkFile(it).delete() } }
+        _state.update {
+            it.copy(kind = if (it.manifest != null) UpdateKind.AVAILABLE else UpdateKind.HIDDEN, progress = 0, downloaded = 0L)
         }
         Log.i(TAG, "用户取消下载")
+    }
+
+    private fun matchesSha(file: File, expected: String): Boolean {
+        if (expected.isBlank()) return true
+        return runCatching {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+                .equals(expected, ignoreCase = true)
+        }.getOrElse { error ->
+            Log.w(TAG, "计算安装包摘要失败: ${error.message}")
+            false
+        }
     }
 
     // ------------------------------------------------------------ 安装
@@ -249,11 +412,11 @@ object UpdateCenter {
         runCatching {
             val uri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", apk)
             val intent = Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .setDataAndType(uri, APK_MIME)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             appContext.startActivity(intent)
             Log.i(TAG, "已调起系统安装器: v${manifest.versionName}")
-            _state.update { it.copy(kind = UpdateKind.READY, hint = "待安装") }
+            _state.update { it.copy(kind = UpdateKind.READY, hint = "待安装", installRequested = true) }
         }.onFailure { error ->
             Log.w(TAG, "调起安装器失败: ${error.message}")
             _state.update {
@@ -281,22 +444,27 @@ object UpdateCenter {
 
     // ------------------------------------------------------------ 用户选择
 
-    /** 稍后：本次收起，明天（或下次启动）再提醒。 */
+    /** 稍后：收起弹层；若正在下载则继续在后台跑，完成后只停在待安装。 */
     fun later() {
-        _state.update { it.copy(kind = UpdateKind.HIDDEN) }
+        _state.update {
+            it.copy(kind = UpdateKind.HIDDEN, installOnReady = it.kind != UpdateKind.DOWNLOADING && it.installOnReady)
+        }
     }
 
-    /** 跳过此版本：记下版本号，之后同版本不再自动弹。 */
+    /** 跳过此版本：记下版本号，同时停掉正在进行的下载。 */
     fun skipVersion() {
         val manifest = _state.value.manifest
         if (manifest != null) {
             prefs?.skip(manifest.versionCode)
             Log.i(TAG, "用户跳过 v${manifest.versionName}")
         }
+        if (_state.value.kind == UpdateKind.DOWNLOADING) cancelDownload()
         _state.update { it.copy(kind = UpdateKind.HIDDEN, hint = "已跳过 v${manifest?.versionName.orEmpty()}") }
     }
 
     fun dismiss() {
-        _state.update { it.copy(kind = UpdateKind.HIDDEN) }
+        _state.update {
+            it.copy(kind = UpdateKind.HIDDEN, installOnReady = it.kind != UpdateKind.DOWNLOADING && it.installOnReady)
+        }
     }
 }
