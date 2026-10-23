@@ -31,6 +31,7 @@ from flux.core.context.trust import VerificationLedger
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
+from flux.core.key_vault.service import KeyVaultService
 from flux.core.mcp.auth import AgentTokenService
 from flux.core.memory.repository import MemoryRepository
 from flux.core.memory.service import MemoryService
@@ -82,6 +83,7 @@ class Container:
     memory_repo: MemoryRepository = field(init=False)
     memory: MemoryService = field(init=False)
     task_repo: TaskRepository = field(init=False)
+    key_vault: KeyVaultService = field(init=False)
     task_runs: TaskRunBridge = field(init=False)
     assistant: TaskAssistant = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
@@ -108,6 +110,8 @@ class Container:
         #: 内建 CLI Agent Adapter 集合：installation 状态机与 P2-1 的 CLI runtime 共用同一批实例
         cli_adapters = build_default_adapters()
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 密钥库：Agent 模型通道的 API Key（加密落库），与任务级 model / api_key_id 配合解析
+        self.key_vault = KeyVaultService(self.session_factory, self.settings)  # type: ignore[attr-defined]
         # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
         # Apply 批日志（P0-1）：每次 apply_many 一行，先于磁盘操作落库；

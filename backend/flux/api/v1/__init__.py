@@ -10,6 +10,7 @@ from flux.api.v1 import (
     git,
     health,
     installations,
+    keys,
     memory,
     models,
     projects,
@@ -21,6 +22,7 @@ from flux.api.v1 import (
 api_v1_router = APIRouter()
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(agents.router)
+api_v1_router.include_router(keys.router)
 api_v1_router.include_router(installations.router)
 api_v1_router.include_router(tasks.router)
 api_v1_router.include_router(workspace.router)

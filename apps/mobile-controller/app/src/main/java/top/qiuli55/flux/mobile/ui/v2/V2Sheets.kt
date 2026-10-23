@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Link
@@ -86,6 +87,7 @@ fun SettingsSheet(
     onStrict: (Boolean) -> Unit,
     onOpenDevices: () -> Unit,
     onOpenTerminals: () -> Unit,
+    onOpenKeyVault: () -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
     onDismiss: () -> Unit,
@@ -165,6 +167,14 @@ fun SettingsSheet(
                     description = "在工作区执行命令，查看实时输出",
                     danger = false,
                     onClick = onOpenTerminals,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                SettingsActionRow(
+                    icon = Icons.Outlined.Key,
+                    title = "密钥库",
+                    description = "管理 Agent 模型通道的 API Key",
+                    danger = false,
+                    onClick = onOpenKeyVault,
                 )
                 ThinDivider(V2Colors.ink(.05f))
                 SettingsActionRow(
@@ -886,7 +896,7 @@ fun ConfirmSheet(
 fun AgentPickerSheet(
     chat: V2ChatState,
     options: List<V2AgentOption>,
-    onPick: (agentId: String, model: String) -> Unit,
+    onPick: (agentId: String, model: V2ModelOption) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var expandedAgent by remember(chat.agentId) { mutableStateOf(chat.agentId) }
@@ -947,7 +957,8 @@ fun AgentPickerSheet(
                         Spacer(Modifier.height(6.dp))
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             option.models.forEach { model ->
-                                val selectedModel = selectedAgent && model == chat.model
+                                val selectedModel =
+                                    selectedAgent && model.model == chat.model && model.keyId == chat.modelKeyId
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
@@ -963,7 +974,7 @@ fun AgentPickerSheet(
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Label(
-                                        model,
+                                        model.label,
                                         11f,
                                         if (selectedModel) Color.White else V2Colors.ink(.65f),
                                         if (selectedModel) FontWeight.Medium else FontWeight.Normal,

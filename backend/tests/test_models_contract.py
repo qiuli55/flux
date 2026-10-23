@@ -72,6 +72,8 @@ SPEC_TABLES = {
     # FLUX_CONTEXT_MECHANISM §10.1 的脱敏映射表：占位符 → 被换下来的原文，值单独加密。
     # 本表本身敏感，随会话级联删除（§8.2 / §13-5）。
     "context_redactions",
+    # 密钥库：Agent 模型通道的 API Key（加密落库，明文不出接口）。与其余表一样受本文件约束。
+    "api_keys",
 }
 
 

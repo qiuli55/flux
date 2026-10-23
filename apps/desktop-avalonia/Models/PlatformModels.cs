@@ -68,6 +68,25 @@ public sealed record Change(
 /// <summary>Agent 规格（GET /api/v1/agents 内嵌）。</summary>
 public sealed record AgentSpec(string Name, string? Runtime);
 
+/// <summary>GET /api/v1/keys 的元素（密钥库；只有掩码，没有明文/密文）。</summary>
+public sealed record ApiKeyEntry(
+    string Id,
+    string Name,
+    string Provider,
+    string BaseUrl,
+    string WireApi,
+    string[] Models,
+    string KeyHint,
+    bool Enabled)
+{
+    public string ToggleText => Enabled ? "停用" : "启用";
+    public string BaseUrlText => string.IsNullOrWhiteSpace(BaseUrl) ? "默认地址" : BaseUrl;
+    public string ModelsText => string.Join(" / ", Models);
+}
+
+/// <summary>DELETE /api/v1/keys/{id} 的 data。</summary>
+public sealed record ApiKeyDeleteResult(bool Deleted, string KeyId);
+
 /// <summary>GET /api/v1/agents 的元素。</summary>
 public sealed record AgentHandle(string Id, string State, AgentSpec Spec);
 

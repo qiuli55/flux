@@ -16,7 +16,14 @@ data class V2Agent(
     val tint: Color,
 )
 
-data class V2DeviceAgent(val agentId: String, val models: List<String>)
+/** 一个可选模型：keyId 非空表示来自密钥库。 */
+data class V2ModelOption(
+    val model: String,
+    val label: String = model,
+    val keyId: String? = null,
+)
+
+data class V2DeviceAgent(val agentId: String, val models: List<V2ModelOption>)
 
 data class V2Device(
     val name: String,
@@ -27,7 +34,7 @@ data class V2Device(
 enum class V2DeviceKind { LAPTOP, DESKTOP, PHONE }
 
 /** 当前设备上已配置的 Agent + 该 Agent 可用模型。 */
-data class V2AgentOption(val agent: V2Agent, val models: List<String>)
+data class V2AgentOption(val agent: V2Agent, val models: List<V2ModelOption>)
 
 enum class V2MessageRole { SYSTEM, USER, AGENT }
 
@@ -109,29 +116,31 @@ val demoAgents = listOf(
     V2Agent("sec", "Security-Auditor", "安全漏洞扫描", 7, 0, Color(0xFF059669)),
 )
 
+private fun models(vararg names: String): List<V2ModelOption> = names.map { V2ModelOption(it, it) }
+
 val demoDevices = listOf(
     V2Device(
         "MacBook Pro",
         V2DeviceKind.LAPTOP,
         listOf(
-            V2DeviceAgent("arch", listOf("Claude Opus 4.5", "GPT-5.2", "DeepSeek-V3.2")),
-            V2DeviceAgent("ops", listOf("Claude Sonnet 4.6", "GPT-5.1-Codex")),
-            V2DeviceAgent("sec", listOf("Claude Sonnet 4.6", "DeepSeek-V3.2")),
+            V2DeviceAgent("arch", models("Claude Opus 4.5", "GPT-5.2", "DeepSeek-V3.2")),
+            V2DeviceAgent("ops", models("Claude Sonnet 4.6", "GPT-5.1-Codex")),
+            V2DeviceAgent("sec", models("Claude Sonnet 4.6", "DeepSeek-V3.2")),
         ),
     ),
     V2Device(
         "Studio",
         V2DeviceKind.DESKTOP,
         listOf(
-            V2DeviceAgent("arch", listOf("Claude Opus 4.5", "Qwen3-Coder-480B")),
-            V2DeviceAgent("ops", listOf("GPT-5.1-Codex")),
+            V2DeviceAgent("arch", models("Claude Opus 4.5", "Qwen3-Coder-480B")),
+            V2DeviceAgent("ops", models("GPT-5.1-Codex")),
         ),
     ),
     V2Device(
         "iPhone",
         V2DeviceKind.PHONE,
         listOf(
-            V2DeviceAgent("sec", listOf("DeepSeek-V3.2", "Claude Haiku 4.5")),
+            V2DeviceAgent("sec", models("DeepSeek-V3.2", "Claude Haiku 4.5")),
         ),
     ),
 )
@@ -148,8 +157,8 @@ object V2Registry {
     var agents: List<V2Agent> by mutableStateOf(demoAgents)
     var devices: List<V2Device> by mutableStateOf(demoDevices)
     var models: List<String> by mutableStateOf(emptyList())
-    /** 后端每个 Agent 的可用模型（/agents 的 spec.models）；空 = 回落到全局模型。 */
-    var agentModels: Map<String, List<String>> by mutableStateOf(emptyMap())
+    /** 后端每个 Agent 的可用模型（原生 + key 库）；空 = 回落到全局模型。 */
+    var agentModels: Map<String, List<V2ModelOption>> by mutableStateOf(emptyMap())
 }
 
 private val unknownAgent = V2Agent("unknown", "Flux Agent", "未配置", 0, 0, V2Colors.accent)
@@ -161,21 +170,28 @@ fun demoAgent(id: String): V2Agent =
     V2Registry.agents.firstOrNull { it.id == id }
         ?: if (id.isBlank()) fallbackAgent else unknownAgent.copy(id = id, name = id.take(12))
 
+private fun globalModelOptions(): List<V2ModelOption> = V2Registry.models.map { V2ModelOption(it, it) }
+
 fun agentsForDevice(deviceName: String): List<V2AgentOption> {
-    fun modelsOf(agentId: String, fallback: List<String>): List<String> =
+    fun modelsOf(agentId: String, fallback: List<V2ModelOption>): List<V2ModelOption> =
         V2Registry.agentModels[agentId]?.takeIf { it.isNotEmpty() }
             ?: fallback.takeIf { it.isNotEmpty() }
-            ?: V2Registry.models
+            ?: globalModelOptions()
 
     val options = if (deviceName == ALL_DEVICES) {
-        val merged = LinkedHashMap<String, LinkedHashSet<String>>()
+        val merged = LinkedHashMap<String, MutableList<V2ModelOption>>()
         V2Registry.devices.forEach { device ->
             device.agents.forEach { configured ->
-                merged.getOrPut(configured.agentId) { LinkedHashSet() }.addAll(configured.models)
+                val bucket = merged.getOrPut(configured.agentId) { mutableListOf() }
+                configured.models.forEach { option ->
+                    if (bucket.none { it.model == option.model && it.keyId == option.keyId }) {
+                        bucket.add(option)
+                    }
+                }
             }
         }
         if (merged.isEmpty()) {
-            V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, V2Registry.models)) }
+            V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, globalModelOptions())) }
         } else {
             merged.map { (agentId, models) ->
                 V2AgentOption(demoAgent(agentId), modelsOf(agentId, models.toList()))
@@ -184,9 +200,9 @@ fun agentsForDevice(deviceName: String): List<V2AgentOption> {
     } else {
         val device = V2Registry.devices.firstOrNull { it.name == deviceName }
         device?.agents?.map { V2AgentOption(demoAgent(it.agentId), modelsOf(it.agentId, it.models)) }
-            ?: V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, V2Registry.models)) }
+            ?: V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, globalModelOptions())) }
     }
-    return options.ifEmpty { listOf(V2AgentOption(fallbackAgent, V2Registry.models)) }
+    return options.ifEmpty { listOf(V2AgentOption(fallbackAgent, globalModelOptions())) }
 }
 
 fun deviceKind(name: String): V2DeviceKind =

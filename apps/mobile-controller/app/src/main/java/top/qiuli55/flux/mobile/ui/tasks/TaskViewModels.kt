@@ -219,9 +219,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(task = task, notice = "已切换 Agent，后续执行交给新 Agent")
     }
 
-    /** 对话页切换模型：必须是当前 Agent 支持的模型，后续 Run 用它执行。 */
-    fun switchModel(model: String) = runAction("switch-model") { api ->
-        val task = api.setTaskModel(taskId, model)
+    /** 对话页切换模型：必须是当前 Agent 支持的模型，后续 Run 用它执行；keyId 非空表示来自密钥库。 */
+    fun switchModel(model: String, keyId: String? = null) = runAction("switch-model") { api ->
+        val task = api.setTaskModel(taskId, model, keyId)
         _state.value = _state.value.copy(task = task, notice = "已切换模型：$model")
     }
 

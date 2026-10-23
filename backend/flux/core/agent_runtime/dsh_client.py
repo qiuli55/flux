@@ -28,8 +28,10 @@ from deepseek_harness.client import HarnessClient
 from flux.config import Settings
 from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.dsh_events import to_flux_event
+from flux.core.agent_runtime.model_catalog import dsh_provider_for
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
+from flux.core.agent_runtime.runtimes.base import ModelChannel
 from flux.core.agent_runtime.supervisor import RunSupervisor
 from flux.core.event.bus import EventBus
 from flux.core.mcp.auth import AgentTokenService
@@ -137,6 +139,8 @@ class DshRun:
     task_id: str | None = None
     #: 任务级模型覆盖（移动端切换模型）；None = 用服务端配置的默认模型
     model: str | None = None
+    #: 任务级模型通道（密钥库）；含明文 key，repr 已脱敏，不进任何对外快照
+    channel: ModelChannel | None = None
     last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -159,6 +163,7 @@ class DshRun:
             "agent_id": self.agent_id,
             "task_id": self.task_id,
             "model": self.model,
+            "model_key_id": self.channel.key_id if self.channel is not None else None,
             "last_state_change_at": (
                 self.last_state_change_at.isoformat() if self.last_state_change_at else None
             ),
@@ -394,6 +399,7 @@ class FluxDshClient:
         task_id: object | None = None,
         agent_id: str | None = None,
         model: str | None = None,
+        channel: ModelChannel | None = None,
     ) -> DshRun:
         """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
 
@@ -420,6 +426,7 @@ class FluxDshClient:
             agent_id=agent_id or self._mcp_agent_id,
             task_id=str(task_id) if task_id is not None else None,
             model=(model or "").strip() or None,
+            channel=channel,
         )
         self._runs[run.run_id] = run
         await self._supervisor.create_run(
@@ -461,17 +468,26 @@ class FluxDshClient:
         timeout_kind: str | None = None
         harness: DeepSeekHarness | None = None
         await self._supervisor.mark_starting(run_id)
+        provider = self._settings.dsh_provider
+        base_url: str | None = None
+        api_key: str | None = None
+        if run.channel is not None:
+            provider = dsh_provider_for(run.channel.provider) or provider
+            base_url = run.channel.base_url or None
+            api_key = run.channel.api_key or None
         try:
             harness = self._harness_factory(
                 dsh_home=self._settings.dsh_home,
                 cwd=self._settings.dsh_workspace,
-                provider=self._settings.dsh_provider,
+                provider=provider,
                 model=run.model or self._settings.dsh_model,
                 max_tokens=self._settings.dsh_max_tokens,
                 patches=(str(patch_path),) if patch_path is not None else (),
                 initialize_timeout_seconds=self._settings.dsh_init_timeout_seconds,
                 request_timeout_seconds=self._settings.dsh_run_timeout_seconds or None,
                 env=self._agent_env(run),
+                base_url=base_url,
+                api_key=api_key,
             )
             self._harnesses[run.run_id] = harness
             if not await self._mark_process_started(run_id, harness):

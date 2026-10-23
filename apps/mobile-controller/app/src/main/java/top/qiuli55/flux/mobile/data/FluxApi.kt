@@ -57,11 +57,19 @@ class FluxApi(
     suspend fun listAgents(): List<Agent> = get("api/v1/agents")
     suspend fun listTasks(): List<Task> = get("api/v1/tasks")
 
-    suspend fun createTask(description: String, agentId: String?, decisionMode: String): Task {
+    suspend fun createTask(
+        description: String,
+        agentId: String?,
+        decisionMode: String,
+        model: String? = null,
+        keyId: String? = null,
+    ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
             if (!agentId.isNullOrBlank()) put("agent_id", agentId)
             put("decision_mode", decisionMode)
+            if (!model.isNullOrBlank()) put("model", model)
+            if (!keyId.isNullOrBlank()) put("key_id", keyId)
         }
         return post("api/v1/tasks", body)
     }
@@ -89,9 +97,68 @@ class FluxApi(
     suspend fun setTaskAgent(taskId: String, agentId: String): Task =
         post("api/v1/tasks/$taskId/agent", buildJsonObject { put("agent_id", agentId) })
 
-    /** 切换任务的执行模型：必须是当前 Agent runtime 支持的模型。 */
-    suspend fun setTaskModel(taskId: String, model: String): Task =
-        post("api/v1/tasks/$taskId/model", buildJsonObject { put("model", model) })
+    /** 切换任务的执行模型：必须是当前 Agent runtime 支持的模型；keyId 非空表示来自密钥库。 */
+    suspend fun setTaskModel(taskId: String, model: String, keyId: String? = null): Task =
+        post(
+            "api/v1/tasks/$taskId/model",
+            buildJsonObject {
+                put("model", model)
+                if (!keyId.isNullOrBlank()) put("key_id", keyId)
+            },
+        )
+
+    // ---------------------------------------------------------- 密钥库
+
+    suspend fun listKeys(): List<ApiKeyEntry> = get("api/v1/keys")
+
+    suspend fun createKey(
+        name: String,
+        provider: String,
+        baseUrl: String,
+        apiKey: String,
+        models: List<String>,
+        wireApi: String,
+        enabled: Boolean,
+    ): ApiKeyEntry = post(
+        "api/v1/keys",
+        buildJsonObject {
+            put("name", name.trim())
+            put("provider", provider)
+            put("base_url", baseUrl.trim())
+            put("api_key", apiKey.trim())
+            put("models", json.encodeToJsonElement(ListSerializer(String.serializer()), models))
+            put("wire_api", wireApi)
+            put("enabled", enabled)
+        },
+    )
+
+    /** 修改密钥：apiKey 为空表示保持原 key。 */
+    suspend fun updateKey(
+        keyId: String,
+        name: String,
+        provider: String,
+        baseUrl: String,
+        apiKey: String?,
+        models: List<String>,
+        wireApi: String,
+        enabled: Boolean,
+    ): ApiKeyEntry = patch(
+        "api/v1/keys/$keyId",
+        buildJsonObject {
+            put("name", name.trim())
+            put("provider", provider)
+            put("base_url", baseUrl.trim())
+            if (!apiKey.isNullOrBlank()) put("api_key", apiKey.trim())
+            put("models", json.encodeToJsonElement(ListSerializer(String.serializer()), models))
+            put("wire_api", wireApi)
+            put("enabled", enabled)
+        },
+    )
+
+    suspend fun deleteKey(keyId: String): JsonElement = delete("api/v1/keys/$keyId")
+
+    suspend fun setKeyEnabled(keyId: String, enabled: Boolean): ApiKeyEntry =
+        patch("api/v1/keys/$keyId", buildJsonObject { put("enabled", enabled) })
 
     suspend fun getRun(runId: String): Run = get("api/v1/dsh/runs/$runId")
     suspend fun listRuns(): List<Run> = get("api/v1/dsh/runs")
@@ -194,6 +261,10 @@ class FluxApi(
     private suspend inline fun <reified T> get(path: String): T = request("GET", path, null)
 
     private suspend inline fun <reified T> post(path: String, body: JsonObject): T = request("POST", path, body)
+
+    private suspend inline fun <reified T> patch(path: String, body: JsonObject): T = request("PATCH", path, body)
+
+    private suspend inline fun <reified T> delete(path: String): T = request("DELETE", path, null)
 
     private suspend inline fun <reified T> terminalPost(path: String, body: JsonObject): T =
         requestWithClient(terminalClient, "POST", path, body)

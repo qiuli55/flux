@@ -6,16 +6,18 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { API_BASE, api, ApiError } from "../api/client";
 import { toast } from "../app/toast";
+import { KeyVaultPanel } from "../components/KeyVaultPanel";
 import { Icon } from "../shell/Icon";
 import { setPref, usePrefs } from "../shell/prefs";
 import { Button, Card, PageHead, SectionTitle, Switch } from "../shell/ui";
 import { Modal } from "../shell/Overlay";
 
-type Tab = "appearance" | "workspace" | "about";
+type Tab = "appearance" | "workspace" | "keys" | "about";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "appearance", label: "外观", icon: "eye" },
   { id: "workspace", label: "工作区", icon: "folder" },
+  { id: "keys", label: "密钥库", icon: "key" },
   { id: "about", label: "关于", icon: "book" },
 ];
 
@@ -98,6 +100,8 @@ export function SettingsPage() {
               </div>
             </Card>
           ) : null}
+
+          {tab === "keys" ? <KeyVaultPanel /> : null}
 
           {tab === "about" ? (
             <Card pad>

@@ -47,6 +47,15 @@ data class DshStatus(
 )
 
 @Serializable
+data class KeyModelOption(
+    @SerialName("key_id") val keyId: String = "",
+    @SerialName("key_name") val keyName: String = "",
+    val provider: String = "",
+    @SerialName("provider_title") val providerTitle: String = "",
+    val model: String = "",
+)
+
+@Serializable
 data class AgentSpec(
     val name: String = "",
     val role: String = "",
@@ -60,6 +69,8 @@ data class AgentSpec(
     val model: String = "",
     /** 该 runtime 支持的模型（移动端「切换模型」下拉的数据源）。 */
     val models: List<String> = emptyList(),
+    /** 密钥库中该 runtime 可用的模型。 */
+    @SerialName("key_models") val keyModels: List<KeyModelOption> = emptyList(),
 )
 
 @Serializable
@@ -132,7 +143,33 @@ data class Task(
     @SerialName("run_id") val runId: String? = null,
     /** 任务级模型覆盖；null = 用所属 Agent 的默认模型。 */
     val model: String? = null,
+    /** 任务级模型来自哪条 key 库条目；null = 原生模型。 */
+    @SerialName("api_key_id") val apiKeyId: String? = null,
 )
+
+/** 密钥库条目（GET /keys）：只有掩码，没有明文/密文。 */
+@Serializable
+data class ApiKeyEntry(
+    val id: String = "",
+    val name: String = "",
+    val provider: String = "",
+    @SerialName("base_url") val baseUrl: String = "",
+    @SerialName("wire_api") val wireApi: String = "",
+    val models: List<String> = emptyList(),
+    @SerialName("key_hint") val keyHint: String = "",
+    val enabled: Boolean = true,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+) {
+    val providerTitle: String
+        get() = when (provider) {
+            "deepseek" -> "DeepSeek"
+            "openai" -> "OpenAI"
+            "openai_compatible" -> "OpenAI 兼容"
+            "anthropic" -> "Anthropic"
+            else -> provider
+        }
+}
 
 @Serializable
 data class Run(

@@ -45,6 +45,25 @@ RUNTIME_EVENT_TYPES: frozenset[str] = frozenset(
 
 
 @dataclass(slots=True)
+class ModelChannel:
+    """密钥库解析出的一条模型通道（含明文 key；只在内存里流转，绝不落盘/进日志）。"""
+
+    provider: str
+    base_url: str
+    api_key: str
+    wire_api: str = ""
+    #: key 库条目的名称，用于 codex provider 块的展示名
+    label: str = ""
+    key_id: str = ""
+
+    def __repr__(self) -> str:  # 防止误把密钥打进日志/异常
+        return (
+            f"ModelChannel(provider={self.provider!r}, base_url={self.base_url!r}, "
+            f"key_id={self.key_id!r})"
+        )
+
+
+@dataclass(slots=True)
 class RuntimeLaunch:
     """一次 Run 启动所需的全部事实（由 `AgentRuntime.prepare` 组装）。"""
 
@@ -64,6 +83,8 @@ class RuntimeLaunch:
     argv: tuple[str, ...] = ()
     #: Run 结束即撤销的一次性令牌（明文不落任何日志/证据）
     token_id: str | None = None
+    #: 任务级模型通道（来自密钥库）；None = 用 runtime 原生模型配置
+    channel: ModelChannel | None = None
 
 
 @dataclass(slots=True)
@@ -102,8 +123,12 @@ class AgentRuntime(Protocol):
         agent: Any,
         run_id: str,
         instruction: str,
+        channel: ModelChannel | None = None,
     ) -> RuntimeLaunch:
-        """准备一次 Run：指令已由编排层拼好，这里补齐 env / cwd / run 目录 / MCP 注入 / 令牌。"""
+        """准备一次 Run：指令已由编排层拼好，这里补齐 env / cwd / run 目录 / MCP 注入 / 令牌。
+
+        `channel` 是任务级模型通道（密钥库）；None = 用 runtime 原生模型配置。
+        """
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
         """拉起 Run 并返回进程句柄；进程组隔离与看护登记在此完成。"""
@@ -125,6 +150,7 @@ __all__ = [
     "EVENT_TOOL_CALL",
     "EVENT_TOOL_RESULT",
     "KNOWN_RUNTIMES",
+    "ModelChannel",
     "RUNTIME_CODEX",
     "RUNTIME_DSH",
     "RUNTIME_EVENT_TYPES",

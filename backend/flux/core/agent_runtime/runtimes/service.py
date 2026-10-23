@@ -80,8 +80,10 @@ class TaskRunService:
         task = await container.task_repo.set_run_id(task_uuid, run_id)
         task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
         try:
+            # 任务级模型通道（密钥库）：没有 key 覆盖时为 None，runtime 用原生配置
+            channel = await container.key_vault.channel_for_task(task)
             launch = await runtime.prepare(
-                task=task, agent=agent, run_id=run_id, instruction=instruction
+                task=task, agent=agent, run_id=run_id, instruction=instruction, channel=channel
             )
             proc = await runtime.start(launch)
         except AIOSError:

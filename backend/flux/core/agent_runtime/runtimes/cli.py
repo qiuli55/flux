@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from flux.config import Settings
+from flux.core.agent_runtime.model_catalog import PROVIDER_TITLES, wire_api_for
 from flux.core.agent_runtime.platforms import secure_file, signal_group_graceful
 from flux.core.agent_runtime.protocol import build_runtime_env
 from flux.core.agent_runtime.runtimes.base import (
@@ -241,6 +242,7 @@ class CliRuntime:
         agent: Any,
         run_id: str,
         instruction: str,
+        channel: Any = None,
     ) -> RuntimeLaunch:
         agent_id = getattr(agent, "id_str", None)
         if not agent_id:
@@ -259,7 +261,7 @@ class CliRuntime:
                 os.chmod(run_dir, 0o700)
             token_id, token_raw = await self._issue_token(agent_id, run_id)
             runtime_env = self._write_runtime_config(
-                run_dir, token_raw, run_id, model=model_override
+                run_dir, token_raw, run_id, model=model_override, channel=channel
             )
         except Exception:
             await self._revoke(token_id)
@@ -295,6 +297,7 @@ class CliRuntime:
             run_dir=run_dir,
             argv=argv,
             token_id=token_id,
+            channel=channel,
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
@@ -394,7 +397,13 @@ class CliRuntime:
         return str(token.id), raw
 
     def _write_runtime_config(
-        self, run_dir: Path, token_raw: str | None, run_id: str, *, model: str = ""
+        self,
+        run_dir: Path,
+        token_raw: str | None,
+        run_id: str,
+        *,
+        model: str = "",
+        channel: Any = None,
     ) -> dict[str, str]:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
@@ -404,15 +413,34 @@ class CliRuntime:
             home.mkdir(parents=True, exist_ok=True)
             config = home / "config.toml"
             config.write_text(
-                _codex_config(url, token_raw, settings=self._settings, run_id=run_id, model=model),
+                _codex_config(
+                    url,
+                    token_raw,
+                    settings=self._settings,
+                    run_id=run_id,
+                    model=model,
+                    channel=channel,
+                ),
                 encoding="utf-8",
             )
             self._secure(config)
-            return {"CODEX_HOME": str(home)}
+            env = {"CODEX_HOME": str(home)}
+            if channel is not None:
+                # 密钥只进子进程环境：config.toml 里只写 env_key 变量名
+                env["FLUX_MODEL_API_KEY"] = channel.api_key
+            return env
         config = run_dir / "opencode.json"
-        config.write_text(_opencode_config(url, token_raw, run_id, model=model), encoding="utf-8")
+        config.write_text(
+            _opencode_config(url, token_raw, run_id, model=model), encoding="utf-8"
+        )
         self._secure(config)
-        return {"OPENCODE_CONFIG": str(config)}
+        env = {"OPENCODE_CONFIG": str(config)}
+        if channel is not None:
+            # 含密钥的完整配置只经环境变量交给本次 Run，不落盘；文件里的 MCP 配置仍保留
+            env["OPENCODE_CONFIG_CONTENT"] = _opencode_config(
+                url, token_raw, run_id, model=model, channel=channel
+            )
+        return env
 
     def _secure(self, path: Path) -> None:
         # 平台原语：POSIX chmod 0600 / Windows icacls 收权；失败如实记 warning，不静默降级
@@ -724,15 +752,24 @@ def _text_of(data: dict[str, Any]) -> str:
 
 
 def _codex_config(
-    url: str, token: str | None, *, settings: Settings, run_id: str = "", model: str = ""
+    url: str,
+    token: str | None,
+    *,
+    settings: Settings,
+    run_id: str = "",
+    model: str = "",
+    channel: Any = None,
 ) -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
 
     隔离 CODEX_HOME 里没有用户的 auth.json，codex 会判定「未登录」；所以模型通道必须自带
     凭据来源：第三方供应商写 [model_providers.<name>]（只写 env_key 环境变量名，密钥不落盘）。
+
+    `channel` 非空时走密钥库通道：provider 块由该条 key 的 base_url / wire_api 生成，
+    env_key 指向 `FLUX_MODEL_API_KEY`（真实值由启动环境注入，不写进本文件）。
     """
     lines = ["# Flux 自动生成：为本次 Run 注入 Flux MCP（含一次性令牌，权限 0600）。"]
-    lines += _codex_provider_lines(settings, model=model)
+    lines += _codex_provider_lines(settings, model=model, channel=channel)
     if token is not None:
         lines += [
             "[mcp_servers.flux]",
@@ -747,11 +784,16 @@ def _codex_config(
     return "\n".join(lines)
 
 
-def _codex_provider_lines(settings: Settings, *, model: str = "") -> list[str]:
+def _codex_provider_lines(
+    settings: Settings, *, model: str = "", channel: Any = None
+) -> list[str]:
     """codex 的模型通道：openai（内置供应商）不写，第三方供应商写一块 model_providers。
 
     `model` 是任务级覆盖；留空用 `FLUX_CODEX_MODEL`，再留空用 codex 自带默认。
+    `channel` 非空时由密钥库条目决定 base_url / wire_api / env_key。
     """
+    if channel is not None:
+        return _codex_channel_lines(channel, model=model)
     provider = (settings.codex_provider or "").strip().lower()
     configured_model = (model or settings.codex_model or "").strip()
     catalog = (settings.codex_model_catalog or "").strip()
@@ -793,7 +835,54 @@ def _codex_provider_lines(settings: Settings, *, model: str = "") -> list[str]:
     return lines
 
 
-def _opencode_config(url: str, token: str | None, run_id: str = "", model: str = "") -> str:
+def _codex_channel_lines(channel: Any, *, model: str) -> list[str]:
+    """密钥库通道的 codex provider 块：base_url / wire_api 来自该条 key。"""
+    provider = str(getattr(channel, "provider", "") or "").strip().lower()
+    if provider not in ("deepseek", "openai", "openai_compatible"):
+        raise ConfigurationError(
+            f"codex 不支持该供应商协议的密钥：{provider}",
+            details={"provider": provider, "known": ["deepseek", "openai", "openai_compatible"]},
+        )
+    configured_model = (model or "").strip()
+    if not configured_model:
+        raise ConfigurationError(
+            "使用密钥库模型时必须在任务上指定模型 id",
+            details={"key_id": getattr(channel, "key_id", "")},
+        )
+    provider_id = _key_provider_id(channel)
+    label = str(getattr(channel, "label", "") or "") or PROVIDER_TITLES.get(provider, provider)
+    base_url = str(getattr(channel, "base_url", "") or "").strip()
+    wire_api = wire_api_for(provider, str(getattr(channel, "wire_api", "") or ""))
+    lines = [f'model = "{configured_model}"', f'model_provider = "{provider_id}"']
+    if provider == "deepseek":
+        # DeepSeek 没有 codex 内置的联网搜索工具，留着会把请求打回 400
+        lines += ['web_search = "disabled"']
+    lines += [
+        "",
+        f"[model_providers.{provider_id}]",
+        f"name = {json.dumps(label, ensure_ascii=False)}",
+        f"base_url = {json.dumps(base_url, ensure_ascii=False)}",
+        f'wire_api = "{wire_api}"',
+        # 只写变量名；真实密钥由 Flux 注入子进程环境，不落盘
+        'env_key = "FLUX_MODEL_API_KEY"',
+        "",
+    ]
+    return lines
+
+
+def _key_provider_id(channel: Any) -> str:
+    """密钥库 provider 的唯一标识：codex/opencode 的 provider 块名。"""
+    key_id = str(getattr(channel, "key_id", "") or "").replace("-", "")
+    return f"fluxkey{key_id[:8] or 'run'}"
+
+
+def _opencode_config(
+    url: str,
+    token: str | None,
+    run_id: str = "",
+    model: str = "",
+    channel: Any = None,
+) -> str:
     """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
 
     `X-Flux-Run-Id` 把这条 MCP 连接绑到本次 Run：context 摄入、失败步记录、
@@ -802,9 +891,34 @@ def _opencode_config(url: str, token: str | None, run_id: str = "", model: str =
 
     `model` 是任务级覆盖：写进这份按 Run 隔离的配置，只影响本 Run，
     不改用户的全局 OpenCode 默认模型（实测 1.18.29 会与全局配置合并）。
+    `channel` 非空时追加密钥库 provider 块；这份配置只经 `OPENCODE_CONFIG_CONTENT`
+    环境变量交给子进程，不写盘（文件版只保留 MCP）。
     """
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
-    if model:
+    if channel is not None:
+        provider = str(getattr(channel, "provider", "") or "").strip().lower()
+        configured_model = (model or "").strip()
+        if not configured_model:
+            raise ConfigurationError(
+                "使用密钥库模型时必须在任务上指定模型 id",
+                details={"key_id": getattr(channel, "key_id", "")},
+            )
+        provider_id = _key_provider_id(channel)
+        npm = "@ai-sdk/anthropic" if provider == "anthropic" else "@ai-sdk/openai-compatible"
+        payload["provider"] = {
+            provider_id: {
+                "npm": npm,
+                "name": str(getattr(channel, "label", "") or "")
+                or PROVIDER_TITLES.get(provider, provider),
+                "options": {
+                    "baseURL": str(getattr(channel, "base_url", "") or ""),
+                    "apiKey": str(getattr(channel, "api_key", "") or ""),
+                },
+                "models": {configured_model: {"name": configured_model}},
+            }
+        }
+        payload["model"] = f"{provider_id}/{configured_model}"
+    elif model:
         payload["model"] = model
     if token is not None:
         payload["mcp"] = {

@@ -34,6 +34,13 @@ function isRunOk(run: DshRun): boolean {
   return String(run.status).toLowerCase() === "completed";
 }
 
+/** 模型下拉的一项：value 编码 keyId::model（原生模型只有 model）。 */
+interface ModelChoice {
+  value: string;
+  label: string;
+  keyId: string | null;
+}
+
 /** 这次 Run 要展示的文本：优先终态总结，其次累积的助手片段，最后才是错误原因 */
 function runText(run: DshRun): string {
   if (run.final_response.trim()) return run.final_response.trim();
@@ -114,6 +121,57 @@ export function AgentChatPanel({
   onRunStartRef.current = onRunStart;
 
   const dshReady = Boolean(dsh?.enabled);
+  const [modelChoices, setModelChoices] = useState<ModelChoice[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(
+    () => window.localStorage.getItem(`${storageKey}.model`) ?? "",
+  );
+
+  /* 可用模型 = dsh 原生模型 + 密钥库中 DeepSeek 协议的模型 */
+  useEffect(() => {
+    if (!dshReady) {
+      setModelChoices([]);
+      return;
+    }
+    let alive = true;
+    void api
+      .getDshModels()
+      .then((data) => {
+        if (!alive) return;
+        setModelChoices([
+          ...data.models.map((model) => ({ value: model, label: model, keyId: null })),
+          ...data.key_models.map((item) => ({
+            value: `${item.key_id}::${item.model}`,
+            label: `${item.model} · ${item.key_name}`,
+            keyId: item.key_id,
+          })),
+        ]);
+      })
+      .catch(() => {
+        if (alive) setModelChoices([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [dshReady]);
+
+  /* 切换命名空间：模型选择也按会话恢复 */
+  useEffect(() => {
+    setSelectedModel(window.localStorage.getItem(`${storageKey}.model`) ?? "");
+  }, [storageKey]);
+
+  /* 选中的 key/模型被删除或停用后，回落到默认 */
+  useEffect(() => {
+    if (!selectedModel || modelChoices.length === 0) return;
+    if (!modelChoices.some((choice) => choice.value === selectedModel)) {
+      setSelectedModel("");
+      window.localStorage.removeItem(`${storageKey}.model`);
+    }
+  }, [modelChoices, selectedModel, storageKey]);
+
+  const selectedLabel = modelChoices.find((choice) => choice.value === selectedModel)?.label;
+  const selectedFromVault = Boolean(
+    modelChoices.find((choice) => choice.value === selectedModel)?.keyId,
+  );
 
   /* 切换命名空间：读回该会话的对话与上次会话 id（复用即同一会话） */
   useEffect(() => {
@@ -156,7 +214,16 @@ export function AgentChatPanel({
     setBusy(true);
     onRunStartRef.current?.();
     try {
-      const run = await api.startDshRun(text, sessionRef.current || undefined, agentId);
+      const [keyId, model] = selectedModel.includes("::")
+        ? selectedModel.split("::", 2)
+        : [null, selectedModel];
+      const run = await api.startDshRun(
+        text,
+        sessionRef.current || undefined,
+        agentId,
+        model || undefined,
+        keyId || null,
+      );
       sessionRef.current = run.session_id;
       window.localStorage.setItem(`${storageKey}.session`, run.session_id);
       setRunId(run.run_id);
@@ -173,7 +240,7 @@ export function AgentChatPanel({
         ),
       );
     }
-  }, [draft, busy, dshReady, agentId, storageKey]);
+  }, [draft, busy, dshReady, agentId, storageKey, selectedModel]);
 
   /** 停止当前 Run（后端会先把进程树清干净再返回） */
   const stop = useCallback(async () => {
@@ -255,11 +322,36 @@ export function AgentChatPanel({
         </div>
       ) : null}
 
+      {dshReady && modelChoices.length > 0 ? (
+        <div className="agent-pick">
+          <span className="ap-label">模型</span>
+          <select
+            className="ap-select"
+            value={selectedModel}
+            disabled={busy}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSelectedModel(value);
+              if (value) window.localStorage.setItem(`${storageKey}.model`, value);
+              else window.localStorage.removeItem(`${storageKey}.model`);
+            }}
+          >
+            <option value="">
+              默认（{dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "运行时默认"}）
+            </option>
+            {modelChoices.map((choice) => (
+              <option key={choice.value} value={choice.value}>{choice.label}</option>
+            ))}
+          </select>
+          <span className="ap-model">{selectedFromVault ? "来自密钥库" : "原生模型"}</span>
+        </div>
+      ) : null}
+
       <div className="ag-chat" ref={scrollRef}>
         <div className="ag-chat-head">
           <span>增量改码</span>
           <span className="ag-chat-sub">
-            {dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "DSH 运行时未启用"}
+            {selectedLabel ?? (dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "DSH 运行时未启用")}
           </span>
           {turns.length > 0 ? (
             <button type="button" className="link" onClick={clear}>
