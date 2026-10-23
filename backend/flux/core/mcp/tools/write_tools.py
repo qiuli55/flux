@@ -49,10 +49,39 @@ PROPOSAL_CREATE_SCHEMA: dict[str, Any] = {
 }
 
 
+async def _run_scope(ctx: ToolContext) -> tuple[str | None, str | None]:
+    """提案没写 task/project 时，从发起它的 Run 找回归属（task_id, project_id）。
+
+    模型常常只传 payload（2026-10-23 基准 T02 实测），提案落成 task_id=None：人审队列
+    看不出它属于哪个任务，Apply 后的 Brain 沉淀也无处可写。Run 本身记着 task_id，
+    由服务端补上比让模型猜 UUID 可靠。
+    """
+    run_id = getattr(ctx.identity, "run_id", None)
+    if not run_id:
+        return None, None
+    run = await ctx.container.run_repo.get(run_id)
+    if run is None or run.task_id is None:
+        return None, None
+    task_id = str(run.task_id)
+    try:
+        task = await ctx.container.task_repo.get(run.task_id)
+    except NotFoundError:
+        # Run 记着已不存在的任务：保留 task_id（审计仍可见归属），项目只能留空
+        return task_id, None
+    return task_id, str(task.project_id) if task.project_id else None
+
+
 async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"payload", "task_id", "project_id", "agent_id"})
     _reject_impersonation(ctx, optional_str(params, "agent_id"))
     change_set = parse_code_change_set(_as_text(params.get("payload")), source="proposal.create")
+
+    task_id = optional_str(params, "task_id")
+    project_id = optional_str(params, "project_id")
+    if task_id is None or project_id is None:
+        run_task, run_project = await _run_scope(ctx)
+        task_id = task_id or run_task
+        project_id = project_id or run_project
 
     originals: dict[str, str | None] = {}
     for change in change_set.changes:
@@ -60,8 +89,8 @@ async def proposal_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str,
 
     created = await ctx.container.workspace.propose_changes(
         change_set,
-        project_id=optional_str(params, "project_id"),
-        task_id=optional_str(params, "task_id"),
+        project_id=project_id,
+        task_id=task_id,
         # 服务端盖章：提案归属只看令牌，不看请求体
         agent_source=ctx.identity.agent_id,
         original_files=originals,
