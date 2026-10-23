@@ -107,6 +107,7 @@ fun FluxV2Root() {
     val chatMessages = remember { mutableStateListOf<V2Message>() }
 
     var settingsOpen by remember { mutableStateOf(false) }
+    var keyVaultOpen by remember { mutableStateOf(false) }
     var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
     var groupDetail by remember { mutableStateOf<V2Group?>(null) }
@@ -173,12 +174,14 @@ fun FluxV2Root() {
         } else {
             device
         }
+        val firstModel = option.models.firstOrNull()
         chat = V2ChatState(
             conversationId = null,
             title = "新的对话",
             device = chatDevice,
             agentId = option.agent.id,
-            model = option.models.firstOrNull() ?: V2Registry.models.firstOrNull() ?: "默认模型",
+            model = firstModel?.model ?: V2Registry.models.firstOrNull() ?: "",
+            modelKeyId = firstModel?.keyId,
         )
         chatMessages.clear()
         chatMessages.add(
@@ -195,7 +198,13 @@ fun FluxV2Root() {
     fun sendDraftMessage(text: String) {
         val current = chat ?: return
         chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
-        vm.createTask(text, current.agentId, current.decisionMode) { taskId ->
+        vm.createTask(
+            text,
+            current.agentId,
+            current.decisionMode,
+            current.model,
+            current.modelKeyId,
+        ) { taskId ->
             chat = current.copy(conversationId = taskId, title = text.take(40))
             chatMessages.clear()
             chatOrigin = V2Route.Home
@@ -212,7 +221,7 @@ fun FluxV2Root() {
         }
     }
 
-    val hasBack = confirmDecision != null || settingsOpen || logsOpen || newChatOpen ||
+    val hasBack = confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
         groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home
 
     BackHandler(enabled = hasBack) {
@@ -222,6 +231,7 @@ fun FluxV2Root() {
             agentPickerOpen -> agentPickerOpen = false
             groupDetail != null -> groupDetail = null
             newChatOpen -> newChatOpen = false
+            keyVaultOpen -> keyVaultOpen = false
             logsOpen -> logsOpen = false
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
@@ -516,6 +526,11 @@ fun FluxV2Root() {
                                 settingsOpen = false
                                 route = V2Route.Terminals
                             },
+                            onOpenKeyVault = {
+                                settingsOpen = false
+                                keyVaultOpen = true
+                                vm.loadKeys()
+                            },
                             onManualConnect = {
                                 settingsOpen = false
                                 manualConnectOpen = true
@@ -525,6 +540,32 @@ fun FluxV2Root() {
                                 vm.logout()
                             },
                             onDismiss = { settingsOpen = false },
+                        )
+                    }
+
+                    if (keyVaultOpen) {
+                        KeyVaultSheet(
+                            keys = app.keys,
+                            loading = app.keysLoading,
+                            onRefresh = { vm.loadKeys() },
+                            onSave = { draft, onResult ->
+                                vm.saveKey(
+                                    keyId = draft.keyId,
+                                    name = draft.name,
+                                    provider = draft.provider,
+                                    baseUrl = draft.baseUrl,
+                                    apiKey = draft.apiKey.takeIf { it.isNotBlank() },
+                                    models = draft.models,
+                                    wireApi = draft.wireApi,
+                                    enabled = draft.enabled,
+                                    onResult = onResult,
+                                )
+                            },
+                            onToggle = { entry, value, onResult ->
+                                vm.setKeyEnabled(entry.id, value, onResult)
+                            },
+                            onDelete = { entry, onResult -> vm.deleteKey(entry.id, onResult) },
+                            onDismiss = { keyVaultOpen = false },
                         )
                     }
 
@@ -575,7 +616,11 @@ fun FluxV2Root() {
                             chat = currentChat,
                             options = agentsForDevice(currentChat.device),
                             onPick = { agentId, model ->
-                                chat = currentChat.copy(agentId = agentId, model = model)
+                                chat = currentChat.copy(
+                                    agentId = agentId,
+                                    model = model.model,
+                                    modelKeyId = model.keyId,
+                                )
                                 agentPickerOpen = false
                             },
                             onDismiss = { agentPickerOpen = false },

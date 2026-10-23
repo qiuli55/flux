@@ -13,6 +13,7 @@ from typing import Any
 from flux.core.agent_runtime.runtimes.base import (
     EVENT_FINAL,
     RUNTIME_DSH,
+    ModelChannel,
     RuntimeEvent,
     RuntimeLaunch,
     RuntimeProcess,
@@ -36,6 +37,7 @@ class DshRuntime:
         agent: Any,
         run_id: str,
         instruction: str,
+        channel: ModelChannel | None = None,
     ) -> RuntimeLaunch:
         return RuntimeLaunch(
             runtime_id=self.runtime_id,
@@ -46,6 +48,7 @@ class DshRuntime:
             task_id=str(getattr(task, "id", "")) or None,
             agent_id=getattr(agent, "id_str", None),
             model=str(getattr(task, "model", "") or ""),
+            channel=channel,
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
@@ -55,6 +58,7 @@ class DshRuntime:
             run_id=launch.run_id,
             task_id=launch.task_id,
             model=launch.model or None,
+            channel=launch.channel,
         )
         return RuntimeProcess(
             runtime_id=self.runtime_id,

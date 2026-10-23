@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -76,6 +77,46 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<List<FluxTask>>?> ListTasksAsync(int limit = 50, CancellationToken ct = default)
         => GetAsync<List<FluxTask>>($"/api/v1/tasks?limit={limit}", ct);
 
+    // --- 密钥库（API Key Vault）---
+
+    public Task<ApiEnvelope<List<ApiKeyEntry>>?> ListApiKeysAsync(CancellationToken ct = default)
+        => GetAsync<List<ApiKeyEntry>>("/api/v1/keys", ct);
+
+    public Task<ApiEnvelope<ApiKeyEntry>?> CreateApiKeyAsync(
+        string name,
+        string provider,
+        string baseUrl,
+        string apiKey,
+        string[] models,
+        string wireApi,
+        bool enabled,
+        CancellationToken ct = default)
+        => PostAsync<ApiKeyEntry>("/api/v1/keys", new
+        {
+            name,
+            provider,
+            base_url = NormalizeUrl(baseUrl),
+            api_key = apiKey,
+            models,
+            wire_api = wireApi ?? "",
+            enabled,
+        }, ct);
+
+    public Task<ApiEnvelope<ApiKeyEntry>?> UpdateApiKeyAsync(
+        string keyId,
+        object body,
+        CancellationToken ct = default)
+        => SendAsync<ApiKeyEntry>(HttpMethod.Patch, $"/api/v1/keys/{Uri.EscapeDataString(keyId)}", body, ct);
+
+    public Task<ApiEnvelope<ApiKeyDeleteResult>?> DeleteApiKeyAsync(
+        string keyId,
+        CancellationToken ct = default)
+        => SendAsync<ApiKeyDeleteResult>(
+            HttpMethod.Delete,
+            $"/api/v1/keys/{Uri.EscapeDataString(keyId)}",
+            null,
+            ct);
+
     public Task<ApiEnvelope<CloudSession>?> GetCloudSessionAsync(CancellationToken ct = default)
         => GetAsync<CloudSession>("/api/v1/cloud/session", ct);
 
@@ -97,6 +138,37 @@ public sealed class FluxApiClient : IDisposable
             // 登出即使失败也继续把前端状态切回未登录
         }
     }
+
+    private async Task<ApiEnvelope<T>?> SendAsync<T>(
+        HttpMethod method,
+        string path,
+        object? payload,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(method, path);
+            if (payload is not null)
+            {
+                request.Content = new StringContent(
+                    JsonSerializer.Serialize(payload, JsonOptions),
+                    Encoding.UTF8,
+                    "application/json");
+            }
+            using var res = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"{method} {path} -> {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Base URL 去掉空白与末尾斜杠；留空表示用供应商默认地址。</summary>
+    private static string NormalizeUrl(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "" : value.Trim().TrimEnd('/');
 
     private async Task<ApiEnvelope<T>?> GetAsync<T>(string path, CancellationToken ct)
     {

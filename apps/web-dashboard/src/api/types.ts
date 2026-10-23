@@ -237,6 +237,21 @@ export interface AgentSpec {
   permissions: string[];
   /** 执行该 Agent 的 runtime：dsh（内置，缺省）/ codex / opencode（P2-1 §6.2） */
   runtime?: string;
+  /** 该 runtime 的原生可选模型 */
+  models?: string[];
+  /** 未设置任务级覆盖时该 runtime 会用的默认模型 */
+  model?: string;
+  /** 密钥库中该 runtime 可用的模型 */
+  key_models?: KeyModelOption[];
+}
+
+/** 密钥库中一个可用模型（GET /agents 的 spec.key_models） */
+export interface KeyModelOption {
+  key_id: string;
+  key_name: string;
+  provider: string;
+  provider_title: string;
+  model: string;
 }
 
 /** GET /api/v1/agents 返回的 Agent 句柄 */
@@ -360,6 +375,51 @@ export interface Task {
   pending_decision: DecisionRecord | null;
   /** 该任务触发的 DSH Run；未开始执行为 null */
   run_id: string | null;
+  /** 任务级模型覆盖；null = 用所属 Agent 的默认模型 */
+  model?: string | null;
+  /** 任务级模型来自哪条 key 库条目；null = 原生模型 */
+  api_key_id?: string | null;
+}
+
+/** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
+export interface ApiKeyEntry {
+  id: string;
+  name: string;
+  provider: string;
+  base_url: string;
+  wire_api: string;
+  models: string[];
+  key_hint: string;
+  enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ApiKeyCreateRequest {
+  name: string;
+  provider: "deepseek" | "openai" | "openai_compatible" | "anthropic";
+  base_url?: string;
+  api_key: string;
+  models: string[];
+  wire_api?: string;
+  enabled?: boolean;
+}
+
+export interface ApiKeyUpdateRequest {
+  name?: string;
+  provider?: "deepseek" | "openai" | "openai_compatible" | "anthropic";
+  base_url?: string;
+  api_key?: string;
+  models?: string[];
+  wire_api?: string;
+  enabled?: boolean;
+}
+
+/** GET /api/v1/dsh/models：dsh 的原生模型 + 密钥库中 DeepSeek 协议的模型 */
+export interface DshModels {
+  models: string[];
+  model: string;
+  key_models: KeyModelOption[];
 }
 
 /** 助手回复里落库的结构化负载（模型元信息 / 待补充问题 / 需求确认 / 执行计划） */

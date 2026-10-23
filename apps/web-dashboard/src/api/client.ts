@@ -12,9 +12,10 @@
 import { getAccessToken, getAuth, refreshAuth } from "./auth";
 import { API_BASE } from "./base";
 import type {
-  AgentCreateRequest, AgentHandle, ApplyBatch, CapabilityImportOutcome, CapabilityKind,
+  AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
+  ApiKeyUpdateRequest, CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
-  DecisionOutcome, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
+  DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
   TerminalEvent, TerminalSession,
@@ -171,12 +172,15 @@ export const api = {
   dshStatus: () => getData<DshStatus>("GET", "/dsh/status"),
   /** 起一次 DSH Run：instruction 必填；session_id 复用即同一会话（留空由后端生成）；
    *  agent_id 指定执行者（留空 = 内置 DSH） */
-  startDshRun: (instruction: string, sessionId?: string, agentId?: string | null) =>
+  startDshRun: (instruction: string, sessionId?: string, agentId?: string | null, model?: string, keyId?: string | null) =>
     getData<DshRun>("POST", "/dsh/runs", {
       instruction,
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(agentId ? { agent_id: agentId } : {}),
+      ...(model ? { model } : {}),
+      ...(keyId ? { key_id: keyId } : {}),
     }),
+  getDshModels: () => getData<DshModels>("GET", "/dsh/models"),
   getDshRun: (runId: string) => getData<DshRun>("GET", `/dsh/runs/${encodeURIComponent(runId)}`),
   listDshRuns: () => getData<DshRun[]>("GET", "/dsh/runs"),
   interruptDshRun: (runId: string) =>
@@ -201,6 +205,13 @@ export const api = {
   updateTaskConfirmation: (taskId: string, items: ConfirmationItem[]) =>
     getData<TaskConfirmationOutcome>("PUT", `/tasks/${taskId}/confirmation`, { items }),
   cancelTask: (taskId: string) => getData<Task>("POST", `/tasks/${taskId}/cancel`),
+  /** 密钥库：列表只含掩码与元数据，明文只进 create/update 的请求体 */
+  listApiKeys: () => getData<ApiKeyEntry[]>("GET", "/keys"),
+  createApiKey: (body: ApiKeyCreateRequest) => getData<ApiKeyEntry>("POST", "/keys", body),
+  updateApiKey: (keyId: string, body: ApiKeyUpdateRequest) =>
+    getData<ApiKeyEntry>("PATCH", `/keys/${encodeURIComponent(keyId)}`, body),
+  deleteApiKey: (keyId: string) =>
+    getData<{ deleted: boolean; key_id: string }>("DELETE", `/keys/${encodeURIComponent(keyId)}`),
   chooseDecision: (
     taskId: string,
     body: { decision_id: string; action: "choose" | "reject"; option?: string; note?: string },

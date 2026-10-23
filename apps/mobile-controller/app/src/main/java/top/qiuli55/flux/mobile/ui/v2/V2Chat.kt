@@ -63,6 +63,8 @@ data class V2ChatState(
     val device: String,
     val agentId: String,
     val model: String,
+    /** 模型来自哪条 key 库条目；null = 原生模型。 */
+    val modelKeyId: String? = null,
     /** 新建任务时的决策方式：auto = AI 自己定，manual = 停下来问我。 */
     val decisionMode: String = "auto",
 )
@@ -96,10 +98,14 @@ fun V2ChatScreen(
     agentOptions: List<V2AgentOption> = emptyList(),
     onSwitchAgent: (String) -> Unit = {},
     /** 当前 Agent 支持的模型；非空时 Agent 名下提供模型下拉。 */
-    modelOptions: List<String> = emptyList(),
-    onSwitchModel: (String) -> Unit = {},
+    modelOptions: List<V2ModelOption> = emptyList(),
+    onSwitchModel: (V2ModelOption) -> Unit = {},
 ) {
     val agent = demoAgent(chat.agentId)
+    val currentModelOption = modelOptions.firstOrNull {
+        it.model == chat.model && it.keyId == chat.modelKeyId
+    }
+    val currentModelLabel = currentModelOption?.label ?: chat.model.ifBlank { "默认模型" }
     val listState = rememberLazyListState()
     var input by remember(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
@@ -176,7 +182,7 @@ fun V2ChatScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Label(
-                                        chat.model.ifBlank { "默认模型" },
+                                        currentModelLabel,
                                         8.5f,
                                         V2Colors.cyan800,
                                         mono = true,
@@ -219,7 +225,7 @@ fun V2ChatScreen(
                                     Spacer(Modifier.height(2.dp))
                                     Label(
                                         option.models.firstOrNull()
-                                            ?.let { "${option.agent.role} · $it" }
+                                            ?.let { "${option.agent.role} · ${it.label}" }
                                             ?: option.agent.role,
                                         9.5f,
                                         V2Colors.ink(.40f),
@@ -240,12 +246,12 @@ fun V2ChatScreen(
                     onDismissRequest = { modelMenuOpen = false },
                     modifier = Modifier.background(Color.White),
                 ) {
-                    modelOptions.forEach { model ->
-                        val selected = model == chat.model
+                    modelOptions.forEach { option ->
+                        val selected = option.model == chat.model && option.keyId == chat.modelKeyId
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Label(model, 12f, V2Colors.ink(.88f), mono = true)
+                                    Label(option.label, 12f, V2Colors.ink(.88f), mono = true)
                                     if (selected) {
                                         Spacer(Modifier.width(6.dp))
                                         Icon(
@@ -259,7 +265,7 @@ fun V2ChatScreen(
                             },
                             onClick = {
                                 modelMenuOpen = false
-                                if (!selected) onSwitchModel(model)
+                                if (!selected) onSwitchModel(option)
                             },
                         )
                     }

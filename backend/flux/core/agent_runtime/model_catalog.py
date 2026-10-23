@@ -1,26 +1,113 @@
-"""Agent 可用模型目录（移动端对话页切换模型用）。
+"""Agent 可用模型目录（对话页切换模型 / key 库模型选择用）。
 
-模型的权威来源是各 runtime 自己的配置，Flux 不臆造模型 id：
+模型的权威来源分两类：
 
-- `dsh`：内置 Runtime 只有一个配置项（`FLUX_DSH_MODEL`），列表即它自己；
-- `codex`：若配置了 `FLUX_CODEX_MODEL_CATALOG`（codex 的 model_catalog_json），
-  从该文件读 `models[].slug`；否则退回 `FLUX_CODEX_MODEL`；
-- 其它 runtime：空列表（前端只显示当前模型，不提供切换）。
+1. 各 runtime 自己的原生配置，Flux 不臆造模型 id：
+   - `dsh`：内置 Runtime 只有一个配置项（`FLUX_DSH_MODEL`），列表即它自己；
+   - `codex`：若配置了 `FLUX_CODEX_MODEL_CATALOG`（codex 的 model_catalog_json），
+     从该文件读 `models[].slug`；否则退回 `FLUX_CODEX_MODEL`；
+   - 其它 runtime：空列表（前端只显示当前模型，不提供切换）。
+2. 密钥库（`api_keys`）里登记的 key + 模型；按 runtime 的协议兼容性过滤。
 
-`POST /tasks/{id}/model` 用同一份目录做校验，避免"前端能选、后端跑不了"。
+`POST /tasks/{id}/model`、`POST /tasks` 与 `POST /dsh/runs` 都用同一份目录做校验，
+避免"前端能选、后端跑不了"。
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from flux.config import Settings
 from flux.core.agent_runtime.runtimes.base import (
     DEFAULT_RUNTIME,
     RUNTIME_CODEX,
     RUNTIME_DSH,
+    RUNTIME_OPENCODE,
 )
+
+#: 密钥库允许的供应商类型（写库/校验用）
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_OPENAI = "openai"
+PROVIDER_OPENAI_COMPATIBLE = "openai_compatible"
+PROVIDER_ANTHROPIC = "anthropic"
+KEY_PROVIDERS: tuple[str, ...] = (
+    PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    PROVIDER_OPENAI_COMPATIBLE,
+    PROVIDER_ANTHROPIC,
+)
+
+PROVIDER_TITLES: dict[str, str] = {
+    PROVIDER_DEEPSEEK: "DeepSeek",
+    PROVIDER_OPENAI: "OpenAI",
+    PROVIDER_OPENAI_COMPATIBLE: "OpenAI 兼容",
+    PROVIDER_ANTHROPIC: "Anthropic",
+}
+
+#: 各 runtime 能吃哪些供应商协议的 key。协议层不兼容的一律不展示、不接收。
+_RUNTIME_PROVIDERS: dict[str, frozenset[str]] = {
+    # dsh 的模型通道是 DeepSeekHarness（DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY）
+    RUNTIME_DSH: frozenset({PROVIDER_DEEPSEEK}),
+    # codex 的第三方供应商块只讲 OpenAI wire api（responses / chat）
+    RUNTIME_CODEX: frozenset(
+        {PROVIDER_DEEPSEEK, PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE}
+    ),
+    # opencode 原生支持多家供应商
+    RUNTIME_OPENCODE: frozenset(KEY_PROVIDERS),
+}
+
+#: dsh 内部 provider 标识：只有 DeepSeek 官方协议走这个入口
+_DSH_PROVIDER_BY_KEY_PROVIDER = {PROVIDER_DEEPSEEK: "deepseek-official"}
+
+
+@dataclass(frozen=True, slots=True)
+class KeyEntry:
+    """密钥库里一条 key 的安全投影（不含明文/密文）。"""
+
+    id: str
+    name: str
+    provider: str
+    base_url: str
+    wire_api: str
+    models: tuple[str, ...]
+    key_hint: str
+    enabled: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "provider": self.provider,
+            "provider_title": PROVIDER_TITLES.get(self.provider, self.provider),
+            "base_url": self.base_url,
+            "wire_api": self.wire_api,
+            "models": list(self.models),
+            "key_hint": self.key_hint,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class KeyModelOption:
+    """key 库中一个可选模型（供前端/校验使用）。"""
+
+    key_id: str
+    key_name: str
+    provider: str
+    model: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key_id": self.key_id,
+            "key_name": self.key_name,
+            "provider": self.provider,
+            "provider_title": PROVIDER_TITLES.get(self.provider, self.provider),
+            "model": self.model,
+        }
 
 
 def _catalog_slugs(raw_path: str) -> list[str]:
@@ -46,7 +133,7 @@ def _catalog_slugs(raw_path: str) -> list[str]:
 
 
 def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
-    """该 runtime 支持的模型 id 列表（顺序即展示顺序，第一项是默认值）。"""
+    """该 runtime 支持的原生模型 id 列表（顺序即展示顺序，第一项是默认值）。"""
     name = (runtime or DEFAULT_RUNTIME).strip().lower()
     if name == RUNTIME_DSH:
         model = (settings.dsh_model or "").strip()
@@ -57,6 +144,9 @@ def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
         if configured:
             return [configured, *(m for m in catalog if m != configured)]
         return catalog
+    if name == RUNTIME_OPENCODE:
+        # opencode 的默认模型来自用户全局配置，Flux 不覆盖；仅任务级覆盖时可写。
+        return []
     return []
 
 
@@ -74,4 +164,77 @@ def default_model_for_runtime(settings: Settings, runtime: str | None) -> str:
     return ""
 
 
-__all__ = ["default_model_for_runtime", "models_for_runtime"]
+def supports_provider(runtime: str | None, provider: str) -> bool:
+    """该 runtime 的协议层能否使用这个供应商的 key。"""
+    name = (runtime or DEFAULT_RUNTIME).strip().lower()
+    return provider in _RUNTIME_PROVIDERS.get(name, frozenset())
+
+
+def dsh_provider_for(provider: str) -> str:
+    """key 库供应商 → dsh 内部 provider 标识；不支持时返回空串。"""
+    return _DSH_PROVIDER_BY_KEY_PROVIDER.get(provider, "")
+
+
+def default_base_url(settings: Settings, provider: str) -> str:
+    """key 未填 Base URL 时的默认地址（兼容端点必须自己填）。"""
+    if provider == PROVIDER_DEEPSEEK:
+        return (settings.deepseek_base_url or "").strip()
+    if provider == PROVIDER_OPENAI:
+        return (settings.openai_base_url or "").strip()
+    if provider == PROVIDER_ANTHROPIC:
+        return (settings.anthropic_base_url or "").strip()
+    return ""
+
+
+def wire_api_for(provider: str, configured: str = "") -> str:
+    """codex 供应商块的 wire_api：显式配置优先，否则按供应商推导。"""
+    value = (configured or "").strip().lower()
+    if value in ("chat", "responses"):
+        return value
+    if provider == PROVIDER_OPENAI_COMPATIBLE:
+        return "chat"
+    return "responses"
+
+
+def vault_models_for_runtime(
+    entries: Iterable[KeyEntry],
+    runtime: str | None,
+    *,
+    enabled_only: bool = True,
+) -> list[KeyModelOption]:
+    """把密钥库条目摊平成该 runtime 可选的模型列表（供应商协议不兼容的跳过）。"""
+    options: list[KeyModelOption] = []
+    for entry in entries:
+        if enabled_only and not entry.enabled:
+            continue
+        if not supports_provider(runtime, entry.provider):
+            continue
+        for model in entry.models:
+            options.append(
+                KeyModelOption(
+                    key_id=entry.id,
+                    key_name=entry.name,
+                    provider=entry.provider,
+                    model=model,
+                )
+            )
+    return options
+
+
+__all__ = [
+    "KEY_PROVIDERS",
+    "PROVIDER_ANTHROPIC",
+    "PROVIDER_DEEPSEEK",
+    "PROVIDER_OPENAI",
+    "PROVIDER_OPENAI_COMPATIBLE",
+    "PROVIDER_TITLES",
+    "KeyEntry",
+    "KeyModelOption",
+    "default_base_url",
+    "default_model_for_runtime",
+    "dsh_provider_for",
+    "models_for_runtime",
+    "supports_provider",
+    "vault_models_for_runtime",
+    "wire_api_for",
+]

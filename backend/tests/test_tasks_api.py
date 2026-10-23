@@ -31,6 +31,7 @@ _RESPONSE_KEYS = {
     "pending_decision",
     "run_id",
     "model",
+    "api_key_id",
 }
 
 

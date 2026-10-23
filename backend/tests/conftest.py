@@ -56,6 +56,15 @@ def settings(tmp_path) -> Settings:
         anthropic_api_key=None,
         deepseek_api_key=None,
         default_provider="local",
+        # 密钥库用固定主密钥：用例不读 ~/.flux，也不在开发机留下密钥文件
+        key_vault_secret="flux-test-key-vault-secret",
+        key_vault_key_file=str(tmp_path / "key-vault.key"),
+        # 同样显式钉死：开发机仓库根 .env 的鉴权令牌/工作区会让整批 REST 用例 401 或走错目录
+        auth_token=None,
+        desktop_control_token=None,
+        workspace_root=None,
+        cloud_secret_key=None,
+        cloud_login_required=False,
     )
 
 

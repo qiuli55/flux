@@ -391,6 +391,15 @@
 .fx-set-row .fx-info .fx-t { font-size: var(--tn-fs-sm); font-weight: 500; color: var(--tn-text); }
 .fx-set-row .fx-info .fx-d { font-size: var(--tn-fs-xs); color: var(--tn-text-4); margin-top: 3px; }
 .fx-set-row .fx-ctl { flex: none; }
+.fx-note { color: var(--tn-text-4); font-size: var(--tn-fs-sm); line-height: var(--tn-lh); }
+.fx-key-list { display: flex; flex-direction: column; gap: 10px; }
+.fx-key-row { display: flex; align-items: center; gap: var(--tn-s4); padding: var(--tn-s3) var(--tn-s4); border: 1px solid var(--tn-line-soft); border-radius: var(--tn-r); background: var(--tn-bg-2); }
+.fx-key-main { min-width: 0; flex: 1; }
+.fx-key-name { font-size: var(--tn-fs-sm); font-weight: 600; color: var(--tn-text); }
+.fx-key-meta { margin-top: 3px; color: var(--tn-text-4); font-size: var(--tn-fs-xs); font-family: var(--tn-mono); word-break: break-all; }
+.fx-key-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.fx-key-model { padding: 1px 6px; border: 1px solid var(--tn-line); border-radius: var(--tn-r); color: var(--tn-text-3); font-size: var(--tn-fs-xs); font-family: var(--tn-mono); }
+.fx-key-actions { display: flex; align-items: center; gap: var(--tn-s2); flex: none; }
 
 /* ==========================================================================
    命令面板

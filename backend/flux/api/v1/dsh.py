@@ -11,17 +11,50 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.agent_runtime.model_catalog import (
+    default_model_for_runtime,
+    models_for_runtime,
+    vault_models_for_runtime,
+)
+from flux.core.agent_runtime.runtimes.base import RUNTIME_DSH
 from flux.schemas.dsh import DshRunCreateRequest
 
 router = APIRouter(prefix="/dsh", tags=["dsh"])
+
+
+@router.get("/models")
+async def list_models(container: Container = Depends(get_container)) -> dict[str, object]:
+    """dsh 当前可选的模型：原生模型 + 密钥库中 DeepSeek 协议的模型（Web Solo 用）。"""
+    entries = tuple(await container.key_vault.catalog_entries())
+    return ok(
+        {
+            "models": models_for_runtime(container.settings, RUNTIME_DSH),
+            "model": default_model_for_runtime(container.settings, RUNTIME_DSH),
+            "key_models": [
+                option.to_dict() for option in vault_models_for_runtime(entries, RUNTIME_DSH)
+            ],
+        }
+    )
 
 
 @router.post("/runs")
 async def start_run(
     payload: DshRunCreateRequest, container: Container = Depends(get_container)
 ) -> dict[str, object]:
+    model, key_id = await container.key_vault.resolve_selection(
+        runtime=RUNTIME_DSH, model=payload.model or "", key_id=payload.key_id
+    )
+    channel = (
+        await container.key_vault.channel_for_key(str(key_id), model or "")
+        if key_id is not None and model
+        else None
+    )
     run = await container.dsh.start_run(
-        payload.instruction, session_id=payload.session_id, agent_id=payload.agent_id
+        payload.instruction,
+        session_id=payload.session_id,
+        agent_id=payload.agent_id,
+        model=model,
+        channel=channel,
     )
     return ok(run.to_dict())
 

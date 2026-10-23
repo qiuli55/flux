@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.agent_runtime.model_catalog import models_for_runtime
 from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
@@ -96,9 +95,14 @@ async def create_task(
 ) -> dict[str, object]:
     project_id = _parse_uuid(payload.project_id, field="project_id") if payload.project_id else None
     agent_id = _parse_uuid(payload.agent_id, field="agent_id") if payload.agent_id else None
+    runtime = DEFAULT_RUNTIME
     if agent_id is not None:
         # Agent 注册表是 Agent 存在性的唯一权威：API 边界 fail-closed。
-        container.agents.get(payload.agent_id)
+        agent = container.agents.get(payload.agent_id)
+        runtime = str(getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME))
+    model, key_id = await container.key_vault.resolve_selection(
+        runtime=runtime, model=payload.model or "", key_id=payload.key_id
+    )
 
     task = await container.task_repo.create(
         task_id=uuid.uuid4(),
@@ -107,6 +111,8 @@ async def create_task(
         project_id=project_id,
         agent_id=agent_id,
         decision_mode=payload.decision_mode,
+        model=model,
+        api_key_id=key_id,
     )
     container.scheduler.submit(
         str(task.id),
@@ -331,14 +337,10 @@ async def switch_task_model(
     if task.agent_id is not None:
         agent = container.agents.get(str(task.agent_id))
         runtime = getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME)
-    allowed = models_for_runtime(container.settings, runtime)
-    model = payload.model.strip()
-    if allowed and model not in allowed:
-        raise BadRequestError(
-            f"该 Agent 不支持模型 {model}",
-            details={"model": model, "allowed": allowed},
-        )
-    task = await container.task_repo.set_model(task_uuid, model)
+    model, key_id = await container.key_vault.resolve_selection(
+        runtime=runtime, model=payload.model, key_id=payload.key_id
+    )
+    task = await container.task_repo.set_model(task_uuid, model, key_id)
     return ok(_task_dict(task))
 
 

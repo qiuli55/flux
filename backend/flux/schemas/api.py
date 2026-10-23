@@ -53,6 +53,9 @@ class TaskCreateRequest(BaseModel):
     priority: int = 100
     # 任务级决策策略（文档 §5）：建任务时就定下来，之后可单独切换
     decision_mode: DecisionMode = DecisionMode.AUTO
+    # 任务级模型选择：model + key_id。key_id 留空 = 原生模型；两者都留空 = Agent 默认。
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
 
 
 class TaskMessageCreateRequest(BaseModel):
@@ -91,9 +94,38 @@ class TaskAgentRequest(BaseModel):
 
 
 class TaskModelRequest(BaseModel):
-    """切换任务的执行模型：必须是该 Agent runtime 支持的模型。"""
+    """切换任务的执行模型：必须是该 Agent runtime 支持的模型。
+
+    `key_id` 非空表示模型来自密钥库；留空 = 原生模型。
+    """
 
     model: str = Field(min_length=1, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+
+
+class ApiKeyCreateRequest(BaseModel):
+    """在密钥库中登记一条 API Key。明文只在请求体里出现，落库即加密。"""
+
+    name: str = Field(min_length=1, max_length=128)
+    provider: Literal["deepseek", "openai", "openai_compatible", "anthropic"]
+    base_url: str = Field(default="", max_length=256)
+    api_key: str = Field(min_length=1, max_length=4096)
+    models: list[str] = Field(default_factory=list)
+    #: codex 的 wire_api：空 = 按供应商推导；兼容端点可选 chat / responses
+    wire_api: str = Field(default="", max_length=16)
+    enabled: bool = True
+
+
+class ApiKeyUpdateRequest(BaseModel):
+    """修改密钥库条目；未出现的字段保持不变，api_key 留空也表示不改。"""
+
+    name: str | None = Field(default=None, max_length=128)
+    provider: Literal["deepseek", "openai", "openai_compatible", "anthropic"] | None = None
+    base_url: str | None = Field(default=None, max_length=256)
+    api_key: str | None = Field(default=None, max_length=4096)
+    models: list[str] | None = None
+    wire_api: str | None = Field(default=None, max_length=16)
+    enabled: bool | None = None
 
 
 class DecisionOption(BaseModel):

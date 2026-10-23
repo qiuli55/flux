@@ -13,21 +13,30 @@ from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.manager import AgentHandle, AgentSpec
 from flux.core.agent_runtime.model_catalog import (
+    KeyEntry,
     default_model_for_runtime,
     models_for_runtime,
+    vault_models_for_runtime,
 )
 from flux.schemas.api import AgentCreateRequest, AgentTokenIssueRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _agent_payload(handle: AgentHandle, container: Container) -> dict[str, object]:
-    """档案响应：附上该 Agent runtime 的可用模型（移动端对话页切换 Agent 的模型用）。"""
+def _agent_payload(
+    handle: AgentHandle,
+    container: Container,
+    key_entries: tuple[KeyEntry, ...] = (),
+) -> dict[str, object]:
+    """档案响应：附上该 Agent runtime 的可用原生模型与密钥库模型。"""
     data = handle.to_dict()
     spec = dict(data.get("spec") or {})
     runtime = str(spec.get("runtime") or "")
     spec["models"] = models_for_runtime(container.settings, runtime)
     spec["model"] = default_model_for_runtime(container.settings, runtime)
+    spec["key_models"] = [
+        option.to_dict() for option in vault_models_for_runtime(key_entries, runtime)
+    ]
     data["spec"] = spec
     return data
 
@@ -52,7 +61,8 @@ async def create_agent(
 @router.get("")
 async def list_agents(container: Container = Depends(get_container)) -> dict[str, object]:
     handles = container.agents.list()
-    items = [_agent_payload(h, container) for h in handles]
+    key_entries = tuple(await container.key_vault.catalog_entries())
+    items = [_agent_payload(h, container, key_entries) for h in handles]
     return ok(items, metadata={"count": len(items)})
 
 
@@ -60,7 +70,8 @@ async def list_agents(container: Container = Depends(get_container)) -> dict[str
 async def get_agent(
     agent_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
-    return ok(_agent_payload(container.agents.get(agent_id), container))
+    key_entries = tuple(await container.key_vault.catalog_entries())
+    return ok(_agent_payload(container.agents.get(agent_id), container, key_entries))
 
 
 # --- MCP 接入令牌（目标架构 §3.2）---

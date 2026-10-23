@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:models="using:Flux.Desktop.Models"
              xmlns:v="using:Flux.Desktop.Views"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -35,6 +36,13 @@
                             <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
                                     Background="{DynamicResource TnAccent}"
                                     IsVisible="{Binding IsWorkspace}" />
+                        </Grid>
+                        <Grid>
+                            <Button Classes="set-nav" Classes.active="{Binding IsKeys}"
+                                    Content="密钥库" Command="{Binding SelectTabCommand}" CommandParameter="keys" />
+                            <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="{DynamicResource TnAccent}"
+                                    IsVisible="{Binding IsKeys}" />
                         </Grid>
                         <Grid>
                             <Button Classes="set-nav" Classes.active="{Binding IsAbout}"
@@ -109,6 +117,137 @@
                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="单一共享 Token（本地单用户）"
                                            Classes="mono" FontSize="12" />
                             </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 密钥库 -->
+                    <Border Grid.Column="1" Classes="card pad" IsVisible="{Binding IsKeys}">
+                        <StackPanel Spacing="14">
+                            <StackPanel>
+                                <TextBlock Classes="section-title" Text="密钥库" />
+                                <TextBlock Text="密钥加密保存，接口只回末 4 位掩码；Agent 的模型通道可直接选用这里的模型。"
+                                           FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel Grid.Column="0" Spacing="2">
+                                    <TextBlock Text="{Binding KeyFormTitle}" FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding KeyStatus}" FontSize="11"
+                                               Foreground="{DynamicResource TnText4}" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Classes="btn" Content="新建密钥"
+                                        Command="{Binding StartCreateKeyCommand}" />
+                            </Grid>
+
+                            <Border Classes="card" Padding="12" Background="{DynamicResource TnBg2}">
+                                <StackPanel Spacing="10">
+                                    <Grid ColumnDefinitions="96,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                                          RowSpacing="8">
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" FontSize="12"
+                                                   VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding KeyName, Mode=TwoWay}"
+                                                 FontSize="12" Watermark="DeepSeek 官方" />
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="供应商" FontSize="12"
+                                                   VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
+                                        <ComboBox Grid.Row="1" Grid.Column="1" FontSize="12"
+                                                  ItemsSource="{Binding ProviderOptions}"
+                                                  SelectedItem="{Binding KeyProvider, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Base URL" FontSize="12"
+                                                   VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding KeyBaseUrl, Mode=TwoWay}"
+                                                 FontSize="12" Watermark="留空使用供应商默认地址" />
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="API Key" FontSize="12"
+                                                   VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding KeyApiKey, Mode=TwoWay}"
+                                                 FontSize="12" PasswordChar="●"
+                                                 Watermark="留空表示修改时保持原 key" />
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="模型" FontSize="12"
+                                                   VerticalAlignment="Top" Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding KeyModelsText, Mode=TwoWay}"
+                                                 FontSize="12" Height="88" AcceptsReturn="True"
+                                                 TextWrapping="Wrap" Watermark="每行一个模型 id" />
+
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="wire_api" FontSize="12"
+                                                   VerticalAlignment="Center" Foreground="{DynamicResource TnText3}"
+                                                   IsVisible="{Binding IsCompatProvider}" />
+                                        <ComboBox Grid.Row="5" Grid.Column="1" FontSize="12"
+                                                  ItemsSource="{Binding WireApiOptions}"
+                                                  SelectedItem="{Binding KeyWireApi, Mode=TwoWay}"
+                                                  IsVisible="{Binding IsCompatProvider}" />
+
+                                        <CheckBox Grid.Row="6" Grid.Column="1" FontSize="12" Content="启用"
+                                                  IsChecked="{Binding KeyEnabled, Mode=TwoWay}" />
+                                    </Grid>
+                                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                        <Button Classes="btn" Content="取消" Command="{Binding CancelKeyEditCommand}"
+                                                IsVisible="{Binding IsEditingKey}" />
+                                        <Button Classes="btn primary" Content="保存"
+                                                Command="{Binding SaveKeyCommand}"
+                                                IsEnabled="{Binding !IsKeysBusy}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Border IsVisible="{Binding IsDeleteKeyOpen}" Padding="12" CornerRadius="8"
+                                    Background="{DynamicResource TnBg2}"
+                                    BorderBrush="{DynamicResource TnLine}" BorderThickness="1">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Grid.Column="0" FontSize="12" TextWrapping="Wrap"
+                                               VerticalAlignment="Center"
+                                               Text="{Binding DeleteKeyName, StringFormat='删除「{0}」后，引用它的任务会回到默认模型。'}"
+                                               Foreground="{DynamicResource TnText2}" />
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                        <Button Classes="btn" Content="取消" Command="{Binding CancelDeleteKeyCommand}" />
+                                        <Button Classes="btn danger" Content="确认删除"
+                                                Command="{Binding ConfirmDeleteKeyCommand}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <ItemsControl ItemsSource="{Binding Keys}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:ApiKeyEntry">
+                                        <Border Classes="card" Padding="12" Margin="0,0,0,8">
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <StackPanel Grid.Column="0" Spacing="3">
+                                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                                        <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" />
+                                                        <Border Classes="badge">
+                                                            <TextBlock Text="{Binding Provider}" FontSize="10"
+                                                                       Foreground="{DynamicResource TnText3}" />
+                                                        </Border>
+                                                        <Border Classes="badge">
+                                                            <TextBlock Text="{Binding KeyHint}" FontSize="10"
+                                                                       Foreground="{DynamicResource TnText4}" />
+                                                        </Border>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding BaseUrlText}" Classes="mono" FontSize="11"
+                                                               Foreground="{DynamicResource TnText4}" />
+                                                    <TextBlock Text="{Binding ModelsText}" Classes="mono" FontSize="11"
+                                                               TextWrapping="Wrap" Foreground="{DynamicResource TnText3}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                                            VerticalAlignment="Center">
+                                                    <Button Classes="btn" Content="{Binding ToggleText}"
+                                                            Command="{Binding DataContext.ToggleKeyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}" />
+                                                    <Button Classes="btn" Content="编辑"
+                                                            Command="{Binding DataContext.StartEditKeyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}" />
+                                                    <Button Classes="btn danger" Content="删除"
+                                                            Command="{Binding DataContext.AskDeleteKeyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
 

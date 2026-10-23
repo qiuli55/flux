@@ -15,6 +15,9 @@ class DshRunCreateRequest(BaseModel):
     instruction: str = Field(min_length=1)
     session_id: str | None = None
     agent_id: str | None = None
+    #: 任务级模型选择（Web Solo 对话用）：key_id 非空 = 使用密钥库中的模型
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
 
 
 __all__ = ["DshRunCreateRequest"]

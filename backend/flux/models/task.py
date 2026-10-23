@@ -45,6 +45,11 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # 任务级模型覆盖（移动端对话页切换 Agent 的模型）；None = 用该 Agent runtime 的默认模型。
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 任务级模型来自哪条 key 库条目；None = 原生模型（不需要 key 库凭据）。
+    # 与 model 一起构成完整选择；切换 Agent 时两者同时清空。
+    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True, index=True
+    )
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -74,6 +79,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "pending_decision": self.pending_decision(),
             "run_id": self.run_id,
             "model": self.model,
+            "api_key_id": str(self.api_key_id) if self.api_key_id is not None else None,
         }
 
 

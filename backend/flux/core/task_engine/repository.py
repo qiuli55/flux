@@ -52,11 +52,15 @@ class TaskRepository:
         project_id: uuid.UUID | None,
         agent_id: uuid.UUID | None,
         decision_mode: DecisionMode = DecisionMode.AUTO,
+        model: str | None = None,
+        api_key_id: uuid.UUID | None = None,
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
         与 agent_id 的边界校验保持同一语义：合法 UUID 但不存在的关联实体一律 404，
         而不是留给数据库外键去抛约束错误（那会退化成 400，同一类问题两种错误码）。
+
+        `model` / `api_key_id` 是任务级模型选择；`api_key_id=None` 表示原生模型。
         """
         async with self._session_factory() as session:
             if project_id is not None:
@@ -73,6 +77,8 @@ class TaskRepository:
                 project_id=project_id,
                 agent_id=agent_id,
                 decision_mode=str(decision_mode),
+                model=(model or "").strip() or None,
+                api_key_id=api_key_id,
             )
             session.add(task)
             await self._commit(session)
@@ -125,20 +131,27 @@ class TaskRepository:
     async def set_agent(self, task_id: uuid.UUID, agent_id: uuid.UUID) -> Task:
         """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。
 
-        换 Agent 时清掉任务级模型覆盖：旧 Agent 的模型不一定在新 Agent 的支持列表里。
+        换 Agent 时清掉任务级模型覆盖：旧 Agent 的模型/密钥不一定在新 Agent 的支持列表里。
         """
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.agent_id = agent_id
             task.model = None
+            task.api_key_id = None
             await self._commit(session)
             return task
 
-    async def set_model(self, task_id: uuid.UUID, model: str | None) -> Task:
-        """设置任务级模型覆盖；传 None 表示回到该 Agent runtime 的默认模型。"""
+    async def set_model(
+        self,
+        task_id: uuid.UUID,
+        model: str | None,
+        api_key_id: uuid.UUID | None = None,
+    ) -> Task:
+        """设置任务级模型选择；`api_key_id=None` 表示原生模型，`model=None` 表示回默认。"""
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
-            task.model = model
+            task.model = (model or "").strip() or None
+            task.api_key_id = api_key_id if task.model else None
             await self._commit(session)
             return task
 

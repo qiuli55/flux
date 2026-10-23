@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.Agent
+import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.CloudApi
 import top.qiuli55.flux.mobile.data.ConnectionConfig
 import top.qiuli55.flux.mobile.data.DeviceInfo
@@ -48,6 +49,9 @@ data class V2AppState(
     val notice: String? = null,
     val bootError: String? = null,
     val hideFinished: Boolean = false,
+    /** 密钥库（/keys）；只在打开密钥库面板时加载。 */
+    val keys: List<ApiKeyEntry> = emptyList(),
+    val keysLoading: Boolean = false,
 ) {
     val conversations: List<V2Conversation> get() = tasks.map { it.toV2Conversation(deviceLabel) }
     val queueTasks: List<V2Task>
@@ -244,16 +248,23 @@ class V2AppViewModel : FluxViewModel() {
                 val mapped = agents.toV2Agents(tasks)
                 V2Registry.agents = mapped
                 V2Registry.models = models
-                // 每个 Agent 的可用模型来自 /agents 的 spec.models；空则回落到 dsh 全局模型。
-                V2Registry.agentModels = agents.associate {
-                    it.id to (it.spec?.models ?: emptyList())
+                // 每个 Agent 的可用模型 = 原生模型 + 密钥库模型（带 keyId，切换时一起提交）
+                val fallbackOptions = models.map { V2ModelOption(it, it) }
+                V2Registry.agentModels = agents.associate { agent ->
+                    val spec = agent.spec
+                    agent.id to buildList {
+                        spec?.models?.forEach { add(V2ModelOption(it, it)) }
+                        spec?.keyModels?.forEach {
+                            add(V2ModelOption(it.model, "${it.model} · ${it.keyName}", it.keyId))
+                        }
+                    }
                 }
                 V2Registry.devices = listOf(
                     V2Device(
                         name = _state.value.deviceLabel,
                         kind = deviceKindOf(_state.value.deviceLabel),
                         agents = mapped.map {
-                            V2DeviceAgent(it.id, V2Registry.agentModels[it.id] ?: models)
+                            V2DeviceAgent(it.id, V2Registry.agentModels[it.id] ?: fallbackOptions)
                         },
                     ),
                 )
@@ -299,6 +310,8 @@ class V2AppViewModel : FluxViewModel() {
         description: String,
         agentId: String?,
         decisionMode: String = "auto",
+        model: String = "",
+        keyId: String? = null,
         onCreated: (String) -> Unit,
     ) {
         val text = description.trim()
@@ -310,12 +323,90 @@ class V2AppViewModel : FluxViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "create", error = null, notice = null)
             try {
-                val task = api().createTask(text, agentId?.takeIf { it.isNotBlank() }, decisionMode)
+                val task = api().createTask(
+                    text,
+                    agentId?.takeIf { it.isNotBlank() },
+                    decisionMode,
+                    model.takeIf { it.isNotBlank() },
+                    keyId?.takeIf { it.isNotBlank() },
+                )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
                 onCreated(task.id)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null, error = readable(e))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 密钥库
+
+    fun loadKeys() {
+        if (_state.value.keysLoading) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(keysLoading = true)
+            try {
+                val keys = api().listKeys()
+                _state.value = _state.value.copy(keys = keys, keysLoading = false, error = null)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(keysLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** 新建/修改密钥；onResult 为空串表示成功，否则是错误文案。 */
+    fun saveKey(
+        keyId: String?,
+        name: String,
+        provider: String,
+        baseUrl: String,
+        apiKey: String?,
+        models: List<String>,
+        wireApi: String,
+        enabled: Boolean,
+        onResult: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            try {
+                val api = api()
+                if (keyId.isNullOrBlank()) {
+                    api.createKey(name, provider, baseUrl, apiKey.orEmpty(), models, wireApi, enabled)
+                } else {
+                    api.updateKey(keyId, name, provider, baseUrl, apiKey, models, wireApi, enabled)
+                }
+                refresh(quiet = true)
+                val keys = api.listKeys()
+                _state.value = _state.value.copy(keys = keys, error = null)
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    fun deleteKey(keyId: String, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                api().deleteKey(keyId)
+                val keys = api().listKeys()
+                _state.value = _state.value.copy(keys = keys, error = null)
+                refresh(quiet = true)
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    fun setKeyEnabled(keyId: String, enabled: Boolean, onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                api().setKeyEnabled(keyId, enabled)
+                val keys = api().listKeys()
+                _state.value = _state.value.copy(keys = keys, error = null)
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
             }
         }
     }
