@@ -54,6 +54,12 @@ data class AgentSpec(
     val skills: List<String> = emptyList(),
     val tools: List<String> = emptyList(),
     val permissions: List<String> = emptyList(),
+    /** 执行该 Agent 的 runtime（dsh / codex / opencode）。 */
+    val runtime: String = "",
+    /** 该 runtime 的默认模型；任务未覆盖时实际用它。 */
+    val model: String = "",
+    /** 该 runtime 支持的模型（移动端「切换模型」下拉的数据源）。 */
+    val models: List<String> = emptyList(),
 )
 
 @Serializable
@@ -124,6 +130,8 @@ data class Task(
     val decisions: List<Decision> = emptyList(),
     @SerialName("pending_decision") val pendingDecision: Decision? = null,
     @SerialName("run_id") val runId: String? = null,
+    /** 任务级模型覆盖；null = 用所属 Agent 的默认模型。 */
+    val model: String? = null,
 )
 
 @Serializable

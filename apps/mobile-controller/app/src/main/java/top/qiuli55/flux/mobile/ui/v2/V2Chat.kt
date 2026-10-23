@@ -95,11 +95,15 @@ fun V2ChatScreen(
     /** 非空时点击 Agent 名称展开的是就地下拉栏（任务对话切换执行 Agent）。 */
     agentOptions: List<V2AgentOption> = emptyList(),
     onSwitchAgent: (String) -> Unit = {},
+    /** 当前 Agent 支持的模型；非空时 Agent 名下提供模型下拉。 */
+    modelOptions: List<String> = emptyList(),
+    onSwitchModel: (String) -> Unit = {},
 ) {
     val agent = demoAgent(chat.agentId)
     val listState = rememberLazyListState()
     var input by remember(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
+    var modelMenuOpen by remember { mutableStateOf(false) }
     val inputEnabled = !locked && !sending
 
     LaunchedEffect(messages.size, chat.conversationId) {
@@ -146,7 +150,46 @@ fun V2ChatScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
                             Spacer(Modifier.width(4.dp))
-                            Label("${chat.title} · ${chat.device}", 9.5f, V2Colors.ink(.36f), maxLines = 1)
+                            Label(
+                                "${chat.title} · ${chat.device}",
+                                9.5f,
+                                V2Colors.ink(.36f),
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (canSwitchAgent && modelOptions.isNotEmpty()) {
+                                Spacer(Modifier.width(6.dp))
+                                Row(
+                                    Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(V2Colors.cyan500.copy(alpha = .10f))
+                                        .border(
+                                            1.dp,
+                                            V2Colors.accent.copy(alpha = .20f),
+                                            RoundedCornerShape(999.dp),
+                                        )
+                                        .clickable {
+                                            agentMenuOpen = false
+                                            modelMenuOpen = true
+                                        }
+                                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Label(
+                                        chat.model.ifBlank { "默认模型" },
+                                        8.5f,
+                                        V2Colors.cyan800,
+                                        mono = true,
+                                        maxLines = 1,
+                                    )
+                                    Icon(
+                                        Icons.Outlined.KeyboardArrowDown,
+                                        null,
+                                        tint = V2Colors.cyan800.copy(alpha = .7f),
+                                        modifier = Modifier.padding(start = 2.dp).size(10.dp),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -187,6 +230,36 @@ fun V2ChatScreen(
                             onClick = {
                                 agentMenuOpen = false
                                 if (!selected) onSwitchAgent(option.agent.id)
+                            },
+                        )
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = modelMenuOpen && modelOptions.isNotEmpty(),
+                    onDismissRequest = { modelMenuOpen = false },
+                    modifier = Modifier.background(Color.White),
+                ) {
+                    modelOptions.forEach { model ->
+                        val selected = model == chat.model
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Label(model, 12f, V2Colors.ink(.88f), mono = true)
+                                    if (selected) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Outlined.Check,
+                                            null,
+                                            tint = V2Colors.cyan700,
+                                            modifier = Modifier.size(13.dp),
+                                        )
+                                    }
+                                }
+                            },
+                            onClick = {
+                                modelMenuOpen = false
+                                if (!selected) onSwitchModel(model)
                             },
                         )
                     }

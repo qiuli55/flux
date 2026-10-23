@@ -508,16 +508,19 @@ fun V2TaskChatScreen(
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
     val agentId = task?.agentId.orEmpty()
-    val option = agentsForDevice(ALL_DEVICES).firstOrNull { it.agent.id == agentId }
-    val model = option?.models?.firstOrNull()
+    val option = agentsForDevice(device).firstOrNull { it.agent.id == agentId }
+    val models = option?.models ?: emptyList()
+    val defaultModel = models.firstOrNull()
         ?: V2Registry.models.firstOrNull()
         ?: "默认模型"
+    // 任务级模型覆盖优先；切换 Agent 时后端会清空覆盖，自动回到新 Agent 的默认模型。
+    val currentModel = task?.model?.takeIf { it.isNotBlank() } ?: defaultModel
     val chat = V2ChatState(
         conversationId = taskId,
         title = task?.firstLine(40) ?: "任务对话",
         device = device,
         agentId = agentId,
-        model = model,
+        model = currentModel,
     )
     val messages = remember(state.messages, task?.id) {
         val mapped = state.messages.mapNotNull { it.toV2Message() }
@@ -556,6 +559,9 @@ fun V2TaskChatScreen(
             // 当前设备上已配置的 Agent 就地下拉切换，历史消息保留。
             agentOptions = if (canSwitchAgent) agentsForDevice(chat.device) else emptyList(),
             onSwitchAgent = { vm.switchAgent(it) },
+            // 当前 Agent 支持的模型下拉（codex 走 model catalog，dsh 目前只有默认模型）。
+            modelOptions = if (canSwitchAgent) models else emptyList(),
+            onSwitchModel = { vm.switchModel(it) },
         )
     }
 }

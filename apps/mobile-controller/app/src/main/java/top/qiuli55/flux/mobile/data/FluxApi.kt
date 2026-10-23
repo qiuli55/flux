@@ -89,6 +89,10 @@ class FluxApi(
     suspend fun setTaskAgent(taskId: String, agentId: String): Task =
         post("api/v1/tasks/$taskId/agent", buildJsonObject { put("agent_id", agentId) })
 
+    /** 切换任务的执行模型：必须是当前 Agent runtime 支持的模型。 */
+    suspend fun setTaskModel(taskId: String, model: String): Task =
+        post("api/v1/tasks/$taskId/model", buildJsonObject { put("model", model) })
+
     suspend fun getRun(runId: String): Run = get("api/v1/dsh/runs/$runId")
     suspend fun listRuns(): List<Run> = get("api/v1/dsh/runs")
     suspend fun interruptRun(runId: String): Run = post("api/v1/dsh/runs/$runId/interrupt", buildJsonObject {})

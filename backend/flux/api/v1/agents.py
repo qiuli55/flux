@@ -12,9 +12,24 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.manager import AgentHandle, AgentSpec
+from flux.core.agent_runtime.model_catalog import (
+    default_model_for_runtime,
+    models_for_runtime,
+)
 from flux.schemas.api import AgentCreateRequest, AgentTokenIssueRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _agent_payload(handle: AgentHandle, container: Container) -> dict[str, object]:
+    """档案响应：附上该 Agent runtime 的可用模型（移动端对话页切换 Agent 的模型用）。"""
+    data = handle.to_dict()
+    spec = dict(data.get("spec") or {})
+    runtime = str(spec.get("runtime") or "")
+    spec["models"] = models_for_runtime(container.settings, runtime)
+    spec["model"] = default_model_for_runtime(container.settings, runtime)
+    data["spec"] = spec
+    return data
 
 
 @router.post("")
@@ -37,14 +52,15 @@ async def create_agent(
 @router.get("")
 async def list_agents(container: Container = Depends(get_container)) -> dict[str, object]:
     handles = container.agents.list()
-    return ok([h.to_dict() for h in handles], metadata={"count": len(handles)})
+    items = [_agent_payload(h, container) for h in handles]
+    return ok(items, metadata={"count": len(items)})
 
 
 @router.get("/{agent_id}")
 async def get_agent(
     agent_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
-    return ok(container.agents.get(agent_id).to_dict())
+    return ok(_agent_payload(container.agents.get(agent_id), container))
 
 
 # --- MCP 接入令牌（目标架构 §3.2）---

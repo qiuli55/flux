@@ -148,6 +148,8 @@ object V2Registry {
     var agents: List<V2Agent> by mutableStateOf(demoAgents)
     var devices: List<V2Device> by mutableStateOf(demoDevices)
     var models: List<String> by mutableStateOf(emptyList())
+    /** 后端每个 Agent 的可用模型（/agents 的 spec.models）；空 = 回落到全局模型。 */
+    var agentModels: Map<String, List<String>> by mutableStateOf(emptyMap())
 }
 
 private val unknownAgent = V2Agent("unknown", "Flux Agent", "未配置", 0, 0, V2Colors.accent)
@@ -160,6 +162,11 @@ fun demoAgent(id: String): V2Agent =
         ?: if (id.isBlank()) fallbackAgent else unknownAgent.copy(id = id, name = id.take(12))
 
 fun agentsForDevice(deviceName: String): List<V2AgentOption> {
+    fun modelsOf(agentId: String, fallback: List<String>): List<String> =
+        V2Registry.agentModels[agentId]?.takeIf { it.isNotEmpty() }
+            ?: fallback.takeIf { it.isNotEmpty() }
+            ?: V2Registry.models
+
     val options = if (deviceName == ALL_DEVICES) {
         val merged = LinkedHashMap<String, LinkedHashSet<String>>()
         V2Registry.devices.forEach { device ->
@@ -168,14 +175,16 @@ fun agentsForDevice(deviceName: String): List<V2AgentOption> {
             }
         }
         if (merged.isEmpty()) {
-            V2Registry.agents.map { V2AgentOption(it, V2Registry.models) }
+            V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, V2Registry.models)) }
         } else {
-            merged.map { (agentId, models) -> V2AgentOption(demoAgent(agentId), models.toList()) }
+            merged.map { (agentId, models) ->
+                V2AgentOption(demoAgent(agentId), modelsOf(agentId, models.toList()))
+            }
         }
     } else {
         val device = V2Registry.devices.firstOrNull { it.name == deviceName }
-        device?.agents?.map { V2AgentOption(demoAgent(it.agentId), it.models) }
-            ?: V2Registry.agents.map { V2AgentOption(it, V2Registry.models) }
+        device?.agents?.map { V2AgentOption(demoAgent(it.agentId), modelsOf(it.agentId, it.models)) }
+            ?: V2Registry.agents.map { V2AgentOption(it, modelsOf(it.id, V2Registry.models)) }
     }
     return options.ifEmpty { listOf(V2AgentOption(fallbackAgent, V2Registry.models)) }
 }

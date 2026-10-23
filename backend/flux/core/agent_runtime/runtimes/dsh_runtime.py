@@ -45,6 +45,7 @@ class DshRuntime:
             session_id=f"flux-task-{getattr(task, 'id', run_id)}",
             task_id=str(getattr(task, "id", "")) or None,
             agent_id=getattr(agent, "id_str", None),
+            model=str(getattr(task, "model", "") or ""),
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
@@ -53,6 +54,7 @@ class DshRuntime:
             session_id=launch.session_id,
             run_id=launch.run_id,
             task_id=launch.task_id,
+            model=launch.model or None,
         )
         return RuntimeProcess(
             runtime_id=self.runtime_id,
