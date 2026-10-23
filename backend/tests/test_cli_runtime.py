@@ -9,6 +9,7 @@ completed / failed / cancel 三条路径，真实经过 `CliRuntime` → `CliAda
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -37,6 +38,7 @@ from flux.core.agent_runtime.runtimes.cli import (
     _codex_config,
     _normalize_codex_event,
     _normalize_opencode_event,
+    _opencode_config,
     _RunUsage,
 )
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
@@ -270,6 +272,19 @@ def test_codex_config_openai_uses_builtin_provider(settings: Settings) -> None:
     assert "[mcp_servers.flux]" in text
     # 不放行 MCP 工具审批的话，codex 会判定「MCP 不可用」而退回自己读文件
     assert 'default_tools_approval_mode = "approve"' in text
+
+
+def test_cli_mcp_config_binds_the_run_id_header(settings: Settings) -> None:
+    """CLI 通道的 MCP 配置要把连接绑到本次 Run：step 摄入与 context.steps 都靠它归属。"""
+    run_id = "run-bind-123"
+
+    opencode = json.loads(_opencode_config("http://127.0.0.1:8802/mcp", "tok", run_id))
+    headers = opencode["mcp"]["flux"]["headers"]
+    assert headers["Authorization"] == "Bearer tok"
+    assert headers["X-Flux-Run-Id"] == run_id
+
+    codex = _codex_config("http://127.0.0.1:8802/mcp", "tok", settings=settings, run_id=run_id)
+    assert f'X-Flux-Run-Id = "{run_id}"' in codex
 
 
 def test_codex_event_normalisation_maps_items() -> None:
