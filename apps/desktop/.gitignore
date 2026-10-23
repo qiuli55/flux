@@ -1,9 +1,0 @@
-# 依赖与构建产物
-node_modules/
-release/
-dist/
-
-# PyInstaller 后端 sidecar 的中间产物与产物
-backend/build/
-backend/dist/
-backend/*.spec.bak

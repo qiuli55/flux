@@ -13,7 +13,7 @@ namespace Flux.Desktop.Services;
 
 /// <summary>
 /// 以子进程方式拉起本地 Python 后端（uvicorn），并等待 /api/v1/health 就绪。
-/// 行为与 Electron 版 apps/desktop/src/main.js 的 dev 分支保持一致。
+/// 端口随机分配，避免与本机常驻实例（8801）冲突。
 /// </summary>
 public sealed class BackendHost : IDisposable
 {
