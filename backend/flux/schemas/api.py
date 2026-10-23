@@ -90,6 +90,12 @@ class TaskAgentRequest(BaseModel):
     agent_id: str = Field(min_length=1)
 
 
+class TaskModelRequest(BaseModel):
+    """切换任务的执行模型：必须是该 Agent runtime 支持的模型。"""
+
+    model: str = Field(min_length=1, max_length=128)
+
+
 class DecisionOption(BaseModel):
     """一个候选方案：做什么、带来什么影响、是不是推荐项。"""
 

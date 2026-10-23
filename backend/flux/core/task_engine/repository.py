@@ -123,10 +123,22 @@ class TaskRepository:
             return task
 
     async def set_agent(self, task_id: uuid.UUID, agent_id: uuid.UUID) -> Task:
-        """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。"""
+        """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。
+
+        换 Agent 时清掉任务级模型覆盖：旧 Agent 的模型不一定在新 Agent 的支持列表里。
+        """
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.agent_id = agent_id
+            task.model = None
+            await self._commit(session)
+            return task
+
+    async def set_model(self, task_id: uuid.UUID, model: str | None) -> Task:
+        """设置任务级模型覆盖；传 None 表示回到该 Agent runtime 的默认模型。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.model = model
             await self._commit(session)
             return task
 

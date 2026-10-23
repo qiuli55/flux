@@ -135,6 +135,8 @@ class DshRun:
     agent_id: str | None = None
     #: 本次 Run 归属的任务（用于注入 FLUX_TASK_ID；独立起 Run 时为 None）
     task_id: str | None = None
+    #: 任务级模型覆盖（移动端切换模型）；None = 用服务端配置的默认模型
+    model: str | None = None
     last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -156,6 +158,7 @@ class DshRun:
             "timeout_kind": self.timeout_kind,
             "agent_id": self.agent_id,
             "task_id": self.task_id,
+            "model": self.model,
             "last_state_change_at": (
                 self.last_state_change_at.isoformat() if self.last_state_change_at else None
             ),
@@ -390,6 +393,7 @@ class FluxDshClient:
         run_id: str | None = None,
         task_id: object | None = None,
         agent_id: str | None = None,
+        model: str | None = None,
     ) -> DshRun:
         """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
 
@@ -415,6 +419,7 @@ class FluxDshClient:
             started_at=datetime.now(timezone.utc),
             agent_id=agent_id or self._mcp_agent_id,
             task_id=str(task_id) if task_id is not None else None,
+            model=(model or "").strip() or None,
         )
         self._runs[run.run_id] = run
         await self._supervisor.create_run(
@@ -461,7 +466,7 @@ class FluxDshClient:
                 dsh_home=self._settings.dsh_home,
                 cwd=self._settings.dsh_workspace,
                 provider=self._settings.dsh_provider,
-                model=self._settings.dsh_model,
+                model=run.model or self._settings.dsh_model,
                 max_tokens=self._settings.dsh_max_tokens,
                 patches=(str(patch_path),) if patch_path is not None else (),
                 initialize_timeout_seconds=self._settings.dsh_init_timeout_seconds,

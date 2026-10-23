@@ -16,6 +16,8 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.agent_runtime.model_catalog import models_for_runtime
+from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.model_gateway.base import ChatMessage
@@ -33,6 +35,7 @@ from flux.schemas.api import (
     TaskAgentRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
+    TaskModelRequest,
     TaskStartRequest,
 )
 
@@ -303,6 +306,39 @@ async def switch_task_agent(
     # Agent 注册表是 Agent 存在性的唯一权威：API 边界 fail-closed。
     container.agents.get(payload.agent_id)
     task = await container.task_repo.set_agent(task_uuid, agent_id)
+    return ok(_task_dict(task))
+
+
+@router.post("/{task_id}/model")
+async def switch_task_model(
+    task_id: str,
+    payload: TaskModelRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """切换任务的执行模型（移动端对话页 Agent 名称旁的下拉）。
+
+    只接受该 Agent runtime 的模型目录里的 id；正在执行时不允许切换。
+    切换 Agent 时会清掉本覆盖，回到新 Agent 的默认模型。
+    """
+    task_uuid = _task_id(task_id)
+    task = await _require_open_task(container, task_uuid, task_id)
+    if task.status == TaskStatus.RUNNING.value:
+        raise ConflictError(
+            f"任务 {task_id} 正在执行，先停止 Agent 再切换模型",
+            details={"task_id": task_id, "status": task.status},
+        )
+    runtime = DEFAULT_RUNTIME
+    if task.agent_id is not None:
+        agent = container.agents.get(str(task.agent_id))
+        runtime = getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME)
+    allowed = models_for_runtime(container.settings, runtime)
+    model = payload.model.strip()
+    if allowed and model not in allowed:
+        raise BadRequestError(
+            f"该 Agent 不支持模型 {model}",
+            details={"model": model, "allowed": allowed},
+        )
+    task = await container.task_repo.set_model(task_uuid, model)
     return ok(_task_dict(task))
 
 

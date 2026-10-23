@@ -222,6 +222,7 @@ class V2AppViewModel : FluxViewModel() {
             V2Registry.agents = emptyList()
             V2Registry.devices = emptyList()
             V2Registry.models = emptyList()
+            V2Registry.agentModels = emptyMap()
             _state.value = V2AppState(boot = V2Boot.LOGIN)
         }
     }
@@ -243,11 +244,17 @@ class V2AppViewModel : FluxViewModel() {
                 val mapped = agents.toV2Agents(tasks)
                 V2Registry.agents = mapped
                 V2Registry.models = models
+                // 每个 Agent 的可用模型来自 /agents 的 spec.models；空则回落到 dsh 全局模型。
+                V2Registry.agentModels = agents.associate {
+                    it.id to (it.spec?.models ?: emptyList())
+                }
                 V2Registry.devices = listOf(
                     V2Device(
                         name = _state.value.deviceLabel,
                         kind = deviceKindOf(_state.value.deviceLabel),
-                        agents = mapped.map { V2DeviceAgent(it.id, models) },
+                        agents = mapped.map {
+                            V2DeviceAgent(it.id, V2Registry.agentModels[it.id] ?: models)
+                        },
                     ),
                 )
                 _state.value = _state.value.copy(

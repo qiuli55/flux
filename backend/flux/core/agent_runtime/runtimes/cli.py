@@ -248,6 +248,8 @@ class CliRuntime:
                 f"{self.runtime_id} runtime 需要一个 Agent 档案作为令牌身份",
                 details={"runtime": self.runtime_id},
             )
+        # 任务级模型覆盖（移动端切换模型）；留空 = 用 runtime 配置里的默认模型
+        model_override = str(getattr(task, "model", "") or "").strip()
         workspace = self._settings.workspace_root or self._settings.dsh_workspace
         run_dir = Path(self._settings.dsh_home).expanduser() / "runs" / run_id
         token_id: str | None = None
@@ -256,7 +258,7 @@ class CliRuntime:
             with contextlib.suppress(OSError):
                 os.chmod(run_dir, 0o700)
             token_id, token_raw = await self._issue_token(agent_id, run_id)
-            runtime_env = self._write_runtime_config(run_dir, token_raw, run_id)
+            runtime_env = self._write_runtime_config(run_dir, token_raw, run_id, model=model_override)
         except Exception:
             await self._revoke(token_id)
             raise
@@ -287,7 +289,7 @@ class CliRuntime:
             session_id=f"flux-task-{getattr(task, 'id', run_id)}",
             task_id=str(getattr(task, "id", "")) or None,
             agent_id=agent_id,
-            model=str(getattr(agent, "model_name", "") or ""),
+            model=model_override,
             run_dir=run_dir,
             argv=argv,
             token_id=token_id,
@@ -390,7 +392,7 @@ class CliRuntime:
         return str(token.id), raw
 
     def _write_runtime_config(
-        self, run_dir: Path, token_raw: str | None, run_id: str
+        self, run_dir: Path, token_raw: str | None, run_id: str, *, model: str = ""
     ) -> dict[str, str]:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
@@ -400,7 +402,7 @@ class CliRuntime:
             home.mkdir(parents=True, exist_ok=True)
             config = home / "config.toml"
             config.write_text(
-                _codex_config(url, token_raw, settings=self._settings, run_id=run_id),
+                _codex_config(url, token_raw, settings=self._settings, run_id=run_id, model=model),
                 encoding="utf-8",
             )
             self._secure(config)
@@ -719,14 +721,16 @@ def _text_of(data: dict[str, Any]) -> str:
     return ""
 
 
-def _codex_config(url: str, token: str | None, *, settings: Settings, run_id: str = "") -> str:
+def _codex_config(
+    url: str, token: str | None, *, settings: Settings, run_id: str = "", model: str = ""
+) -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
 
     隔离 CODEX_HOME 里没有用户的 auth.json，codex 会判定「未登录」；所以模型通道必须自带
     凭据来源：第三方供应商写 [model_providers.<name>]（只写 env_key 环境变量名，密钥不落盘）。
     """
     lines = ["# Flux 自动生成：为本次 Run 注入 Flux MCP（含一次性令牌，权限 0600）。"]
-    lines += _codex_provider_lines(settings)
+    lines += _codex_provider_lines(settings, model=model)
     if token is not None:
         lines += [
             "[mcp_servers.flux]",
@@ -741,20 +745,23 @@ def _codex_config(url: str, token: str | None, *, settings: Settings, run_id: st
     return "\n".join(lines)
 
 
-def _codex_provider_lines(settings: Settings) -> list[str]:
-    """codex 的模型通道：openai（内置供应商）不写，第三方供应商写一块 model_providers。"""
+def _codex_provider_lines(settings: Settings, *, model: str = "") -> list[str]:
+    """codex 的模型通道：openai（内置供应商）不写，第三方供应商写一块 model_providers。
+
+    `model` 是任务级覆盖；留空用 `FLUX_CODEX_MODEL`，再留空用 codex 自带默认。
+    """
     provider = (settings.codex_provider or "").strip().lower()
-    model = (settings.codex_model or "").strip()
+    configured_model = (model or settings.codex_model or "").strip()
     catalog = (settings.codex_model_catalog or "").strip()
     if provider in ("", "openai"):
         # 空 model = 用 codex 自带默认模型
-        return [f'model = "{model}"', ""] if model else []
+        return [f'model = "{configured_model}"', ""] if configured_model else []
     if provider != "deepseek":
         raise ConfigurationError(
             f"codex 不支持该模型供应商：{provider}（已知：openai / deepseek）",
             details={"provider": provider, "hint": "FLUX_CODEX_PROVIDER"},
         )
-    if not model:
+    if not configured_model:
         raise ConfigurationError(
             "codex 走第三方供应商必须显式指定模型（FLUX_CODEX_MODEL）",
             details={"provider": provider},
@@ -766,7 +773,7 @@ def _codex_provider_lines(settings: Settings) -> list[str]:
             f"codex 走 {provider} 需要环境变量 {env_key}（Flux 只写变量名，不下发密钥）",
             details={"provider": provider, "env_key": env_key},
         )
-    lines = [f'model = "{model}"', f'model_provider = "{provider}"']
+    lines = [f'model = "{configured_model}"', f'model_provider = "{provider}"']
     # DeepSeek 没有 codex 内置的联网搜索工具，留着会把请求打回 400
     lines += ['web_search = "disabled"']
     if catalog:

@@ -43,6 +43,8 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     decisions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # 该任务触发的 DSH Run（P0-05）。Run 结束时靠它把终态回写到任务上。
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 任务级模型覆盖（移动端对话页切换 Agent 的模型）；None = 用该 Agent runtime 的默认模型。
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -71,6 +73,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "decisions": list(self.decisions or []),
             "pending_decision": self.pending_decision(),
             "run_id": self.run_id,
+            "model": self.model,
         }
 
 

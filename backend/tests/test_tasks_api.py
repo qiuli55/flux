@@ -30,6 +30,7 @@ _RESPONSE_KEYS = {
     "decisions",
     "pending_decision",
     "run_id",
+    "model",
 }
 
 
