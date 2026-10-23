@@ -19,9 +19,9 @@ from fastapi.testclient import TestClient
 
 from flux.core.agent_runtime.protocol import RUNTIME_ENTRY, RUNTIME_RULES
 from flux.core.mcp.auth import AgentIdentity
-from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, _attach_run_id
+from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, McpServer, _attach_run_id
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
-from flux.enums import Capability, DshRunStatus
+from flux.enums import Capability, DshRunStatus, StepStatus
 from flux.errors import AuthenticationError
 
 from .conftest import create_agent, issue_token
@@ -786,3 +786,96 @@ async def test_attach_run_id_ignores_foreign_unknown_or_absent_run(apply_contain
     ).run_id is None
 
     assert (await _attach_run_id(_header_request(None), apply_container, same_agent)).run_id is None
+
+
+# --- 6. 上下文闭环：失败也摄入、step 目录可读（机制 §3.3 / §6.3）---
+
+
+async def test_failed_tool_call_is_ingested_as_a_failed_step(apply_container) -> None:
+    """失败调用同样落 step（status=fail）：否则 Agent 看不到自己刚才错在哪，只能反复试错。"""
+    agent_id = str(uuid.uuid4())
+    run_id = uuid.uuid4().hex
+    await _seed_run(apply_container, run_id=run_id, agent_id=agent_id)
+    identity = AgentIdentity(
+        agent_id=agent_id,
+        token_id="t",
+        scopes=frozenset({Capability.FILE_READ}),
+        run_id=run_id,
+    )
+    server = McpServer(apply_container)
+
+    response = await server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "workspace.read", "arguments": {"path": "missing.py"}},
+        },
+        identity,
+    )
+
+    assert response["result"]["isError"] is True
+    steps = await apply_container.context_steps.list_by_run(run_id)
+    assert len(steps) == 1
+    assert steps[0].tool == "workspace.read"
+    assert steps[0].status == StepStatus.FAIL.value
+    # 错误码与消息进了 result_head（原文另存 CAS），下一轮可直接据此定位
+    assert "not_found" in (steps[0].result_head or "")
+    assert "missing.py" in (steps[0].result_head or "")
+
+
+async def test_context_steps_lists_the_current_run_and_refuses_foreign_runs(
+    apply_container,
+) -> None:
+    """step 目录入口：本 Run 可读、他人 Run 拒读；失败步带 ! 标记且摘要已脱敏。"""
+    agent_id = str(uuid.uuid4())
+    run_id = uuid.uuid4().hex
+    await _seed_run(apply_container, run_id=run_id, agent_id=agent_id)
+    identity = AgentIdentity(
+        agent_id=agent_id,
+        token_id="t",
+        scopes=frozenset({Capability.FILE_READ}),
+        run_id=run_id,
+    )
+    server = McpServer(apply_container)
+    await server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "workspace.read", "arguments": {"path": "missing.py"}},
+        },
+        identity,
+    )
+
+    listed = await server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "context.steps", "arguments": {"limit": 10}},
+        },
+        identity,
+    )
+    data = json.loads(listed["result"]["content"][0]["text"])
+    assert data["run_id"] == run_id and data["count"] == 1
+    assert data["steps"][0]["status"] == StepStatus.FAIL.value
+    assert data["steps"][0]["catalog_line"].startswith("!")
+
+    foreign = AgentIdentity(
+        agent_id=str(uuid.uuid4()),
+        token_id="t2",
+        scopes=frozenset({Capability.FILE_READ}),
+        run_id=None,
+    )
+    denied = await server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "context.steps", "arguments": {"run_id": run_id}},
+        },
+        foreign,
+    )
+    assert denied["result"]["isError"] is True
+    assert "本 Agent" in denied["result"]["content"][0]["text"]

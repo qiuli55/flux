@@ -26,6 +26,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings
+from flux.container import Container
 from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.run_repository import AgentRunRepository, utcnow
 from flux.core.agent_runtime.supervisor import RunSupervisor
@@ -34,7 +35,7 @@ from flux.core.task_engine import dsh_bridge
 from flux.core.task_engine.dsh_bridge import TaskRunBridge
 from flux.core.task_engine.repository import TaskRepository
 from flux.db.session import create_engine, create_session_factory
-from flux.enums import DshRunStatus, TaskStatus
+from flux.enums import BrainSection, DshRunStatus, TaskStatus
 from flux.models import Base
 
 
@@ -357,6 +358,59 @@ async def test_orphan_task_with_live_run_is_untouched(
     assert await bridge.reconcile_orphan_tasks() == []
     assert (await tasks.get(task_id)).status == TaskStatus.RUNNING.value
     await engine.dispose()
+
+
+# --- 上下文闭环：任务收尾自动沉淀到项目 Brain ---
+
+
+async def test_completed_task_is_sedimented_into_project_brain(tmp_path: Path) -> None:
+    """Run 终态 → 任务终态时，把"这轮做了什么"写进 Project Brain（同一 Run 幂等）。"""
+    container = Container(_settings(tmp_path))
+    try:
+        async with container.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        project = await container.brain.create_project(name="登录服务")
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="给登录服务加验证码",
+            priority=1,
+            project_id=project.id,
+            agent_id=None,
+        )
+        run_id = "run-sediment-1"
+        await container.run_repo.create(
+            run_id=run_id,
+            session_id="s",
+            instruction="给登录服务加验证码",
+            status=DshRunStatus.RUNNING,
+            task_id=task.id,
+        )
+        await container.task_repo.set_run_id(task.id, run_id)
+        await container.task_repo.set_status(task.id, TaskStatus.RUNNING)
+        bridge = TaskRunBridge(
+            container.task_repo,
+            container.run_repo,
+            brain=container.brain,
+            workspace=container.workspace,
+        )
+
+        await bridge._on_run_settled(
+            Events.DSH_RUN_COMPLETED,
+            {"run_id": run_id, "final_response": "已提交 2 个提案"},
+        )
+
+        notes = (await container.brain.sections(project.id))[BrainSection.AGENT_NOTES.value]
+        assert len(notes) == 1
+        assert notes[0]["metadata"]["run_id"] == run_id
+        assert "给登录服务加验证码" in notes[0]["content"]
+        assert (await container.task_repo.get(task.id)).status == TaskStatus.COMPLETED.value
+
+        # 同一 Run 重复沉淀不新增第二条（事件重复投递 / 直接重调都幂等）
+        await bridge._sediment(task, status=TaskStatus.COMPLETED, run_id=run_id, body={})
+        again = (await container.brain.sections(project.id))[BrainSection.AGENT_NOTES.value]
+        assert len(again) == 1
+    finally:
+        await container.dispose()
 
 
 async def test_reconcile_hook_runs_after_row_reconcile(tmp_path: Path) -> None:

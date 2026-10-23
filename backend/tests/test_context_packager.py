@@ -30,7 +30,7 @@ from flux.core.mcp.context_packager import (
     package_context,
 )
 from flux.core.virtual_workspace.service import EXPIRE_REASON_TIMEOUT
-from flux.enums import DecisionMode, VirtualChangeStatus
+from flux.enums import DecisionMode, DshRunStatus, VirtualChangeStatus
 from flux.models.task import Task
 
 ORIGINAL = "def list_todos():\n    return None\n"
@@ -211,6 +211,35 @@ async def test_expired_proposal_is_shown_as_stale(ctx_container: Container) -> N
 
     assert "todo_service/store.py" in pack["content"]
     assert "[expired]" in pack["content"]
+
+
+async def test_pack_carries_previous_run_termination_reason(ctx_container: Container) -> None:
+    """上一轮 Run 的终态与失败原因必须回到下一轮的上下文里（否则 Agent 不知道自己为何失败）。"""
+    project = await _project(ctx_container)
+    task = await _task(ctx_container, project, description="修登录接口")
+    run_id = uuid.uuid4().hex
+    await ctx_container.run_repo.create(
+        run_id=run_id,
+        session_id="s",
+        instruction="修登录接口",
+        status=DshRunStatus.RUNNING,
+        task_id=task.id,
+    )
+    await ctx_container.run_repo.set_status(
+        run_id,
+        DshRunStatus.FAILED,
+        error="pytest 失败：3 errors",
+        finish_reason="error",
+        finished=True,
+    )
+
+    pack = await package_context(ctx_container, task_id=str(task.id))
+
+    kinds = [entry["kind"] for entry in pack["entries"]]
+    assert "runs" in kinds
+    assert "最近 Run" in pack["content"]
+    assert "[failed]" in pack["content"] and run_id in pack["content"]
+    assert "pytest 失败：3 errors" in pack["content"]
 
 
 async def test_pack_without_task_only_carries_project_facts(ctx_container: Container) -> None:
