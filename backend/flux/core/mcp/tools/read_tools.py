@@ -473,8 +473,9 @@ async def workspace_read_many(ctx: ToolContext, params: dict[str, Any]) -> dict[
     paths = params.get("paths")
     if not isinstance(paths, list) or not paths or len(paths) > MAX_READ_MANY_PATHS:
         raise ValidationError(
-            f"参数 paths 必须是 1..{MAX_READ_MANY_PATHS} 个路径的数组",
-            details={"param": "paths"},
+            f"参数 paths 必须是 1..{MAX_READ_MANY_PATHS} 个路径的数组；"
+            f"超过 {MAX_READ_MANY_PATHS} 个请拆成多次 workspace.read_many 调用",
+            details={"param": "paths", "max_items": MAX_READ_MANY_PATHS},
         )
     max_chars = _optional_int(params, "max_chars", default=DEFAULT_READ_MANY_CHARS)
     if max_chars < 200:

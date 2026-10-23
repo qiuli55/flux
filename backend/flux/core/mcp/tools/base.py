@@ -65,9 +65,15 @@ def optional_str(params: dict[str, Any], key: str) -> str | None:
 
 
 def reject_unknown(params: dict[str, Any], allowed: set[str]) -> None:
-    """入参里出现未声明的字段一律报错——静默忽略会让"我传了但没生效"无从排查。"""
+    """入参里出现未声明的字段一律报错——静默忽略会让"我传了但没生效"无从排查。
+
+    报错里带上本工具允许的入参名：模型常凭记忆猜字段（`workdir` / `filename`），
+    只报"未定义"的话它只能反复试错，既浪费调用又推高工具失败率。
+    """
     unknown = sorted(set(params) - allowed)
     if unknown:
+        allowed_text = "、".join(sorted(allowed)) or "（无）"
         raise ValidationError(
-            f"存在未定义的入参：{'、'.join(unknown)}", details={"unknown": unknown}
+            f"存在未定义的入参：{'、'.join(unknown)}；该工具允许的入参是：{allowed_text}",
+            details={"unknown": unknown, "allowed": sorted(allowed)},
         )

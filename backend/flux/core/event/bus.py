@@ -31,6 +31,10 @@ class Events:
     TASK_FAILED = "task.failed"
     CONNECTOR_EXECUTED = "connector.executed"
     WORKSPACE_CHANGED = "workspace.changed"
+    #: Apply 整批成功（上下文闭环）：载荷含 batch_id / files / task_id / project_id /
+    #: added_lines / removed_lines / test（真实测试结果），供收尾沉淀使用。
+    #: 逐条 applied 事件不带批次信息，沉淀若挂在它上面会把一批写成 N 条。
+    WORKSPACE_APPLIED = "workspace.applied"
     #: Apply 崩溃恢复（P0-1）：进程重启/入口懒检查对账完一批中断的 Apply 后发出，
     #: 载荷含 batch_id、终态（recovered / needs_attention）与逐条处理结论。
     APPLY_RECOVERED = "apply.recovered"

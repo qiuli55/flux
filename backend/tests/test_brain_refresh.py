@@ -23,10 +23,12 @@ class _Clock:
 
 
 class _Brain:
-    """记录扫描调用；`fail` 打开后模拟扫描异常。"""
+    """记录扫描与写入；`fail` 打开后模拟扫描异常。"""
 
     def __init__(self) -> None:
         self.scans: list[str] = []
+        self.writes: list[tuple[str, object, str, dict]] = []
+        self.notes: dict[str, list[dict]] = {}
         self.fail = False
 
     async def scan(self, project_id, *, record: bool = True):
@@ -34,6 +36,15 @@ class _Brain:
             raise RuntimeError("scan boom")
         self.scans.append(str(project_id))
         return SimpleNamespace(profile=SimpleNamespace(files_scanned=1))
+
+    async def write(self, project_id, *, section, content: str, meta=None):
+        key = getattr(section, "value", str(section))
+        metadata = dict(meta or {})
+        self.writes.append((str(project_id), key, content, metadata))
+        self.notes.setdefault(key, []).append({"metadata": metadata, "content": content})
+
+    async def sections(self, project_id):
+        return dict(self.notes)
 
 
 class _Workspace:
@@ -127,3 +138,50 @@ async def test_scan_failure_is_swallowed_and_retried_on_the_next_change() -> Non
     clock.now += 1
     await bus.publish(Events.WORKSPACE_CHANGED, {"change_id": "c2", "to": "applied"})
     assert brain.scans == [str(project)]
+
+
+def _applied_payload(project_id, *, batch_id: str = "batch-1") -> dict:
+    return {
+        "batch_id": batch_id,
+        "change_ids": ["c1", "c2"],
+        "files": ["a.py", "b.py"],
+        "task_id": str(uuid.uuid4()),
+        "project_id": str(project_id),
+        "added_lines": 7,
+        "removed_lines": 2,
+        "test": {"passed": True, "command": "pytest -q", "exit_code": 0},
+    }
+
+
+async def test_applied_batch_is_sedimented_once_with_real_test_result() -> None:
+    """整批落盘写一条沉淀：含文件清单与真实测试结果；同一 batch_id 重投只写一次。"""
+    clock, brain, project = _Clock(), _Brain(), uuid.uuid4()
+    bus, _ = _build(
+        brain=brain, project_id=project, workspace=_Workspace(project_id=project), clock=clock
+    )
+
+    payload = _applied_payload(project)
+    await bus.publish(Events.WORKSPACE_APPLIED, payload)
+    await bus.publish(Events.WORKSPACE_APPLIED, payload)
+
+    assert len(brain.writes) == 1
+    written_project, section, text, meta = brain.writes[0]
+    assert written_project == str(project)
+    assert section == "agent_notes"
+    assert "a.py" in text and "b.py" in text
+    assert "pytest -q" in text and "通过" in text
+    assert meta["batch_id"] == "batch-1"
+
+
+async def test_applied_batch_without_project_falls_back_to_its_task() -> None:
+    """批次事件只带 task_id 时，沿任务找回项目归属，不能因为缺 project_id 就丢沉淀。"""
+    clock, brain, project = _Clock(), _Brain(), uuid.uuid4()
+    bus, _ = _build(
+        brain=brain, project_id=project, workspace=_Workspace(project_id=None), clock=clock
+    )
+
+    payload = _applied_payload(project)
+    payload["project_id"] = None
+    await bus.publish(Events.WORKSPACE_APPLIED, payload)
+
+    assert [item[0] for item in brain.writes] == [str(project)]

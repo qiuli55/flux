@@ -209,6 +209,17 @@ def test_apply_many_success_marks_every_proposal_applied(
     assert (workspace_root / "a.py").read_text(encoding="utf-8") == PROPOSED
     assert (workspace_root / "b.py").read_text(encoding="utf-8") == PROPOSED
     assert all(c.backup_path for c in applied)
+    # 上下文闭环：整批成功要发一条带批次边界与真实测试结果的 applied 事件，
+    # 任务收尾沉淀靠它写"测试到底过没过"，逐条事件带不出这个事实。
+    batches = [
+        payload
+        for event, payload in apply_container.bus.history
+        if event == Events.WORKSPACE_APPLIED
+    ]
+    assert len(batches) == 1
+    assert sorted(batches[0]["files"]) == ["a.py", "b.py"]
+    # 未配置测试命令时 test 为 None，但字段必须存在：订阅方靠"有没有值"区分跳过与通过
+    assert "test" in batches[0]
 
 
 def test_apply_many_failure_marks_all_failed_and_restores_files(
