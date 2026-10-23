@@ -84,6 +84,11 @@ class FluxApi(
     }
 
     suspend fun cancelTask(taskId: String): Task = post("api/v1/tasks/$taskId/cancel", buildJsonObject {})
+
+    /** 切换任务的执行 Agent：同一对话保留历史，后续 Run 交给新 Agent。 */
+    suspend fun setTaskAgent(taskId: String, agentId: String): Task =
+        post("api/v1/tasks/$taskId/agent", buildJsonObject { put("agent_id", agentId) })
+
     suspend fun getRun(runId: String): Run = get("api/v1/dsh/runs/$runId")
     suspend fun listRuns(): List<Run> = get("api/v1/dsh/runs")
     suspend fun interruptRun(runId: String): Run = post("api/v1/dsh/runs/$runId/interrupt", buildJsonObject {})

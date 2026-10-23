@@ -84,6 +84,12 @@ class DecisionModeRequest(BaseModel):
     mode: DecisionMode
 
 
+class TaskAgentRequest(BaseModel):
+    """切换任务的执行 Agent：同一对话继续，后续 Run 交给新 Agent。"""
+
+    agent_id: str = Field(min_length=1)
+
+
 class DecisionOption(BaseModel):
     """一个候选方案：做什么、带来什么影响、是不是推荐项。"""
 

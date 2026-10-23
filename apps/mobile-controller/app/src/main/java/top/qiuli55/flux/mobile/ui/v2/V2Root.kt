@@ -136,12 +136,24 @@ fun FluxV2Root() {
         }
     }
 
+    // 首页 / 决策 / 队列：进入或切回时拉一次真实数据，不用干等 3 秒轮询
+    LaunchedEffect(route) {
+        if (app.boot == V2Boot.READY &&
+            (route == V2Route.Home || route == V2Route.Decisions || route == V2Route.Queue)
+        ) {
+            vm.refresh(quiet = true)
+        }
+    }
+
     // 前后台：退到后台时暂停 3 秒轮询
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> vm.setForeground(true)
+                Lifecycle.Event.ON_RESUME -> {
+                    vm.setForeground(true)
+                    vm.refresh(quiet = true)
+                }
                 Lifecycle.Event.ON_PAUSE -> vm.setForeground(false)
                 else -> Unit
             }
@@ -183,7 +195,7 @@ fun FluxV2Root() {
     fun sendDraftMessage(text: String) {
         val current = chat ?: return
         chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
-        vm.createTask(text, current.agentId) { taskId ->
+        vm.createTask(text, current.agentId, current.decisionMode) { taskId ->
             chat = current.copy(conversationId = taskId, title = text.take(40))
             chatMessages.clear()
             chatOrigin = V2Route.Home
@@ -348,6 +360,9 @@ fun FluxV2Root() {
                                     onSend = { sendDraftMessage(it) },
                                     sending = app.busyAction == "create",
                                     notice = app.error,
+                                    // 新建对话不是从设备接续的历史会话，不需要接续横幅。
+                                    showHandoff = false,
+                                    onDecisionModeChange = { mode -> chat = chat?.copy(decisionMode = mode) },
                                 )
                             }
                         }

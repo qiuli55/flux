@@ -288,7 +288,12 @@ class V2AppViewModel : FluxViewModel() {
 
     // ------------------------------------------------------------ 动作
 
-    fun createTask(description: String, agentId: String?, onCreated: (String) -> Unit) {
+    fun createTask(
+        description: String,
+        agentId: String?,
+        decisionMode: String = "auto",
+        onCreated: (String) -> Unit,
+    ) {
         val text = description.trim()
         if (text.isEmpty()) {
             _state.value = _state.value.copy(error = "任务描述不能为空")
@@ -298,7 +303,7 @@ class V2AppViewModel : FluxViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "create", error = null, notice = null)
             try {
-                val task = api().createTask(text, agentId?.takeIf { it.isNotBlank() }, "auto")
+                val task = api().createTask(text, agentId?.takeIf { it.isNotBlank() }, decisionMode)
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
                 onCreated(task.id)

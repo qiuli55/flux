@@ -500,7 +500,11 @@ fun V2TaskChatScreen(
     val state by vm.state.collectAsState()
     val task = state.task
 
-    LaunchedEffect(taskId) { vm.refresh(quiet = true) }
+    LaunchedEffect(taskId) {
+        // 「已开始执行」之类的提示只属于任务详情页，进入对话页不该再看到。
+        vm.dismissNotice()
+        vm.refresh(quiet = true)
+    }
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
     val agentId = task?.agentId.orEmpty()
@@ -525,28 +529,35 @@ fun V2TaskChatScreen(
         }
     }
     val locked = task?.isFinished == true
+    // 正在执行时 Agent 已接手，先停止再切换；终态任务聊天只读，不提供切换。
+    val canSwitchAgent = task != null && !locked && task.status != "running"
 
-    V2ChatScreen(
-        chat = chat,
-        messages = messages,
-        extraTop = extraTop,
-        showBack = showBack,
-        onBack = onBack,
-        onOpenLogs = onOpenLogs,
-        onDelete = {},
-        onOpenAgentPicker = {},
-        onSend = { text ->
-            vm.onDraftChange(text)
-            vm.send()
-        },
-        sending = state.sending,
-        locked = locked,
-        showDelete = false,
-        canSwitchAgent = false,
-        notice = state.error?.let { it } ?: state.notice,
-        suggestions = emptyList(),
-        showHandoff = false,
-    )
+    Box(Modifier.fillMaxSize()) {
+        V2ChatScreen(
+            chat = chat,
+            messages = messages,
+            extraTop = extraTop,
+            showBack = showBack,
+            onBack = onBack,
+            onOpenLogs = onOpenLogs,
+            onDelete = {},
+            onOpenAgentPicker = {},
+            onSend = { text ->
+                vm.onDraftChange(text)
+                vm.send()
+            },
+            sending = state.sending,
+            locked = locked,
+            showDelete = false,
+            canSwitchAgent = canSwitchAgent,
+            notice = state.error?.let { it } ?: state.notice,
+            suggestions = emptyList(),
+            showHandoff = false,
+            // 当前设备上已配置的 Agent 就地下拉切换，历史消息保留。
+            agentOptions = if (canSwitchAgent) agentsForDevice(chat.device) else emptyList(),
+            onSwitchAgent = { vm.switchAgent(it) },
+        )
+    }
 }
 
 private fun TaskMessage.toV2Message(): V2Message? {
@@ -769,7 +780,11 @@ fun V2ChangesScreen(
     val state by vm.state.collectAsState()
     var bulk by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(taskId) { vm.refresh(quiet = true) }
+    LaunchedEffect(taskId) {
+        // 任务详情页留下的提示不带进变更页；本页操作产生的提示会在下方正常展示。
+        vm.dismissNotice()
+        vm.refresh(quiet = true)
+    }
 
     val pending = state.changes.count { it.status == "pending" }
 

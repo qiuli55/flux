@@ -13,6 +13,10 @@ data class ConnectionConfig(
     val isComplete: Boolean
         get() = baseUrl.isNotBlank() && token.isNotBlank()
 
+    /** 账号模式：baseUrl 指向云端设备中转 `.../api/devices/{id}/p`。 */
+    val isRelay: Boolean
+        get() = baseUrl.contains("/api/devices/")
+
     companion object {
         const val DEFAULT_BASE_URL = "https://flux.qiuli55.top/mobile"
     }

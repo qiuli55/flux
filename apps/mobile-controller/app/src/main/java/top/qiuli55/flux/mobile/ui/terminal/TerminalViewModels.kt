@@ -81,6 +81,7 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
 
     private var streamSource: EventSource? = null
     private var reconnectJob: Job? = null
+    private var pollJob: Job? = null
     private var suppressReconnect = false
     private val eventLock = Any()
     private val seenSeqs = LinkedHashSet<Int>()
@@ -99,13 +100,38 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
                 val api = api()
                 val session = api.getTerminalSession(sessionId)
                 api.listTerminalEvents(sessionId, afterSeq = 0).forEach(::ingest)
-                _state.value = _state.value.copy(loading = false, session = session, streamState = "connecting")
-                openStream(lastSeenSeq())
+                _state.value = _state.value.copy(loading = false, session = session, streamState = "connecting", error = null)
+                // 账号云中转只做请求-响应，不转发 SSE：长连接会占用通道直到超时，
+                // 后面发命令的请求全被堵住（实测 504）。中转模式改为轮询事件。
+                if (config().isRelay) startRelayPolling() else openStream(lastSeenSeq())
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(loading = false, error = e.message, streamState = "error")
             } catch (e: Exception) {
                 _state.value = _state.value.copy(loading = false, error = e.message ?: "加载失败", streamState = "error")
             }
+        }
+    }
+
+    /** 中转模式的实时性来源：按序号增量拉取事件。 */
+    private fun startRelayPolling() {
+        pollJob?.cancel()
+        pollJob = viewModelScope.launch {
+            _state.value = _state.value.copy(streamState = "live", streamError = null)
+            while (isActive && !suppressReconnect && isSessionActive()) {
+                delay(RELAY_POLL_MS)
+                runCatching { api().listTerminalEvents(sessionId, afterSeq = lastSeenSeq()) }
+                    .onSuccess { events ->
+                        events.forEach(::ingest)
+                        _state.value = _state.value.copy(streamState = "live", streamError = null, error = null)
+                    }
+                    .onFailure { error ->
+                        // 停止会话会取消轮询；CancellationException 不是错误，不能上屏。
+                        if (error !is kotlinx.coroutines.CancellationException) {
+                            _state.value = _state.value.copy(streamError = error.message ?: "轮询终端事件失败")
+                        }
+                    }
+            }
+            _state.value = _state.value.copy(streamState = "closed")
         }
     }
 
@@ -264,6 +290,8 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
         suppressReconnect = true
         reconnectJob?.cancel()
         reconnectJob = null
+        pollJob?.cancel()
+        pollJob = null
         streamSource?.cancel()
         streamSource = null
         _state.value = _state.value.copy(streamState = "closed", streamError = null)
@@ -290,6 +318,8 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
         suppressReconnect = true
         reconnectJob?.cancel()
         reconnectJob = null
+        pollJob?.cancel()
+        pollJob = null
         streamSource?.cancel()
         streamSource = null
     }
@@ -299,5 +329,6 @@ class TerminalViewModel(private val sessionId: String) : FluxViewModel() {
         private const val MAX_SEEN_SEQS = 4096
         private const val REPLAY_WINDOW = 200
         private const val MAX_BACKOFF_MS = 15_000L
+        private const val RELAY_POLL_MS = 1_200L
     }
 }
