@@ -242,7 +242,10 @@ def test_unknown_argument_is_rejected_instead_of_ignored(mcp_client: TestClient)
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     result = call(mcp_client, token, "workspace.read", {"path": "a.py", "sudo": True})
     assert result["isError"] is True
-    assert "未定义的入参" in result["content"][0]["text"]
+    text = result["content"][0]["text"]
+    assert "未定义的入参" in text
+    # 报错要给出合法入参名，否则模型只能靠猜（基准里 `workdir` 这类拼写就反复失败）
+    assert "path" in text
 
 
 # --- 4. 只读工具 ---
@@ -306,6 +309,19 @@ def test_workspace_read_many_reads_files_and_reports_per_item_errors(
     assert items["b.py"]["content"] == "b = 2\n"
     assert items["missing.py"]["error"]
     assert data["count"] == 3
+
+
+def test_workspace_read_many_rejects_more_than_ten_paths(mcp_client: TestClient) -> None:
+    """超量不是静默截断：报错要告诉 Agent 拆成多次调用，否则它只会原地重试。"""
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    result = call(
+        mcp_client,
+        token,
+        "workspace.read_many",
+        {"paths": [f"f{i}.py" for i in range(11)]},
+    )
+    assert result["isError"] is True
+    assert "拆成多次" in result["content"][0]["text"]
 
 
 def test_workspace_read_many_clips_large_files(mcp_client: TestClient, workspace_root) -> None:

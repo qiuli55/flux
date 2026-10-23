@@ -25,6 +25,7 @@ from flux.core.virtual_workspace.apply_engine import (
     OUTCOME_NEEDS_ATTENTION,
     PHASE_PREPARED,
     ApplyEngine,
+    ApplyOutcome,
     ChangeRecovery,
     RecoveryEntry,
     RollbackItem,
@@ -482,6 +483,9 @@ class VirtualWorkspaceService:
                 await self._publish(updated, previous=VirtualChangeStatus.APPLYING)
                 applied.append(updated)
             await self._finish_batch(batch_id, ApplyBatchStatus.APPLIED)
+            # 上下文闭环：整批成功后再发一条批次级事件（逐条 applied 没有批次边界，
+            # 沉淀挂在逐条事件上会把一批写成 N 条）。
+            await self._publish_applied(applied, outcomes, batch_id)
             return applied
         finally:
             self._active_batches.discard(batch_id)
@@ -1187,6 +1191,40 @@ class VirtualWorkspaceService:
         if extra:
             payload.update(extra)
         await self._bus.publish(Events.WORKSPACE_CHANGED, payload)
+
+    async def _publish_applied(
+        self,
+        applied: Sequence[VirtualChange],
+        outcomes: Sequence[ApplyOutcome],
+        batch_id: str,
+    ) -> None:
+        """整批落盘成功后发一条批次级事件（任务收尾沉淀的事实来源）。
+
+        真实测试结果只存在于 `ApplyOutcome.test`，逐条 applied 事件带不出去；没有这条
+        事件，沉淀只能写"改了什么"，写不出"测试到底过没过"。
+        """
+        if self._bus is None or not applied:
+            return
+        try:
+            first = applied[0]
+            test = outcomes[0].test if outcomes else None
+            await self._bus.publish(
+                Events.WORKSPACE_APPLIED,
+                {
+                    "batch_id": batch_id,
+                    "change_ids": [str(item.id) for item in applied],
+                    "files": [item.file_path for item in applied],
+                    "task_id": str(first.task_id) if first.task_id else None,
+                    "project_id": str(first.project_id) if first.project_id else None,
+                    "added_lines": sum(getattr(item, "added_lines", 0) or 0 for item in applied),
+                    "removed_lines": sum(
+                        getattr(item, "removed_lines", 0) or 0 for item in applied
+                    ),
+                    "test": test.to_dict() if test is not None else None,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 沉淀事件不能把已经成功的 Apply 反转成失败
+            logger.warning("Apply 批次事件发布失败 batch=%s", batch_id, exc_info=True)
 
 
 def _clip(text: str, limit: int) -> str:
