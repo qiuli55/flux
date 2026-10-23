@@ -35,7 +35,7 @@ APK_URL="${DOMAIN}/flux-mobile/${REMOTE_APK}"
 echo "==> 发布 v${VERSION_NAME} (vc${VERSION_CODE}) → ${HOST}:${REMOTE_DIR}/${REMOTE_APK}"
 ssh "$HOST" "mkdir -p '$REMOTE_DIR'"
 scp "$APK" "$HOST:$REMOTE_DIR/.upload-${REMOTE_APK}"
-ssh "$HOST" "mv '$REMOTE_DIR/.upload-${REMOTE_APK}' '$REMOTE_DIR/${REMOTE_APK}'"
+ssh "$HOST" "mv '$REMOTE_DIR/.upload-${REMOTE_APK}' '$REMOTE_DIR/${REMOTE_APK}' && chmod 644 '$REMOTE_DIR/${REMOTE_APK}'"
 
 TMP_JSON="$(mktemp)"
 trap 'rm -f "$TMP_JSON"' EXIT
@@ -61,7 +61,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 PY
 
 scp "$TMP_JSON" "$HOST:$REMOTE_DIR/.latest.json.tmp"
-ssh "$HOST" "mv '$REMOTE_DIR/.latest.json.tmp' '$REMOTE_DIR/latest.json'"
+# mktemp 默认 0600，直接 mv 过去 nginx（www-data）会 403，这里显式放开读权限。
+ssh "$HOST" "chmod 644 '$REMOTE_DIR/.latest.json.tmp' && mv '$REMOTE_DIR/.latest.json.tmp' '$REMOTE_DIR/latest.json'"
 
 echo "==> 完成"
 echo "    清单: ${DOMAIN}/flux-mobile/latest.json"
