@@ -256,7 +256,7 @@ class CliRuntime:
             with contextlib.suppress(OSError):
                 os.chmod(run_dir, 0o700)
             token_id, token_raw = await self._issue_token(agent_id, run_id)
-            runtime_env = self._write_runtime_config(run_dir, token_raw)
+            runtime_env = self._write_runtime_config(run_dir, token_raw, run_id)
         except Exception:
             await self._revoke(token_id)
             raise
@@ -389,7 +389,9 @@ class CliRuntime:
         )
         return str(token.id), raw
 
-    def _write_runtime_config(self, run_dir: Path, token_raw: str | None) -> dict[str, str]:
+    def _write_runtime_config(
+        self, run_dir: Path, token_raw: str | None, run_id: str
+    ) -> dict[str, str]:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
             raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
@@ -398,12 +400,13 @@ class CliRuntime:
             home.mkdir(parents=True, exist_ok=True)
             config = home / "config.toml"
             config.write_text(
-                _codex_config(url, token_raw, settings=self._settings), encoding="utf-8"
+                _codex_config(url, token_raw, settings=self._settings, run_id=run_id),
+                encoding="utf-8",
             )
             self._secure(config)
             return {"CODEX_HOME": str(home)}
         config = run_dir / "opencode.json"
-        config.write_text(_opencode_config(url, token_raw), encoding="utf-8")
+        config.write_text(_opencode_config(url, token_raw, run_id), encoding="utf-8")
         self._secure(config)
         return {"OPENCODE_CONFIG": str(config)}
 
@@ -716,7 +719,7 @@ def _text_of(data: dict[str, Any]) -> str:
     return ""
 
 
-def _codex_config(url: str, token: str | None, *, settings: Settings) -> str:
+def _codex_config(url: str, token: str | None, *, settings: Settings, run_id: str = "") -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
 
     隔离 CODEX_HOME 里没有用户的 auth.json，codex 会判定「未登录」；所以模型通道必须自带
@@ -728,7 +731,7 @@ def _codex_config(url: str, token: str | None, *, settings: Settings) -> str:
         lines += [
             "[mcp_servers.flux]",
             f'url = "{url}"',
-            f'http_headers = {{ Authorization = "Bearer {token}" }}',
+            f'http_headers = {{ Authorization = "Bearer {token}", X-Flux-Run-Id = "{run_id}" }}',
             # codex exec 的审批策略是 never，MCP 工具调用默认仍要审批——不显式放行，
             # Agent 会判定「MCP 不可用」退回自己读文件（2026-10-06 真实 Run 记录）。
             # 取值实测只有 auto / prompt / writes / approve（codex 0.157.1 解析报错原文）。
@@ -781,15 +784,20 @@ def _codex_provider_lines(settings: Settings) -> list[str]:
     return lines
 
 
-def _opencode_config(url: str, token: str | None) -> str:
-    """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。"""
+def _opencode_config(url: str, token: str | None, run_id: str = "") -> str:
+    """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
+
+    `X-Flux-Run-Id` 把这条 MCP 连接绑到本次 Run：context 摄入、失败步记录、
+    `context.steps` 的默认归属都依赖它。少了这个头，CLI 通道下的 step 日志会被整段跳过
+    （2026-10-23 基准复跑时发现：Agent 只能自己从环境变量里翻 run_id 再显式传参）。
+    """
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
     if token is not None:
         payload["mcp"] = {
             "flux": {
                 "type": "remote",
                 "url": url,
-                "headers": {"Authorization": f"Bearer {token}"},
+                "headers": {"Authorization": f"Bearer {token}", "X-Flux-Run-Id": run_id},
                 "enabled": True,
             }
         }
