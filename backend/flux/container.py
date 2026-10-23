@@ -37,6 +37,7 @@ from flux.core.memory.service import MemoryService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
+from flux.core.project_brain.refresh import BrainRefresher
 from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
@@ -77,6 +78,7 @@ class Container:
     files: WorkspaceFileExplorer = field(init=False)
     brain_repo: ProjectBrainRepository = field(init=False)
     brain: ProjectBrain = field(init=False)
+    brain_refresher: BrainRefresher = field(init=False)
     memory_repo: MemoryRepository = field(init=False)
     memory: MemoryService = field(init=False)
     task_repo: TaskRepository = field(init=False)
@@ -213,8 +215,18 @@ class Container:
         # DSH Run 终态 → 任务状态（P0-05）：订阅事件总线，Run 结束即回写所属任务。
         # 同时把任务级对账挂上看护器的对账循环：事件在崩溃时会丢，running 任务需要兜底收尾
         # （P2-04 / TC-502），Run 状态先对完再让下游据真实状态判断。
-        self.task_runs = TaskRunBridge(self.task_repo, self.run_repo)
+        self.task_runs = TaskRunBridge(
+            self.task_repo, self.run_repo, brain=self.brain, workspace=self.workspace
+        )
         self.task_runs.attach(self.bus)
+        # 上下文闭环：提案 applied 后刷新项目 Brain 快照（同项目节流，失败不阻塞 Apply）
+        self.brain_refresher = BrainRefresher(
+            brain=self.brain,
+            tasks=self.task_repo,
+            workspace=self.workspace,
+            bus=self.bus,
+        )
+        self.brain_refresher.attach()
         self.dsh.supervisor.add_reconcile_hook(self.task_runs.reconcile_orphan_tasks)
         # MCP 工具调用成功 = 一次有效进展（P2-15 §2.4）：接线到看护器，避免 idle timeout 误杀
         self.bus.subscribe(Events.MCP_TOOL_CALLED, self._on_mcp_tool_called)

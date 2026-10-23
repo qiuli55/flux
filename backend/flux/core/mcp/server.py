@@ -148,10 +148,24 @@ class McpServer:
             logger.info(
                 "MCP 工具调用失败 agent=%s tool=%s error=%s", identity.agent_id, name, exc.code
             )
+            # 失败也要摄入（§3.3）：错误是下一轮最需要的上下文，成功路径写、失败路径不写
+            # 会让 Agent 在同一个坑里反复踩——它看不到自己刚才失败在哪。
+            await self._ingest_context(
+                identity,
+                spec,
+                {"error": {"code": exc.code, "message": exc.message}},
+                status=StepStatus.FAIL,
+            )
             return _result(request_id, _tool_error(f"{exc.code}: {exc.message}"))
         except Exception as exc:  # noqa: BLE001 - 工具边界：任何异常都要转成显式失败
             await self._publish(Events.MCP_TOOL_CALLED, identity, spec, error="internal_error")
             logger.exception("MCP 工具执行异常 tool=%s agent=%s", name, identity.agent_id)
+            await self._ingest_context(
+                identity,
+                spec,
+                {"error": {"code": "internal_error", "message": str(exc)}},
+                status=StepStatus.FAIL,
+            )
             return _result(request_id, _tool_error(f"工具执行失败：{exc}"))
 
         await self._publish(Events.MCP_TOOL_CALLED, identity, spec)
@@ -162,9 +176,17 @@ class McpServer:
         return _result(request_id, _tool_text(data))
 
     async def _ingest_context(
-        self, identity: AgentIdentity, spec: ToolSpec, data: dict[str, Any]
+        self,
+        identity: AgentIdentity,
+        spec: ToolSpec,
+        data: dict[str, Any],
+        *,
+        status: StepStatus = StepStatus.OK,
     ) -> None:
-        """把成功的工具结果摄入上下文：redact → CAS 原文 → step 落库 → 脱敏映射（§10.1 契约）。
+        """把一次工具结果摄入上下文：redact → CAS 原文 → step 落库 → 脱敏映射（§10.1 契约）。
+
+        成功与失败共用同一条路径：失败只是 `status=FAIL`、正文换成错误对象——step 日志
+        因此能回答"这轮做砸了什么"，而不是只留下成功的部分历史。
 
         归属键 `run_id` 来自 `X-Flux-Run-Id`（可为 None ⇒ 无法归属到 Run，整段跳过，不写库）。
         当前上下文机制没有 turn 粒度，`turn_id` 暂以 `run_id` 近似（占位符/删除走同一把钥匙）。
@@ -182,7 +204,7 @@ class McpServer:
                 run_id=run_id,
                 turn_id=run_id,
                 kind=StepKind.TOOL_CALL,
-                status=StepStatus.OK,
+                status=status,
                 tool=spec.name,
                 result_sha256=blob.sha256,
                 result_bytes=len(body),

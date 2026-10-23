@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from flux.core.context.catalog import catalog_line
+from flux.core.context.redact import redact
 from flux.core.mcp.context_packager import DEFAULT_BUDGET_CHARS, package_context
 from flux.core.mcp.tools.base import (
     ToolContext,
@@ -32,7 +33,7 @@ from flux.core.virtual_workspace.path_guard import (
     is_secret_path,
 )
 from flux.enums import Capability
-from flux.errors import AIOSError, NotFoundError, ValidationError
+from flux.errors import AIOSError, NotFoundError, PermissionDeniedError, ValidationError
 
 CONTEXT_GET_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -171,6 +172,84 @@ async def context_fetch(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
         "next_offset": stop if truncated else None,
         "content": chunk,
         "facts": step.facts,
+    }
+
+
+#: context.steps 单次最多返回多少条目录行（step 只增不删，一次全拉会撑爆上下文）
+MAX_CONTEXT_STEPS = 200
+#: 每条 step 摘要的字符上限：只要够判断"要不要 fetch 原文"
+STEP_SUMMARY_CHARS = 240
+
+CONTEXT_STEPS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {
+            "type": "string",
+            "description": "Run id；不传则取当前请求绑定的 Run（X-Flux-Run-Id）",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_CONTEXT_STEPS,
+            "description": f"最多返回多少条，默认 50（上限 {MAX_CONTEXT_STEPS}）",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+async def context_steps(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """列出某个 Run 的 step 目录：工具、状态、时间、摘要（失败步带 `!` 标记）。
+
+    `context_steps` 过去只写不读——Agent 看不到自己刚走过的路，也接不上前一轮 Run；
+    这里补的是"目录入口"，细节仍由 `context.fetch(step_id=...)` 按需取回。
+    只允许看本 Agent 名下的 Run：step 正文可能含工作区内容，不能跨 Agent 读。
+    """
+    reject_unknown(params, {"run_id", "limit"})
+    run_id = optional_str(params, "run_id") or ctx.identity.run_id
+    if not run_id:
+        raise ValidationError(
+            "需要 run_id：当前请求没有绑定 Run（缺 X-Flux-Run-Id）", details={"param": "run_id"}
+        )
+    limit = _optional_int(params, "limit", default=50)
+    if limit < 1 or limit > MAX_CONTEXT_STEPS:
+        raise ValidationError(
+            f"参数 limit 必须在 1..{MAX_CONTEXT_STEPS} 之间", details={"param": "limit"}
+        )
+
+    if run_id != ctx.identity.run_id:
+        run = await ctx.container.run_repo.get(run_id)
+        if run is None:
+            raise NotFoundError(f"Run {run_id} 不存在", details={"run_id": run_id})
+        if run.agent_id != ctx.identity.agent_id:
+            raise PermissionDeniedError(
+                "只能查看本 Agent 名下的 Run 步骤", details={"run_id": run_id}
+            )
+
+    steps = await ctx.container.context_steps.list_by_run(run_id, limit=limit)
+    rows: list[dict[str, Any]] = []
+    for step in steps:
+        # 密钥路径的历史 step（策略收紧前落库）不回给 Agent；正文摄入时已脱敏，这里再兜底一次
+        if step.target_ref and is_secret_path(step.target_ref):
+            continue
+        summary = redact(step.result_head or "").text.strip().replace("\n", " ")
+        rows.append(
+            {
+                "step_id": step.id,
+                "catalog_line": catalog_line(step),
+                "kind": step.kind,
+                "status": step.status,
+                "tool": step.tool,
+                "target_ref": step.target_ref,
+                "created_at": step.created_at.isoformat() if step.created_at else None,
+                "summary": summary[:STEP_SUMMARY_CHARS],
+            }
+        )
+    return {
+        "run_id": run_id,
+        "count": len(rows),
+        "steps": rows,
+        "note": "这是目录行；需要某一步的原文时用 context.fetch(step_id=...) 按需取回。",
     }
 
 
@@ -524,6 +603,17 @@ def read_tools() -> tuple[ToolSpec, ...]:
             input_schema=CONTEXT_FETCH_SCHEMA,
             capability=Capability.FILE_READ,
             handler=context_fetch,
+        ),
+        ToolSpec(
+            name="context.steps",
+            title="列出 Run 的步骤目录",
+            description=(
+                "列出本 Run（或本 Agent 的前序 Run）的 step 目录：工具、状态、时间、摘要。"
+                "失败步带 ! 标记。用它回看自己做过什么、接续上一轮；细节再用 context.fetch 取。"
+            ),
+            input_schema=CONTEXT_STEPS_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=context_steps,
         ),
         ToolSpec(
             name="workspace.read",

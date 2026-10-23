@@ -90,6 +90,22 @@ class AgentRunRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
+    async def list_by_task(self, task_id: uuid.UUID, *, limit: int = 5) -> list[AgentRun]:
+        """任务名下的最近若干 Run（按创建时间取最新 limit 条，返回时翻成升序）。
+
+        下一次 `context.get` 靠它把上一轮的终止原因（finish_reason / error）带回给 Agent，
+        否则"上一轮为什么挂"只留在人看的表里，Agent 永远读不到。
+        """
+        statement = (
+            select(AgentRun)
+            .where(AgentRun.task_id == task_id)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(max(limit, 1))
+        )
+        async with self._session_factory() as session:
+            newest_first = list(await session.scalars(statement))
+        return list(reversed(newest_first))
+
     async def set_status(
         self,
         run_id: str,

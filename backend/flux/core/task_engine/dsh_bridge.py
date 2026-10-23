@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, is_terminal, utcnow
+from flux.core.context.redact import redact
 from flux.core.event.bus import EventBus, Events
 from flux.core.task_engine.repository import MessageDraft, TaskRepository
-from flux.enums import DshRunStatus, TaskMessageRole, TaskStatus
+from flux.enums import BrainSection, DshRunStatus, TaskMessageRole, TaskStatus
 from flux.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,14 +56,35 @@ _TASK_STATUS_BY_RUN = {
     DshRunStatus.INTERRUPTED: TaskStatus.FAILED,
 }
 
+#: 自动沉淀只写终态里的"有结果"两种：取消不是产出，不该在项目记忆里留一条噪音
+_SEDIMENT_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+#: 沉淀正文上限：Project 层是给下一轮开工看的短记，不是执行日志（明细在提案与 Run 里）
+SEDIMENT_MAX_CHARS = 800
+#: 任务描述在沉淀里的截断长度
+SEDIMENT_TASK_CHARS = 200
+#: 错误在沉淀里的截断长度（只留尾部，栈的最后几行最能定位问题）
+SEDIMENT_ERROR_CHARS = 300
+
 
 class TaskRunBridge:
     """DSH Run 终态 → 任务状态 / 结果消息。"""
 
-    def __init__(self, tasks: TaskRepository, runs: AgentRunRepository | None = None) -> None:
+    def __init__(
+        self,
+        tasks: TaskRepository,
+        runs: AgentRunRepository | None = None,
+        *,
+        brain: Any = None,
+        workspace: Any = None,
+    ) -> None:
         self._tasks = tasks
         # 对账要拿 Run 的权威状态；纯事件转发（单测）可以不装配
         self._runs = runs
+        # 任务收尾自动沉淀（上下文闭环）：装配了 Brain 才写 Project 层，
+        # 纯事件转发单测可以只传前两个参数，行为不变。
+        self._brain = brain
+        # 提案统计是"改了什么"的事实来源；没装配时沉淀退化成任务级摘要
+        self._workspace = workspace
 
     def attach(self, bus: EventBus) -> None:
         for event in _STATUS_BY_EVENT:
@@ -165,6 +188,70 @@ class TaskRunBridge:
                 )
             ],
         )
+        # 上下文闭环：任务收尾把"这轮做了什么、结果如何"写进项目 Brain 的累积区，
+        # 下一轮（可能是另一个 Agent）开工时 context.get 就能看到，不必从人审队列反推。
+        await self._sediment(task, status=status, run_id=run_id, body=body)
+
+    async def _sediment(
+        self, task: Any, *, status: TaskStatus, run_id: str, body: dict[str, Any]
+    ) -> None:
+        """任务终态后向 Project Brain 写一条简短沉淀（best-effort，失败不影响收尾）。"""
+        if self._brain is None or task.project_id is None or status not in _SEDIMENT_STATUSES:
+            return
+        try:
+            if await self._already_sedimented(task.project_id, run_id):
+                return
+            text = await self._sediment_text(task, status=status, run_id=run_id, body=body)
+            await self._brain.write(
+                task.project_id,
+                section=BrainSection.AGENT_NOTES,
+                content=text,
+                meta={
+                    "source": "task_settle",
+                    "run_id": run_id,
+                    "task_id": str(task.id),
+                    "status": str(status),
+                },
+            )
+            logger.info(
+                "任务收尾已沉淀到项目 Brain task=%s project=%s run=%s",
+                task.id,
+                task.project_id,
+                run_id,
+            )
+        except Exception:  # noqa: BLE001 - 沉淀失败不能改写任务终态，只记日志
+            logger.warning("任务收尾沉淀失败 task=%s run=%s", task.id, run_id, exc_info=True)
+
+    async def _already_sedimented(self, project_id: Any, run_id: str) -> bool:
+        """同一 Run 只沉淀一次：重复投递的事件不能把同一件事写成两条记忆。"""
+        notes = (await self._brain.sections(project_id)).get(BrainSection.AGENT_NOTES.value, [])
+        return any((entry.get("metadata") or {}).get("run_id") == run_id for entry in notes)
+
+    async def _sediment_text(
+        self, task: Any, *, status: TaskStatus, run_id: str, body: dict[str, Any]
+    ) -> str:
+        """沉淀正文：任务、结果、失败原因、提案统计（改了什么），控制在短记长度内。"""
+        description = " ".join((task.description or "").split())
+        lines = [
+            "任务收尾（平台自动沉淀）",
+            f"- 任务：{description[:SEDIMENT_TASK_CHARS]}",
+            f"- 结果：{status}（run={run_id}）",
+        ]
+        finish_reason = body.get("finish_reason")
+        if finish_reason:
+            lines.append(f"- 结束原因：{finish_reason}")
+        error = body.get("error")
+        if error:
+            # 沉淀是长期记忆：错误里可能夹着密钥/令牌，落库前必须脱敏
+            lines.append(f"- 错误：{redact(str(error)[-SEDIMENT_ERROR_CHARS:]).text}")
+        if self._workspace is not None:
+            changes = await self._workspace.list(task_id=task.id)
+            if changes:
+                counts = Counter(str(change.status) for change in changes)
+                detail = "、".join(f"{name} {count}" for name, count in counts.items())
+                lines.append(f"- 提案：共 {len(changes)} 条（{detail}）")
+        lines.append("- 细节以人审队列与 Run 记录为准；本条是下一轮开工的短期锚点。")
+        return "\n".join(lines)[:SEDIMENT_MAX_CHARS]
 
 
 def _summary(status: TaskStatus, body: dict[str, Any]) -> str:

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from flux.core.context.budget import DEFAULT_BUDGET_CHARS, Level, Zone
 from flux.core.context.compress import extract, select, verify
 from flux.core.context.metrics import FeedMetrics
+from flux.core.context.redact import redact
 from flux.core.context.tiers import Tier, tier_rank
 from flux.errors import ValidationError
 from flux.logging import get_logger
@@ -40,6 +41,10 @@ MAX_CHANGES = 20
 MAX_DROPPED_REFS = 50
 #: 失败提案回灌给下一轮的失败原因上限：只留尾部（测试输出最有用的部分在末尾）
 APPLY_ERROR_CONTEXT_CHARS = 800
+#: 上下文里最多带几条历史 Run（终止原因回写用；只带最近的几次就够）
+MAX_RECENT_RUNS = 5
+#: 单条 Run 的错误摘要上限：错误可能是整段栈，上下文只需要能定位问题的尾部
+RUN_ERROR_CONTEXT_CHARS = 400
 #: S3 折算行数时的单行估算长度：把"剩余字符"换成"还能留几行"
 _ENCODED_LINE_CHARS = 120
 
@@ -54,16 +59,18 @@ _ZONE_BY_KIND: dict[str, Zone] = {
     "task": Zone.P0,
     "verify": Zone.P0,
     "brain": Zone.P0,
+    "runs": Zone.P1,
     "proposals": Zone.P1,
     "steps": Zone.P2,
 }
 
 #: 每类 entry 属于哪一层（§6.5）：任务与 Brain 是当轮事实（热，永不替换）；
-#: 近期提案是中段，预算吃紧时先编码；历史 step 是远段，最后才降级为 ref。
+#: 近期 Run 与提案是中段，预算吃紧时先编码；历史 step 是远段，最后才降级为 ref。
 _TIER_BY_KIND: dict[str, Tier] = {
     "task": Tier.HOT,
     "verify": Tier.HOT,
     "brain": Tier.HOT,
+    "runs": Tier.WARM,
     "proposals": Tier.WARM,
     "steps": Tier.COLD,
 }
@@ -74,6 +81,7 @@ _RETRIEVE_HINTS: dict[str, str] = {
     "task": "context.get(task_id=<id>)",
     "verify": "context.get(task_id=<id>)",
     "brain": "context.get(project_id=<id>)",
+    "runs": "context.get(task_id=<id>) / context.steps(run_id=<run_id>)",
     "proposals": "context.get(task_id=<id>) / workspace.diff(change_id=<提案 id>)",
     "step": "context.fetch(step_id=<id>)",
 }
@@ -126,6 +134,9 @@ async def package_context(
                 ref=f"task:{task.id}",
             )
         )
+        recent_runs = await _recent_runs_entry(container, task_uuid)
+        if recent_runs is not None:
+            entries.append(recent_runs)
 
     if project_uuid is not None:
         brain_text = await container.brain.context(project_uuid)
@@ -191,6 +202,38 @@ def _entry(*, kind: str, title: str, text: str, ref: str) -> dict[str, Any]:
         "zone": _ZONE_BY_KIND[kind],
         "tier": _TIER_BY_KIND[kind],
     }
+
+
+async def _recent_runs_entry(container: Container, task_id: uuid.UUID) -> dict[str, Any] | None:
+    """把该任务最近若干 Run 的终态与终止原因带回上下文（P1，温层）。
+
+    上一轮失败/超时的 `finish_reason` 与 `error` 原本只落在 `agent_runs` 表里，
+    Agent 下一轮读不到——它只能看到任务还在、却不知道自己上次为什么没做完。
+    没有终态 Run 时不产出条目，避免给每个新任务加一条空壳。
+    """
+    from flux.core.agent_runtime.run_repository import is_terminal
+
+    runs = await container.run_repo.list_by_task(task_id, limit=MAX_RECENT_RUNS)
+    finished = [run for run in runs if is_terminal(run.status)]
+    if not finished:
+        return None
+    lines = ["# 最近 Run（L1，历史终态）"]
+    for run in finished:
+        lines.append(
+            f"- [{run.status}] run={run.id}"
+            f"  finish_reason={run.finish_reason or '-'}"
+            + (f"  finished_at={run.finished_at.isoformat()}" if run.finished_at else "")
+        )
+        error = (run.error or "").strip()
+        if error:
+            # Run 的错误可能带出模型输出里的密钥；进上下文前统一过脱敏
+            lines.append(f"  错误：{redact(error[-RUN_ERROR_CONTEXT_CHARS:]).text}")
+    return _entry(
+        kind="runs",
+        title=f"最近 Run（{len(finished)} 条）",
+        text="\n".join(lines),
+        ref=f"runs:{task_id}",
+    )
 
 
 def _verify_entry(gate: str, *, task_id: uuid.UUID | None, project_id: uuid.UUID | None) -> dict:
