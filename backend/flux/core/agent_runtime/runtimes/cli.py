@@ -258,7 +258,9 @@ class CliRuntime:
             with contextlib.suppress(OSError):
                 os.chmod(run_dir, 0o700)
             token_id, token_raw = await self._issue_token(agent_id, run_id)
-            runtime_env = self._write_runtime_config(run_dir, token_raw, run_id, model=model_override)
+            runtime_env = self._write_runtime_config(
+                run_dir, token_raw, run_id, model=model_override
+            )
         except Exception:
             await self._revoke(token_id)
             raise
@@ -408,7 +410,7 @@ class CliRuntime:
             self._secure(config)
             return {"CODEX_HOME": str(home)}
         config = run_dir / "opencode.json"
-        config.write_text(_opencode_config(url, token_raw, run_id), encoding="utf-8")
+        config.write_text(_opencode_config(url, token_raw, run_id, model=model), encoding="utf-8")
         self._secure(config)
         return {"OPENCODE_CONFIG": str(config)}
 
@@ -791,14 +793,19 @@ def _codex_provider_lines(settings: Settings, *, model: str = "") -> list[str]:
     return lines
 
 
-def _opencode_config(url: str, token: str | None, run_id: str = "") -> str:
+def _opencode_config(url: str, token: str | None, run_id: str = "", model: str = "") -> str:
     """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
 
     `X-Flux-Run-Id` 把这条 MCP 连接绑到本次 Run：context 摄入、失败步记录、
     `context.steps` 的默认归属都依赖它。少了这个头，CLI 通道下的 step 日志会被整段跳过
     （2026-10-23 基准复跑时发现：Agent 只能自己从环境变量里翻 run_id 再显式传参）。
+
+    `model` 是任务级覆盖：写进这份按 Run 隔离的配置，只影响本 Run，
+    不改用户的全局 OpenCode 默认模型（实测 1.18.29 会与全局配置合并）。
     """
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
+    if model:
+        payload["model"] = model
     if token is not None:
         payload["mcp"] = {
             "flux": {
