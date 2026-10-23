@@ -102,6 +102,7 @@ async def test_preview_tests_the_proposed_code_and_leaves_the_workspace_untouche
 
     assert result["passed"] is True
     assert result["exit_code"] == 0
+    assert "proposal.create" in result["note"]
     assert (root / "calc.py").read_text(encoding="utf-8") == "bad\n"
     assert len(sandboxes) == 1 and not sandboxes[0].exists()
 

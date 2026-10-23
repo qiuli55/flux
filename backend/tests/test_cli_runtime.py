@@ -343,6 +343,17 @@ def test_execution_instruction_keeps_stable_prefix_before_dynamic_task() -> None
     assert text.index("## 平台身份") < text.index("task-1")
 
 
+def test_execution_instruction_requires_create_after_preview() -> None:
+    """预演不产生提案：指令必须要求预演通过后再用 proposal.create 交卷。"""
+    from flux.core.agent_runtime.runtimes.service import _execution_instruction
+
+    text = _execution_instruction(
+        SimpleNamespace(description="TASK-BODY", id="task-1", project_id="proj-1"), None, []
+    )
+    assert "proposal.preview 只是预演" in text
+    assert "proposal.create 提交同一份 payload" in text
+
+
 def test_opencode_step_finish_usage_is_accumulated() -> None:
     """每步的 tokens 必须由 Flux 自己累计，否则只能事后去翻 OpenCode 的库。"""
     usage = _RunUsage()
