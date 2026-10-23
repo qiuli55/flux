@@ -187,6 +187,8 @@ def _execution_instruction(
         "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
         "不要尝试直接写文件、执行 shell 或读取密钥。",
         "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
+        "- proposal.preview 只是预演，不产生提案、也不会进人审队列；"
+        "预演通过后必须再调用 proposal.create 提交同一份 payload，才算交卷。",
         "",
         task.description.strip(),
     ]
