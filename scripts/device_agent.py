@@ -155,6 +155,15 @@ async def relay_once(
                     LOG.debug("心跳失败：%s", exc)
 
         beat_task = asyncio.create_task(beat())
+        pending: set[asyncio.Task] = set()
+
+        async def handle(message: dict) -> None:
+            reply = await forward(local, message)
+            try:
+                await socket.send(json.dumps(reply, ensure_ascii=False))
+            except websockets.WebSocketException as exc:
+                LOG.debug("回传失败（通道可能已断开）：%s", exc)
+
         try:
             async for raw in socket:
                 try:
@@ -163,10 +172,16 @@ async def relay_once(
                     continue
                 if message.get("type") != "req":
                     continue
-                reply = await forward(local, message)
-                await socket.send(json.dumps(reply, ensure_ascii=False))
+                # 并发处理：单个慢请求（如长命令、SSE 流）不能堵住后续请求；
+                # 云端按请求 id 等待各自的响应，顺序无关。
+                task = asyncio.create_task(handle(message))
+                pending.add(task)
+                task.add_done_callback(pending.discard)
         finally:
             beat_task.cancel()
+            for task in list(pending):
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def run(args: argparse.Namespace) -> None:

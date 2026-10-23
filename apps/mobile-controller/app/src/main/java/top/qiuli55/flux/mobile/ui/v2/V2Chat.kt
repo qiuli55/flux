@@ -27,11 +27,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,6 +63,8 @@ data class V2ChatState(
     val device: String,
     val agentId: String,
     val model: String,
+    /** 新建任务时的决策方式：auto = AI 自己定，manual = 停下来问我。 */
+    val decisionMode: String = "auto",
 )
 
 @Composable
@@ -85,10 +90,16 @@ fun V2ChatScreen(
     suggestions: List<String> = demoChatSuggestions,
     /** 真实任务对话没有「从某设备接续」这一层，隐藏那条横幅。 */
     showHandoff: Boolean = true,
+    /** 新建对话时切换任务级决策方式（auto / manual）。 */
+    onDecisionModeChange: (String) -> Unit = {},
+    /** 非空时点击 Agent 名称展开的是就地下拉栏（任务对话切换执行 Agent）。 */
+    agentOptions: List<V2AgentOption> = emptyList(),
+    onSwitchAgent: (String) -> Unit = {},
 ) {
     val agent = demoAgent(chat.agentId)
     val listState = rememberLazyListState()
     var input by remember(chat.conversationId) { mutableStateOf("") }
+    var agentMenuOpen by remember { mutableStateOf(false) }
     val inputEnabled = !locked && !sending
 
     LaunchedEffect(messages.size, chat.conversationId) {
@@ -106,32 +117,78 @@ fun V2ChatScreen(
                 RoundIconButton(Icons.Outlined.ArrowBack, onBack, size = 32.dp, iconSize = 16.dp)
                 Spacer(Modifier.width(10.dp))
             }
-            Row(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(enabled = canSwitchAgent, onClick = onOpenAgentPicker),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Avatar(tint = agent.tint, size = 36.dp, icon = Icons.Outlined.SmartToy)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Label(agent.name, 13f, V2Colors.ink(.95f), FontWeight.Medium, maxLines = 1)
-                        if (canSwitchAgent) {
-                            Icon(
-                                Icons.Outlined.KeyboardArrowDown,
-                                null,
-                                tint = V2Colors.ink(.32f),
-                                modifier = Modifier.padding(start = 3.dp).size(12.dp),
-                            )
+            Box(Modifier.weight(1f)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = canSwitchAgent) {
+                            // 任务对话：就地下拉切换执行 Agent；新建对话：打开 Agent 与模型选择面板。
+                            if (agentOptions.isNotEmpty()) agentMenuOpen = true else onOpenAgentPicker()
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Avatar(tint = agent.tint, size = 36.dp, icon = Icons.Outlined.SmartToy)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Label(agent.name, 13f, V2Colors.ink(.95f), FontWeight.Medium, maxLines = 1)
+                            if (canSwitchAgent) {
+                                Icon(
+                                    Icons.Outlined.KeyboardArrowDown,
+                                    null,
+                                    tint = V2Colors.ink(.32f),
+                                    modifier = Modifier.padding(start = 3.dp).size(12.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
+                            Spacer(Modifier.width(4.dp))
+                            Label("${chat.title} · ${chat.device}", 9.5f, V2Colors.ink(.36f), maxLines = 1)
                         }
                     }
-                    Spacer(Modifier.height(2.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
-                        Spacer(Modifier.width(4.dp))
-                        Label("${chat.title} · ${chat.device}", 9.5f, V2Colors.ink(.36f), maxLines = 1)
+                }
+
+                DropdownMenu(
+                    expanded = agentMenuOpen && agentOptions.isNotEmpty(),
+                    onDismissRequest = { agentMenuOpen = false },
+                    modifier = Modifier.background(Color.White),
+                ) {
+                    agentOptions.forEach { option ->
+                        val selected = option.agent.id == chat.agentId
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Label(option.agent.name, 12f, V2Colors.ink(.90f), FontWeight.Medium)
+                                        if (selected) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Icon(
+                                                Icons.Outlined.Check,
+                                                null,
+                                                tint = V2Colors.cyan700,
+                                                modifier = Modifier.size(13.dp),
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(2.dp))
+                                    Label(
+                                        option.models.firstOrNull()
+                                            ?.let { "${option.agent.role} · $it" }
+                                            ?: option.agent.role,
+                                        9.5f,
+                                        V2Colors.ink(.40f),
+                                        maxLines = 1,
+                                    )
+                                }
+                            },
+                            onClick = {
+                                agentMenuOpen = false
+                                if (!selected) onSwitchAgent(option.agent.id)
+                            },
+                        )
                     }
                 }
             }
@@ -217,6 +274,25 @@ fun V2ChatScreen(
             Spacer(Modifier.height(6.dp))
         }
 
+        if (chat.conversationId == null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Label("决策方式", 9.5f, V2Colors.ink(.32f), mono = true)
+                DecisionModeChip("AI 自己定", chat.decisionMode != "manual") {
+                    onDecisionModeChange("auto")
+                }
+                DecisionModeChip("停下来问我", chat.decisionMode == "manual") {
+                    onDecisionModeChange("manual")
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+
         Row(
             Modifier
                 .fillMaxWidth()
@@ -276,6 +352,29 @@ fun V2ChatScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun DecisionModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) V2Colors.cyan500.copy(alpha = .14f) else Color.White.copy(alpha = .45f))
+            .border(
+                1.dp,
+                if (selected) V2Colors.accent.copy(alpha = .35f) else V2Colors.ink(.07f),
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Label(
+            text,
+            9.5f,
+            if (selected) V2Colors.cyan800 else V2Colors.ink(.42f),
+            if (selected) FontWeight.Medium else FontWeight.Normal,
+        )
     }
 }
 

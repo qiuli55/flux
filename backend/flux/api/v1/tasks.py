@@ -30,6 +30,7 @@ from flux.schemas.api import (
     DecisionChooseRequest,
     DecisionCreateRequest,
     DecisionModeRequest,
+    TaskAgentRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
     TaskStartRequest,
@@ -277,6 +278,31 @@ async def set_decision_mode(
     task_uuid = _task_id(task_id)
     await _require_open_task(container, task_uuid, task_id)
     task = await container.task_repo.set_decision_mode(task_uuid, payload.mode)
+    return ok(_task_dict(task))
+
+
+@router.post("/{task_id}/agent")
+async def switch_task_agent(
+    task_id: str,
+    payload: TaskAgentRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """切换执行该任务的 Agent（移动端对话页的 Agent 下拉）。
+
+    同一任务/对话保留历史消息，后续「开始执行」改由新 Agent 承接；
+    正在执行时不允许切换（先停止），终态任务不可切换（与追加消息同一口径）。
+    """
+    task_uuid = _task_id(task_id)
+    task = await _require_open_task(container, task_uuid, task_id)
+    if task.status == TaskStatus.RUNNING.value:
+        raise ConflictError(
+            f"任务 {task_id} 正在执行，先停止 Agent 再切换",
+            details={"task_id": task_id, "status": task.status},
+        )
+    agent_id = _parse_uuid(payload.agent_id, field="agent_id")
+    # Agent 注册表是 Agent 存在性的唯一权威：API 边界 fail-closed。
+    container.agents.get(payload.agent_id)
+    task = await container.task_repo.set_agent(task_uuid, agent_id)
     return ok(_task_dict(task))
 
 

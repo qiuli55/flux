@@ -16,5 +16,5 @@ abstract class FluxViewModel : ViewModel() {
 
     protected suspend fun config(): ConnectionConfig = FluxEnv.settings.config.first()
 
-    protected suspend fun api(): FluxApi = FluxEnv.api(config())
+    protected suspend fun api(): FluxApi = FluxEnv.api(FluxEnv.configWithFreshToken())
 }

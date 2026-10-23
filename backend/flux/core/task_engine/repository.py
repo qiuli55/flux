@@ -122,6 +122,14 @@ class TaskRepository:
             await self._commit(session)
             return task
 
+    async def set_agent(self, task_id: uuid.UUID, agent_id: uuid.UUID) -> Task:
+        """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.agent_id = agent_id
+            await self._commit(session)
+            return task
+
     async def set_confirmation(self, task_id: uuid.UUID, confirmation: dict[str, Any]) -> Task:
         """写入需求确认（P0-06）。整体覆盖：确认卡的权威副本就是最后一次写入的那份。"""
         async with self._session_factory() as session:

@@ -213,6 +213,12 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(run = run, notice = "已请求停止 Agent：${run.status}")
     }
 
+    /** 对话页切换执行 Agent：历史消息保留，后续执行由新 Agent 承接。 */
+    fun switchAgent(agentId: String) = runAction("switch-agent") { api ->
+        val task = api.setTaskAgent(taskId, agentId)
+        _state.value = _state.value.copy(task = task, notice = "已切换 Agent，后续执行交给新 Agent")
+    }
+
     fun chooseDecision(decisionId: String, option: String?, reject: Boolean) = runAction("decision") { api ->
         val task = api.chooseDecision(
             taskId = taskId,
