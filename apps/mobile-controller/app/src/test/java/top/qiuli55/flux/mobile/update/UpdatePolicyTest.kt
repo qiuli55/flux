@@ -85,4 +85,12 @@ class UpdatePolicyTest {
             shouldAutoPrompt(manifest, 10, skippedCode = 11, lastPromptDay = "", today = "2026-10-23"),
         )
     }
+
+    @Test
+    fun download_progress_handles_unknown_and_overshoot_totals() {
+        assertEquals(0, downloadPercent(done = 0, total = 0))
+        assertEquals(0, downloadPercent(done = 5, total = -1))
+        assertEquals(49, downloadPercent(done = 49, total = 100))
+        assertEquals(100, downloadPercent(done = 120, total = 100))
+    }
 }

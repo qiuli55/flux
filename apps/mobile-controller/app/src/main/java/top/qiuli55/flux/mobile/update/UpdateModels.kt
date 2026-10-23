@@ -2,6 +2,10 @@ package top.qiuli55.flux.mobile.update
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+/** 清单解析统一入口：新增字段不影响旧客户端。 */
+val UpdateJson = Json { ignoreUnknownKeys = true }
 
 /**
  * B 机分发节点上的更新清单（/flux-mobile/latest.json）。
@@ -46,4 +50,10 @@ fun shouldAutoPrompt(
     val forced = manifest.isForcedFor(currentCode)
     if (!forced && manifest.versionCode <= skippedCode) return false
     return lastPromptDay != today
+}
+
+/** 下载进度百分比；总量未知时保持 0，避免出现负数或超过 100。 */
+fun downloadPercent(done: Long, total: Long): Int {
+    if (done <= 0 || total <= 0) return 0
+    return (done * 100 / total).toInt().coerceIn(0, 100)
 }

@@ -1,7 +1,6 @@
 package top.qiuli55.flux.mobile.update
 
 import android.util.Log
-import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -24,7 +23,7 @@ class UpdateChecker(
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("更新清单返回 HTTP ${response.code}")
             val body = response.body?.string() ?: error("更新清单为空")
-            json.decodeFromString<UpdateManifest>(body)
+            UpdateJson.decodeFromString<UpdateManifest>(body)
         }
     }.onFailure { Log.w(TAG, "拉取更新清单失败: ${it.message}") }
 
@@ -33,7 +32,6 @@ class UpdateChecker(
         const val MANIFEST_URL = "https://flux.app.qiuli55.top/flux-mobile/latest.json"
 
         private const val TAG = "FluxUpdate"
-        private val json = Json { ignoreUnknownKeys = true }
 
         private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
