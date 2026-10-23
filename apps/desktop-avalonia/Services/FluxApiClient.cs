@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
@@ -76,6 +77,196 @@ public sealed class FluxApiClient : IDisposable
 
     public Task<ApiEnvelope<List<FluxTask>>?> ListTasksAsync(int limit = 50, CancellationToken ct = default)
         => GetAsync<List<FluxTask>>($"/api/v1/tasks?limit={limit}", ct);
+
+    // --- M3 Solo 任务台 / Agent / Terminal ---
+
+    public Task<ApiEnvelope<TaskDetail>?> GetTaskAsync(string taskId, CancellationToken ct = default)
+        => GetAsync<TaskDetail>($"/api/v1/tasks/{Uri.EscapeDataString(taskId)}", ct);
+
+    public Task<ApiEnvelope<TaskDetail>?> CreateTaskAsync(
+        string description,
+        string? projectId,
+        string? agentId,
+        string decisionMode = "auto",
+        string? model = null,
+        string? keyId = null,
+        CancellationToken ct = default)
+        => PostAsync<TaskDetail>("/api/v1/tasks", new
+        {
+            description,
+            project_id = projectId,
+            agent_id = agentId,
+            decision_mode = decisionMode,
+            model,
+            key_id = keyId,
+        }, ct);
+
+    public Task<ApiEnvelope<List<TaskMessage>>?> ListTaskMessagesAsync(
+        string taskId,
+        int limit = 100,
+        CancellationToken ct = default)
+        => GetAsync<List<TaskMessage>>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages?limit={limit}",
+            ct);
+
+    public Task<ApiEnvelope<TaskMessageResult>?> CreateTaskMessageAsync(
+        string taskId,
+        string content,
+        CancellationToken ct = default)
+        => PostAsync<TaskMessageResult>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages",
+            new { content },
+            ct);
+
+    public Task<ApiEnvelope<TaskConfirmationResult>?> UpdateConfirmationAsync(
+        string taskId,
+        IEnumerable<ConfirmationItem> items,
+        CancellationToken ct = default)
+        => SendAsync<TaskConfirmationResult>(
+            HttpMethod.Put,
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/confirmation",
+            new { items },
+            ct);
+
+    public Task<ApiEnvelope<TaskDetail>?> SetDecisionModeAsync(
+        string taskId,
+        string mode,
+        CancellationToken ct = default)
+        => PostAsync<TaskDetail>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/decision-mode",
+            new { mode },
+            ct);
+
+    public Task<ApiEnvelope<TaskStartResult>?> StartTaskAsync(
+        string taskId,
+        IEnumerable<ConfirmationItem>? items,
+        CancellationToken ct = default)
+        => PostAsync<TaskStartResult>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/start",
+            new { confirmation = items },
+            ct);
+
+    public Task<ApiEnvelope<TaskDetail>?> CancelTaskAsync(string taskId, CancellationToken ct = default)
+        => PostAsync<TaskDetail>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/cancel",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<TaskDecisionResult>?> ChooseDecisionAsync(
+        string taskId,
+        string decisionId,
+        string action,
+        string? option,
+        string? note,
+        CancellationToken ct = default)
+        => PostAsync<TaskDecisionResult>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/decisions/choose",
+            new { decision_id = decisionId, action, option, note },
+            ct);
+
+    public Task<ApiEnvelope<List<WorkspaceChange>>?> ListChangesAsync(
+        string status = "pending",
+        string? taskId = null,
+        CancellationToken ct = default)
+    {
+        var url = $"/api/v1/workspace/changes?status={status}";
+        if (!string.IsNullOrWhiteSpace(taskId))
+        {
+            url += $"&task_id={Uri.EscapeDataString(taskId)}";
+        }
+
+        return GetAsync<List<WorkspaceChange>>(url, ct);
+    }
+
+    public Task<ApiEnvelope<List<WorkspaceChange>>?> ApplyChangesAsync(
+        IEnumerable<string> changeIds,
+        CancellationToken ct = default)
+        => PostAsync<List<WorkspaceChange>>(
+            "/api/v1/workspace/apply",
+            new { change_ids = changeIds.ToArray() },
+            ct);
+
+    public Task<ApiEnvelope<List<WorkspaceChange>>?> RejectChangesAsync(
+        IEnumerable<string> changeIds,
+        string? reason = null,
+        CancellationToken ct = default)
+        => PostAsync<List<WorkspaceChange>>(
+            "/api/v1/workspace/reject",
+            new { change_ids = changeIds.ToArray(), reason },
+            ct);
+
+    public Task<ApiEnvelope<WorkspaceChange>?> RollbackChangeAsync(
+        string changeId,
+        CancellationToken ct = default)
+        => PostAsync<WorkspaceChange>(
+            $"/api/v1/workspace/changes/{Uri.EscapeDataString(changeId)}/rollback",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<List<AgentDetail>>?> ListAgentDetailsAsync(CancellationToken ct = default)
+        => GetAsync<List<AgentDetail>>("/api/v1/agents", ct);
+
+    public Task<ApiEnvelope<DshModelsResponse>?> DshModelsAsync(CancellationToken ct = default)
+        => GetAsync<DshModelsResponse>("/api/v1/dsh/models", ct);
+
+    public Task<ApiEnvelope<DshRun>?> StartDshRunAsync(
+        string instruction,
+        string? sessionId,
+        string? agentId,
+        string? model,
+        string? keyId,
+        CancellationToken ct = default)
+        => PostAsync<DshRun>("/api/v1/dsh/runs", new
+        {
+            instruction,
+            session_id = sessionId,
+            agent_id = agentId,
+            model,
+            key_id = keyId,
+        }, ct);
+
+    public Task<ApiEnvelope<DshRun>?> GetDshRunAsync(string runId, CancellationToken ct = default)
+        => GetAsync<DshRun>($"/api/v1/dsh/runs/{Uri.EscapeDataString(runId)}", ct);
+
+    public Task<ApiEnvelope<DshRun>?> InterruptDshRunAsync(string runId, CancellationToken ct = default)
+        => PostAsync<DshRun>($"/api/v1/dsh/runs/{Uri.EscapeDataString(runId)}/interrupt", new { }, ct);
+
+    public Task<ApiEnvelope<List<TerminalSessionInfo>>?> ListTerminalSessionsAsync(
+        CancellationToken ct = default)
+        => GetAsync<List<TerminalSessionInfo>>("/api/v1/terminal/sessions", ct);
+
+    public Task<ApiEnvelope<TerminalSessionInfo>?> CreateTerminalSessionAsync(
+        string? runId,
+        CancellationToken ct = default)
+        => PostAsync<TerminalSessionInfo>("/api/v1/terminal/sessions", new { run_id = runId }, ct);
+
+    public Task<ApiEnvelope<List<TerminalEventInfo>>?> ListTerminalEventsAsync(
+        string sessionId,
+        long afterSeq = 0,
+        int limit = 500,
+        CancellationToken ct = default)
+        => GetAsync<List<TerminalEventInfo>>(
+            $"/api/v1/terminal/sessions/{Uri.EscapeDataString(sessionId)}/events"
+            + $"?after_seq={afterSeq}&limit={limit}",
+            ct);
+
+    public Task<ApiEnvelope<TerminalEventInfo>?> SendTerminalCommandAsync(
+        string sessionId,
+        string command,
+        CancellationToken ct = default)
+        => PostAsync<TerminalEventInfo>(
+            $"/api/v1/terminal/sessions/{Uri.EscapeDataString(sessionId)}/commands",
+            new { command },
+            ct);
+
+    public Task<ApiEnvelope<TerminalSessionInfo>?> StopTerminalSessionAsync(
+        string sessionId,
+        bool force,
+        CancellationToken ct = default)
+        => PostAsync<TerminalSessionInfo>(
+            $"/api/v1/terminal/sessions/{Uri.EscapeDataString(sessionId)}/stop",
+            new { force },
+            ct);
 
     // --- 密钥库（API Key Vault）---
 
@@ -157,7 +348,7 @@ public sealed class FluxApiClient : IDisposable
             }
             using var res = await _http.SendAsync(request, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions);
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
         }
         catch (Exception ex)
         {
@@ -176,7 +367,7 @@ public sealed class FluxApiClient : IDisposable
         {
             using var res = await _http.GetAsync(path, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions);
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
         }
         catch (Exception ex)
         {
@@ -191,7 +382,7 @@ public sealed class FluxApiClient : IDisposable
         {
             using var res = await _http.PostAsJsonAsync(path, payload, JsonOptions, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions);
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
         }
         catch (Exception ex)
         {
@@ -199,6 +390,13 @@ public sealed class FluxApiClient : IDisposable
             return null;
         }
     }
+
+    /// <summary>
+    /// 失败响应的 data 常带 {task_id,status} 这类诊断明细，直接反序列化会被调用方当成正常数据。
+    /// 统一把失败响应的 Data 置空，调用方只能按 Message 报错，避免空字段引发空引用。
+    /// </summary>
+    private static ApiEnvelope<T>? FailAsNull<T>(ApiEnvelope<T>? envelope)
+        => envelope is { Success: false } ? envelope with { Data = default } : envelope;
 
     /// <summary>请求异常只记一行到临时目录，便于排查「后端未响应」这类被吞掉的失败。</summary>
     private static void DebugLog(string message)

@@ -549,5 +549,95 @@
         <Style Selector="TextBox.input:focus">
             <Setter Property="BorderBrush" Value="{DynamicResource TnAccentLine}" />
         </Style>
+
+        <!-- ===================== M3 Solo / Agent / Terminal ===================== -->
+        <Style Selector="Border.solo-side">
+            <Setter Property="Background" Value="{DynamicResource TnBg2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="0,0,1,0" />
+        </Style>
+        <Style Selector="Border.solo-card">
+            <Setter Property="Background" Value="{DynamicResource TnPanel}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+        <Style Selector="Button.task-row">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="10" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.task-row /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.task-row:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Button.task-row.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+        </Style>
+        <Style Selector="Border.bubble">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+        </Style>
+        <Style Selector="Border.bubble.user">
+            <Setter Property="Background" Value="{DynamicResource TnAccentSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccentLine}" />
+        </Style>
+        <Style Selector="TextBox.compose">
+            <Setter Property="AcceptsReturn" Value="True" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="MinHeight" Value="62" />
+            <Setter Property="MaxHeight" Value="150" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontFamily" Value="{DynamicResource TnUiFont}" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Background" Value="{DynamicResource TnBg2}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource TnAccentSoft}" />
+        </Style>
+        <Style Selector="Border.term-shell">
+            <Setter Property="Background" Value="#07090A" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+        <Style Selector="Button.mini">
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="9,0" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.mini /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Button.mini:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource TnPanel3}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLineStrong}" />
+        </Style>
+        <Style Selector="ComboBox.select">
+            <Setter Property="Height" Value="32" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background" Value="{DynamicResource TnBg2}" />
+            <Setter Property="Foreground" Value="{DynamicResource TnText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TnLine}" />
+            <Setter Property="Padding" Value="10,0" />
+        </Style>
     </Application.Styles>
 </Application>

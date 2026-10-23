@@ -21,7 +21,7 @@ Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent �
 | M0 项目基础 | 完成 | 数据层双向迁移通过、autogenerate 无漂移；`docs/openapi.json` 契约随代码提交；权限策略 fail-closed；事件总线 / 调度器 / 工作流编排；Connector 契约与注册表；Makefile / verify.sh / CI / Docker |
 | M1 核心运行时 | 完成 | `local` / `openai` / `anthropic` / `deepseek` 四家适配器全部注册（统一薄 HTTP 层，不引官方 SDK）；超时退避重试与错误映射；**Task Engine 已由进程内字典切到 `tasks` 表**（`core/task_engine/repository.py`），任务状态唯一权威是数据库 |
 | M2 Virtual Workspace | 完成 | ApplyEngine 真实落盘 + 备份 + 回滚 + Apply 崩溃恢复对账 + 测试门禁；Git 集成（status / diff / stage / unstage / commit / branches / checkout）；`path_guard.py` symlink 逃逸防护（Apply / Backup / Explorer 三处共用）。多文件提案的**原子 Apply 仍在收口**（已提供 `apply-batches` 分组应用与按批回滚） |
-| M3 IDE 体验 | 进行中 | `apps/web-dashboard`（React 19 + Vite）已实现 Solo / IDE 双模式、并排/统一两种 diff 视图、xterm 终端；`apps/desktop-avalonia` 原生桌面端已完成登录、概览、任务、Skills、系统诊断、设置，Solo 任务台与 IDE 工作台待实现。`apps/vscode-extension` 仍为空目录 |
+| M3 IDE 体验 | 进行中 | `apps/web-dashboard`（React 19 + Vite）已实现 Solo / IDE 双模式、并排/统一两种 diff 视图、xterm 终端；`apps/desktop-avalonia` 原生桌面端已完成登录、概览、任务、Skills、系统诊断、设置、Solo 任务台（流水线 + 单 Agent）、项目列表、Agent 面板、Agent Terminal。`apps/vscode-extension` 仍为空目录 |
 | M4 Connector | 未开始（仅契约） | 只有 `backend/flux/connectors/base.py`；仓库 `connectors/` 无具体实现 |
 | M5 Skill 与 Project Brain | 部分 | `project_brain` / `project_files` / `project_scanner` / `memory` / `capability_import` 已落地；`skills/{backend,frontend,security,devops}` 四个包目录仍为空 |
 | M6 成本可观测 | 未开始 | `services/cost_service` 只有 calculator；Provider 不内置价格表，`pricing=None` 时 `cost` 为 `null`（绝不用猜测值填充） |
@@ -119,7 +119,7 @@ Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），
 | 应用 | 技术栈 | 状态 |
 | --- | --- | --- |
 | `apps/web-dashboard` | React 19 + Vite（含 `@xterm/xterm`） | 工作台主界面：Solo / IDE 双模式、diff 双视图、内嵌终端 |
-| `apps/desktop-avalonia` | Avalonia + .NET 8（原生桌面端） | 登录、概览、任务、Skills、系统诊断、设置已接真实接口；Linux x64 产物可构建，Solo 任务台 / IDE 工作台待实现 |
+| `apps/desktop-avalonia` | Avalonia + .NET 8（原生桌面端） | 登录、概览、任务、Skills、系统诊断、设置、Solo 任务台（流水线 + 单 Agent）、项目列表、Agent 面板、Agent Terminal 已接真实接口；IDE 工作台待实现 |
 | `apps/mobile-controller` | Android（Kotlin + Gradle） | 手机远程控制端 |
 | `apps/showcase-web` | React | 展示页 |
 | `apps/vscode-extension` | — | 待建 |
@@ -170,6 +170,10 @@ cd apps/desktop-avalonia && dotnet run
 
 打包 Linux x64 产物：`bash scripts/build_desktop_avalonia_linux.sh`，产物落在 `apps/desktop-avalonia/release/`。
 
+打包 Windows 产物（在 Windows / PowerShell 上）：`pwsh scripts/build_desktop_avalonia_win.ps1`，默认 `win-x64`，产物为 `apps/desktop-avalonia/release/flux-desktop-win-x64.zip`。
+
+桌面端自测（零第三方依赖的纯逻辑断言）：`dotnet run --project apps/desktop-avalonia.tests`，失败返回非零。
+
 用 Docker Compose 起完整三件套（PostgreSQL + pgvector / Redis / 后端）：
 
 ```bash
@@ -213,8 +217,8 @@ flux/
 │   └── requirements.txt          # 固定版本快照
 ├── apps/                         # 客户端
 │   ├── web-dashboard/            # React 19 工作台（Solo / IDE）
-│   ├── desktop/                  # Electron + PyInstaller sidecar
-│   ├── cloud/                    # Flux 账号云服务
+│   ├── desktop-avalonia/         # Avalonia + .NET 8 原生桌面端
+│   ├── desktop-avalonia.tests/   # 桌面端纯逻辑自测（控制台断言）
 │   ├── mobile-controller/        # Android 远程控制端
 │   ├── showcase-web/             # 展示页
 │   └── vscode-extension/         # 待建
@@ -229,6 +233,7 @@ flux/
 │   ├── export_openapi.py         # 导出 / 校验契约
 │   ├── verify.sh                 # 本地一条命令自检
 │   ├── build_desktop_avalonia_linux.sh  # 原生桌面端 Linux 打包
+│   ├── build_desktop_avalonia_win.ps1   # 原生桌面端 Windows 打包
 │   └── run_fault_injection_matrix.sh
 └── Makefile
 ```
@@ -291,6 +296,6 @@ python scripts/export_openapi.py --check   # 校验是否漂移（CI 用）
 - 本机无 Docker，容器构建与 Compose 编排未做本地验证。
 - OpenAI / Anthropic 两个 Provider 适配器已完成并离线验证，但**未做真实调用**（本机无密钥）；只有 `deepseek` 做过真实调用。
 - **M2 收口项**：多文件提案的原子 Apply（Proposal / ChangeSet 级事务）仍在收口；单文件真实写盘、备份、回滚与崩溃恢复已落地。
-- **桌面端**：只做原生 Avalonia 客户端，发行目标为 Windows + Linux；macOS 不交付。Solo 任务台、Agent Terminal、Agent 面板、项目列表与 IDE 工作台仍在实现中。
+- **桌面端**：只做原生 Avalonia 客户端，发行目标为 Windows + Linux；macOS 不交付。Solo 任务台、Agent Terminal、Agent 面板、项目列表已实现，IDE 工作台仍在实现中。
 - **M4 / M5 / M6 / M7 / M9 未开始**：`connectors/`、`skills/*`、`nodes/*`、`apps/vscode-extension` 目录仍为空；成本计价未接（`pricing=None` → `cost` 为 `null`）。
 - **M8 部分**：移动控制端已有 Android 端，`nodes/` 的节点实现待建。

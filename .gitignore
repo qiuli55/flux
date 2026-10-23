@@ -44,6 +44,9 @@ out/
 # --- .NET 桌面端（apps/desktop-avalonia）---
 apps/desktop-avalonia/bin/
 apps/desktop-avalonia/obj/
+# 桌面端纯逻辑自测工程（控制台）的构建产物
+apps/desktop-avalonia.tests/bin/
+apps/desktop-avalonia.tests/obj/
 # 桌面端构建产物（tar.gz 体积大，不入库）
 apps/desktop-avalonia/dist/
 apps/desktop-avalonia/release/
