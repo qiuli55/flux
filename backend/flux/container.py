@@ -7,18 +7,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.adapters import build_default_adapters
+from flux.core.agent_runtime.codex_account import CodexAccountService
 from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.installation import InstallationRepository, InstallationService
 from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.agent_runtime.run_repository import AgentRunRepository
 from flux.core.agent_runtime.runtimes.service import TaskRunService
+from flux.core.agent_runtime.trace import RunTraceRecorder
+from flux.core.agent_runtime.trace_repository import RunTraceRepository
+from flux.core.billing.service import BillingService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
@@ -44,9 +49,11 @@ from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.task_engine.assistant import TaskAssistant
-from flux.core.task_engine.dsh_bridge import TaskRunBridge
+from flux.core.task_engine.conversation_summary import ConversationSummarizer
+from flux.core.task_engine.dsh_bridge import AUTO_RETRY_FOLLOWUP, TaskRunBridge
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
+from flux.core.task_engine.stream import TaskStreamHub, TaskStreamRelay
 from flux.core.terminal.pty_service import HumanPtyService
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.terminal.service import TerminalService
@@ -86,6 +93,10 @@ class Container:
     key_vault: KeyVaultService = field(init=False)
     task_runs: TaskRunBridge = field(init=False)
     assistant: TaskAssistant = field(init=False)
+    #: 对话交接摘要（「上下文快满 → 新建对话带前情」）
+    conversation_summarizer: ConversationSummarizer = field(init=False)
+    #: 任务对话的实时增量（SSE）：进程内广播，最终消息仍以数据库为准
+    task_stream: TaskStreamHub = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
     batch_repo: ApplyBatchRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
@@ -94,6 +105,11 @@ class Container:
     run_repo: AgentRunRepository = field(init=False)
     installations: InstallationService = field(init=False)
     capability_import: CapabilityImportService = field(init=False)
+    #: ChatGPT 账号（Codex 订阅通道）：设备码登录与 Run 时的 auth.json 注入
+    codex_account: CodexAccountService = field(init=False)
+    #: 计费与套餐额度（本地账本 + 官方快照对账 + 闸门）；必须容器级单例，
+    #: 因为 CliRuntime 每个 Run 新建实例，实例内缓存跨 run 不共享。
+    billing: BillingService = field(init=False)
     task_run_service: TaskRunService = field(init=False)
     # 上下文机制（设计文档 §8）：只追加的 step 事件日志 + 内容寻址原文库
     context_steps: ContextStepRepository = field(init=False)
@@ -143,6 +159,9 @@ class Container:
         )
         # Solo 对话助手：平台侧助手（非 agent），回复内容来自 router 的真实模型调用
         self.assistant = TaskAssistant(self.router)
+        # 对话交接摘要：新对话带旧对话前情时使用，与助手共用平台模型通道
+        self.conversation_summarizer = ConversationSummarizer(self.router)
+        self.task_stream = TaskStreamHub()
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
         # Apply Engine 是唯一会写用户真实文件的组件（§7.6），根目录与测试命令来自配置
@@ -208,6 +227,9 @@ class Container:
         self.agent_tokens = AgentTokenService(self.session_factory, self.agents)  # type: ignore[attr-defined]
         # Run 权威状态落 agent_runs 表（P2-15）：多实例共享同库时用 owner_pid 区分归属
         self.run_repo = AgentRunRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 执行轨迹（思考 / 命令 / 错误）按 Run 落库：对话页的「任务耗时 · 概览 · 详情」靠它
+        self.run_trace_repo = RunTraceRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.run_trace = RunTraceRecorder(self.run_trace_repo)
         # DSH Agent Runtime（集成方案 §18 Phase 1）：内置 agent 的接入层，
         # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
         self.dsh = FluxDshClient(
@@ -220,9 +242,17 @@ class Container:
         # 同时把任务级对账挂上看护器的对账循环：事件在崩溃时会丢，running 任务需要兜底收尾
         # （P2-04 / TC-502），Run 状态先对完再让下游据真实状态判断。
         self.task_runs = TaskRunBridge(
-            self.task_repo, self.run_repo, brain=self.brain, workspace=self.workspace
+            self.task_repo,
+            self.run_repo,
+            brain=self.brain,
+            workspace=self.workspace,
+            stream=self.task_stream,
+            trace=self.run_trace,
         )
         self.task_runs.attach(self.bus)
+        # DSH / CLI 的运行事件 → 任务流：前端订阅 SSE 就能看到 Agent 正在干什么
+        # 同时把增量合并成执行轨迹，Run 终态落库（任务详情的思考过程与命令输出靠它回看）
+        TaskStreamRelay(self.task_stream, self.run_trace).attach(self.bus)
         # 上下文闭环：提案 applied 后刷新项目 Brain 快照（同项目节流，失败不阻塞 Apply）
         self.brain_refresher = BrainRefresher(
             brain=self.brain,
@@ -247,7 +277,15 @@ class Container:
             self.bus.subscribe(_terminal_event, self._on_run_terminal)
         # P2-1 §6.2：任务「开始执行」的编排收口——按 agent.config["runtime"] 分发
         # dsh / codex / opencode。CLI runtime 复用同一个 RunSupervisor 与令牌服务，不新建生命周期。
+        # ChatGPT 账号登录态由它提供：codex Run 会把 auth.json 注入隔离 CODEX_HOME。
+        self.codex_account = CodexAccountService(self.settings)
+        # 计费账本与额度闸门：CLI runtime 的每一步用量都落到这里；先于 TaskRunService
+        # 装配，因为 Run 创建前的额度检查要读它。
+        self.billing = BillingService(self.settings, self.session_factory)  # type: ignore[attr-defined]
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
+        # 上游瞬时故障（429 / ReadTimeout）自动续跑一轮：事件桥只做判定与冷却，
+        # 真正重新起 Run 交给 TaskRunService（沿用任务自己的 Agent / 模型 / 权限模式）。
+        self.task_runs.set_retry_handler(self._auto_retry_task)
         # 上下文机制（设计文档 §8）：step 事件日志是唯一真相源（§8.1 不变量 I1），
         # 原文单独进内容寻址库（I2 满保真）；两者都是纯存储，无副作用。
         self.context_steps = ContextStepRepository(self.session_factory)  # type: ignore[attr-defined]
@@ -295,6 +333,11 @@ class Container:
         run_id = payload.get("run_id")
         if isinstance(run_id, str):
             await self.terminal.stop_run_sessions(run_id)
+
+    async def _auto_retry_task(self, task: Any) -> None:
+        """自动重试回调：重新读一次任务（取最新状态），只换续跑指令重新起 Run。"""
+        fresh = await self.task_repo.get(task.id)
+        await self.task_run_service.start(fresh, followup=AUTO_RETRY_FOLLOWUP)
 
     def _resolve_default_provider(self) -> ModelProvider:
         try:

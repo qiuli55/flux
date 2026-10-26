@@ -31,6 +31,9 @@ SPEC_TABLES = {
     "connectors",
     "connector_logs",
     "usage_records",
+    # §11.2 之外的新增表：官方套餐额度快照（计费 P0）。
+    # 官方接口只给套餐总量、没有任务归因，快照负责把百分比钉在时间轴上用于对账与闸门判定。
+    "usage_snapshots",
     # §11.2 之外的新增表：MCP 能力面的鉴权凭据（目标架构 §3.2）。
     # 它不是业务实体，因此不入主规格表清单，但必须与其余表一样受本文件全部约束。
     "agent_tokens",
@@ -74,6 +77,9 @@ SPEC_TABLES = {
     "context_redactions",
     # 密钥库：Agent 模型通道的 API Key（加密落库，明文不出接口）。与其余表一样受本文件约束。
     "api_keys",
+    # 执行轨迹持久化：思考段 / 工具调用 / 错误行按 Run 落库，
+    # 对话页的「任务耗时 · 概览 · 思考过程 · 命令输出」刷新与换设备后仍可回看。
+    "run_trace_items",
 }
 
 

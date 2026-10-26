@@ -23,7 +23,9 @@ platform.claude.com/docs/en/models/overview，2026-09-22 发布说明）：
 
 from __future__ import annotations
 
+import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -83,29 +85,7 @@ class AnthropicProvider(ModelProviderBase):
     async def chat(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         self._ensure_configured()
 
-        system_prompt = "\n\n".join(m.content for m in messages if m.role == "system")
-        dialog = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
-
-        payload: dict[str, Any] = {
-            "model": self.model_name,
-            "max_tokens": kwargs.get("max_tokens") or self.default_max_tokens,
-            "messages": dialog,
-            "stream": False,
-        }
-        if system_prompt:
-            payload["system"] = system_prompt
-
-        temperature = kwargs.get("temperature")
-        if temperature is not None:
-            clamped = min(1.0, max(0.0, temperature))
-            if clamped != temperature:
-                # 只记录被钳制的取值，不涉及任何密钥
-                logger.debug(
-                    "Anthropic temperature 超出 [0, 1] 取值域，已钳制：%s -> %s",
-                    temperature,
-                    clamped,
-                )
-            payload["temperature"] = clamped
+        payload = self._build_payload(messages, stream=False, **kwargs)
 
         headers = {
             "x-api-key": f"{self.api_key}",
@@ -164,3 +144,96 @@ class AnthropicProvider(ModelProviderBase):
             cost=self.calculate_cost(usage),
             raw=data,
         )
+
+    async def stream(self, messages: list[ChatMessage], **kwargs: Any) -> AsyncIterator[str]:
+        """逐段读取 Anthropic 的 SSE：只取 `content_block_delta` 里的 text_delta。"""
+        self._ensure_configured()
+        payload = self._build_payload(messages, stream=True, **kwargs)
+        headers = {
+            "x-api-key": f"{self.api_key}",
+            "anthropic-version": ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+        url = f"{self.base_url.rstrip('/')}/v1/messages"
+
+        client = self._client
+        owned = client is None
+        if client is None:
+            client = httpx.AsyncClient()
+        try:
+            async with client.stream(
+                "POST", url, json=payload, headers=headers, timeout=self.timeout
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode("utf-8", "replace")
+                    raise ProviderError(
+                        f"供应商 {self.provider} 上游拒绝流式请求：HTTP {response.status_code}",
+                        details={
+                            "provider": str(self.provider),
+                            "status": response.status_code,
+                            "body": body[:500],
+                        },
+                    )
+                async for line in response.aiter_lines():
+                    text = _anthropic_stream_text(line)
+                    if text:
+                        yield text
+        finally:
+            if owned:
+                await client.aclose()
+
+    def _build_payload(
+        self, messages: list[ChatMessage], *, stream: bool, **kwargs: Any
+    ) -> dict[str, Any]:
+        system_prompt = "\n\n".join(m.content for m in messages if m.role == "system")
+        dialog = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
+
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "max_tokens": kwargs.get("max_tokens") or self.default_max_tokens,
+            "messages": dialog,
+            "stream": stream,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+
+        temperature = kwargs.get("temperature")
+        if temperature is not None:
+            clamped = min(1.0, max(0.0, temperature))
+            if clamped != temperature:
+                # 只记录被钳制的取值，不涉及任何密钥
+                logger.debug(
+                    "Anthropic temperature 超出 [0, 1] 取值域，已钳制：%s -> %s",
+                    temperature,
+                    clamped,
+                )
+            payload["temperature"] = clamped
+        return payload
+
+
+def _anthropic_stream_text(line: str) -> str:
+    """解析一行 SSE：只返回 text_delta 的增量文本，其他事件一律返回空串。"""
+    if not line.startswith("data:"):
+        return ""
+    data = line[5:].strip()
+    if not data:
+        return ""
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    if parsed.get("type") == "error":
+        raise ProviderError(
+            "供应商 anthropic 流式响应返回错误",
+            details={"provider": "anthropic", "status": None},
+        )
+    if parsed.get("type") != "content_block_delta":
+        return ""
+    delta = parsed.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    text = delta.get("text")
+    return text if isinstance(text, str) else ""
+

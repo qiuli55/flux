@@ -25,11 +25,24 @@ KNOWN_RUNTIMES: tuple[str, ...] = (RUNTIME_DSH, RUNTIME_CODEX, RUNTIME_OPENCODE)
 #: 需要 Flux 主动拉起本机 CLI 的 runtime（安装状态必须是 READY）
 CLI_RUNTIMES: tuple[str, ...] = (RUNTIME_CODEX, RUNTIME_OPENCODE)
 
+#: 每个 runtime 是否原生逐 token 流式。
+#: True = 增量由 runtime 自己产出（DSH 走 LLM SSE 旁路 / codex 走 app-server delta /
+#: opencode 走 serve 的 message.part.delta），平台不做「整段生成再切块回放」。
+#: False = 该 runtime 只能整段返回：Agent 仍可正常创建与执行，档案带
+#: `native_streaming=False` 供客户端标注，正文由平台按分段回放兜底。
+#: 新增 runtime 必须在上面显式登记取值，契约测试会拦住漏登记的 runtime。
+RUNTIME_NATIVE_STREAMING: dict[str, bool] = {
+    RUNTIME_DSH: True,
+    RUNTIME_CODEX: True,
+    RUNTIME_OPENCODE: True,
+}
+
 #: 统一事件词表
 EVENT_STATUS = "status"
 EVENT_MESSAGE = "message"
 EVENT_TOOL_CALL = "tool_call"
 EVENT_TOOL_RESULT = "tool_result"
+EVENT_THINKING = "thinking"
 EVENT_FINAL = "final"
 EVENT_ERROR = "error"
 RUNTIME_EVENT_TYPES: frozenset[str] = frozenset(
@@ -38,6 +51,7 @@ RUNTIME_EVENT_TYPES: frozenset[str] = frozenset(
         EVENT_MESSAGE,
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
+        EVENT_THINKING,
         EVENT_FINAL,
         EVENT_ERROR,
     }
@@ -85,6 +99,8 @@ class RuntimeLaunch:
     token_id: str | None = None
     #: 任务级模型通道（来自密钥库）；None = 用 runtime 原生模型配置
     channel: ModelChannel | None = None
+    #: 本轮权限模式快照（plan / normal / full）：Run 启动时从任务取值，切换模式下一轮才生效
+    permission_mode: str = "normal"
 
 
 @dataclass(slots=True)
@@ -115,6 +131,8 @@ class AgentRuntime(Protocol):
     """所有 Agent Runtime 的实现契约（设计 §6.2）。"""
 
     runtime_id: str
+    #: 是否原生逐 token 流式（True 必须名副其实：增量由 runtime 直接产出）
+    native_streaming: bool
 
     async def prepare(
         self,
@@ -154,6 +172,7 @@ __all__ = [
     "RUNTIME_CODEX",
     "RUNTIME_DSH",
     "RUNTIME_EVENT_TYPES",
+    "RUNTIME_NATIVE_STREAMING",
     "RUNTIME_OPENCODE",
     "AgentRuntime",
     "RuntimeEvent",

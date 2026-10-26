@@ -250,7 +250,7 @@ fun V2DeviceScreen(
                 onClick = onReload,
                 size = 36.dp,
                 iconSize = 16.dp,
-                background = Color.White.copy(alpha = .72f),
+                background = V2Colors.surface(.72f),
             )
         }
         Spacer(Modifier.height(16.dp))
@@ -481,7 +481,7 @@ internal fun V2Field(
                 .fillMaxWidth()
                 .height(46.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color.White)
+                .background(V2Colors.surface)
                 .border(1.dp, V2Colors.line, RoundedCornerShape(12.dp))
                 .padding(horizontal = 12.dp),
             contentAlignment = Alignment.CenterStart,

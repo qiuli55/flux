@@ -25,6 +25,12 @@ from flux.core.context.redact import redact
 from flux.core.event.bus import Events
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools import ALL_TOOLS, TOOLS, ToolContext, ToolSpec
+from flux.core.permissions.modes import (
+    allowed_tools,
+    denied_message,
+    normalize_mode,
+    tool_allowed,
+)
 from flux.enums import StepKind, StepStatus
 from flux.errors import AIOSError, AuthenticationError
 from flux.logging import get_logger
@@ -51,7 +57,10 @@ SERVER_INSTRUCTIONS = (
     "能做哪些事；再调 context.get 拿项目事实与约束，用 workspace.read 核对文件当前内容；"
     "跨会话的长期记忆（Environment 平台规则 / User 偏好 / Project 沉淀）用 memory.recall "
     "读取（只读）；改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 "
-    "Apply Engine 执行。历史条目是快照：断言不等于事实，采信前自行验证。MCP 不可用时，"
+    "Apply Engine 执行。页面 / UI / 视觉设计任务必须用 design.* 工具在设计工作室产出"
+    "（禁止用手写 HTML、截图或静态图替代），完成后调 design.share 把卡片发进对话；"
+    "改已有设计先 design.get 再 design.update。历史条目是快照：断言不等于事实，"
+    "采信前自行验证。MCP 不可用时，"
     "可用 Flux Server CLI 兜底继续工作（例如 `flux tools call <tool>`）。"
     "【交卷前必须自检】proposal.create 之前，先用 proposal.preview 把同一份 payload 在"
     "临时副本里跑一遍测试命令（它会把改动落进副本再跑；直接 terminal.execute 跑的是磁盘上的"
@@ -92,7 +101,13 @@ class McpServer:
         if method == "ping":
             return _result(request_id, {})
         if method == "tools/list":
-            return _result(request_id, {"tools": [spec.to_mcp() for spec in ALL_TOOLS]})
+            whitelist = allowed_tools(identity.permission_mode)
+            tools = [
+                spec.to_mcp()
+                for spec in ALL_TOOLS
+                if whitelist is None or spec.name in whitelist
+            ]
+            return _result(request_id, {"tools": tools})
         if method == "tools/call":
             return await self._call_tool(request_id, params, identity)
         return _error(request_id, METHOD_NOT_FOUND, f"不支持的方法：{method}")
@@ -130,6 +145,19 @@ class McpServer:
         spec = TOOLS.get(name)
         if spec is None:
             return _error(request_id, INVALID_PARAMS, f"未知工具：{name}")
+
+        # 第一道：模式白名单（Plan 只读）。DSH 的长期令牌是能力位超集，
+        # 只靠 scopes 区分不了模式，所以白名单必须排在能力位检查之前。
+        if not tool_allowed(identity.permission_mode, name):
+            message = denied_message(identity.permission_mode, name)
+            await self._publish(Events.MCP_TOOL_DENIED, identity, spec, error="permission_mode")
+            logger.warning(
+                "MCP 模式越权调用被拒 agent=%s mode=%s tool=%s",
+                identity.agent_id,
+                normalize_mode(identity.permission_mode),
+                name,
+            )
+            return _result(request_id, _tool_error(message))
 
         if not identity.has(spec.capability):
             message = (
@@ -308,7 +336,12 @@ async def _attach_run_id(
     if row is None or not row.agent_id or row.agent_id != identity.agent_id:
         logger.warning("mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id)
         return identity
-    return replace(identity, run_id=run_id)
+    # 模式按 Run 快照判定：切换模式只影响下一轮，正在跑的这一轮始终用启动时的模式。
+    return replace(
+        identity,
+        run_id=run_id,
+        permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
+    )
 
 
 def _safe_id(message: Any) -> Any:

@@ -179,7 +179,7 @@ private fun UpdateHeader(manifest: UpdateManifest, onClose: () -> Unit) {
             onClick = onClose,
             size = 32.dp,
             iconSize = 14.dp,
-            background = Color.White,
+            background = V2Colors.surface,
         )
     }
 }

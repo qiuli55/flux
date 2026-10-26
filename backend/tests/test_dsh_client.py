@@ -60,6 +60,9 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         env="test",
         log_level="WARNING",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'dsh.db'}",
+        # 显式关掉工作区根：否则会从本机 .env（FLUX_WORKSPACE_ROOT）读到真实路径，
+        # 让"未配置 workspace_root 时回退 dsh_workspace"的断言失去意义。
+        workspace_root=None,
         openai_api_key=None,
         anthropic_api_key=None,
         deepseek_api_key=None,
@@ -712,6 +715,8 @@ def test_agent_env_injects_runtime_identity(tmp_path: Path) -> None:
         "FLUX_TASK_ID": "task-1",
         "FLUX_AGENT_ID": "agent-1",
         "FLUX_MCP_ENDPOINT": settings.dsh_mcp_url,
+        # 三模式：Run 启动快照的权限模式随环境下发给 Agent
+        "FLUX_PERMISSION_MODE": "normal",
     }
     # 身份不是凭证：环境里绝不出现令牌 / 密钥
     assert not any("token" in key.lower() or "key" in key.lower() for key in env)
@@ -724,7 +729,13 @@ def test_agent_env_omits_optional_fields_when_absent(tmp_path: Path) -> None:
     client = FluxDshClient(settings, harness_factory=FakeDshHarnessFactory())
     env = client._agent_env(DshRun(session_id="s", instruction="hi", run_id="run-x"))
 
-    assert set(env) == {"FLUX_RUNTIME", "FLUX_VERSION", "FLUX_RUN_ID", "FLUX_WORKSPACE"}
+    assert set(env) == {
+        "FLUX_RUNTIME",
+        "FLUX_VERSION",
+        "FLUX_RUN_ID",
+        "FLUX_WORKSPACE",
+        "FLUX_PERMISSION_MODE",
+    }
     assert env["FLUX_WORKSPACE"] == settings.dsh_workspace
     client.close()
 

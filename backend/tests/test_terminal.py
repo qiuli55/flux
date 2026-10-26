@@ -418,7 +418,8 @@ async def test_terminal_execute_binds_session_to_identity_run_id(
         tool_name="terminal.execute",
     )
 
-    result = await terminal_execute(ctx, {"command": _py("print('bound')")})
+    # 用低风险只读命令：本用例只验证会话绑 Run，不想触发高风险审批闸门
+    result = await terminal_execute(ctx, {"command": "echo bound"})
 
     session = await apply_container.terminal.get_session(result["session_id"])
     assert session.run_id == run_id
@@ -431,7 +432,7 @@ async def test_terminal_execute_without_run_id_leaves_session_unbound(
     ctx = ToolContext(
         container=apply_container, identity=_identity(None), tool_name="terminal.execute"
     )
-    result = await terminal_execute(ctx, {"command": _py("print('x')")})
+    result = await terminal_execute(ctx, {"command": "echo x"})
     session = await apply_container.terminal.get_session(result["session_id"])
     assert session.run_id is None
 

@@ -170,3 +170,25 @@ def test_switch_model_with_key_and_agent_switch_clears_it(client: TestClient) ->
     assert moved.status_code == 200, moved.text
     assert moved.json()["data"]["model"] is None
     assert moved.json()["data"]["api_key_id"] is None
+
+
+def test_switch_agent_and_model_on_a_finished_task(client: TestClient) -> None:
+    """终态对话也能换 Agent / 模型：切换只影响下一次续聊，不执行任何东西。"""
+    task = client.post(f"{PREFIX}/tasks", json={"description": "终态切换"}).json()["data"]
+    assert client.post(f"{PREFIX}/tasks/{task['id']}/cancel").status_code == 200
+    key = _create_key(client)
+    agent_id = client.post(
+        f"{PREFIX}/agents",
+        json={"name": "builtin-3", "role": "developer", "runtime": "dsh"},
+    ).json()["data"]["id"]
+
+    switched = client.post(
+        f"{PREFIX}/tasks/{task['id']}/model",
+        json={"model": "deepseek-v4-pro", "key_id": key["id"]},
+    )
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["data"]["api_key_id"] == key["id"]
+
+    moved = client.post(f"{PREFIX}/tasks/{task['id']}/agent", json={"agent_id": agent_id})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["data"]["agent_id"] == agent_id

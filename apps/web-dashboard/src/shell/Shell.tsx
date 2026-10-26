@@ -13,6 +13,7 @@ import { queueSoloIntent } from "../app/soloIntent";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { IdePage } from "../pages/IdePage";
 import { SoloPage } from "../pages/SoloPage";
+import { BillingPage } from "../pages/BillingPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { SettingsPage } from "../pages/SettingsPage";
@@ -184,6 +185,7 @@ function Content({ view, navigate }: { view: View; navigate: (v: View) => void }
         {view === "overview" ? <OverviewPage navigate={navigate} /> : null}
         {view === "tasks" ? <TasksPage navigate={navigate} /> : null}
         {view === "skills" ? <SkillsPage /> : null}
+        {view === "billing" ? <BillingPage /> : null}
         {view === "diagnostics" ? <DiagnosticsPage /> : null}
         {view === "settings" ? <SettingsPage /> : null}
         {view === "solo" ? <div className="fx-embed"><SoloPage onOpenWorkspace={() => navigate("ide")} /></div> : null}

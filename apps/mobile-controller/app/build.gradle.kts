@@ -17,8 +17,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装
-        versionCode = 14
-        versionName = "0.3.5"
+        versionCode = 42
+        versionName = "0.8.0"
     }
 
     buildFeatures {
@@ -26,13 +26,26 @@ android {
         buildConfig = true
     }
 
+    // 固定的分发签名：历史 APK 全部用 A 机的 debug keystore（证书 SHA-256 ec560d8d…）签名，
+    // 若不固定，各机器会用各自的 ~/.android/debug.keystore，导致升级时报签名冲突。
+    signingConfigs {
+        create("flux") {
+            storeFile = rootProject.file("keystore/flux-release.jks")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("flux")
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("flux")
         }
     }
 

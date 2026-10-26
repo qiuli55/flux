@@ -68,6 +68,7 @@ public static class IconPaths
         ["package"] = "M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9",
         ["download"] = "M12 4v10M8 11l4 4 4-4M5 20h14",
         ["activity"] = "M3 12h4l2-6 4 12 2-6h6",
+        ["credit"] = "M3 6h18v12H3zM3 10h18M6 15h4",
         ["refresh"] = "M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4",
         ["diff"] = "M6 4v16M18 4v16M9 8h6M12 5v6M9 17h6",
         ["check"] = "M5 13l4 4L19 7",

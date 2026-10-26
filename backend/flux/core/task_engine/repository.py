@@ -11,14 +11,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import DecisionMode, DecisionStatus, TaskStatus
+from flux.enums import DecisionMode, DecisionStatus, PermissionMode, TaskStatus
 from flux.errors import BadRequestError, NotFoundError
 from flux.logging import get_logger
+from flux.models.agent_run import AgentRun
 from flux.models.project import Project
+from flux.models.run_trace import RunTraceItem
 from flux.models.task import Task, TaskMessage
 
 logger = get_logger(__name__)
@@ -52,6 +54,7 @@ class TaskRepository:
         project_id: uuid.UUID | None,
         agent_id: uuid.UUID | None,
         decision_mode: DecisionMode = DecisionMode.AUTO,
+        permission_mode: PermissionMode = PermissionMode.NORMAL,
         model: str | None = None,
         api_key_id: uuid.UUID | None = None,
     ) -> Task:
@@ -77,6 +80,7 @@ class TaskRepository:
                 project_id=project_id,
                 agent_id=agent_id,
                 decision_mode=str(decision_mode),
+                permission_mode=str(permission_mode),
                 model=(model or "").strip() or None,
                 api_key_id=api_key_id,
             )
@@ -128,6 +132,14 @@ class TaskRepository:
             await self._commit(session)
             return task
 
+    async def set_permission_mode(self, task_id: uuid.UUID, mode: PermissionMode) -> Task:
+        """切换对话级权限模式：只影响下一轮 Run（正在跑的 Run 按启动时快照跑完）。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.permission_mode = str(mode)
+            await self._commit(session)
+            return task
+
     async def set_agent(self, task_id: uuid.UUID, agent_id: uuid.UUID) -> Task:
         """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。
 
@@ -171,6 +183,18 @@ class TaskRepository:
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.run_id = run_id
+            await self._commit(session)
+            return task
+
+    async def reopen(self, task_id: uuid.UUID) -> Task:
+        """把终态对话重新打开：清掉上一轮 run_id、状态回到 pending。
+
+        同一对话的后续消息靠它续跑；历史消息、确认卡与项目关联都保留。
+        """
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.status = TaskStatus.PENDING.value
+            task.run_id = None
             await self._commit(session)
             return task
 
@@ -288,6 +312,64 @@ class TaskRepository:
         window = rows[:limit]
         window.reverse()
         return window, has_more
+
+    async def context_snapshot(
+        self, task_id: uuid.UUID, *, limit: int, kinds: Sequence[str]
+    ) -> tuple[list[TaskMessage], int]:
+        """取最近 limit 条可进模型上下文的消息（seq 升序），以及该类消息总数。
+
+        上下文占用度量要的是「最多能带上的那一段」与「整段对话有多少条」两个数：
+        前者按 limit 截取，后者单独 count——不能拿截取后的长度冒充总数。
+        """
+        wanted = tuple(kinds)
+        async with self._session_factory() as session:
+            if await session.get(Task, task_id) is None:
+                raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            total = await session.scalar(
+                select(func.count(TaskMessage.id)).where(
+                    TaskMessage.task_id == task_id, TaskMessage.kind.in_(wanted)
+                )
+            )
+            rows = list(
+                await session.scalars(
+                    select(TaskMessage)
+                    .where(TaskMessage.task_id == task_id, TaskMessage.kind.in_(wanted))
+                    .order_by(TaskMessage.seq.desc())
+                    .limit(limit)
+                )
+            )
+        rows.reverse()
+        return rows, int(total or 0)
+
+    async def latest_message(self, task_id: uuid.UUID, *, kind: str) -> TaskMessage | None:
+        """取任务里最近一条指定类型的消息（如今摘要）：不受历史条数上限影响。"""
+        async with self._session_factory() as session:
+            if await session.get(Task, task_id) is None:
+                raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            return await session.scalar(
+                select(TaskMessage)
+                .where(TaskMessage.task_id == task_id, TaskMessage.kind == kind)
+                .order_by(TaskMessage.seq.desc())
+                .limit(1)
+            )
+
+    async def delete(self, task_id: uuid.UUID) -> tuple[int, int]:
+        """彻底删除任务及其消息、运行记录、执行轨迹，返回 (消息条数, 运行记录条数)。
+
+        不做软删除：对话删除后聊天记录与运行痕迹一并清除。
+        workspace changes / 用量记录保留——它们是工作区与计费事实，不属于对话内容。
+        """
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            messages = await session.execute(
+                delete(TaskMessage).where(TaskMessage.task_id == task_id)
+            )
+            runs = await session.execute(delete(AgentRun).where(AgentRun.task_id == task_id))
+            # 执行轨迹（思考/命令/输出）是对话内容的一部分，随对话一起删除
+            await session.execute(delete(RunTraceItem).where(RunTraceItem.task_id == task_id))
+            await session.delete(task)
+            await self._commit(session)
+            return int(messages.rowcount or 0), int(runs.rowcount or 0)
 
     async def _commit(self, session: AsyncSession) -> None:
         """提交会话；违反数据库约束时转为 400（不引入全局处理器，见交付说明）。"""

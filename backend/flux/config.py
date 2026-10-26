@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # 留空 = 映射不落库（fail-closed）：正文照常打码，只是不可回填。
     redaction_key: str | None = None
 
+    # --- 设计工作室（Luma Studio，独立进程）---
+    # 设计稿的持久化与 AI 改组件都由本机 Luma Studio 负责；Flux 只做鉴权代理，
+    # 手机端因此复用 Flux 既有登录态，不需要另建账号体系。
+    # 公网路径 /design-studio/api/designs 已在 nginx 屏蔽，只有回环直连可读写。
+    design_studio_url: str = "http://127.0.0.1:8091"
+    design_studio_timeout_seconds: float = 60.0
+
     # --- 存储（主规格 §11.1）---
     database_url: str = "sqlite+aiosqlite:///./flux.db"
     redis_url: str = "redis://localhost:6379/0"
@@ -96,6 +103,8 @@ class Settings(BaseSettings):
     dsh_home: str = "/opt/flux/dsh-home"
     # DSH Agent 的工作目录（cwd），Phase 1 用独立空目录，不指向真实项目
     dsh_workspace: str = "/opt/flux/dsh-ws"
+    # 手机端聊天附件（用户上传的文件）：按上传 id 一目录存放，Agent 按绝对路径直接读
+    uploads_dir: str = "/opt/flux/uploads"
     # DSH provider 路由
     dsh_provider: str = "deepseek-official"
     # DSH 模型 id
@@ -147,6 +156,40 @@ class Settings(BaseSettings):
     # 第三方模型的元数据目录（codex 的 model_catalog_json）：缺了 codex 会退化成 fallback
     # 元数据（实测警告「Model metadata not found…can degrade performance」）；空 = 不写
     codex_model_catalog: str = ""
+    # ChatGPT 账号（Codex 订阅通道）的登录态目录。codex login 把 auth.json 写在这里，
+    # 每次 Run 只把这一个文件复制进隔离的 CODEX_HOME（0600），不动用户的全局 ~/.codex。
+    codex_account_home: str = "~/.flux/codex-account"
+    # 设备码登录与订阅出网的代理地址（如 http://10.99.0.1:7890）；
+    # 空 = 不注入，继承 Flux 进程环境（当前由 /usr/local/bin/codex wrapper 自带代理）。
+    codex_proxy: str = ""
+    # opencode 的模型清单来自它自己的全局配置（provider.<id>.models，含 Zen 免费模型）。
+    # Flux 只读模型 id，不复制清单；文件不存在 = 不提供切换，沿用 opencode 自带默认。
+    opencode_config_file: str = "~/.config/opencode/opencode.json"
+
+    # --- 计费与套餐额度（本地账本 + 官方快照对账）---
+    # 关掉后不再写 usage_records / usage_snapshots，闸门整体失效
+    billing_enabled: bool = True
+    # 是否真的拦截超额 Run。默认 False = 只告警放行：官方快照有 5~30 分钟延迟，
+    # 直接用延迟数据拒单会误伤；确认口径可信后再打开。
+    billing_enforce: bool = False
+    # 告警 / 拦截阈值（已用百分比，0-100）
+    billing_alert_percent: float = 80.0
+    billing_block_percent: float = 95.0
+    # 官方额度快照的缓存时长（秒）；0 = 每次都重新采集
+    billing_refresh_seconds: int = 300
+    # Go 套餐的总额（美元）。官方只给百分比，配了它才能在官方不可用时用本地账本折算占比
+    billing_go_monthly_usd: float | None = None
+    # 火山 Agent Plan 额度采集命令（本机需要先 `arkcli auth login`）；
+    # 留空 = 不采集，闸门退化为「官方数据不可用」
+    billing_arkcli_cmd: str = "arkcli usage plan --product agent-plan"
+    billing_arkcli_timeout_seconds: float = 30.0
+    # 自定义套餐定义文件（JSON）。内置套餐 + 本文件合并，同 key 覆盖内置；
+    # 新增 Codex / Claude / 任意订阅套餐只需往这里加一条，不用改代码。
+    billing_plans_file: str = "~/.flux/billing-plans.json"
+    # 官方价目表覆盖文件（JSON，同 model 覆盖内置单价，单位每百万 token）
+    billing_prices_file: str = "~/.flux/billing-prices.json"
+    # 人民币价（火山方舟）换算美元用的汇率；只影响本地估算，不影响官方账单
+    billing_cny_per_usd: float = 7.2
 
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。

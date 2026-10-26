@@ -127,11 +127,13 @@ class CliAgentAdapter(ABC):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         stderr: Any | None = None,
+        stdin: Any | None = None,
     ) -> CliProcess:
         """以独立进程组启动 CLI，返回可取消的进程句柄。
 
         `stderr` 给文件句柄时，stderr 单独落文件——CLI 的日志与提示不许混进事件流
         （Agent 的答复只认 stdout 上的协议输出）；不给则与旧行为一致（并入 stdout）。
+        `stdin` 给 `subprocess.PIPE` 时可用于 JSON-RPC（codex app-server）；默认继承父进程。
         """
         process = subprocess.Popen(  # noqa: S603 - argv 由 Adapter 决定，不经 shell
             # Windows 上 CLI 常是 *.cmd 包装脚本，CreateProcess 不能直接执行（WinError 193），
@@ -142,6 +144,7 @@ class CliAgentAdapter(ABC):
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=stderr if stderr is not None else subprocess.STDOUT,
+            stdin=stdin,
             text=True,
         )
         # 独立进程组：POSIX 下 pid == pgid；Windows 以组长 pid 作为组标识

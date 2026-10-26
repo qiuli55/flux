@@ -19,10 +19,12 @@ from flux.config import Settings
 from flux.core.agent_runtime.protocol import (
     FLUX_AGENT_PROTOCOL,
     FLUX_AGENT_PROTOCOL_VERSION,
+    MODE_RULES,
     RUNTIME_ENTRY,
     RUNTIME_RULES,
 )
 from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
+from flux.core.permissions.modes import boundary_for, normalize_mode
 from flux.core.task_engine.repository import TaskRepository
 from flux.enums import Capability, FluxCapability
 from flux.errors import AIOSError, ValidationError
@@ -64,6 +66,8 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         container, agent_id=ctx.identity.agent_id, run_id=optional_str(params, "run_id")
     )
     task = await _resolve_task(container.task_repo, optional_str(params, "task_id"), run)
+    mode = normalize_mode(ctx.identity.permission_mode)
+    boundary = boundary_for(mode)
 
     return {
         "protocol": {"name": FLUX_AGENT_PROTOCOL, "version": FLUX_AGENT_PROTOCOL_VERSION},
@@ -77,13 +81,21 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         "workspace": _workspace_view(container, settings),
         "agent": {"id": ctx.identity.agent_id, "adapter": None},
         "policy": {
-            "proposal_required": bool(settings.proposal_required),
-            "direct_apply": False,
+            # Full / 免审核模式允许直写工作区，提案不再是唯一完成路径
+            "proposal_required": bool(settings.proposal_required)
+            and mode not in ("full", "unattended"),
+            "direct_apply": mode in ("full", "unattended"),
+        },
+        # 本次 Run 的权限模式（Plan / Normal / Full）：白名单与审批闸门都以它为准。
+        # 模式在 Run 启动时快照，切换模式从下一轮才生效。
+        "permission_mode": {
+            "mode": mode,
+            **boundary,
         },
         "capabilities": _capabilities(settings),
         # §4.1 契约 rules / entry：与 Runtime Bootstrap（protocol.py）同一份真源——
         # Agent 无论从 prompt 还是从 flux_context 拿到的行为规则必须完全一致。
-        "rules": list(RUNTIME_RULES),
+        "rules": list(MODE_RULES.get(mode, RUNTIME_RULES)),
         "entry": list(RUNTIME_ENTRY),
     }
 

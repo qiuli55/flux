@@ -18,12 +18,16 @@ from flux.core.agent_runtime.runtimes.base import (
     RuntimeLaunch,
     RuntimeProcess,
 )
+from flux.core.permissions.modes import normalize_mode
 
 
 class DshRuntime:
     """内置 DSH Agent 的 Runtime 适配层。"""
 
     runtime_id = RUNTIME_DSH
+    #: DSH 的 stdio SDK 不给 delta，但 runtime 与模型之间是 SSE——由 llm_stream_tap 旁路
+    #: 逐 token 取增量，所以这里也是名副其实的原生流式。
+    native_streaming = True
 
     def __init__(self, client: Any, *, workspace: str = "") -> None:
         #: 由容器惰性解析（测试会替换 container.dsh，故不能在此固化）
@@ -39,16 +43,19 @@ class DshRuntime:
         instruction: str,
         channel: ModelChannel | None = None,
     ) -> RuntimeLaunch:
+        # 每个 Run 用独立 session：DSH 的 session id 全局唯一，沿用同一个 id 起第二轮
+        # 会直接报 "session already exists"，同一对话续聊就永远起不来。
         return RuntimeLaunch(
             runtime_id=self.runtime_id,
             run_id=run_id,
             instruction=instruction,
             cwd=self._workspace,
-            session_id=f"flux-task-{getattr(task, 'id', run_id)}",
+            session_id=f"flux-task-{getattr(task, 'id', run_id)}-{run_id}",
             task_id=str(getattr(task, "id", "")) or None,
             agent_id=getattr(agent, "id_str", None),
             model=str(getattr(task, "model", "") or ""),
             channel=channel,
+            permission_mode=normalize_mode(getattr(task, "permission_mode", None)),
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
@@ -59,6 +66,7 @@ class DshRuntime:
             task_id=launch.task_id,
             model=launch.model or None,
             channel=launch.channel,
+            permission_mode=launch.permission_mode,
         )
         return RuntimeProcess(
             runtime_id=self.runtime_id,

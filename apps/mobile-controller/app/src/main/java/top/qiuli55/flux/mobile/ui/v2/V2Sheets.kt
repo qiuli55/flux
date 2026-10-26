@@ -61,6 +61,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -68,6 +70,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.AccountSession
+import top.qiuli55.flux.mobile.data.CodexAccountStatus
+import top.qiuli55.flux.mobile.data.CodexLoginSession
 
 // ================================================================== 设置
 
@@ -89,6 +93,13 @@ fun SettingsSheet(
     onOpenDevices: () -> Unit,
     onOpenTerminals: () -> Unit,
     onOpenKeyVault: () -> Unit,
+    codexAccount: CodexAccountStatus?,
+    codexLogin: CodexLoginSession?,
+    codexLoading: Boolean,
+    onCodexLogin: () -> Unit,
+    onCodexLogout: () -> Unit,
+    onRefreshCodex: () -> Unit,
+    onOpenCodexUrl: (String) -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
     updateHint: String,
@@ -100,6 +111,8 @@ fun SettingsSheet(
         ?: account?.username?.takeIf { it.isNotBlank() }
         ?: "本机连接"
     val accountLine = account?.email?.takeIf { it.isNotBlank() } ?: "手动连接 · $deviceName"
+    // 每次打开设置都拉一次账号态；有未完成的设备码登录会继续轮询
+    LaunchedEffect(Unit) { onRefreshCodex() }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         SheetHeader(title = "我的", onClose = onDismiss, centered = true)
         Column(
@@ -151,6 +164,34 @@ fun SettingsSheet(
                         else -> "账号"
                     },
                 )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            // ChatGPT 账号（Codex 订阅通道）：用账号订阅额度跑 codex，不走 API Key
+            WhiteCard(Modifier.fillMaxWidth()) {
+                CodexAccountHeader(account = codexAccount, login = codexLogin, loading = codexLoading)
+                ThinDivider(V2Colors.ink(.05f))
+                if (codexAccount?.loggedIn == true) {
+                    SettingsActionRow(
+                        icon = Icons.Outlined.Logout,
+                        title = "退出 ChatGPT 账号",
+                        description = "退出后 Codex Run 不再使用订阅额度",
+                        danger = true,
+                        onClick = onCodexLogout,
+                    )
+                } else {
+                    SettingsActionRow(
+                        icon = Icons.Outlined.Link,
+                        title = if (codexLoading) "正在启动登录…" else "登录 ChatGPT",
+                        description = "在浏览器输入设备码，用订阅额度执行任务",
+                        danger = false,
+                        onClick = onCodexLogin,
+                    )
+                }
+                if (codexLogin != null && (codexLogin.isPending || codexLogin.status == "failed")) {
+                    ThinDivider(V2Colors.ink(.05f))
+                    CodexLoginPanel(codexLogin, onOpenUrl = onOpenCodexUrl)
+                }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -363,7 +404,7 @@ private fun StrengthOption(text: String, selected: Boolean, modifier: Modifier =
     Box(
         modifier
             .clip(RoundedCornerShape(9.dp))
-            .background(if (selected) Color.White else Color.Transparent)
+            .background(if (selected) V2Colors.surface else Color.Transparent)
             .border(1.dp, if (selected) V2Colors.ink(.05f) else Color.Transparent, RoundedCornerShape(9.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 7.dp),
@@ -422,7 +463,7 @@ fun LogsSheet(
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFF7F8FA).copy(alpha = .92f))
+                .background(V2Colors.surface(.92f))
                 .padding(horizontal = 20.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -526,7 +567,7 @@ private fun FilterPill(label: String, count: Int, selected: Boolean, onClick: ()
     Row(
         Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else Color.White.copy(alpha = .35f))
+            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
             .border(
                 1.dp,
                 if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
@@ -579,7 +620,7 @@ fun NewChatSheet(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White.copy(alpha = .55f))
+                        .background(V2Colors.surface(.55f))
                         .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(16.dp))
                         .clickable { onPick(option) }
                         .padding(14.dp),
@@ -642,7 +683,7 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White.copy(alpha = .55f))
+                    .background(V2Colors.surface(.55f))
                     .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp))
                     .padding(16.dp),
             ) {
@@ -684,7 +725,7 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
                     Row(
                         Modifier
                             .clip(RoundedCornerShape(999.dp))
-                            .background(Color.White.copy(alpha = .45f))
+                            .background(V2Colors.surface(.45f))
                             .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(999.dp))
                             .padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -711,7 +752,7 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White.copy(alpha = .45f))
+                    .background(V2Colors.surface(.45f))
                     .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(16.dp))
                     .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
             ) {
@@ -801,7 +842,7 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = .45f))
+                            .background(V2Colors.surface(.45f))
                             .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                     ) {
@@ -820,7 +861,7 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFF7F8FA))
+                .background(V2Colors.shellTop)
                 .border(1.dp, V2Colors.ink(.04f))
                 .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 16.dp),
         ) {
@@ -860,7 +901,7 @@ fun ConfirmSheet(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White.copy(alpha = .55f))
+                    .background(V2Colors.surface(.55f))
                     .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp))
                     .padding(14.dp),
             ) {
@@ -939,7 +980,7 @@ fun AgentPickerSheet(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (selectedAgent) V2Colors.cyan500.copy(alpha = .06f) else Color.White.copy(alpha = .55f))
+                        .background(if (selectedAgent) V2Colors.cyan500.copy(alpha = .06f) else V2Colors.surface(.55f))
                         .border(
                             1.dp,
                             if (selectedAgent) V2Colors.accent.copy(alpha = .28f) else V2Colors.ink(.07f),
@@ -961,7 +1002,13 @@ fun AgentPickerSheet(
                         }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Label(agent.name, 12.5f, V2Colors.ink(.90f), FontWeight.Medium)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Label(agent.name, 12.5f, V2Colors.ink(.90f), FontWeight.Medium)
+                                if (!agent.nativeStreaming) {
+                                    Spacer(Modifier.width(5.dp))
+                                    NonStreamingBadge()
+                                }
+                            }
                             Spacer(Modifier.height(2.dp))
                             Label("${agent.role} · 运行 ${agent.running} 个任务", 10f, V2Colors.ink(.36f))
                         }
@@ -981,7 +1028,7 @@ fun AgentPickerSheet(
                                     Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(if (selectedModel) V2Colors.accent else Color.White.copy(alpha = .55f))
+                                        .background(if (selectedModel) V2Colors.accent else V2Colors.surface(.55f))
                                         .border(
                                             1.dp,
                                             if (selectedModel) V2Colors.accent else V2Colors.ink(.08f),
@@ -1010,5 +1057,129 @@ fun AgentPickerSheet(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- ChatGPT 账号
+
+private fun codexPlanLabel(plan: String?): String = when (plan?.lowercase()) {
+    "plus" -> "Plus"
+    "pro" -> "Pro"
+    "team", "business" -> "Team"
+    "enterprise" -> "Enterprise"
+    "edu", "education" -> "Edu"
+    "free" -> "Free"
+    null, "" -> "账号"
+    else -> plan.replaceFirstChar { it.uppercase() }
+}
+
+@Composable
+private fun CodexAccountHeader(
+    account: CodexAccountStatus?,
+    login: CodexLoginSession?,
+    loading: Boolean,
+) {
+    val loggedIn = account?.loggedIn == true
+    val plan = codexPlanLabel(account?.plan)
+    val subtitle = when {
+        loggedIn && account?.plan == "free" -> "Free 套餐不含 Codex 额度，需 Plus 及以上"
+        loggedIn -> account?.email ?: "已连接 ChatGPT 账号"
+        login?.isPending == true -> "等待浏览器授权…"
+        loading -> "读取账号状态…"
+        account == null -> "账号状态暂不可用"
+        else -> "未登录 · 登录后使用订阅额度"
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.SmartToy, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Label("ChatGPT 账号", 13.5f, V2Colors.ink(.90f))
+            Spacer(Modifier.height(2.dp))
+            Label(subtitle, 10f, V2Colors.ink(.36f), maxLines = 1)
+        }
+        if (loggedIn) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (account?.plan == "free") {
+                            V2Colors.ink(.07f)
+                        } else {
+                            V2Colors.accent.copy(alpha = .12f)
+                        }
+                    )
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            ) {
+                Label(
+                    plan,
+                    9.5f,
+                    if (account?.plan == "free") V2Colors.ink(.42f) else V2Colors.accent,
+                    FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CodexLoginPanel(session: CodexLoginSession, onOpenUrl: (String) -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(session.code) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        if (session.status == "failed") {
+            Label("登录失败", 11f, V2Colors.rose, FontWeight.Medium)
+            Spacer(Modifier.height(4.dp))
+            Label(session.message.ifBlank { "codex 登录进程已退出" }, 9.5f, V2Colors.ink(.38f))
+            return@Column
+        }
+        Label("1. 打开授权页并登录 ChatGPT", 10.5f, V2Colors.ink(.45f))
+        if (session.url.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(V2Colors.accent.copy(alpha = .10f))
+                    .clickable { onOpenUrl(session.url) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Language, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Label("打开授权页", 12f, V2Colors.accent, FontWeight.Medium, modifier = Modifier.weight(1f))
+                Icon(Icons.Outlined.KeyboardArrowRight, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (session.code.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Label("2. 输入设备码（15 分钟内有效）", 10.5f, V2Colors.ink(.45f))
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Label(
+                    session.code,
+                    22f,
+                    V2Colors.ink(.90f),
+                    FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(V2Colors.ink(.06f))
+                        .clickable {
+                            clipboard.setText(AnnotatedString(session.code))
+                            copied = true
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Label(if (copied) "已复制" else "复制", 10.5f, V2Colors.ink(.55f))
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Label("授权完成后这里会自动更新，无需手动刷新", 9.5f, V2Colors.ink(.34f))
     }
 }

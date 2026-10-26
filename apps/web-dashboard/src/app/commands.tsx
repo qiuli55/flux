@@ -87,6 +87,7 @@ export function CommandPalette({
       { id: "go-solo", cat: "导航", name: "切换到 Solo · AI 任务执行中心", run: () => navigate("solo") },
       { id: "go-ide", cat: "导航", name: "切换到 IDE · 工作台", run: () => navigate("ide") },
       { id: "go-skills", cat: "导航", name: "切换到 Skills · 能力管理", run: () => navigate("skills") },
+      { id: "go-billing", cat: "导航", name: "切换到 成本中心", run: () => navigate("billing") },
       { id: "go-diagnostics", cat: "导航", name: "切换到 系统诊断", run: () => navigate("diagnostics") },
       { id: "go-settings", cat: "导航", name: "切换到 设置", run: () => navigate("settings") },
       {

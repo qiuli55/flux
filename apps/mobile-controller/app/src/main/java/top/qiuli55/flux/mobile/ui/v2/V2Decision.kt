@@ -1,5 +1,15 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,9 +45,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -52,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 @Composable
@@ -67,7 +80,29 @@ fun V2DecisionScreen(
 ) {
     val front = decisions.firstOrNull()
     var expandedId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(front?.id) { expandedId = null }
+    var intent by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(front?.id) {
+        expandedId = null
+        intent = 0f
+    }
+    val rejectScale by animateFloatAsState(
+        targetValue = when {
+            intent < -8f -> 1.02f
+            intent > 8f -> .98f
+            else -> 1f
+        },
+        animationSpec = tween(160),
+        label = "reject-scale",
+    )
+    val approveScale by animateFloatAsState(
+        targetValue = when {
+            intent > 8f -> 1.02f
+            intent < -8f -> .98f
+            else -> 1f
+        },
+        animationSpec = tween(160),
+        label = "approve-scale",
+    )
 
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 10.dp)) {
         DecisionHeader(
@@ -79,16 +114,21 @@ fun V2DecisionScreen(
 
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatCard(decisions.size.toString(), "待确认", V2Colors.amber, Modifier.weight(1f))
-            StatCard(runningCount.toString(), "执行中", V2Colors.cyan700, Modifier.weight(1f))
-            StatCard(processedCount.toString(), "今日已处理", V2Colors.ink(.85f), Modifier.weight(1f))
+            StatCard(decisions.size, "待确认", V2Colors.amber, Modifier.weight(1f))
+            StatCard(runningCount, "执行中", V2Colors.cyan700, Modifier.weight(1f))
+            StatCard(processedCount, "今日已处理", V2Colors.ink(.85f), Modifier.weight(1f))
         }
 
         BoxWithConstraints(
             Modifier.weight(1f).fillMaxWidth().padding(top = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
-            val cardHeight: Dp = if (expandedId != null) minOf(maxHeight, 360.dp) else minOf(maxHeight, 328.dp)
+            val targetHeight: Dp = if (expandedId != null) minOf(maxHeight, 420.dp) else minOf(maxHeight, 328.dp)
+            val cardHeight by animateDpAsState(
+                targetValue = targetHeight,
+                animationSpec = spring(stiffness = 360f, dampingRatio = .42f),
+                label = "decision-card-height",
+            )
             if (decisions.isEmpty()) {
                 EmptyDecision()
             } else {
@@ -137,8 +177,15 @@ fun V2DecisionScreen(
                             onToggleDetail = {
                                 expandedId = if (expandedId == front.id) null else front.id
                             },
-                            onApprove = { onRequestApprove(front) },
-                            onReject = { onReject(front) },
+                            onIntent = { intent = it },
+                            onApprove = {
+                                intent = 0f
+                                onRequestApprove(front)
+                            },
+                            onReject = {
+                                intent = 0f
+                                onReject(front)
+                            },
                         )
                     }
                 }
@@ -150,7 +197,10 @@ fun V2DecisionScreen(
             GhostButton(
                 text = "拒绝",
                 onClick = { front?.let(onReject) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).graphicsLayer {
+                    scaleX = rejectScale
+                    scaleY = rejectScale
+                },
                 contentColor = V2Colors.rose.copy(alpha = .9f),
                 icon = Icons.Outlined.Close,
                 enabled = front != null,
@@ -158,7 +208,10 @@ fun V2DecisionScreen(
             PrimaryButton(
                 text = "通过并执行",
                 onClick = { front?.let(onRequestApprove) },
-                modifier = Modifier.weight(1.45f),
+                modifier = Modifier.weight(1.45f).graphicsLayer {
+                    scaleX = approveScale
+                    scaleY = approveScale
+                },
                 icon = Icons.Outlined.VerifiedUser,
                 enabled = front != null,
             )
@@ -183,13 +236,22 @@ private fun DecisionHeader(
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
         if (showBack) {
-            RoundIconButton(Icons.Outlined.ArrowBack, onBack, size = 32.dp, iconSize = 16.dp)
+            RoundIconButton(
+                Icons.Outlined.ArrowBack,
+                onBack,
+                size = 32.dp,
+                iconSize = 16.dp,
+                contentDescription = "返回",
+            )
             Spacer(Modifier.width(10.dp))
         }
         Column(Modifier.weight(1f)) {
             Label("决策中心", 23f, V2Colors.ink(.95f), FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
-            Label("$pendingCount 项操作等待你确认", 11f, V2Colors.ink(.38f))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                V2RollingNumber(pendingCount, 11f, V2Colors.ink(.38f), FontWeight.Normal)
+                Label(" 项操作等待你确认", 11f, V2Colors.ink(.38f))
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             LiveDot(V2Colors.emerald)
@@ -202,16 +264,16 @@ private fun DecisionHeader(
             onClick = onOpenLogs,
             size = 32.dp,
             iconSize = 14.dp,
-            background = Color.White.copy(alpha = .55f),
+            background = V2Colors.surface(.55f),
             tint = V2Colors.cyan700.copy(alpha = .8f),
         )
     }
 }
 
 @Composable
-private fun StatCard(number: String, label: String, color: Color, modifier: Modifier = Modifier) {
+private fun StatCard(number: Int, label: String, color: Color, modifier: Modifier = Modifier) {
     GlassCard(modifier = modifier, shape = RoundedCornerShape(16.dp), contentPadding = padding(12.dp, 8.dp)) {
-        Label(number, 16f, color, FontWeight.SemiBold)
+        V2RollingNumber(number, 16f, color)
         Spacer(Modifier.height(4.dp))
         Label(label, 9f, V2Colors.ink(.30f))
     }
@@ -236,13 +298,18 @@ private fun DecisionCard(
     expanded: Boolean,
     modifier: Modifier = Modifier,
     onToggleDetail: () -> Unit,
+    onIntent: (Float) -> Unit = {},
     onApprove: () -> Unit,
     onReject: () -> Unit,
 ) {
-    var dragX by remember(decision.id) { mutableFloatStateOf(0f) }
+    val dragX = remember(decision.id) { Animatable(0f) }
+    val fade = remember(decision.id) { Animatable(1f) }
+    val scope = rememberCoroutineScope()
+    val haptics = LocalV2Haptics.current
     val density = LocalDensity.current
     val threshold = with(density) { 96.dp.toPx() }
     val shape = RoundedCornerShape(28.dp)
+    var armed by remember(decision.id) { mutableStateOf(0) }
     val riskColor = when (decision.risk) {
         V2Risk.HIGH -> V2Colors.rose
         V2Risk.MEDIUM -> V2Colors.amber
@@ -258,12 +325,46 @@ private fun DecisionCard(
         Modifier.pointerInput(decision.id) {
             detectHorizontalDragGestures(
                 onDragEnd = {
-                    if (dragX > threshold) onApprove() else if (dragX < -threshold) onReject()
-                    dragX = 0f
+                    val current = dragX.value
+                    onIntent(0f)
+                    armed = 0
+                    when {
+                        current > threshold -> scope.launch {
+                            dragX.animateTo(0f, spring(stiffness = 420f, dampingRatio = .32f))
+                            onApprove()
+                        }
+                        current < -threshold -> scope.launch {
+                            fade.animateTo(0f, tween(160))
+                            dragX.animateTo(-420f, tween(220))
+                            onReject()
+                        }
+                        else -> scope.launch {
+                            dragX.animateTo(0f, spring(stiffness = 420f, dampingRatio = .4f))
+                        }
+                    }
                 },
-                onDragCancel = { dragX = 0f },
+                onDragCancel = {
+                    armed = 0
+                    onIntent(0f)
+                    scope.launch {
+                        dragX.animateTo(0f, spring(stiffness = 420f, dampingRatio = .4f))
+                    }
+                },
                 onHorizontalDrag = { _, amount ->
-                    dragX = (dragX + amount).coerceIn(-threshold * 3f, threshold * 3f)
+                    val next = (dragX.value + amount).coerceIn(-threshold * 4f, threshold * 4f)
+                    scope.launch {
+                        dragX.snapTo(next)
+                        onIntent(next)
+                        val zone = when {
+                            next > threshold -> 1
+                            next < -threshold -> -1
+                            else -> 0
+                        }
+                        if (zone != armed) {
+                            armed = zone
+                            if (zone != 0) haptics?.play(V2HapticLevel.TICK)
+                        }
+                    }
                 },
             )
         }
@@ -271,12 +372,13 @@ private fun DecisionCard(
         Modifier
     }
 
-    Column(
+    BoxWithConstraints(
         modifier
             .graphicsLayer {
                 if (interactive) {
-                    translationX = dragX
-                    rotationZ = dragX / 60f
+                    translationX = dragX.value
+                    rotationZ = (dragX.value / 20f).coerceIn(-10f, 10f)
+                    alpha = fade.value
                 }
             }
             .then(swipeModifier)
@@ -285,8 +387,8 @@ private fun DecisionCard(
             .drawBehind {
                 drawRect(
                     Brush.verticalGradient(
-                        if (interactive) listOf(Color.White, Color(0xFFF6F8FA))
-                        else listOf(Color(0xFFF1F4F8), Color(0xFFE5EAF1)),
+                        if (interactive) listOf(V2Colors.surface, V2Colors.shellTop)
+                        else listOf(V2Colors.surface(.75f), V2Colors.surface(.5f)),
                     ),
                 )
                 if (interactive) {
@@ -299,32 +401,11 @@ private fun DecisionCard(
                     )
                 }
             }
-            .border(1.dp, V2Colors.ink(.08f), shape)
-            .padding(start = 18.dp, end = 18.dp, top = 15.dp, bottom = 16.dp),
+            .border(1.dp, V2Colors.ink(.08f), shape),
     ) {
-        if (interactive) {
-            val stampAlpha = (abs(dragX) / threshold).coerceIn(0f, 1f)
-            if (stampAlpha > 0f) {
-                Box(Modifier.fillMaxWidth()) {
-                    Stamp(
-                        "批准",
-                        V2Colors.emerald700,
-                        V2Colors.emerald.copy(alpha = .7f * stampAlpha),
-                        stampAlpha,
-                        Modifier.align(Alignment.TopStart).padding(start = 4.dp, top = 44.dp).graphicsLayer { rotationZ = -13f },
-                    )
-                    Stamp(
-                        "拒绝",
-                        V2Colors.rose700,
-                        V2Colors.rose500.copy(alpha = .7f * stampAlpha),
-                        stampAlpha,
-                        Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = 44.dp).graphicsLayer { rotationZ = 13f },
-                    )
-                }
-            }
-        }
-
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        val stampTop = maxHeight * .38f
+        Column(Modifier.fillMaxSize().padding(start = 18.dp, end = 18.dp, top = 15.dp, bottom = 16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(
                 Modifier
                     .clip(RoundedCornerShape(999.dp))
@@ -372,45 +453,67 @@ private fun DecisionCard(
         Column(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
         ) {
-            if (!expanded) {
-                Label(
-                    decision.reason,
-                    12f,
-                    V2Colors.ink(.58f),
-                    maxLines = 3,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-            } else {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(V2Colors.ink(.035f))
-                        .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                ) {
+            AnimatedVisibility(
+                visible = !expanded,
+                enter = fadeIn(tween(160)),
+                exit = fadeOut(tween(100)),
+            ) {
+                Column {
                     Label(
-                        decision.sql,
-                        10f,
-                        V2Colors.cyan800.copy(alpha = .8f),
-                        mono = true,
+                        decision.reason,
+                        12f,
+                        V2Colors.ink(.58f),
+                        maxLines = 3,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(6.dp))
                 }
-                Spacer(Modifier.height(8.dp))
-                decision.notes.forEach { note ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                        Box(
-                            Modifier.padding(top = 6.dp).size(3.dp).background(V2Colors.ink(.22f), RoundedCornerShape(999.dp)),
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn(tween(180)) + expandVertically(tween(240)),
+                exit = fadeOut(tween(100)) + shrinkVertically(tween(180)),
+            ) {
+                Column {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(V2Colors.ink(.035f))
+                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Label(
+                            decision.sql,
+                            10f,
+                            V2Colors.cyan800.copy(alpha = .8f),
+                            mono = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Label(note, 10f, V2Colors.ink(.38f), modifier = Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    decision.notes.forEach { note ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                            Box(
+                                Modifier.padding(top = 6.dp).size(3.dp).background(V2Colors.ink(.22f), RoundedCornerShape(999.dp)),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Label(note, 10f, V2Colors.ink(.38f), modifier = Modifier.weight(1f))
+                        }
                     }
                 }
             }
+            val chevron by animateFloatAsState(
+                targetValue = if (expanded) 180f else 0f,
+                animationSpec = tween(200),
+                label = "detail-chevron",
+            )
             Row(
-                Modifier.clickable { if (interactive) onToggleDetail() }.padding(vertical = 2.dp),
+                Modifier
+                    .v2Pressable(enabled = interactive, pressScale = .98f) {
+                        if (interactive) onToggleDetail()
+                    }
+                    .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Label(
@@ -425,7 +528,7 @@ private fun DecisionCard(
                     tint = V2Colors.cyan700.copy(alpha = .75f),
                     modifier = Modifier
                         .size(12.dp)
-                        .graphicsLayer { rotationZ = if (expanded) 180f else 0f },
+                        .graphicsLayer { rotationZ = chevron },
                 )
             }
         }
@@ -435,7 +538,7 @@ private fun DecisionCard(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color.White.copy(alpha = .55f))
+                .background(V2Colors.surface(.55f))
                 .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp)),
         ) {
             decision.impact.forEachIndexed { index, impact ->
@@ -456,6 +559,35 @@ private fun DecisionCard(
                 if (index != decision.impact.lastIndex) {
                     Box(Modifier.width(1.dp).height(34.dp).background(V2Colors.ink(.06f)).align(Alignment.CenterVertically))
                 }
+            }
+        }
+        }
+        if (interactive) {
+            val approveAlpha = (dragX.value / threshold).coerceIn(0f, 1f)
+            val rejectAlpha = (-dragX.value / threshold).coerceIn(0f, 1f)
+            if (approveAlpha > 0f) {
+                Stamp(
+                    text = "批准",
+                    color = V2Colors.emerald700,
+                    border = V2Colors.emerald.copy(alpha = .7f * approveAlpha),
+                    alpha = approveAlpha,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 22.dp, top = stampTop)
+                        .graphicsLayer { rotationZ = -13f },
+                )
+            }
+            if (rejectAlpha > 0f) {
+                Stamp(
+                    text = "拒绝",
+                    color = V2Colors.rose700,
+                    border = V2Colors.rose500.copy(alpha = .7f * rejectAlpha),
+                    alpha = rejectAlpha,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 22.dp, top = stampTop)
+                        .graphicsLayer { rotationZ = 13f },
+                )
             }
         }
     }

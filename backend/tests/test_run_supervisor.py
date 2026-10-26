@@ -1,4 +1,4 @@
-"""Run 生命周期看护的回归测试（修复方案 §2 / §3：TC-15A~F）。
+﻿"""Run 生命周期看护的回归测试（修复方案 §2 / §3：TC-15A~F）。
 
 覆盖六条硬判据：
 - TC-15A startup timeout：启动卡死不得永久 running；
@@ -411,6 +411,194 @@ async def test_completed_task_is_sedimented_into_project_brain(tmp_path: Path) -
         assert len(again) == 1
     finally:
         await container.dispose()
+
+
+# --- 上游瞬时故障（429 / ReadTimeout）自动重试 ---
+
+
+async def _retry_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.0
+) -> tuple[
+    TaskRepository,
+    AgentRunRepository,
+    AsyncEngine,
+    TaskRunBridge,
+    uuid.UUID,
+    str,
+    list[uuid.UUID],
+]:
+    """一套「任务已在跑、Run 刚失败」的环境，handler 只记录被调用的任务。"""
+    monkeypatch.setattr(dsh_bridge, "_AUTO_RETRY_DELAY_SECONDS", delay)
+    tasks, runs, engine = await _task_env(tmp_path)
+    task_id = await _make_running_task(tasks, "给项目补一个 /ping 接口")
+    run_id = "run-retry-1"
+    await runs.create(
+        run_id=run_id,
+        session_id="s",
+        instruction="i",
+        status=DshRunStatus.RUNNING,
+        owner_pid=os.getpid(),
+        started_at=utcnow(),
+    )
+    await tasks.set_run_id(task_id, run_id)
+    bridge = TaskRunBridge(tasks, runs)
+    calls: list[uuid.UUID] = []
+
+    async def _handler(task: object) -> None:
+        calls.append(task.id)  # type: ignore[attr-defined]
+
+    bridge.set_retry_handler(_handler)
+    return tasks, runs, engine, bridge, task_id, run_id, calls
+
+
+async def _drain_retries(bridge: TaskRunBridge) -> None:
+    while bridge._retry_jobs:
+        await asyncio.gather(*list(bridge._retry_jobs))
+
+
+async def test_transient_upstream_failure_auto_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """429 触发的失败不落终态：任务保持 running，写一条重试提示，冷却后重新起一轮。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(tmp_path, monkeypatch)
+
+    await bridge._on_run_settled(
+        Events.DSH_RUN_FAILED,
+        {
+            "run_id": run_id,
+            "error": "AI_APICallError: Too Many Requests",
+            "finish_reason": "upstream_error",
+        },
+    )
+
+    assert (await tasks.get(task_id)).status == TaskStatus.RUNNING.value
+    messages, _ = await tasks.list_messages(task_id)
+    assert [message.kind for message in messages] == ["run_retry"]
+
+    await _drain_retries(bridge)
+    assert calls == [task_id]
+    await engine.dispose()
+
+
+async def test_read_timeout_is_treated_as_transient(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """流挂住后 Flux 侧报的 ReadTimeout 同样是瞬时故障，不能算任务失败。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(tmp_path, monkeypatch)
+
+    await bridge._on_run_settled(
+        Events.DSH_RUN_FAILED,
+        {
+            "run_id": run_id,
+            "error": "httpx.ReadTimeout: timed out",
+            "finish_reason": "upstream_error",
+        },
+    )
+
+    assert (await tasks.get(task_id)).status == TaskStatus.RUNNING.value
+    await _drain_retries(bridge)
+    assert calls == [task_id]
+    await engine.dispose()
+
+
+async def test_non_transient_failure_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """业务失败（鉴权、配置）照常落 FAILED；错误里的普通数字不触发重试。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(tmp_path, monkeypatch)
+
+    await bridge._on_run_settled(
+        Events.DSH_RUN_FAILED,
+        {"run_id": run_id, "error": "鉴权失败：invalid api key (step 4291)", "finish_reason": "1"},
+    )
+
+    assert (await tasks.get(task_id)).status == TaskStatus.FAILED.value
+    messages, _ = await tasks.list_messages(task_id)
+    assert [message.kind for message in messages] == ["run_finished"]
+    await _drain_retries(bridge)
+    assert calls == []
+    await engine.dispose()
+
+
+async def test_retry_budget_stops_after_second_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """每轮失败链只自动重试一次：重试后仍被限流就直接落 FAILED，不无限重试。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(tmp_path, monkeypatch)
+    failure = {
+        "error": "AI_APICallError: status 429",
+        "finish_reason": "upstream_error",
+    }
+
+    await bridge._on_run_settled(Events.DSH_RUN_FAILED, {"run_id": run_id, **failure})
+    await _drain_retries(bridge)
+    assert calls == [task_id]
+
+    # 重试那一轮重新登记了新的 run_id，又失败一次：这次必须收尾
+    second_run = "run-retry-2"
+    await tasks.set_run_id(task_id, second_run)
+    await bridge._on_run_settled(Events.DSH_RUN_FAILED, {"run_id": second_run, **failure})
+    await _drain_retries(bridge)
+
+    assert calls == [task_id]
+    assert (await tasks.get(task_id)).status == TaskStatus.FAILED.value
+    await engine.dispose()
+
+
+async def test_cancelled_task_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户取消是明确意图，不在自动重试范围。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(tmp_path, monkeypatch)
+
+    await bridge._on_run_settled(
+        Events.DSH_RUN_CANCELLED, {"run_id": run_id, "error": "cancelled by user"}
+    )
+    await _drain_retries(bridge)
+
+    assert calls == []
+    assert (await tasks.get(task_id)).status == TaskStatus.CANCELLED.value
+    await engine.dispose()
+
+
+async def test_orphan_reconcile_skips_task_waiting_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """冷却期内 run_id 仍指向已失败的 Run：对账不能把它当孤儿判失败。"""
+    _age_orphan(monkeypatch)
+    tasks, runs, engine, bridge, task_id, run_id, calls = await _retry_env(
+        tmp_path, monkeypatch, delay=1.0
+    )
+    await bridge._on_run_settled(
+        Events.DSH_RUN_FAILED, {"run_id": run_id, "error": "Too Many Requests"}
+    )
+    await runs.set_status(run_id, DshRunStatus.FAILED, error="Too Many Requests", finished=True)
+
+    assert await bridge.reconcile_orphan_tasks() == []
+    assert (await tasks.get(task_id)).status == TaskStatus.RUNNING.value
+
+    await _drain_retries(bridge)
+    assert calls == [task_id]
+    await engine.dispose()
+
+
+async def test_retry_is_abandoned_when_task_stops_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """冷却期内用户取消/改状态：到点后发现任务已不在 running，放弃重试。"""
+    tasks, _runs, engine, bridge, task_id, run_id, calls = await _retry_env(
+        tmp_path, monkeypatch, delay=0.05
+    )
+
+    await bridge._on_run_settled(
+        Events.DSH_RUN_FAILED, {"run_id": run_id, "error": "Too Many Requests"}
+    )
+    await tasks.set_status(task_id, TaskStatus.CANCELLED)
+    await _drain_retries(bridge)
+
+    assert calls == []
+    assert (await tasks.get(task_id)).status == TaskStatus.CANCELLED.value
+    await engine.dispose()
 
 
 async def test_reconcile_hook_runs_after_row_reconcile(tmp_path: Path) -> None:

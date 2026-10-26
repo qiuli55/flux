@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 from flux.core.mcp.tools.base import ToolContext, ToolSpec
+from flux.core.mcp.tools.design_tools import design_tools
 from flux.core.mcp.tools.memory_tools import memory_tools
+from flux.core.mcp.tools.plan_tools import plan_tools
 from flux.core.mcp.tools.preview_tools import preview_tools
 from flux.core.mcp.tools.read_tools import read_tools
 from flux.core.mcp.tools.runtime_tools import runtime_tools
@@ -29,6 +31,8 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     *memory_tools(),
     *terminal_tools(),
     *preview_tools(),
+    *design_tools(),
+    *plan_tools(),
 )
 
 TOOLS: dict[str, ToolSpec] = {tool.name: tool for tool in ALL_TOOLS}

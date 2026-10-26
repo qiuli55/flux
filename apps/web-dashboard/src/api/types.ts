@@ -670,3 +670,141 @@ export interface ChatResult {
   cost: number | null;
   latency_ms: number;
 }
+
+/* ---------------- 计费 / 额度（/api/v1/billing） ---------------- */
+
+/** 额度闸门等级：ok 正常 / warning 告警 / exceeded 超额 / unknown 数据不足 / disabled 计费关闭 */
+export type BillingLevel = "ok" | "warning" | "exceeded" | "unknown" | "disabled";
+
+/** 一次额度闸门判定（对应后端 GateDecision.to_dict） */
+export interface BillingGate {
+  plan_key: string;
+  level: BillingLevel;
+  percent: number | null;
+  window_key: string;
+  message: string;
+  enforce: boolean;
+  fallback_model: string;
+  blocked: boolean;
+}
+
+/** 本地账本在某个窗口内的合计 */
+export interface BillingTotals {
+  records: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost: number;
+}
+
+/** 官方额度快照（采集失败时 error 有值、其余字段可能为 null） */
+export interface BillingOfficialWindow {
+  plan_key: string;
+  window_key: string;
+  used: number | null;
+  quota: number | null;
+  percent: number | null;
+  unit: string;
+  status: string;
+  resets_at: string | null;
+  fetched_at: string | null;
+  source: string;
+  error: string | null;
+}
+
+/** 套餐的一个额度窗口：本地账本 + 官方快照 */
+export interface BillingWindow {
+  key: string;
+  label: string;
+  since: string;
+  local: BillingTotals;
+  official: BillingOfficialWindow | null;
+}
+
+/** 单套餐视图（对应后端 _plan_view 的返回） */
+export interface BillingPlan {
+  key: string;
+  label: string;
+  vendor: string;
+  /** 多个前缀拼好的展示串（`claude / anthropic`） */
+  model_prefix: string;
+  /** 归因前缀（模型 id 第一段）；空 = 不按模型归因 */
+  model_prefixes?: string[];
+  /** 模型不带前缀时按 runtime 归因（如 codex → Codex 订阅） */
+  runtime_ids?: string[];
+  official_source: string;
+  fallback_model: string;
+  gate: BillingGate;
+  windows: BillingWindow[];
+}
+
+/** GET /api/v1/billing/plans 的 data */
+export interface BillingOverview {
+  enabled: boolean;
+  enforce: boolean;
+  alert_percent: number;
+  block_percent: number;
+  /** 自定义套餐文件路径（~ 未展开）；空 = 只用内置套餐 */
+  plans_file?: string;
+  plans: BillingPlan[];
+}
+
+/** 一条官方价目（每 100 万 token；currency 可能是 CNY） */
+export interface BillingPrice {
+  model: string;
+  vendor: string;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  currency: string;
+  off_peak_multiplier: number | null;
+  source: string;
+  note: string;
+}
+
+/** GET /api/v1/billing/prices 的 data */
+export interface BillingPrices {
+  /** 价目基准日期（官方页面核对日期） */
+  as_of: string;
+  cny_per_usd: number;
+  prices: BillingPrice[];
+}
+
+/** 一条用量明细（usage_records） */
+export interface BillingRecord {
+  id: string;
+  provider: string;
+  model: string;
+  plan_key: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost: number | null;
+  run_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  occurred_at: string | null;
+}
+
+/** GET /api/v1/billing/runs/{run_id} 的 data */
+export interface BillingRunUsage {
+  run_id: string;
+  totals: BillingTotals;
+  records: BillingRecord[];
+}
+
+/** POST /api/v1/billing/refresh 的 data */
+export interface BillingRefreshResult {
+  results: Array<{
+    plan_key: string;
+    source: string;
+    refreshed: boolean;
+    rows: number;
+    error: string | null;
+  }>;
+}

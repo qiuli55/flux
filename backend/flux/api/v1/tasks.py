@@ -8,29 +8,44 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import suppress
 from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
+from fastapi.responses import StreamingResponse
 
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.agent_runtime.run_repository import as_utc, utcnow
 from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
+from flux.core.agent_runtime.trace import summarize_trace
+from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.model_gateway.base import ChatMessage
 from flux.core.task_engine.assistant import validate_confirmation_items
+from flux.core.task_engine.context_usage import (
+    CONTEXT_MESSAGE_KINDS,
+    context_message_limit,
+    measure_context,
+)
 from flux.core.task_engine.decisions import build_decision, reject_decision, resolve_decision
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
-from flux.errors import BadRequestError, ConflictError, NotFoundError
+from flux.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
+from flux.logging import get_logger
 from flux.models.task import Task
 from flux.schemas.api import (
     ConfirmationUpdateRequest,
     DecisionChooseRequest,
     DecisionCreateRequest,
     DecisionModeRequest,
+    PermissionModeRequest,
     TaskAgentRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
@@ -40,14 +55,24 @@ from flux.schemas.api import (
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+logger = get_logger(__name__)
+
 _FINAL_STATUSES = {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value, TaskStatus.FAILED.value}
 
 #: 一次对话请求带上的历史条数上限：由 §6.1 的字符预算折算而来（不再是固定值）
 _HISTORY_LIMIT = history_message_limit()
 
+#: 生成交接摘要时最多回看的历史消息条数（更早的由摘要器按字符预算丢弃并标注）
+_HANDOFF_MESSAGE_LIMIT = 120
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _format_task_sse(payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"id: {payload['seq']}\nevent: task.event\ndata: {data}\n\n"
 
 
 def _confirmation_text(items: list[dict[str, str]]) -> str:
@@ -71,6 +96,37 @@ async def _require_open_task(container: Container, task_uuid: uuid.UUID, task_id
 def _task_dict(task: Task) -> dict[str, object]:
     """任务响应体：M0 冻结的 7 个键 + created_at（任务执行中心展示真实创建时间）。"""
     return task.to_dict()
+
+
+async def _record_attachments(
+    container: Container, task_uuid: uuid.UUID, files: list[UploadedFile]
+) -> None:
+    """把本轮附件记成一条 kind=attachments 的消息：刷新/换设备后仍能看到发过哪些文件。"""
+    if not files:
+        return
+    message = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.USER.value,
+                    kind="attachments",
+                    content="、".join(item.name for item in files),
+                    payload={"files": [item.to_dict() for item in files]},
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": message.to_dict()}
+    )
+
+
+def _attachments_brief(files: list[UploadedFile]) -> str:
+    """只发附件没写正文时，给助手/Agent 的一句人话说明。"""
+    return "请看我随消息附上的文件：" + "、".join(
+        f"{item.name}（{size_label(item.size)}）" for item in files
+    )
 
 
 def _parse_uuid(value: str, *, field: str) -> uuid.UUID:
@@ -104,6 +160,8 @@ async def create_task(
         runtime=runtime, model=payload.model or "", key_id=payload.key_id
     )
 
+    # 附件先校验：不合格就别把任务建出来，免得留下一条空对话
+    files = resolve_uploads(container.settings, payload.attachment_ids)
     task = await container.task_repo.create(
         task_id=uuid.uuid4(),
         description=payload.description,
@@ -111,9 +169,38 @@ async def create_task(
         project_id=project_id,
         agent_id=agent_id,
         decision_mode=payload.decision_mode,
+        permission_mode=payload.permission_mode,
         model=model,
         api_key_id=key_id,
     )
+    # 从旧对话接手：摘要落成一条 kind=summary 的助手消息。它同时进入助手历史
+    # 与 Agent 执行指令（TaskRunService._latest_summary），新对话因此不是"从零开始"，
+    # 但也不会拷贝任何旧消息。
+    summary = (payload.summary or "").strip()
+    if summary:
+        source_id = (
+            _parse_uuid(payload.summary_from, field="summary_from")
+            if payload.summary_from
+            else None
+        )
+        await container.task_repo.add_messages(
+            task.id,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="summary",
+                    content=summary,
+                    payload={"from_task_id": str(source_id) if source_id else None},
+                )
+            ],
+        )
+        logger.info(
+            "新对话带入前情摘要 task=%s from=%s 字数=%d",
+            task.id,
+            source_id or "未提供",
+            len(summary),
+        )
+    await _record_attachments(container, task.id, files)
     container.scheduler.submit(
         str(task.id),
         task.description,
@@ -176,6 +263,122 @@ async def list_task_messages(
     )
 
 
+def _run_summary(run: Any, stats: dict[str, int]) -> dict[str, object]:
+    """一轮 Run 的摘要：耗时 + 概览计数（对话里的「任务耗时」入口与详情页眉用）。"""
+    duration_ms: int | None = None
+    if run.started_at is not None:
+        end = run.finished_at if run.finished_at is not None else utcnow()
+        duration_ms = max(0, int((as_utc(end) - as_utc(run.started_at)).total_seconds() * 1000))
+    return {
+        "run_id": run.id,
+        "task_id": str(run.task_id) if run.task_id else None,
+        "agent_id": run.agent_id,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "duration_ms": duration_ms,
+        "commands": stats.get("commands", 0),
+        "files_read": stats.get("files_read", 0),
+        "files_changed": stats.get("files_changed", 0),
+    }
+
+
+@router.get("/{task_id}/runs")
+async def list_task_runs(
+    task_id: str,
+    limit: int = 20,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """任务名下的 Run 摘要（按时间升序）：耗时与「改动/命令/读取」计数。"""
+    if limit < 1 or limit > 100:
+        raise BadRequestError("limit 必须在 1~100 之间", details={"limit": limit})
+    task_uuid = _task_id(task_id)
+    await container.task_repo.get(task_uuid)
+    runs = await container.run_repo.list_by_task(task_uuid, limit=limit)
+    rows = await container.run_trace_repo.list_for_runs([run.id for run in runs])
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["run_id"]), []).append(row)
+    return ok([_run_summary(run, summarize_trace(grouped.get(run.id, []))) for run in runs])
+
+
+@router.get("/{task_id}/runs/{run_id}/trace")
+async def get_run_trace(
+    task_id: str,
+    run_id: str,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """一轮 Run 的完整执行轨迹：概览 + 思考过程 + 命令（含输出）。"""
+    task_uuid = _task_id(task_id)
+    run = await container.run_repo.get(run_id)
+    if run is None or run.task_id != task_uuid:
+        raise NotFoundError(
+            f"Run {run_id} 不属于任务 {task_id}",
+            details={"task_id": task_id, "run_id": run_id},
+        )
+    rows = await container.run_trace_repo.list_for_run(run_id)
+    items = [row.to_dict() for row in rows]
+    data = _run_summary(run, summarize_trace(items))
+    data["items"] = items
+    return ok(data)
+
+
+@router.get("/{task_id}/context")
+async def get_task_context(
+    task_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """对话上下文占用（「上下文快满」提醒的唯一口径）。
+
+    度量的不是模型标称窗口，而是平台助手这一轮实际能带上的那段历史：
+    条数上限与字符预算都来自 §6.1。客户端据此画占用条并在阈值处提醒新建对话。
+    """
+    limit = context_message_limit()
+    messages, total = await container.task_repo.context_snapshot(
+        _task_id(task_id), limit=limit, kinds=CONTEXT_MESSAGE_KINDS
+    )
+    usage = measure_context(messages, message_count=total, limit=limit)
+    return ok(usage.to_dict())
+
+
+@router.post("/{task_id}/handoff")
+async def create_task_handoff(
+    task_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """把一段对话压成前情摘要，供客户端带进新对话。
+
+    只生成摘要、不建任务：新对话由客户端在用户发出第一条消息时创建
+    （`POST /tasks` 的 summary / summary_from 字段），避免留下一段
+    没有用户意图的孤儿对话。
+    """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    if task.status == TaskStatus.RUNNING.value:
+        raise ConflictError(
+            "这段对话正在执行，结束后再新建带摘要的对话",
+            details={"task_id": task_id, "status": task.status},
+        )
+    messages, _ = await container.task_repo.list_messages(
+        task_uuid, limit=_HANDOFF_MESSAGE_LIMIT
+    )
+    pairs = [
+        (message.role, message.content)
+        for message in messages
+        if message.kind in CONTEXT_MESSAGE_KINDS and message.content.strip()
+    ]
+    summary = await container.conversation_summarizer.summarize(
+        description=task.description, messages=pairs
+    )
+    logger.info(
+        "生成对话交接摘要 task=%s 来源消息=%d 截断=%s",
+        task_uuid,
+        summary.source_messages,
+        summary.truncated,
+    )
+    data = summary.to_dict()
+    data["from_task_id"] = str(task_uuid)
+    return ok(data)
+
+
 @router.post("/{task_id}/messages")
 async def create_task_message(
     task_id: str,
@@ -189,6 +392,12 @@ async def create_task_message(
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
+    content = payload.content.strip()
+    files = resolve_uploads(container.settings, payload.attachment_ids)
+    if not content and not files:
+        raise ValidationError(
+            "消息内容不能为空", details={"task_id": task_id, "attachments": len(files)}
+        )
     if task.status in _FINAL_STATUSES:
         raise ConflictError(
             f"任务 {task_id} 已处于终态 {task.status}，不能再追加消息",
@@ -197,24 +406,45 @@ async def create_task_message(
 
     user_message = (
         await container.task_repo.add_messages(
-            task_uuid, [MessageDraft(role=TaskMessageRole.USER.value, content=payload.content)]
+            task_uuid, [MessageDraft(role=TaskMessageRole.USER.value, content=content)]
         )
     )[0]
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": user_message.to_dict()}
+    )
+    await _record_attachments(container, task_uuid, files)
 
     history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
     context = (
         await container.brain.context(task.project_id) if task.project_id is not None else None
     )
-    turn = await container.assistant.respond(
-        description=task.description,
-        message=payload.content,
-        history=[
-            ChatMessage(role=m.role, content=m.content)
-            for m in history
-            if m.kind == "text" and m.id != user_message.id
-        ],
-        context=context,
-    )
+    await container.task_stream.publish(task_uuid, "assistant_start", {})
+
+    async def _on_delta(text: str) -> None:
+        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
+    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
+    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
+    prompt_text = content or _attachments_brief(files)
+    if files and content:
+        prompt_text = content + "\n\n" + _attachments_brief(files)
+    try:
+        turn = await container.assistant.respond(
+            description=task.description,
+            message=prompt_text,
+            history=[
+                ChatMessage(role=m.role, content=m.content)
+                for m in history
+                if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
+            ],
+            context=context,
+            on_delta=_on_delta,
+        )
+    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
+        await container.task_stream.publish(
+            task_uuid, "assistant_error", {"error": str(exc)[:500]}
+        )
+        raise
     reply = (
         await container.task_repo.add_messages(
             task_uuid,
@@ -227,6 +457,9 @@ async def create_task_message(
             ],
         )
     )[0]
+    await container.task_stream.publish(
+        task_uuid, "assistant_message", {"message": reply.to_dict()}
+    )
 
     if turn.confirmation:
         # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
@@ -242,6 +475,118 @@ async def create_task_message(
     return ok(
         {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
         metadata={"provider": turn.provider, "model": turn.model},
+    )
+
+
+@router.get("/{task_id}/stream")
+async def stream_task(
+    task_id: str,
+    after_seq: int = 0,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    container: Container = Depends(get_container),
+) -> StreamingResponse:
+    """对话增量流（SSE）：助手逐字回复 + Agent 运行事件。
+
+    连接建立后先补 `after_seq` 之后的缓冲事件，再持续推送，15 秒静默发一次心跳。
+    最终消息仍以 GET /tasks/{id}/messages 为准：断线期间漏掉的增量由客户端重拉补齐。
+    """
+    task_uuid = _task_id(task_id)
+    await container.task_repo.get(task_uuid)
+    resume_from = after_seq
+    if last_event_id:
+        with suppress(ValueError):
+            resume_from = max(resume_from, int(last_event_id))
+
+    async def generate() -> AsyncIterator[str]:
+        async for event in container.task_stream.stream(task_uuid, after_seq=resume_from):
+            yield ": keep-alive\n\n" if event is None else _format_task_sse(event.to_dict())
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{task_id}/events")
+async def poll_task_events(
+    task_id: str,
+    after_seq: int = 0,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """对话增量的轮询版（账号云中转只做请求-响应，不能承载 SSE 长连接）。
+
+    与 `/stream` 共用同一份缓冲：返回 `after_seq` 之后的事件，客户端按回调逐条消费即可。
+    """
+    if after_seq < 0:
+        raise BadRequestError("after_seq 不能为负数", details={"after_seq": after_seq})
+    task_uuid = _task_id(task_id)
+    await container.task_repo.get(task_uuid)
+    events = container.task_stream.poll(task_uuid, after_seq=after_seq)
+    return ok(
+        [event.to_dict() for event in events],
+        metadata={"count": len(events), "after_seq": after_seq},
+    )
+
+
+@router.post("/{task_id}/continue")
+async def continue_task(
+    task_id: str,
+    payload: TaskMessageCreateRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """同一对话续跑：终态对话收到新消息时，重开任务并起一轮新 Run。
+
+    与 `/messages` 的区别：那个只让助手回话；续跑把新消息当作本轮 Agent 指令，
+    让同一个对话接着执行（历史消息、项目关联与标题都保留）。
+    """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    content = payload.content.strip()
+    files = resolve_uploads(container.settings, payload.attachment_ids)
+    if not content and not files:
+        raise ValidationError(
+            "消息内容不能为空", details={"task_id": task_id, "attachments": len(files)}
+        )
+    if task.status not in _FINAL_STATUSES:
+        raise ConflictError(
+            f"对话 {task_id} 仍在进行中，直接追加消息即可，不需要续跑",
+            details={"task_id": task_id, "status": task.status},
+        )
+    previous_status = task.status
+    task = await container.task_repo.reopen(task_uuid)
+    user_message = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [MessageDraft(role=TaskMessageRole.USER.value, content=content)],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": user_message.to_dict()}
+    )
+    await _record_attachments(container, task_uuid, files)
+    followup = content or _attachments_brief(files)
+    try:
+        result = await container.task_run_service.start(task, followup=followup)
+    except Exception:
+        # 起不来时退回原终态：用户消息保留，修好 runtime 后可以直接重试，
+        # 不留下一个没有 Run 支撑的 running 僵尸。
+        current = await container.task_repo.get(task_uuid)
+        if current.run_id is None and current.status in {
+            TaskStatus.PENDING.value,
+            TaskStatus.RUNNING.value,
+        }:
+            await container.task_repo.set_status(task_uuid, TaskStatus(previous_status))
+        raise
+    return ok(
+        {
+            "task": _task_dict(result.task),
+            "messages": [user_message.to_dict()],
+        }
     )
 
 
@@ -290,6 +635,44 @@ async def set_decision_mode(
     return ok(_task_dict(task))
 
 
+@router.post("/{task_id}/permission-mode")
+async def set_permission_mode(
+    task_id: str,
+    payload: PermissionModeRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """切换对话级权限模式（Plan / Normal / Full）。
+
+    任何状态都允许切换；正在执行的 Run 按启动时的模式跑完，新模式从下一轮生效
+    （响应里的 `effective_from` 明确告诉客户端这一点）。切换本身不执行任何命令、
+    也不改动历史消息与已完成的审批记录。
+    """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    previous = task.permission_mode or "normal"
+    task = await container.task_repo.set_permission_mode(task_uuid, payload.mode)
+    effective_from = "next_run" if task.status == TaskStatus.RUNNING.value else "next_message"
+    result = {
+        **_task_dict(task),
+        "previous_mode": previous,
+        "effective_from": effective_from,
+    }
+    # 多端一致性：其他设备打开同一对话时靠这个事件同步胶囊状态
+    await container.task_stream.publish(
+        task_uuid,
+        "permission_mode_changed",
+        {"permission_mode": str(payload.mode), "previous_mode": previous},
+    )
+    logger.info(
+        "task.permission_mode_changed task=%s from=%s to=%s effective_from=%s",
+        task_uuid,
+        previous,
+        payload.mode,
+        effective_from,
+    )
+    return ok(result)
+
+
 @router.post("/{task_id}/agent")
 async def switch_task_agent(
     task_id: str,
@@ -298,11 +681,12 @@ async def switch_task_agent(
 ) -> dict[str, object]:
     """切换执行该任务的 Agent（移动端对话页的 Agent 下拉）。
 
-    同一任务/对话保留历史消息，后续「开始执行」改由新 Agent 承接；
-    正在执行时不允许切换（先停止），终态任务不可切换（与追加消息同一口径）。
+    同一任务/对话保留历史消息，后续「开始执行」或续聊改由新 Agent 承接；
+    正在执行时不允许切换（先停止）。终态对话也允许切换：切换本身不执行任何东西，
+    只决定下一条消息由谁承接，续聊时按新的 Agent 起 Run。
     """
     task_uuid = _task_id(task_id)
-    task = await _require_open_task(container, task_uuid, task_id)
+    task = await container.task_repo.get(task_uuid)
     if task.status == TaskStatus.RUNNING.value:
         raise ConflictError(
             f"任务 {task_id} 正在执行，先停止 Agent 再切换",
@@ -325,9 +709,10 @@ async def switch_task_model(
 
     只接受该 Agent runtime 的模型目录里的 id；正在执行时不允许切换。
     切换 Agent 时会清掉本覆盖，回到新 Agent 的默认模型。
+    终态对话同样允许切换，理由与切换 Agent 一致：只影响下一次续聊的模型。
     """
     task_uuid = _task_id(task_id)
-    task = await _require_open_task(container, task_uuid, task_id)
+    task = await container.task_repo.get(task_uuid)
     if task.status == TaskStatus.RUNNING.value:
         raise ConflictError(
             f"任务 {task_id} 正在执行，先停止 Agent 再切换模型",
@@ -375,7 +760,7 @@ async def start_task(
         {
             "task": _task_dict(result.task),
             "run": result.run,
-            "message": result.message.to_dict(),
+            "message": result.message.to_dict() if result.message is not None else None,
         }
     )
 
@@ -533,6 +918,30 @@ async def cancel_task(
             return ok(_task_dict(task))
     task = await container.task_repo.set_status(task_uuid, TaskStatus.CANCELLED)
     return ok(_task_dict(task))
+
+
+@router.delete("/{task_id}")
+async def delete_task(
+    task_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """彻底删除一段对话（任务）：消息与运行记录一并清除，不做软删除。
+
+    正在执行（running / waiting_for_user_decision）的对话必须先停止：
+    删掉一个 Agent 仍在改文件的任务是矛盾的。
+    """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    if task.status in {TaskStatus.RUNNING.value, TaskStatus.WAITING_FOR_USER_DECISION.value}:
+        raise ConflictError(
+            f"对话 {task_id} 正在执行，先停止后再删除",
+            details={"task_id": task_id, "status": task.status},
+        )
+    # 队列是进程内的易失结构：pending 任务可能还排在队列里，删之前先摘掉，
+    # 否则调度器之后取到一条已经不存在的任务。
+    with contextlib.suppress(NotFoundError):
+        container.scheduler.cancel(str(task.id))
+    messages, runs = await container.task_repo.delete(task_uuid)
+    return ok({"id": task_id, "deleted": True, "messages": messages, "runs": runs})
 
 
 async def _cancel_run(container: Container, run_id: str) -> DshRunStatus | None:

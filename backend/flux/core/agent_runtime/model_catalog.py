@@ -6,6 +6,8 @@
    - `dsh`：内置 Runtime 只有一个配置项（`FLUX_DSH_MODEL`），列表即它自己；
    - `codex`：若配置了 `FLUX_CODEX_MODEL_CATALOG`（codex 的 model_catalog_json），
      从该文件读 `models[].slug`；否则退回 `FLUX_CODEX_MODEL`；
+   - `opencode`：读它自己的全局配置 `provider.<id>.models`，拼成 `<provider>/<model>`
+     （用户配置的 Zen 免费模型因此能在手机/桌面端直接选）；
    - 其它 runtime：空列表（前端只显示当前模型，不提供切换）。
 2. 密钥库（`api_keys`）里登记的 key + 模型；按 runtime 的协议兼容性过滤。
 
@@ -132,6 +134,38 @@ def _catalog_slugs(raw_path: str) -> list[str]:
     return slugs
 
 
+def _opencode_model_ids(raw_path: str) -> list[str]:
+    """从 opencode 全局配置取用户已配置的模型 id（`<provider>/<model>`）。
+
+    opencode 的模型清单由它自己的全局配置维护（provider 的 models 键，含 Zen 免费模型）；
+    Flux 只读模型 id 并把顶层 `model`（opencode 的默认）置顶，供应商的 options/密钥一律不读。
+    """
+    path = Path((raw_path or "").strip()).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    providers = data.get("provider") if isinstance(data, dict) else None
+    if not isinstance(providers, dict):
+        return []
+    ids: list[str] = []
+    for provider_id, provider in providers.items():
+        models = provider.get("models") if isinstance(provider, dict) else None
+        if not isinstance(models, dict):
+            continue
+        for model_id in models:
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            full = f"{provider_id}/{model_id.strip()}"
+            if full not in ids:
+                ids.append(full)
+    default = data.get("model") if isinstance(data, dict) else None
+    if isinstance(default, str) and default.strip() in ids:
+        ids.remove(default.strip())
+        ids.insert(0, default.strip())
+    return ids
+
+
 def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
     """该 runtime 支持的原生模型 id 列表（顺序即展示顺序，第一项是默认值）。"""
     name = (runtime or DEFAULT_RUNTIME).strip().lower()
@@ -145,8 +179,8 @@ def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
             return [configured, *(m for m in catalog if m != configured)]
         return catalog
     if name == RUNTIME_OPENCODE:
-        # opencode 的默认模型来自用户全局配置，Flux 不覆盖；仅任务级覆盖时可写。
-        return []
+        # 模型清单由 opencode 全局配置持有；列表首项 = 它的默认模型。
+        return _opencode_model_ids(settings.opencode_config_file)
     return []
 
 
@@ -161,6 +195,9 @@ def default_model_for_runtime(settings: Settings, runtime: str | None) -> str:
             return configured
         catalog = _catalog_slugs(settings.codex_model_catalog)
         return catalog[0] if catalog else ""
+    if name == RUNTIME_OPENCODE:
+        models = _opencode_model_ids(settings.opencode_config_file)
+        return models[0] if models else ""
     return ""
 
 

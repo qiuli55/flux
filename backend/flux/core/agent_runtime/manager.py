@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from flux.core.agent_runtime.lifecycle import assert_transition
 from flux.core.agent_runtime.manifest import AgentManifest, builtin_manifests
 from flux.core.agent_runtime.repository import AgentRepository
-from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME, KNOWN_RUNTIMES
+from flux.core.agent_runtime.runtimes.base import (
+    DEFAULT_RUNTIME,
+    KNOWN_RUNTIMES,
+    RUNTIME_NATIVE_STREAMING,
+)
 from flux.core.event.bus import EventBus, Events
 from flux.enums import AgentRole, AgentState, Capability
 from flux.errors import NotFoundError, ValidationError
@@ -55,6 +59,9 @@ class AgentSpec:
             "tools": list(self.tools),
             "permissions": sorted(str(p) for p in self.permissions),
             "runtime": self.runtime,
+            # 客户端据此标注「非逐字流式」：这类 Agent 仍可正常绑定与执行，
+            # 只是正文会在结尾整段到达（平台按分段回放兜底，不冒充原生逐 token）。
+            "native_streaming": bool(RUNTIME_NATIVE_STREAMING.get(self.runtime, False)),
         }
 
 
@@ -172,11 +179,22 @@ class AgentManager:
 
     @staticmethod
     def _validate_runtime(runtime: str) -> None:
-        """创建 Agent 时校验 runtime 取值合法（P2-1 §6.2），非法即 422，不静默兜底。"""
+        """创建 Agent 时校验 runtime 取值合法（P2-1 §6.2），非法即 422，不静默兜底。
+
+        非原生逐 token 的 runtime 也允许创建：档案会带 `native_streaming=False`
+        供客户端标注，执行时正文走分段回放兜底——能力可用，但不能含糊其辞地当作流式。
+        未登记在 RUNTIME_NATIVE_STREAMING 的 runtime 视为「不支持原生流式」，由契约
+        测试强制要求每个已知 runtime 显式登记取值。
+        """
         if runtime not in KNOWN_RUNTIMES:
             raise ValidationError(
                 f"未知的 runtime：{runtime}",
                 details={"runtime": runtime, "known": list(KNOWN_RUNTIMES)},
+            )
+        if not RUNTIME_NATIVE_STREAMING.get(runtime, False):
+            logger.info(
+                "agent.create 使用非逐 token 流式 runtime=%s：档案将标注 native_streaming=False",
+                runtime,
             )
 
     async def _persist(self, handle: AgentHandle) -> None:

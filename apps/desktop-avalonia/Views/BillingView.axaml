@@ -1,0 +1,229 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.BillingView"
+             x:DataType="vm:BillingViewModel">
+
+    <UserControl.Resources>
+        <!-- 额度窗口行（web 端 WindowRow） -->
+        <DataTemplate x:Key="WindowTemplate" DataType="vm:BillingWindowView">
+            <Border BorderBrush="{DynamicResource TnLineSoft}" BorderThickness="0,1,0,0" Padding="0,10">
+                <StackPanel Spacing="5">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{Binding Label}" FontSize="12" />
+                            <TextBlock Text="{Binding SinceText}" FontSize="11"
+                                       Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="{Binding OfficialText}" FontSize="11"
+                                   Foreground="{Binding Tone}" />
+                    </Grid>
+                    <ProgressBar Minimum="0" Maximum="100" Value="{Binding Percent}"
+                                 Height="3" IsVisible="{Binding HasPercent}"
+                                 Foreground="{Binding Tone}"
+                                 Background="{DynamicResource TnPanel3}" />
+                    <TextBlock Text="{Binding LocalText}" Classes="mono" FontSize="10.5"
+                               Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 套餐卡（web 端 PlanCard） -->
+        <DataTemplate x:Key="PlanTemplate" DataType="vm:BillingPlanView">
+            <Border Classes="card pad" Margin="0,0,16,16">
+                <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="4">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding Label}" FontSize="14" FontWeight="SemiBold" />
+                                <Border Classes="badge" BorderBrush="{DynamicResource TnInfo}">
+                                    <TextBlock Text="{Binding Vendor}" FontSize="11"
+                                               Foreground="{DynamicResource TnInfo}" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Text="{Binding MetaText}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                    VerticalAlignment="Top">
+                            <Border Classes="badge" BorderBrush="{Binding LevelTone}">
+                                <TextBlock Text="{Binding LevelText}" FontSize="11"
+                                           Foreground="{Binding LevelTone}" />
+                            </Border>
+                            <Border Classes="badge" BorderBrush="{DynamicResource TnWarn}"
+                                    IsVisible="{Binding Enforce}">
+                                <TextBlock Text="闸门开启" FontSize="11"
+                                           Foreground="{DynamicResource TnWarn}" />
+                            </Border>
+                            <Border Classes="badge" BorderBrush="{DynamicResource TnDanger}"
+                                    IsVisible="{Binding Blocked}">
+                                <TextBlock Text="已拦截" FontSize="11"
+                                           Foreground="{DynamicResource TnDanger}" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock Text="{Binding GateMessage}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{Binding LevelTone}" IsVisible="{Binding HasGateMessage}" />
+                    <ProgressBar Minimum="0" Maximum="100" Value="{Binding GatePercent}"
+                                 Height="4" IsVisible="{Binding HasGatePercent}"
+                                 Foreground="{DynamicResource TnAccent}"
+                                 Background="{DynamicResource TnPanel3}" />
+                    <ItemsControl ItemsSource="{Binding Windows}"
+                                  ItemTemplate="{StaticResource WindowTemplate}" />
+                    <TextBlock Text="{Binding FallbackText}" FontSize="11"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 官方价目行 -->
+        <DataTemplate x:Key="PriceTemplate" DataType="vm:BillingPriceRow">
+            <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                <StackPanel Grid.Column="0" Spacing="2">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{Binding Model}" FontSize="12" />
+                        <TextBlock Text="{Binding Vendor}" FontSize="10.5"
+                                   Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding PriceText}" Classes="mono" FontSize="10.5"
+                               Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
+                </StackPanel>
+                <HyperlinkButton Grid.Column="1" Content="官方定价" FontSize="11"
+                                 NavigateUri="{Binding SourceUri}"
+                                 IsVisible="{Binding HasSource}"
+                                 VerticalAlignment="Center" />
+            </Grid>
+        </DataTemplate>
+
+        <!-- Run 用量行 -->
+        <DataTemplate x:Key="RunTemplate" DataType="vm:BillingRunRow">
+            <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                <StackPanel Grid.Column="0" Spacing="2">
+                    <TextBlock Text="{Binding Model}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding MetaText}" FontSize="10.5"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding UsageText}" Classes="mono" FontSize="10.5"
+                           Foreground="{DynamicResource TnText3}" VerticalAlignment="Center" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer>
+        <StackPanel Margin="32,32,40,32">
+
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                <StackPanel Grid.Column="0">
+                    <TextBlock Classes="page-title" Text="成本中心" Margin="0,0,0,5" />
+                    <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                               Text="本地账本逐次记账，官方接口按套餐对账，成本按官方价目估算；默认仅告警，不拦截任务。" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                            VerticalAlignment="Bottom">
+                    <Button Classes="btn subtle" Content="刷新"
+                            Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                    <Button Classes="btn primary" Content="立即对账"
+                            Command="{Binding SyncCommand}" IsEnabled="{Binding !IsSyncing}" />
+                </StackPanel>
+            </Grid>
+
+            <TextBlock Text="{Binding NoticeText}" FontSize="11" Margin="0,0,0,12"
+                       Foreground="{DynamicResource TnAccent}" IsVisible="{Binding HasNotice}" />
+
+            <!-- 总览 -->
+            <UniformGrid Columns="4" Margin="0,0,0,16">
+                <Border Classes="card pad" Margin="0,0,8,0">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="本月调用" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Text="{Binding CallCountText}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+                <Border Classes="card pad" Margin="0,0,8,0">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="本月 Tokens" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Text="{Binding TokensText}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+                <Border Classes="card pad" Margin="0,0,8,0">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="本月估算成本" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Text="{Binding CostText}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
+                <Border Classes="card pad">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="闸门" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Text="{Binding GateText}" FontSize="20" FontWeight="SemiBold"
+                                   Foreground="{Binding GateTone}" />
+                    </StackPanel>
+                </Border>
+            </UniformGrid>
+
+            <!-- 套餐卡 -->
+            <ItemsControl ItemsSource="{Binding Plans}" ItemTemplate="{StaticResource PlanTemplate}"
+                          IsVisible="{Binding HasPlans}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Columns="2" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+            <TextBlock Text="还没有配置任何套餐" FontSize="12" Margin="0,16"
+                       Foreground="{DynamicResource TnText4}"
+                       IsVisible="{Binding HasNoPlans}" />
+
+            <!-- 官方价目 -->
+            <Border Classes="card pad" Margin="0,0,0,16" IsVisible="{Binding HasPrices}">
+                <StackPanel Spacing="4">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0" Classes="section-title" Text="官方 API 价目" />
+                        <TextBlock Grid.Column="1" Text="{Binding PricesMetaText}" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                    </Grid>
+                    <TextBlock Text="runtime 未上报 cost 的调用按此表估算；订阅套餐按底层模型价目折算等价消耗。"
+                               FontSize="11" Foreground="{DynamicResource TnText4}" />
+                    <ItemsControl ItemsSource="{Binding Prices}"
+                                  ItemTemplate="{StaticResource PriceTemplate}" />
+                </StackPanel>
+            </Border>
+            <TextBlock Text="价目表不可用" FontSize="12" Margin="0,0,0,16"
+                       Foreground="{DynamicResource TnText4}"
+                       IsVisible="{Binding HasNoPrices}" />
+
+            <!-- Run 用量明细 -->
+            <Border Classes="card pad">
+                <StackPanel Spacing="6">
+                    <TextBlock Classes="section-title" Text="Run 用量明细" />
+                    <TextBlock Text="按 run_id 查这次执行每一步的 token 账，用于核对任务级归因。"
+                               FontSize="11" Foreground="{DynamicResource TnText4}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,8,0,0">
+                        <TextBox Grid.Column="0" Text="{Binding RunId}" Watermark="输入 run_id" />
+                        <Button Grid.Column="1" Classes="btn" Content="查询"
+                                Command="{Binding LookupRunCommand}"
+                                IsEnabled="{Binding !IsRunBusy}" />
+                    </Grid>
+                    <TextBlock Text="{Binding RunSummaryText}" FontSize="12" Margin="0,8,0,0"
+                               IsVisible="{Binding HasRun}" />
+                    <ItemsControl ItemsSource="{Binding RunRows}"
+                                  ItemTemplate="{StaticResource RunTemplate}" />
+                    <TextBlock Text="这个 Run 还没有用量记录" FontSize="11" Margin="0,8,0,0"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding ShowRunEmpty}" />
+                    <TextBlock Text="{Binding RunErrorText}" FontSize="11" Margin="0,8,0,0"
+                               Foreground="{DynamicResource TnDanger}"
+                               IsVisible="{Binding HasRunError}" />
+                </StackPanel>
+            </Border>
+
+            <TextBlock Text="{Binding PlansFileText}" FontSize="11" Margin="0,12,0,0"
+                       Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

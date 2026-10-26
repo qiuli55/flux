@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import top.qiuli55.flux.mobile.data.DesignPreview
 
 // ------------------------------------------------------------------ 模型
 
@@ -14,6 +15,8 @@ data class V2Agent(
     val load: Int,
     val running: Int,
     val tint: Color,
+    /** 是否原生逐 token 流式；false 时界面标注「非逐字流式」。 */
+    val nativeStreaming: Boolean = true,
 )
 
 /** 一个可选模型：keyId 非空表示来自密钥库。 */
@@ -38,7 +41,99 @@ data class V2AgentOption(val agent: V2Agent, val models: List<V2ModelOption>)
 
 enum class V2MessageRole { SYSTEM, USER, AGENT }
 
-data class V2Message(val role: V2MessageRole, val text: String, val time: String)
+/** 历史消息里的一条附件：只用来渲染文件名与大小。 */
+data class V2MessageFile(val name: String, val size: Long)
+
+/** 对话里的设计稿卡片：Agent 通过 design.share 写入，点开进入原生画布。 */
+data class V2DesignCard(
+    val id: String,
+    val name: String,
+    val project: String = "",
+    val description: String = "",
+    val version: Int = 0,
+    val screenCount: Int = 0,
+    val layerCount: Int = 0,
+    val updatedAt: String = "",
+    val bg: String = "#F4F6F9",
+    /** 第一屏的尺寸与节点子集，用于卡片上的小画布预览。 */
+    val preview: DesignPreview? = null,
+)
+
+/** 计划卡里的一步：标题必填，说明可空。 */
+data class V2PlanStep(val title: String, val detail: String? = null)
+
+/**
+ * Agent 用 plan.write 产出的实施计划（kind = plan_card）。
+ * 计划文档落在 Flux 自有目录，卡片只展示标题、步骤与涉及文件。
+ */
+data class V2PlanCard(
+    val title: String,
+    val steps: List<V2PlanStep> = emptyList(),
+    val files: List<String> = emptyList(),
+    val planPath: String = "",
+    val markdown: String? = null,
+)
+
+/**
+ * 审批卡（kind = decision / decision_result）。
+ * kind 为 high_risk_command（正常模式高风险命令）或 protected_access（受保护对象，任何模式都问）。
+ */
+data class V2ApprovalCard(
+    val id: String,
+    val kind: String,
+    val question: String,
+    val detail: String = "",
+    val command: String = "",
+    val reason: String = "",
+    /** pending / resolved / rejected / expired（auto_resolved 也按已决策显示）。 */
+    val status: String = "pending",
+    val chosen: String? = null,
+    val expired: Boolean = false,
+)
+
+data class V2Message(
+    val role: V2MessageRole,
+    val text: String,
+    val time: String,
+    /** text = 普通消息；summary = 前情摘要；attachments = 附件消息；design_card = 设计稿卡片；
+     *  plan_card = 实施计划；decision = 待审批；decision_result = 审批结果。 */
+    val kind: String = "text",
+    /** kind = attachments 时的文件清单。 */
+    val attachments: List<V2MessageFile> = emptyList(),
+    /** kind = design_card 时的设计稿信息。 */
+    val designCard: V2DesignCard? = null,
+    /** kind = plan_card 时的计划信息。 */
+    val planCard: V2PlanCard? = null,
+    /** kind = decision / decision_result 时的审批信息。 */
+    val approvalCard: V2ApprovalCard? = null,
+    /** run_finished 关联的 Run：有值时答案上方显示「任务耗时」入口。 */
+    val runId: String = "",
+)
+
+/**
+ * 执行轨迹的一项：思考刻度或一次命令调用。
+ *
+ * 来自任务实时流的 `run_event`（kind = thinking / tool / error），
+ * 只在本次会话里累积展示；对话历史仍以 run_finished 的最终答复为准。
+ */
+data class V2RunItem(
+    val id: String,
+    /** thinking / tool / error */
+    val kind: String,
+    val text: String = "",
+    val name: String = "",
+    val detail: String = "",
+    val output: String = "",
+    val status: String = "",
+    /** command / read / write / other：实时累加概览计数用。 */
+    val category: String = "",
+    /** 该次工具调用触及的文件路径（服务端从入参提取）。 */
+    val paths: List<String> = emptyList(),
+    /** step_start：一轮模型调用的起点（没有推理文本时显示「思考中」） */
+    val phase: String = "",
+    /** 该项是不是「正在进行」（最近到达的那一项） */
+    val live: Boolean = false,
+)
 
 data class V2Conversation(
     val id: String,

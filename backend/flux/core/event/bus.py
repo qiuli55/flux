@@ -29,6 +29,12 @@ class Events:
     TASK_CREATED = "task.created"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
+    #: 对话权限模式切换（Plan / Normal / Full）：载荷含 permission_mode 与 previous_mode，
+    #: 供多端同步胶囊状态；只影响后续消息，不改写历史。
+    PERMISSION_MODE_CHANGED = "task.permission_mode_changed"
+    #: 审批闸门事件：发起（审批卡写入对话）与结果（允许/拒绝/超时）各发一次。
+    APPROVAL_REQUESTED = "task.approval_requested"
+    APPROVAL_RESOLVED = "task.approval_resolved"
     CONNECTOR_EXECUTED = "connector.executed"
     WORKSPACE_CHANGED = "workspace.changed"
     #: Apply 整批成功（上下文闭环）：载荷含 batch_id / files / task_id / project_id /

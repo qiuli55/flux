@@ -54,6 +54,9 @@
         <DataTemplate x:Key="MessageCard" DataType="vm:MessageRow">
             <Border Classes="bubble" Classes.user="{Binding IsUser}" Margin="0,0,0,8">
                 <StackPanel Spacing="5">
+                    <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
+                               Foreground="{DynamicResource TnInfo}"
+                               IsVisible="{Binding IsSummary}" />
                     <TextBlock Text="{Binding Meta}" FontSize="10"
                                Foreground="{DynamicResource TnText4}" />
                     <TextBlock Text="{Binding Content}" FontSize="12" LineHeight="19"
@@ -316,6 +319,37 @@
                                                Foreground="{DynamicResource TnText4}"
                                                Text="{Binding StrategyText}" />
                                 </Grid>
+                                <!-- 上下文占用：平台助手这一轮实际能带上的历史，不是模型标称窗口 -->
+                                <StackPanel Spacing="3" IsVisible="{Binding HasContextUsage}">
+                                    <Grid ColumnDefinitions="Auto,*,Auto">
+                                        <TextBlock Text="上下文" FontSize="10"
+                                                   Foreground="{DynamicResource TnText4}"
+                                                   VerticalAlignment="Center" />
+                                        <ProgressBar Grid.Column="1" Height="3" Margin="8,0"
+                                                     Minimum="0" Maximum="100"
+                                                     Value="{Binding ContextUsage.Percent}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding ContextPercentText}"
+                                                   FontSize="10"
+                                                   FontFamily="{DynamicResource TnMonoFont}"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding ContextHintText}" FontSize="9"
+                                               Foreground="{DynamicResource TnText4}" />
+                                </StackPanel>
+                                <!-- 从上一段对话接手：只带摘要，不搬旧消息 -->
+                                <Border IsVisible="{Binding HasPendingSummary}"
+                                        Background="#0C1B22" BorderBrush="#1F4E5A"
+                                        BorderThickness="1" CornerRadius="6" Padding="10">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
+                                                   Foreground="{DynamicResource TnInfo}" />
+                                        <ScrollViewer MaxHeight="110">
+                                            <TextBlock Text="{Binding PendingSummary}" FontSize="11"
+                                                       LineHeight="18" TextWrapping="Wrap"
+                                                       Foreground="{DynamicResource TnText2}" />
+                                        </ScrollViewer>
+                                    </StackPanel>
+                                </Border>
                                 <ScrollViewer Name="ChatScroll" MaxHeight="420">
                                     <ItemsControl ItemsSource="{Binding Messages}"
                                                   ItemTemplate="{StaticResource MessageCard}" />
@@ -329,6 +363,30 @@
                 <Border Grid.Row="1" Padding="20,10,20,16"
                         BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
                     <StackPanel Spacing="6">
+                        <!-- 上下文将满：就在输入框上方问一句，不打断当前对话 -->
+                        <Border IsVisible="{Binding ContextPromptVisible}"
+                                Background="#221A0B" BorderBrush="#5A4218"
+                                BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="6">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="上下文快满了" FontSize="11"
+                                               FontWeight="SemiBold" Foreground="#E8B25E" />
+                                    <TextBlock Grid.Column="1" Text="{Binding ContextPercentText}"
+                                               FontSize="10" FontFamily="{DynamicResource TnMonoFont}"
+                                               Foreground="#E8B25E" />
+                                </Grid>
+                                <TextBlock Text="{Binding ContextPromptDetail}" FontSize="10"
+                                           Foreground="{DynamicResource TnText3}"
+                                           TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="mini" Content="继续聊"
+                                            Command="{Binding ContinueContextCommand}" />
+                                    <Button Classes="mini" Content="新建并带摘要"
+                                            Command="{Binding StartHandoffCommand}"
+                                            IsEnabled="{Binding !IsHandoffBusy}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
                         <TextBlock Text="{Binding ConfirmationHint}" FontSize="10"
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,Auto">

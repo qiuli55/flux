@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, is_terminal, utcnow
@@ -65,6 +68,37 @@ SEDIMENT_TASK_CHARS = 200
 #: 错误在沉淀里的截断长度（只留尾部，栈的最后几行最能定位问题）
 SEDIMENT_ERROR_CHARS = 300
 
+#: 上游瞬时故障的判定词：命中才自动重试，真正的业务失败（鉴权、上下文超限、用户取消）不重试。
+#: 观测到的真实形态：opencode-go 返回 429 后流挂住，Flux 侧最终报 ReadTimeout。
+_TRANSIENT_ERROR_MARKERS = (
+    "readtimeout",
+    "read timeout",
+    "timed out",
+    "timeout",
+    "too many requests",
+    "connection reset",
+    "remoteprotocol",
+    "connecterror",
+    "connect error",
+    "temporarily unavailable",
+    "service unavailable",
+)
+
+#: HTTP 状态码按词边界匹配：错误正文里的 "4291" 或路径里的数字不算限流，避免误重试。
+_TRANSIENT_STATUS_RE = re.compile(r"\b(429|500|502|503|504)\b")
+
+#: 每个任务每轮最多自动重试一次：重试也失败就按真实失败收尾，避免无限重试烧额度。
+_AUTO_RETRY_BUDGET = 1
+#: 限流后等一会儿再重试，给上游恢复窗口（429 常见按分钟限流）。
+_AUTO_RETRY_DELAY_SECONDS = 30.0
+#: 自动重试时给 Agent 的续跑指令：让模型接着做，避免把已完成的部分重来一遍。
+#: CLI runtime 每次重试都是新会话，所以必须提示先读上下文与已产出物，而不是凭记忆续跑。
+AUTO_RETRY_FOLLOWUP = (
+    "继续（上一次执行被上游限流/超时中断，这是自动续跑的新会话）。"
+    "先用 context.get 与 design.list 查看已有进度，再从未完成的地方接着做；"
+    "不要重复已完成的步骤，也不要把已交付的内容重做一遍。"
+)
+
 
 class TaskRunBridge:
     """DSH Run 终态 → 任务状态 / 结果消息。"""
@@ -76,6 +110,8 @@ class TaskRunBridge:
         *,
         brain: Any = None,
         workspace: Any = None,
+        stream: Any = None,
+        trace: Any = None,
     ) -> None:
         self._tasks = tasks
         # 对账要拿 Run 的权威状态；纯事件转发（单测）可以不装配
@@ -85,6 +121,25 @@ class TaskRunBridge:
         self._brain = brain
         # 提案统计是"改了什么"的事实来源；没装配时沉淀退化成任务级摘要
         self._workspace = workspace
+        # 任务对话的实时流（可选）：Run 收尾时把结果消息推给正在看对话的客户端
+        self._stream = stream
+        # 执行轨迹记录器（可选）：收尾时先把思考/命令轨迹落库，
+        # 客户端刷新任务详情时「任务耗时 / 概览」立刻可读（不必等 SSE 订阅者处理完）
+        self._trace = trace
+        # 自动重试（可选）：上游瞬时故障（429 / ReadTimeout）时由容器注入「再起一轮」的回调；
+        # 没装配时退化为原有的失败收尾，行为不变。
+        self._retry_handler: Callable[[Any], Awaitable[None]] | None = None
+        #: task_id → 本轮失败链剩余的自动重试次数（成功后清零）
+        self._retry_budget: dict[str, int] = {}
+        #: 正在冷却、等待自动重试的任务：此时 run_id 还是刚失败的那个 Run，
+        #: 孤儿对账必须跳过它们，否则冷却没结束就被判成失败。
+        self._retry_pending: set[str] = set()
+        #: 重试协程的强引用，避免 create_task 后被 GC 提前回收
+        self._retry_jobs: set[asyncio.Task[Any]] = set()
+
+    def set_retry_handler(self, handler: Callable[[Any], Awaitable[None]] | None) -> None:
+        """注入自动重试回调：参数是任务对象，由容器转交 TaskRunService 重新起 Run。"""
+        self._retry_handler = handler
 
     def attach(self, bus: EventBus) -> None:
         for event in _STATUS_BY_EVENT:
@@ -105,6 +160,8 @@ class TaskRunBridge:
         for task in await self._tasks.list(status=TaskStatus.RUNNING, limit=200):
             if as_utc(task.updated_at).timestamp() > cutoff:
                 continue  # 刚动过：可能正在起跑，给它时间
+            if str(task.id) in self._retry_pending:
+                continue  # 自动重试冷却中：等它自己起新 Run，别当孤儿收尾
             run_id = task.run_id
             if not run_id:
                 await self._tasks.set_status(task.id, TaskStatus.PENDING)
@@ -126,6 +183,9 @@ class TaskRunBridge:
             run = await self._runs.get(run_id) if self._runs is not None else None
             if run is not None and not is_terminal(run.status):
                 continue  # Run 还活着：任务确实在执行，不动
+            if self._trace is not None:
+                # 终态事件可能丢了，但进程内的轨迹缓冲还在：顺手落库，别把过程带进坟墓
+                await self._trace.flush(run_id)
             status = (
                 _TASK_STATUS_BY_RUN.get(DshRunStatus(run.status), TaskStatus.FAILED)
                 if run is not None
@@ -170,27 +230,177 @@ class TaskRunBridge:
         if task.status == TaskStatus.WAITING_FOR_USER_DECISION.value:
             logger.info("dsh.run 结束但任务正等人决策，保留等待态 task=%s run=%s", task.id, run_id)
             return
+        if self._trace is not None:
+            # 先落轨迹再写结果消息：手机端收到 run_finished 后立刻拉详情也能读全
+            await self._trace.flush(run_id)
+        if await self._maybe_auto_retry(event, body, run_id, task):
+            return
         status = _STATUS_BY_EVENT[event]
         await self._tasks.set_status(task.id, status)
-        await self._tasks.add_messages(
-            task.id,
-            [
-                MessageDraft(
-                    role=TaskMessageRole.ASSISTANT.value,
-                    kind="run_finished",
-                    content=_summary(status, body),
-                    payload={
-                        "run_id": run_id,
-                        "status": str(status),
-                        "finish_reason": body.get("finish_reason"),
-                        "error": body.get("error"),
-                    },
-                )
-            ],
-        )
+        # 失败链已收尾：下一轮用户再发起时重新获得一次自动重试机会
+        self._retry_budget.pop(str(task.id), None)
+        message = (
+            await self._tasks.add_messages(
+                task.id,
+                [
+                    MessageDraft(
+                        role=TaskMessageRole.ASSISTANT.value,
+                        kind="run_finished",
+                        content=_summary(status, body),
+                        payload={
+                            "run_id": run_id,
+                            "status": str(status),
+                            "finish_reason": body.get("finish_reason"),
+                            "error": body.get("error"),
+                        },
+                    )
+                ],
+            )
+        )[0]
+        if self._stream is not None:
+            # 对话页据此收掉"执行中"气泡并立即展示结果，不必等下一次轮询
+            await self._stream.publish(
+                task.id,
+                "run_finished",
+                {
+                    "run_id": run_id,
+                    "status": str(status),
+                    "message": message.to_dict(),
+                },
+            )
+            self._stream.unbind_run(run_id)
         # 上下文闭环：任务收尾把"这轮做了什么、结果如何"写进项目 Brain 的累积区，
         # 下一轮（可能是另一个 Agent）开工时 context.get 就能看到，不必从人审队列反推。
         await self._sediment(task, status=status, run_id=run_id, body=body)
+
+    # --- 上游瞬时故障的自动重试 ---
+
+    async def _maybe_auto_retry(
+        self, event: str, body: dict[str, Any], run_id: str, task: Any
+    ) -> bool:
+        """429/超时这类上游瞬时故障自动续跑一轮，避免用户看到一次「假失败」。
+
+        只对 `dsh.run_failed` 生效；每轮失败链最多重试一次（budget 置 0 后放行真实失败），
+        取消/人工暂停/业务错误不在重试范围。重试期间任务保持 running，界面不出现失败气泡。
+        """
+        if event != Events.DSH_RUN_FAILED or self._retry_handler is None:
+            return False
+        error_text = f"{body.get('error') or ''} {body.get('finish_reason') or ''}".lower()
+        transient = any(marker in error_text for marker in _TRANSIENT_ERROR_MARKERS) or bool(
+            _TRANSIENT_STATUS_RE.search(error_text)
+        )
+        if not transient:
+            return False
+        key = str(task.id)
+        # 本轮失败链第一次命中时领取预算；领完置 0，再失败就按真实失败收尾。
+        budget = self._retry_budget.setdefault(key, _AUTO_RETRY_BUDGET)
+        if budget <= 0:
+            return False
+        self._retry_budget[key] = 0
+        self._retry_pending.add(key)
+
+        try:
+            await self._tasks.add_messages(
+                task.id,
+                [
+                    MessageDraft(
+                        role=TaskMessageRole.ASSISTANT.value,
+                        kind="run_retry",
+                        content="上游服务暂时限流（429/超时），正在自动重试…",
+                        payload={
+                            "run_id": run_id,
+                            "status": "retrying",
+                            "error": body.get("error"),
+                            "finish_reason": body.get("finish_reason"),
+                        },
+                    )
+                ],
+            )
+            if self._stream is not None:
+                await self._stream.publish(
+                    task.id,
+                    "run_retry",
+                    {"run_id": run_id, "message": "上游服务暂时限流，正在自动重试…"},
+                )
+        except Exception:  # noqa: BLE001 - 提示写不进去也必须继续重试
+            logger.warning("写自动重试提示失败 task=%s", task.id, exc_info=True)
+        finally:
+            # 解除旧 Run 绑定：终态中转看到 run_id 已解绑就不会再向对话推 failed 状态
+            if self._stream is not None:
+                self._stream.unbind_run(run_id)
+        logger.warning(
+            "上游瞬时故障，自动重试 task=%s run=%s error=%s finish=%s",
+            task.id,
+            run_id,
+            body.get("error"),
+            body.get("finish_reason"),
+        )
+        job = asyncio.create_task(self._run_retry_after_delay(task.id))
+        self._retry_jobs.add(job)
+        job.add_done_callback(self._retry_jobs.discard)
+        return True
+
+    async def _run_retry_after_delay(self, task_id: Any) -> None:
+        """等冷却时间后重新起一轮；任务已被用户取消/改状态时放弃重试。"""
+        key = str(task_id)
+        try:
+            await asyncio.sleep(_AUTO_RETRY_DELAY_SECONDS)
+            handler = self._retry_handler
+            if handler is None:
+                self._retry_budget.pop(key, None)
+                return
+            try:
+                task = await self._tasks.get(task_id)
+            except Exception:  # noqa: BLE001 - 任务读不到就不再重试
+                logger.warning("自动重试读取任务失败 task=%s", task_id, exc_info=True)
+                self._retry_budget.pop(key, None)
+                return
+            if task.status != TaskStatus.RUNNING.value:
+                # 冷却期内任务已被取消/收尾：用户意图优先，不再续跑
+                self._retry_budget.pop(key, None)
+                return
+            try:
+                await handler(task)
+            except Exception as exc:  # noqa: BLE001 - 重试起不来要如实收尾，不能留 running 僵尸
+                logger.warning("自动重试启动失败 task=%s", task_id, exc_info=True)
+                await self._retry_failed_to_start(task, exc)
+                return
+            logger.info("自动重试已重新起 Run task=%s", task_id)
+        finally:
+            # 重试协程结束（起新 Run 或放弃）都会刷新/离开冷却态；
+            # 新 Run 的 set_run_id 已刷新任务 updated_at，对账据此看到活的 Run。
+            self._retry_pending.discard(key)
+
+    async def _retry_failed_to_start(self, task: Any, exc: Exception) -> None:
+        """自动重试没能起 Run：如实落失败并告知用户，别让任务永久停在 running。"""
+        await self._tasks.set_status(task.id, TaskStatus.FAILED)
+        message = (
+            await self._tasks.add_messages(
+                task.id,
+                [
+                    MessageDraft(
+                        role=TaskMessageRole.ASSISTANT.value,
+                        kind="run_finished",
+                        content=f"自动重试未能启动：{exc}",
+                        payload={
+                            "status": "failed",
+                            "error": str(exc),
+                            "reason": "auto_retry_failed",
+                        },
+                    )
+                ],
+            )
+        )[0]
+        if self._stream is not None:
+            await self._stream.publish(
+                task.id,
+                "run_finished",
+                {
+                    "status": "failed",
+                    "message": message.to_dict(),
+                },
+            )
+        self._retry_budget.pop(str(task.id), None)
 
     async def _sediment(
         self, task: Any, *, status: TaskStatus, run_id: str, body: dict[str, Any]
@@ -260,7 +470,8 @@ def _summary(status: TaskStatus, body: dict[str, Any]) -> str:
         response = body.get("final_response")
         if isinstance(response, str) and response.strip():
             return response.strip()
-        return "Agent 执行完成。"
+        # 空正文说明模型这轮只做了工具动作/推理，没产出可读文字；别再报「执行完成」糊弄用户
+        return "Agent 本轮没有生成文字回复（工具调用与耗时可在「执行过程」查看）。"
     if status is TaskStatus.FAILED:
         error = body.get("error")
         if error:

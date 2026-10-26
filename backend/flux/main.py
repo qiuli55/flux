@@ -12,11 +12,13 @@ from fastapi import Depends, FastAPI
 
 from flux.api.auth import require_rest_auth
 from flux.api.errors import register_exception_handlers
+from flux.api.internal_tap import router as llm_tap_router
 from flux.api.v1 import api_v1_router, terminal
 from flux.api.v1 import cloud as cloud_api
 from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
 from flux.container import Container
+from flux.core.agent_runtime.llm_stream_tap import llm_stream_tap
 from flux.core.mcp.server import router as mcp_router
 from flux.logging import configure_logging
 from flux.version import VERSION
@@ -63,6 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log_upload_task.cancel()
         # Container.dispose() owns service shutdown ordering, including Human PTY.
         await container.dispose()
+        # 内部旁路的上游连接池随应用一起关闭
+        await llm_stream_tap.aclose()
 
     app = FastAPI(
         title=app_settings.app_name,
@@ -91,6 +95,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # MCP 能力面（目标架构 §3.1）：与 REST 同进程同生命周期，但不挂在 /api/v1 下——
     # 它是给 agent 用的协议端点，不是给前端用的业务接口。
     app.include_router(mcp_router)
+    # 内置 Agent 的 token 流式旁路：只给本机 DSH 子进程用，无 REST 鉴权（回环 + 一次性 token）
+    app.include_router(llm_tap_router)
     return app
 
 

@@ -145,6 +145,8 @@ fun TaskDetailScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            // 「已开始执行」气泡已下线；旧对话里的同类消息同样不再展示
+            val visibleMessages = state.messages.filter { it.kind != "run_started" }
             if (state.loading) {
                 Box(Modifier.padding(16.dp)) { LoadingRow("正在读取任务…") }
                 return@Column
@@ -195,11 +197,11 @@ fun TaskDetailScreen(
                     }
                 }
 
-                item { SectionTitle("对话（${state.messages.size} 条）", Modifier.padding(top = 4.dp)) }
-                if (state.messages.isEmpty()) {
+                item { SectionTitle("对话（${visibleMessages.size} 条）", Modifier.padding(top = 4.dp)) }
+                if (visibleMessages.isEmpty()) {
                     item { EmptyHint("还没有对话。可以在下面的输入框里补充要求，助手会回复并给出需求确认。") }
                 } else {
-                    items(state.messages, key = { it.id }) { message -> MessageRow(message) }
+                    items(visibleMessages, key = { it.id }) { message -> MessageRow(message) }
                 }
 
                 item {

@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,8 +27,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Publish
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ShowChart
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -40,11 +43,13 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -53,7 +58,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.R
+import top.qiuli55.flux.mobile.data.HandoffSummary
+import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
@@ -63,6 +71,20 @@ private sealed interface V2Route {
     data object Home : V2Route
     data object Decisions : V2Route
     data object Queue : V2Route
+    data object Designs : V2Route
+    data object DesignCanvas : V2Route
+
+    /**
+     * App 内嵌浏览器：对话里点开的网址一律走这里，返回时回到来源页。
+     *
+     * [html] 不为空时离线渲染这段单文件 HTML（设计稿网页预览）。
+     */
+    data class Browser(
+        val url: String,
+        val origin: V2Route,
+        val html: String? = null,
+        val title: String? = null,
+    ) : V2Route
 
     /** 尚未创建任务的新对话（首条消息才落成任务）。 */
     data object Chat : V2Route
@@ -96,6 +118,8 @@ private fun nowMinute(): String = nowTime().take(5)
 fun FluxV2Root() {
     val vm: V2AppViewModel = viewModel()
     val app by vm.state.collectAsState()
+    val designVm: DesignStudioViewModel = viewModel()
+    val designState by designVm.state.collectAsState()
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
@@ -108,21 +132,38 @@ fun FluxV2Root() {
 
     var chat by remember { mutableStateOf<V2ChatState?>(null) }
     val chatMessages = remember { mutableStateListOf<V2Message>() }
+    // 新建对话的附件是页面本地状态：离开草稿页就清空，避免残留一组没人发送的附件
+    val draftAttachments = remember { mutableStateListOf<UploadedAttachment>() }
+    var draftUploading by remember { mutableStateOf(false) }
+    var draftAttachmentError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    // 全局触感控制器：设置里的开关只改 enabled，不重建振动器
+    val hapticsController = remember(context) { createV2Haptics(context) }
 
     var settingsOpen by remember { mutableStateOf(false) }
     var keyVaultOpen by remember { mutableStateOf(false) }
+    var billingOpen by remember { mutableStateOf(false) }
     var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
     var groupDetail by remember { mutableStateOf<V2Group?>(null) }
     var confirmDecision by remember { mutableStateOf<V2Decision?>(null) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
+    // 画布有未保存改动时，返回先问一句：保存并退出 / 放弃 / 继续编辑
+    var designExitOpen by remember { mutableStateOf(false) }
+    // 画布来源：从设计列表进默认回列表；从对话卡片进则回原对话
+    var designOrigin by remember { mutableStateOf<V2Route>(V2Route.Designs) }
+
+    // 长按对话 / 对话页垃圾桶 → 删除面板；面板按 id 实时读任务状态（运行中要先停止）。
+    var deleteConversationId by remember { mutableStateOf<String?>(null) }
+    var deleteConversationError by remember { mutableStateOf<String?>(null) }
 
     var haptics by remember { mutableStateOf(true) }
     var reduceMotion by remember { mutableStateOf(false) }
     var decisionAlerts by remember { mutableStateOf(true) }
     var taskAlerts by remember { mutableStateOf(false) }
     var strict by remember { mutableStateOf(false) }
+    SideEffect { hapticsController.enabled = haptics }
 
     LaunchedEffect(Unit) {
         if (logs.isEmpty()) {
@@ -137,17 +178,21 @@ fun FluxV2Root() {
             route = V2Route.Home
             chat = null
             chatMessages.clear()
+            draftAttachments.clear()
+            draftAttachmentError = null
         } else {
             UpdateCenter.onForeground()
         }
     }
 
-    // 首页 / 决策 / 队列：进入或切回时拉一次真实数据，不用干等 3 秒轮询
+    // 首页 / 决策 / 队列 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
     LaunchedEffect(route) {
-        if (app.boot == V2Boot.READY &&
-            (route == V2Route.Home || route == V2Route.Decisions || route == V2Route.Queue)
-        ) {
-            vm.refresh(quiet = true)
+        if (app.boot == V2Boot.READY) {
+            when (route) {
+                V2Route.Home, V2Route.Decisions, V2Route.Queue -> vm.refresh(quiet = true)
+                V2Route.Designs -> designVm.loadDesigns(quiet = true)
+                else -> Unit
+            }
         }
     }
 
@@ -177,6 +222,18 @@ fun FluxV2Root() {
         route = V2Route.TaskChat(taskId)
     }
 
+    // 从对话里的设计稿卡片进原生画布：记住当前对话路由，返回时回到这段对话
+    fun openDesignFromChat(designId: String) {
+        designOrigin = route
+        designVm.openDesign(designId)
+        route = V2Route.DesignCanvas
+    }
+
+    // 对话里的链接一律交给 App 内的浏览器，不跳系统浏览器
+    fun openInternalBrowser(url: String) {
+        route = V2Route.Browser(url, route)
+    }
+
     fun createChat(option: V2AgentOption) {
         val chatDevice = if (device == ALL_DEVICES) {
             V2Registry.devices.firstOrNull()?.name ?: "本机"
@@ -193,6 +250,8 @@ fun FluxV2Root() {
             modelKeyId = firstModel?.keyId,
         )
         chatMessages.clear()
+        draftAttachments.clear()
+        draftAttachmentError = null
         chatMessages.add(
             V2Message(
                 V2MessageRole.SYSTEM,
@@ -206,19 +265,89 @@ fun FluxV2Root() {
 
     fun sendDraftMessage(text: String) {
         val current = chat ?: return
-        chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
+        if (draftUploading) return
+        val attachmentIds = draftAttachments.map { it.id }
+        // 只有附件没有文字也能发；后端任务描述必填，这里给 Agent 一句最小上下文
+        val description = text.ifBlank { "请查看我附上的文件" }
+        if (text.isBlank() && attachmentIds.isEmpty()) return
+        if (attachmentIds.isEmpty()) {
+            chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
+        } else {
+            chatMessages.add(
+                V2Message(
+                    role = V2MessageRole.USER,
+                    text = text,
+                    time = nowMinute(),
+                    kind = "attachments",
+                    attachments = draftAttachments.map { V2MessageFile(it.name, it.size) },
+                ),
+            )
+        }
         vm.createTask(
-            text,
+            description,
             current.agentId,
             current.decisionMode,
+            current.permissionMode,
             current.model,
             current.modelKeyId,
+            // 从旧对话接手：摘要随首条消息落库，新对话只带摘要、不搬旧消息
+            summary = current.pendingSummary,
+            summaryFrom = current.summaryFrom,
+            attachmentIds = attachmentIds,
         ) { taskId ->
-            chat = current.copy(conversationId = taskId, title = text.take(40))
+            // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
+            draftAttachments.clear()
+            draftAttachmentError = null
+            // 新对话第一次发送 = 建任务并立即交给 Agent；只建不跑会让用户以为消息没发出去。
+            vm.startTask(taskId)
+            chat = current.copy(
+                conversationId = taskId,
+                title = text.take(40).ifBlank { "附件对话" },
+                pendingSummary = null,
+                summaryFrom = null,
+            )
             chatMessages.clear()
             chatOrigin = V2Route.Home
             route = V2Route.TaskChat(taskId)
         }
+    }
+
+    /**
+     * 上下文快满 → 新建并带摘要：沿用当前任务的项目 / Agent / 模型，
+     * 只把摘要带进新对话。任务本身要等用户发出第一条消息才落成，
+     * 避免在列表里留下一段没有用户意图的孤儿对话。
+     */
+    fun startHandoffChat(fromTaskId: String, summary: HandoffSummary) {
+        val source = app.tasks.firstOrNull { it.id == fromTaskId }
+        val chatDevice = if (device == ALL_DEVICES) {
+            V2Registry.devices.firstOrNull()?.name ?: "本机"
+        } else {
+            device
+        }
+        chat = V2ChatState(
+            conversationId = null,
+            title = "延续 · " + (source?.firstLine(30) ?: "上一段对话"),
+            device = chatDevice,
+            agentId = source?.agentId.orEmpty(),
+            model = source?.model.orEmpty(),
+            modelKeyId = source?.apiKeyId?.takeIf { it.isNotBlank() },
+            // 接手一段对话时沿用它的权限模式，避免用户刚切到 Plan 又悄悄回到正常模式
+            permissionMode = source?.permissionMode ?: "normal",
+            pendingSummary = summary.summary,
+            summaryFrom = fromTaskId,
+        )
+        chatMessages.clear()
+        draftAttachments.clear()
+        draftAttachmentError = null
+        chatMessages.add(
+            V2Message(
+                V2MessageRole.SYSTEM,
+                "已带上上一段对话的摘要，接着说你想做的事",
+                nowMinute(),
+            ),
+        )
+        chatOrigin = V2Route.TaskChat(fromTaskId)
+        route = V2Route.Chat
     }
 
     fun appendHeartbeat() {
@@ -230,13 +359,19 @@ fun FluxV2Root() {
         }
     }
 
-    val hasBack = update.kind != UpdateKind.HIDDEN ||
+    val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
         confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
-        groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home
+        groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
+        designExitOpen
 
     BackHandler(enabled = hasBack) {
         when {
+            designExitOpen -> designExitOpen = false
             update.kind != UpdateKind.HIDDEN -> UpdateCenter.dismiss()
+            deleteConversationId != null -> {
+                deleteConversationId = null
+                deleteConversationError = null
+            }
             manualConnectOpen -> manualConnectOpen = false
             confirmDecision != null -> confirmDecision = null
             agentPickerOpen -> agentPickerOpen = false
@@ -246,15 +381,25 @@ fun FluxV2Root() {
             logsOpen -> logsOpen = false
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
-                is V2Route.TaskDetail -> taskOrigin
-                is V2Route.TaskChat -> chatOrigin
-                is V2Route.Confirmation -> V2Route.TaskDetail(current.taskId)
-                is V2Route.Changes -> V2Route.TaskDetail(current.taskId)
-                is V2Route.Diff -> V2Route.Changes(current.taskId)
-                is V2Route.Run -> V2Route.TaskDetail(current.taskId)
-                is V2Route.Terminal -> V2Route.Terminals
-                else -> V2Route.Home
-            }
+                  is V2Route.TaskDetail -> taskOrigin
+                  is V2Route.TaskChat -> chatOrigin
+                  is V2Route.Confirmation -> V2Route.TaskDetail(current.taskId)
+                  is V2Route.Changes -> V2Route.TaskDetail(current.taskId)
+                  is V2Route.Diff -> V2Route.Changes(current.taskId)
+                  is V2Route.Run -> V2Route.TaskDetail(current.taskId)
+                  is V2Route.Terminal -> V2Route.Terminals
+                  is V2Route.Browser -> current.origin
+                  V2Route.DesignCanvas -> {
+                      if (designState.dirty) {
+                          designExitOpen = true
+                          V2Route.DesignCanvas
+                      } else {
+                          designVm.closeDesign()
+                          designOrigin
+                      }
+                  }
+                  else -> V2Route.Home
+              }
         }
     }
 
@@ -307,8 +452,8 @@ fun FluxV2Root() {
                     task.decisions.count { it.status != null && it.status != "pending" }
                 }
 
-                val renderContent: @Composable (Dp, Boolean) -> Unit = { extraTop, showBack ->
-                    when (val current = route) {
+                val renderContent: @Composable (V2Route, Dp, Boolean) -> Unit = { pageRoute, extraTop, showBack ->
+                    when (val current = pageRoute) {
                         V2Route.Home -> V2HomeScreen(
                             device = device,
                             onDeviceChange = { device = it },
@@ -316,13 +461,24 @@ fun FluxV2Root() {
                             groups = app.groups,
                             pendingCount = app.pendingCount,
                             runningCount = app.runningCount,
+                            billingHeadline = app.billing?.headline ?: "暂无额度数据",
                             extraTop = extraTop,
                             onOpenDecisions = { route = V2Route.Decisions },
                             onOpenQueue = { route = V2Route.Queue },
+                            onOpenBilling = {
+                                billingOpen = true
+                                vm.loadBilling()
+                            },
+                            onOpenDesigns = { route = V2Route.Designs },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
+                            onDeleteConversation = {
+                                deleteConversationError = null
+                                deleteConversationId = it.id
+                            },
                             onOpenGroup = { groupDetail = it },
                             onOpenSettings = { settingsOpen = true },
                             onNewChat = { newChatOpen = true },
+                            onRefresh = { vm.refresh(quiet = true) },
                         )
 
                         V2Route.Decisions -> V2DecisionScreen(
@@ -356,7 +512,81 @@ fun FluxV2Root() {
                                 taskOrigin = V2Route.Queue
                                 route = V2Route.TaskDetail(task.id)
                             },
+                            onRequestDelete = { task ->
+                                deleteConversationError = null
+                                deleteConversationId = task.id
+                            },
                         )
+
+                        V2Route.Designs -> DesignStudioListScreen(
+                            state = designState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Home },
+                            onReload = { designVm.loadDesigns() },
+                            onOpen = { designId ->
+                                designOrigin = V2Route.Designs
+                                designVm.openDesign(designId)
+                                route = V2Route.DesignCanvas
+                            },
+                            onCreate = {
+                                designVm.createDesign(it) {
+                                    designOrigin = V2Route.Designs
+                                    route = V2Route.DesignCanvas
+                                }
+                            },
+                            onRename = { designId, name -> designVm.renameDesign(designId, name) },
+                            onDelete = { designId -> designVm.deleteDesign(designId) },
+                            onDismissMessages = { designVm.clearMessages() },
+                        )
+
+                        V2Route.DesignCanvas -> DesignCanvasScreen(
+                            state = designState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = {
+                                if (designState.dirty) {
+                                    designExitOpen = true
+                                } else {
+                                    designVm.closeDesign()
+                                    route = designOrigin
+                                }
+                            },
+                            onSelectNode = { designVm.selectNode(it) },
+                            onSelectScreen = { designVm.selectScreen(it) },
+                            onSave = { designVm.save() },
+                            onWebPreview = {
+                                val designId = designState.document?.id
+                                if (designId != null) {
+                                    designVm.loadWebPreview(designId) { preview ->
+                                        route = V2Route.Browser(
+                                            url = "",
+                                            origin = V2Route.DesignCanvas,
+                                            html = preview.html,
+                                            title = preview.name,
+                                        )
+                                    }
+                                }
+                            },
+                            onSetText = { designVm.setNodeText(it) },
+                            onSetFill = { designVm.setNodeFill(it) },
+                            onSetTextColor = { designVm.setNodeTextColor(it) },
+                            onSetRadius = { designVm.setNodeRadius(it) },
+                            onSetOpacity = { designVm.setNodeOpacity(it) },
+                            onAskAi = { designVm.askAi(it) },
+                            onDismissMessages = { designVm.clearMessages() },
+                        )
+
+                          is V2Route.Browser -> {
+                            V2BrowserScreen(
+                                url = current.url,
+                                extraTop = extraTop,
+                                showBack = showBack,
+                                html = current.html,
+                                title = current.title,
+                                onBack = { route = current.origin },
+                            )
+                        }
 
                         V2Route.Chat -> {
                             val active = chat
@@ -369,21 +599,65 @@ fun FluxV2Root() {
                                     onBack = {
                                         chat = null
                                         chatMessages.clear()
+                                        draftAttachments.clear()
+                                        draftAttachmentError = null
                                         route = V2Route.Home
                                     },
                                     onOpenLogs = { logsOpen = true },
                                     onDelete = {
                                         chat = null
                                         chatMessages.clear()
+                                        draftAttachments.clear()
+                                        draftAttachmentError = null
                                         route = V2Route.Home
                                     },
                                     onOpenAgentPicker = { agentPickerOpen = true },
                                     onSend = { sendDraftMessage(it) },
-                                    sending = app.busyAction == "create",
-                                    notice = app.error,
+                                    attachments = draftAttachments,
+                                    uploading = draftUploading,
+                                    onAddAttachments = { uris ->
+                                        val remaining = UploadedAttachment.MAX_FILES - draftAttachments.size
+                                        if (remaining <= 0) {
+                                            Toast.makeText(
+                                                context,
+                                                "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件",
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        } else {
+                                            if (uris.size > remaining) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "最多 5 个附件，已忽略多选的 ${uris.size - remaining} 个",
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                            }
+                                            draftAttachmentError = null
+                                            draftUploading = true
+                                            vm.uploadDraftAttachments(
+                                                uris = uris.take(remaining),
+                                                resolver = context.contentResolver,
+                                                onUploaded = { draftAttachments.add(it) },
+                                                onError = { draftAttachmentError = it },
+                                                onFinished = { draftUploading = false },
+                                            )
+                                        }
+                                    },
+                                    onRemoveAttachment = { id ->
+                                        draftAttachments.removeAll { it.id == id }
+                                    },
+                                    sending = app.busyAction == "create" || draftUploading,
+                                    notice = draftAttachmentError ?: app.error,
+                                    onDismissNotice = {
+                                        draftAttachmentError = null
+                                        vm.clearMessages()
+                                    },
                                     // 新建对话不是从设备接续的历史会话，不需要接续横幅。
                                     showHandoff = false,
                                     onDecisionModeChange = { mode -> chat = chat?.copy(decisionMode = mode) },
+                                    // 新建对话还没有任务：模式只记在本地，发首条消息时随建任务请求带上
+                                    onPermissionModeChange = { mode -> chat = chat?.copy(permissionMode = mode) },
+                                    onOpenUrl = { openInternalBrowser(it) },
+                                    onOpenDesign = { openDesignFromChat(it) },
                                 )
                             }
                         }
@@ -411,6 +685,15 @@ fun FluxV2Root() {
                                 }
                             },
                             onOpenLogs = { logsOpen = true },
+                            onRequestDelete = {
+                                deleteConversationError = null
+                                deleteConversationId = current.taskId
+                            },
+                            onHandoffReady = { summary ->
+                                startHandoffChat(current.taskId, summary)
+                            },
+                            onOpenDesign = { openDesignFromChat(it) },
+                            onOpenUrl = { openInternalBrowser(it) },
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
@@ -461,7 +744,11 @@ fun FluxV2Root() {
                     }
                 }
 
-                CompositionLocalProvider(LocalSheetMaxWidth provides if (tablet) 560.dp else null) {
+                CompositionLocalProvider(
+                    LocalSheetMaxWidth provides if (tablet) 560.dp else null,
+                    LocalV2Haptics provides hapticsController,
+                    LocalReduceMotion provides reduceMotion,
+                ) {
                     if (tablet) {
                         Row(Modifier.fillMaxSize().then(insets)) {
                             V2NavRail(
@@ -488,17 +775,34 @@ fun FluxV2Root() {
                                 contentAlignment = Alignment.TopCenter,
                             ) {
                                 Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().fillMaxHeight()) {
-                                    renderContent(0.dp, false)
+                                    V2PageTransition(
+                                        target = route,
+                                        depthOf = { v2RouteDepth(it as V2Route) },
+                                    ) { page ->
+                                        renderContent(page as V2Route, 0.dp, false)
+                                    }
                                 }
                             }
                         }
                     } else {
                         Column(Modifier.fillMaxSize().then(insets)) {
-                            renderContent(0.dp, true)
+                            V2PageTransition(
+                                target = route,
+                                depthOf = { v2RouteDepth(it as V2Route) },
+                            ) { page ->
+                                renderContent(page as V2Route, 0.dp, true)
+                            }
                         }
                     }
 
                     val flash = app.error ?: app.notice
+                    // 提示条到点自动收起：错误留久一点，成功提示更快消失，避免长期糊在顶栏。
+                    LaunchedEffect(flash) {
+                        if (flash != null) {
+                            delay(if (app.error != null) 5000L else 2600L)
+                            vm.clearMessages()
+                        }
+                    }
                     if (flash != null) {
                         Box(
                             Modifier
@@ -542,6 +846,16 @@ fun FluxV2Root() {
                                 keyVaultOpen = true
                                 vm.loadKeys()
                             },
+                            codexAccount = app.codexAccount,
+                            codexLogin = app.codexLogin,
+                            codexLoading = app.codexLoading,
+                            onCodexLogin = { vm.startCodexLogin() },
+                            onCodexLogout = { vm.logoutCodexAccount() },
+                            onRefreshCodex = { vm.loadCodexAccount() },
+                            onOpenCodexUrl = { url ->
+                                settingsOpen = false
+                                openInternalBrowser(url)
+                            },
                             onManualConnect = {
                                 settingsOpen = false
                                 manualConnectOpen = true
@@ -580,6 +894,18 @@ fun FluxV2Root() {
                             },
                             onDelete = { entry, onResult -> vm.deleteKey(entry.id, onResult) },
                             onDismiss = { keyVaultOpen = false },
+                        )
+                    }
+
+                    if (billingOpen) {
+                        BillingSheet(
+                            overview = app.billing,
+                            prices = app.billingPrices,
+                            loading = app.billingLoading,
+                            error = app.billingError,
+                            onRefresh = { vm.loadBilling() },
+                            onSync = { vm.loadBilling(sync = true) },
+                            onDismiss = { billingOpen = false },
                         )
                     }
 
@@ -641,6 +967,60 @@ fun FluxV2Root() {
                         )
                     }
 
+                    deleteConversationId?.let { deleteId ->
+                        val target = app.tasks.firstOrNull { it.id == deleteId }
+                        ConversationDeleteSheet(
+                            title = target?.description?.lineSequence()?.firstOrNull()?.take(40)
+                                ?.takeIf { it.isNotBlank() } ?: "这段对话",
+                            running = target?.status == "running" ||
+                                target?.status == "waiting_for_user_decision",
+                            deleting = app.busyAction == "delete:$deleteId",
+                            stopping = app.busyAction == "cancel:$deleteId",
+                            error = deleteConversationError,
+                            onStop = { vm.cancelTask(deleteId) },
+                            onDelete = {
+                                vm.deleteConversation(deleteId) { error ->
+                                    if (error.isEmpty()) {
+                                        deleteConversationId = null
+                                        deleteConversationError = null
+                                        val chatRoute = route as? V2Route.TaskChat
+                                        if (chatRoute?.taskId == deleteId) {
+                                            chat = null
+                                            chatMessages.clear()
+                                            chatOrigin = V2Route.Home
+                                            route = V2Route.Home
+                                        }
+                                    } else {
+                                        deleteConversationError = error
+                                    }
+                                }
+                            },
+                            onDismiss = {
+                                deleteConversationId = null
+                                deleteConversationError = null
+                            },
+                        )
+                    }
+
+                    if (designExitOpen && route == V2Route.DesignCanvas) {
+                        DesignExitSheet(
+                            saving = designState.saving,
+                            onSaveAndExit = {
+                                designVm.save {
+                                    designExitOpen = false
+                                    designVm.closeDesign()
+                                    route = designOrigin
+                                }
+                            },
+                            onDiscard = {
+                                designExitOpen = false
+                                designVm.closeDesign()
+                                route = designOrigin
+                            },
+                            onDismiss = { designExitOpen = false },
+                        )
+                    }
+
                     // 更新弹层放最后，保证盖在其他面板之上。
                     if (update.kind != UpdateKind.HIDDEN) {
                         UpdateSheet(
@@ -683,7 +1063,7 @@ private fun V2NavRail(
         Modifier
             .width(92.dp)
             .fillMaxHeight()
-            .background(Color.White.copy(alpha = .52f))
+            .background(V2Colors.surface(.52f))
             .padding(vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -796,4 +1176,20 @@ private fun RailButton(
             }
         }
     }
+}
+
+
+/** 页面层级：用于判断转场方向（前进 / 返回）。 */
+private fun v2RouteDepth(route: V2Route): Int = when (route) {
+    V2Route.Home -> 0
+    V2Route.Decisions, V2Route.Queue, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
+    is V2Route.Browser -> v2RouteDepth(route.origin) + 1
+    is V2Route.TaskDetail -> 2
+    V2Route.DesignCanvas -> 2
+    is V2Route.TaskChat -> 3
+    is V2Route.Confirmation -> 3
+    is V2Route.Changes -> 3
+    is V2Route.Run -> 3
+    is V2Route.Terminal -> 2
+    is V2Route.Diff -> 4
 }

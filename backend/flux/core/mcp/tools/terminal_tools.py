@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from flux.core.context.redact import redact
 from flux.core.mcp.tools.base import (
     ToolContext,
     ToolSpec,
@@ -23,7 +24,22 @@ from flux.core.mcp.tools.base import (
     reject_unknown,
     require_str,
 )
-from flux.enums import Capability, TerminalEventKind, TerminalSource
+from flux.core.permissions.modes import normalize_mode
+from flux.core.permissions.risk import LEVEL_HIGH, LEVEL_PROTECTED, classify_command
+from flux.core.task_engine.approvals import (
+    APPROVAL_KIND_HIGH_RISK,
+    APPROVAL_KIND_PROTECTED,
+    ApprovalCancelledError,
+    ApprovalDeniedError,
+    ApprovalTimeoutError,
+    raise_approval,
+    wait_for_approval,
+)
+from flux.enums import Capability, PermissionMode, TerminalEventKind, TerminalSource
+from flux.errors import ConflictError
+from flux.logging import get_logger
+
+logger = get_logger(__name__)
 
 #: 回给 Agent 的输出摘要上限。取**尾部**：测试汇总行、报错栈尾、编译结论都在末尾。
 MAX_SUMMARY_CHARS = 4000
@@ -54,10 +70,102 @@ def _run_uuid(ctx: ToolContext) -> uuid.UUID | None:
     return uuid.UUID(raw) if raw else None
 
 
+async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
+    """执行前的审批闸门：受保护对象在 Plan/正常/完全访问模式都问；高风险只在正常模式问。
+
+    Full 模式跳过 high（用户已明确风险自负），但 protected 仍然逐次询问；
+    Unattended 模式两者都放行（无人值守，用户明确要求不被打断）；
+    Plan 模式在 MCP 白名单层已被拒绝，走不到这里。拒绝/超时/取消都抛错，命令不执行。
+    """
+    mode = normalize_mode(ctx.identity.permission_mode)
+    report = classify_command(command)
+    if mode == PermissionMode.UNATTENDED.value:
+        # 免审核（无人值守）：任何等级都不落审批卡；保留日志供事后审计
+        logger.warning(
+            "terminal.unattended_allow mode=%s rule=%s level=%s command=%s",
+            mode,
+            report.rule,
+            report.level,
+            redact(command).text[:200],
+        )
+        return
+    if report.level == LEVEL_PROTECTED:
+        kind = APPROVAL_KIND_PROTECTED
+        title = "受保护操作 · 需要你确认"
+    elif report.level == LEVEL_HIGH and mode != PermissionMode.FULL.value:
+        kind = APPROVAL_KIND_HIGH_RISK
+        title = "高风险命令 · 需要你确认"
+    else:
+        logger.info(
+            "terminal.risk_allow mode=%s rule=%s level=%s", mode, report.rule, report.level
+        )
+        return
+
+    task_id = await _task_uuid(ctx)
+    if task_id is None:
+        # 无 Run 归属就找不到对话去落审批卡：fail-closed，不允许绕过闸门直接执行
+        raise ConflictError(
+            f"该命令需要用户审批（{report.reason}），但当前调用没有关联的 Run，无法发起审批"
+        )
+
+    display_command = redact(command).text
+    detail = f"{report.reason}\n\n命令：\n{display_command}"
+    record = await raise_approval(
+        ctx.container,
+        task_id=task_id,
+        run_id=ctx.identity.run_id,
+        kind=kind,
+        title=title,
+        detail=detail,
+        meta={
+            "command": display_command,
+            "rule": report.rule,
+            "level": report.level,
+            "reason": report.reason,
+        },
+    )
+    outcome = await wait_for_approval(
+        ctx.container,
+        task_id=task_id,
+        decision_id=str(record["id"]),
+        run_id=ctx.identity.run_id,
+    )
+    if outcome == "allowed":
+        logger.info(
+            "terminal.approved mode=%s rule=%s decision=%s", mode, report.rule, record["id"]
+        )
+        return
+    if outcome == "denied":
+        raise ApprovalDeniedError(
+            f"用户拒绝了这条命令（{report.rule}），未执行：{display_command}"
+        )
+    if outcome == "timeout":
+        raise ApprovalTimeoutError(
+            "审批超时（10 分钟）：命令未执行。需要时请向用户重新申请。"
+        )
+    raise ApprovalCancelledError("任务已取消或结束，命令未执行")
+
+
+async def _task_uuid(ctx: ToolContext) -> uuid.UUID | None:
+    """本次调用所属的任务（经 Run 反查）；没有 Run 或 Run 不属于任务时返回 None。
+
+    注意：Run 主键是 `uuid4().hex`（无连字符），必须原样拿去查，不能先转 `UUID` 再 `str()`
+    ——补上连字符后与存储的 Run id 不一致，会永远查不到 Run 而误判「没有关联 Run」。
+    """
+    run_id = ctx.identity.run_id
+    if not run_id:
+        return None
+    run = await ctx.container.run_repo.get(run_id)
+    if run is None or run.task_id is None:
+        return None
+    return uuid.UUID(str(run.task_id))
+
+
 async def terminal_execute(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"command", "session_id"})
     command = require_str(params, "command")
     session_id = optional_str(params, "session_id")
+    await _approve_if_needed(ctx, command)
     service = ctx.container.terminal
 
     if session_id is None:

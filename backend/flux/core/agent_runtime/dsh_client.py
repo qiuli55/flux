@@ -13,6 +13,7 @@ P0-01 起这里还负责**把 Flux 的 MCP 能力面注入 DSH**：起 Run 前�
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import uuid
 from collections.abc import Callable
@@ -28,6 +29,11 @@ from deepseek_harness.client import HarnessClient
 from flux.config import Settings
 from flux.core.agent_runtime import platforms
 from flux.core.agent_runtime.dsh_events import to_flux_event
+from flux.core.agent_runtime.llm_stream_tap import (
+    DEFAULT_UPSTREAM,
+    llm_stream_tap,
+    tap_base_url,
+)
 from flux.core.agent_runtime.model_catalog import dsh_provider_for
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
@@ -141,6 +147,8 @@ class DshRun:
     model: str | None = None
     #: 任务级模型通道（密钥库）；含明文 key，repr 已脱敏，不进任何对外快照
     channel: ModelChannel | None = None
+    #: 本轮权限模式快照（plan / normal / full），MCP 层据此做白名单与审批闸门
+    permission_mode: str = "normal"
     last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,6 +170,7 @@ class DshRun:
             "timeout_kind": self.timeout_kind,
             "agent_id": self.agent_id,
             "task_id": self.task_id,
+            "permission_mode": self.permission_mode,
             "model": self.model,
             "model_key_id": self.channel.key_id if self.channel is not None else None,
             "last_state_change_at": (
@@ -400,6 +409,7 @@ class FluxDshClient:
         agent_id: str | None = None,
         model: str | None = None,
         channel: ModelChannel | None = None,
+        permission_mode: str = "normal",
     ) -> DshRun:
         """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
 
@@ -427,6 +437,7 @@ class FluxDshClient:
             task_id=str(task_id) if task_id is not None else None,
             model=(model or "").strip() or None,
             channel=channel,
+            permission_mode=permission_mode,
         )
         self._runs[run.run_id] = run
         await self._supervisor.create_run(
@@ -435,6 +446,7 @@ class FluxDshClient:
             instruction=instruction,
             agent_id=run.agent_id,
             task_id=task_id,
+            permission_mode=permission_mode,
         )
         asyncio.create_task(self._execute(run, patch_path))
         return run
@@ -450,13 +462,22 @@ class FluxDshClient:
         """
         loop = asyncio.get_running_loop()
         run_id = run.run_id
+        # 旁路 token：token 级增量由本进程的 SSE 代理直接发总线，Run 结束注销
+        tap_token: str | None = None
 
         def _on_notification(notification: Notification) -> None:
             # 回调由 SDK 读线程同步调用，不能直接 await；把动作交回事件循环线程。
             event, body = to_flux_event(notification)
             record = {**body, "run_id": run_id}
             run.events.append(record)
-            if self._bus is not None:
+            # 旁路已经逐 token 推过正文时，SDK 收尾那条整段 assistant/message 只留档不外发，
+            # 否则手机端会把同一段答复再整段贴一遍。
+            duplicate = (
+                tap_token is not None
+                and body.get("event_type") == "assistant/message"
+                and llm_stream_tap.has_streamed(tap_token)
+            )
+            if self._bus is not None and not duplicate:
                 asyncio.run_coroutine_threadsafe(self._bus.publish(event, record), loop)
             # 收到事件即算一次有效进展（P2-15 §2.4：不能只看 stdout 有没有字节）
             asyncio.run_coroutine_threadsafe(
@@ -475,6 +496,21 @@ class FluxDshClient:
             provider = dsh_provider_for(run.channel.provider) or provider
             base_url = run.channel.base_url or None
             api_key = run.channel.api_key or None
+        # token 级流式：把 DSH 的模型 base_url 临时指到本进程的 SSE 旁路。
+        # 上游就是本来要用的模型 API；旁路只转发 + 解析增量，不改请求/响应内容。
+        if self._bus is not None:
+            upstream = (
+                base_url
+                or os.environ.get("DEEPSEEK_BASE_URL")
+                or self._settings.deepseek_base_url
+                or DEFAULT_UPSTREAM
+            )
+            tap_token = llm_stream_tap.register(
+                run_id=run_id, upstream=upstream, bus=self._bus
+            )
+            base_url = (
+                f"{tap_base_url(self._settings.dsh_mcp_url).rstrip('/')}/{tap_token}"
+            )
         try:
             harness = self._harness_factory(
                 dsh_home=self._settings.dsh_home,
@@ -519,7 +555,7 @@ class FluxDshClient:
                 # 的第一份强制上下文；run.instruction 存库 / API / UI 仍保持用户原文。
                 result = await asyncio.to_thread(
                     harness.run,
-                    compose_instruction(run.instruction),
+                    compose_instruction(run.instruction, run.permission_mode),
                     session_id=run.session_id,
                     on_notification=_on_notification,
                 )
@@ -540,6 +576,8 @@ class FluxDshClient:
             status = DshRunStatus.FAILED
             error = str(exc)
         finally:
+            # 旁路只在本 Run 内有效：无论成败都注销，避免 token 泄漏成长期入口
+            llm_stream_tap.unregister(tap_token)
             # 构造也可能失败（无合适 runtime 载体等），关闭同上：单点失败不得吞掉终态写入。
             if harness is not None:
                 try:
@@ -629,6 +667,7 @@ class FluxDshClient:
             task_id=run.task_id,
             agent_id=run.agent_id,
             mcp_endpoint=self._settings.dsh_mcp_url if self._settings.dsh_mcp_enabled else None,
+            permission_mode=run.permission_mode,
         )
 
     async def cancel(self, run_id: str) -> DshRun:
@@ -759,6 +798,7 @@ class FluxDshClient:
             status=DshRunStatus(row.status),
             agent_id=row.agent_id,
             task_id=str(row.task_id) if row.task_id else None,
+            permission_mode=getattr(row, "permission_mode", "normal") or "normal",
         )
         await self._refresh_from_row(run)
         if status is not None:

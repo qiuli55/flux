@@ -9,6 +9,11 @@
 # 注意：脚本会写 B 机（上传 APK + 替换清单），执行前请确认目标主机与目录。
 set -euo pipefail
 
+# 发版机制自包含：调用方 shell 没配 SDK 时也按 A 机约定补齐，避免构建失败。
+export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/opt/gradle-home}"
+
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../apps/mobile-controller" && pwd)"
 HOST="${FLUX_RELEASE_HOST:-shanghai}"
 REMOTE_DIR="${FLUX_RELEASE_DIR:-/opt/downloads/flux-mobile}"

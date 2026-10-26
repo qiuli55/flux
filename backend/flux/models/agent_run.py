@@ -35,6 +35,11 @@ class AgentRun(TimestampMixin, Base):
     instruction: Mapped[str] = mapped_column(Text, default="")
     #: 取值见 flux.enums.DshRunStatus
     status: Mapped[str] = mapped_column(String(32), index=True)
+    #: 启动时从任务快照的权限模式（flux.enums.PermissionMode）。MCP 层按它判定
+    #: 工具白名单与审批闸门——DSH 内置 Agent 用长期令牌，仅靠令牌 scopes 无法区分模式。
+    permission_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="normal", server_default="normal"
+    )
     #: Agent 运行时子进程（进程组组长，见 dsh_client 的 setsid shim）
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pgid: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -69,6 +74,7 @@ class AgentRun(TimestampMixin, Base):
             "agent_id": self.agent_id,
             "instruction": self.instruction,
             "status": self.status,
+            "permission_mode": self.permission_mode or "normal",
             "pid": self.pid,
             "pgid": self.pgid,
             "cancel_requested": bool(self.cancel_requested),

@@ -58,6 +58,7 @@ class AgentRunRepository:
         task_id: uuid.UUID | None = None,
         owner_pid: int | None = None,
         started_at: datetime | None = None,
+        permission_mode: str = "normal",
     ) -> AgentRun:
         now = utcnow()
         run = AgentRun(
@@ -65,6 +66,7 @@ class AgentRunRepository:
             session_id=session_id,
             instruction=instruction,
             status=str(status),
+            permission_mode=permission_mode,
             agent_id=agent_id,
             task_id=task_id,
             owner_pid=owner_pid,

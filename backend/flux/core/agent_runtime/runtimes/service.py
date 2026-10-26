@@ -1,9 +1,9 @@
 """TaskRunService：任务「开始执行」的编排收口（P2-1 §6.2）。
 
 把原先散在 `api/v1/tasks.py` 里的启动编排（确认卡合并 → 计划/指令拼装 → 预登记 run_id →
-起 Run → 落 run_started 消息）抽到这里，按 `agent.config["runtime"]` 分发到对应
-`AgentRuntime`。对外 API 与消息落库行为保持不变：DSH 路径返回的 Run 快照仍是
-`FluxDshClient` 的原物，CLI 路径返回同形快照。
+起 Run → 广播 run_started）抽到这里，按 `agent.config["runtime"]` 分发到对应
+`AgentRuntime`。开始执行不再往对话里落消息（执行过程由流事件呈现）：DSH 路径返回的
+Run 快照仍是 `FluxDshClient` 的原物，CLI 路径返回同形快照。
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from flux.core.agent_runtime.runtimes.base import (
 from flux.core.agent_runtime.runtimes.cli import build_cli_runtime
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.core.context.budget import history_message_limit
+from flux.core.permissions.modes import normalize_mode
 from flux.core.task_engine.assistant import validate_confirmation_items
-from flux.core.task_engine.repository import MessageDraft
 from flux.enums import AgentInstallStatus, TaskMessageRole, TaskStatus
 from flux.errors import AIOSError, ConflictError, NotFoundError
 from flux.logging import get_logger
@@ -39,11 +39,15 @@ _HISTORY_LIMIT = history_message_limit()
 
 @dataclass(slots=True)
 class RunStartResult:
-    """一次「开始执行」的结果（API 响应三件套）。"""
+    """一次「开始执行」的结果（API 响应三件套）。
+
+    `message` 恒为 None：开始执行不再往对话里落「已开始执行」气泡，
+    执行过程改由 `run_started` / `run_event` 流事件呈现。
+    """
 
     task: Task
     run: dict[str, Any]
-    message: Any
+    message: Any = None
 
 
 class TaskRunService:
@@ -53,7 +57,13 @@ class TaskRunService:
         self._container = container
         self._cli_adapters = tuple(cli_adapters)
 
-    async def start(self, task: Task, confirmation_request: Any = None) -> RunStartResult:
+    async def start(
+        self,
+        task: Task,
+        confirmation_request: Any = None,
+        *,
+        followup: str | None = None,
+    ) -> RunStartResult:
         container = self._container
         task_uuid = task.id
 
@@ -65,12 +75,31 @@ class TaskRunService:
             confirmation = {"items": items, "actor": "user", "updated_at": _now_iso()}
             task = await container.task_repo.set_confirmation(task_uuid, confirmation)
 
-        steps = await _latest_plan(container, task_uuid)
-        instruction = _execution_instruction(task, confirmation, steps)
+        # 续跑：新消息是这一轮的唯一指令，不叠加上一轮的确认卡与计划（那是历史上下文，
+        # 由 Agent 自己的会话/项目 Brain 承接）。
+        steps = [] if followup else await _latest_plan(container, task_uuid)
+        summary = await _latest_summary(container, task_uuid)
+        attachments = await _latest_attachments(container, task_uuid)
+        instruction = _execution_instruction(
+            task,
+            None if followup else confirmation,
+            steps,
+            summary=summary,
+            followup=followup,
+            attachments=attachments,
+            mode=normalize_mode(getattr(task, "permission_mode", None)),
+        )
 
         agent = self._agent(task)
         runtime_id = _runtime_of(agent)
         await self._require_ready(runtime_id)
+        # 额度闸门：默认只告警（FLUX_BILLING_ENFORCE=false）；开启拦截且已超额时在这里拒单。
+        # 此刻还没预登记 run_id，抛错不需要回滚任务状态。
+        billing = getattr(container, "billing", None)
+        if billing is not None:
+            await billing.ensure_can_start(
+                model=str(getattr(task, "model", "") or ""), runtime_id=runtime_id
+            )
         runtime = self._runtime(runtime_id)
 
         # 先登记 run_id 与 running，再真正起 Run：倒过来的话，Run 结束事件可能先于登记到达，
@@ -79,6 +108,8 @@ class TaskRunService:
         previous_status = task.status
         task = await container.task_repo.set_run_id(task_uuid, run_id)
         task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
+        # 先建立 run → 对话 的映射：CLI runtime 可能在 start() 返回前就开始吐事件
+        container.task_stream.bind_run(run_id, str(task_uuid))
         try:
             # 任务级模型通道（密钥库）：没有 key 覆盖时为 None，runtime 用原生配置
             channel = await container.key_vault.channel_for_task(task)
@@ -89,32 +120,17 @@ class TaskRunService:
         except AIOSError:
             # 起 Run 失败（未启用 / 令牌签发失败 / patch 写不出 / 装配不齐）时撤回预登记：
             # 否则任务卡在"看起来在跑"，用户既看不到 Agent 也再也点不动「开始执行」。
+            container.task_stream.unbind_run(run_id)
             await container.task_repo.set_run_id(task_uuid, None)
             task = await container.task_repo.set_status(task_uuid, TaskStatus(previous_status))
             raise
 
-        label = "DSH" if runtime_id == DEFAULT_RUNTIME else runtime_id
-        message = (
-            await container.task_repo.add_messages(
-                task_uuid,
-                [
-                    MessageDraft(
-                        role=TaskMessageRole.ASSISTANT.value,
-                        kind="run_started",
-                        content=(
-                            f"已开始执行（{label} Run {run_id}），"
-                            "Agent 的改动会以提案形式进入人工审核队列。"
-                        ),
-                        payload={
-                            "run_id": run_id,
-                            "instruction": instruction,
-                            "runtime": runtime_id,
-                        },
-                    )
-                ],
-            )
-        )[0]
-        return RunStartResult(task=task, run=proc.snapshot, message=message)
+        await container.task_stream.publish(
+            task_uuid,
+            "run_started",
+            {"run_id": run_id, "runtime": runtime_id},
+        )
+        return RunStartResult(task=task, run=proc.snapshot)
 
     # --- runtime 解析 ---
 
@@ -140,6 +156,7 @@ class TaskRunService:
             supervisor=container.dsh.supervisor,
             bus=container.bus,
             token_service=container.agent_tokens,
+            container=container,
         )
 
     async def _require_ready(self, runtime_id: str) -> None:
@@ -175,8 +192,72 @@ async def _latest_plan(container: Container, task_uuid: uuid.UUID) -> list[str]:
     return []
 
 
+async def _latest_summary(container: Container, task_uuid: uuid.UUID) -> str:
+    """取这段对话最近的「前情摘要」（来自上一段对话）；没有则返回空串。"""
+    message = await container.task_repo.latest_message(task_uuid, kind="summary")
+    return message.content.strip() if message is not None else ""
+
+
+async def _latest_attachments(container: Container, task_uuid: uuid.UUID) -> list[dict[str, Any]]:
+    """取最近一次上传的附件清单（手机端「+」传文件）。
+
+    只带最近一批：更早的附件在当轮的指令里已经给过，Agent 会话也还记得，
+    每轮都重列会让长对话的指令无限膨胀。
+    """
+    message = await container.task_repo.latest_message(task_uuid, kind="attachments")
+    files = (message.payload or {}).get("files") if message is not None else None
+    return [item for item in files if isinstance(item, dict)] if isinstance(files, list) else []
+
+
+def _mode_constraints(mode: str) -> list[str]:
+    """三种权限模式的执行约束（与 protocol.compose_instruction 的模式段保持一致）。"""
+    if mode == "plan":
+        return [
+            "- 当前是 Plan 模式（只读）：只读项目上下文与设计稿（design.list / design.get），"
+            "不要执行 shell、不要改代码、不要提交提案、不要 design.create/update/share。",
+            "- 用 plan.write 输出实施计划（标题 + 1–12 个步骤 + 涉及文件），计划文档由服务端"
+            "写入固定目录；计划卡会自动出现在对话里。",
+            "- 交付的是可执行、可验收的计划，不是“已完成的改动”。",
+        ]
+    if mode == "unattended":
+        return [
+            "- 当前是免审核（无人值守）模式：高风险命令与受保护对象都会自动放行，"
+            "没有人会在这轮执行中拦下你。",
+            "- 越是没有把关，越要保守：不要执行 rm -rf、格式化、重启主机这类破坏性操作；"
+            "不要读取或复制密钥内容，除非任务明确要求；不要凭空猜测后直接改生产数据。",
+            "- 设计任务仍必须用 design.* 工具产出，完成后 design.share 发进对话。",
+            "- 结束时如实汇报做了哪些有风险的操作、改了哪些文件、还有哪些没验证。",
+        ]
+    if mode == "full":
+        return [
+            "- 当前是完全访问模式：可以直接修改工作区、执行命令、提交 git，"
+            "不必逐步提交提案审批。",
+            "- 受保护对象（.env / *.pem / SSH 私钥等敏感文件，systemctl / service / reboot 等"
+            "系统服务操作）仍会逐次请求用户确认；先自问两次是否真的需要，再说明理由申请，"
+            "不要假设上一次允许继续有效，也不要尝试绕过闸门。",
+            "- 设计任务仍必须用 design.* 工具产出，完成后 design.share 发进对话。",
+            "- 结束时如实汇报改了哪些文件、跑了什么验证、还有哪些风险。",
+        ]
+    return [
+        "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
+        "不要尝试直接写文件、执行 shell 或读取密钥。",
+        "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
+        "- proposal.preview 只是预演，不产生提案、也不会进人审队列；"
+        "预演通过后必须再调用 proposal.create 提交同一份 payload，才算交卷。",
+        "- 高风险命令（删除、git commit/push、安装依赖、联网、改系统服务）会先请求用户允许；"
+        "低风险只读命令自动执行，不要试图绕过审批。",
+    ]
+
+
 def _execution_instruction(
-    task: Task, confirmation: dict[str, Any] | None, steps: list[str]
+    task: Task,
+    confirmation: dict[str, Any] | None,
+    steps: list[str],
+    *,
+    summary: str = "",
+    followup: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    mode: str = "normal",
 ) -> str:
     """拼出交给 Agent 的执行指令。
 
@@ -184,16 +265,31 @@ def _execution_instruction(
     CLI 会话会把整个 prompt 当作前缀缓存，越早出现的内容越容易在后续 Run 里复用，
     把随任务变化的 task_id 和描述放在前面等于每轮都从第一个 token 开始失效。
     """
-    lines = [
-        "## 执行约束",
-        "- 只能通过 Flux MCP 读取项目上下文并把改动提交为提案；"
-        "不要尝试直接写文件、执行 shell 或读取密钥。",
-        "- 改动一律进入人工审核队列，落盘由人审通过后经 Apply Engine 执行，并在落盘时跑项目测试。",
-        "- proposal.preview 只是预演，不产生提案、也不会进人审队列；"
-        "预演通过后必须再调用 proposal.create 提交同一份 payload，才算交卷。",
-        "",
-        task.description.strip(),
-    ]
+    constraints = ["## 执行约束", *_mode_constraints(mode), ""]
+    if followup:
+        # 续跑轮：这条新消息才是这一轮要执行的事。原任务只作背景并显式标注「不要重做」，
+        # 否则 Agent 会把最初的需求当成当前任务再执行一遍（真机反馈：每轮都重做最初的设计）。
+        lines = [
+            *constraints,
+            "## 本轮任务（同一对话的后续消息，只执行这一条）",
+            followup.strip(),
+            "",
+            "## 原任务背景（对话最初的目标，此前已处理；除非本轮任务明确要求返工，不要重新执行）",
+            task.description.strip(),
+        ]
+    else:
+        lines = [*constraints, task.description.strip()]
+    if summary:
+        # 从上一段对话接手：新对话不拷贝旧消息，只带这份要点，保持上下文轻量。
+        lines += [
+            "",
+            "## 前情摘要（来自上一段对话，供你接着做）",
+            summary.strip(),
+        ]
+    if attachments:
+        # 用户从手机附上的文件：路径是服务端真实落盘位置，直接用原生读文件/终端看
+        lines += ["", "## 附件（用户随本轮消息上传，可直接按路径读取）"]
+        lines += [f"- {item.get('path')}（{item.get('name')}）" for item in attachments]
     items = (confirmation or {}).get("items")
     if isinstance(items, list) and items:
         lines += ["", "## 需求确认（用户已确认，以此为准）"]

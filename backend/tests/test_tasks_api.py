@@ -8,7 +8,9 @@ import uuid
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
+from flux.core.task_engine.repository import MessageDraft
 from flux.db.session import create_engine
+from flux.enums import DshRunStatus, TaskStatus
 from flux.main import create_app
 from flux.models.project import Project
 
@@ -32,6 +34,8 @@ _RESPONSE_KEYS = {
     "run_id",
     "model",
     "api_key_id",
+    # 对话权限三模式（plan / normal / full）
+    "permission_mode",
 }
 
 
@@ -116,6 +120,71 @@ def test_cancel_twice_conflicts(client: TestClient) -> None:
     response = client.post(f"{PREFIX}/tasks/{task_id}/cancel")
     assert response.status_code == 409
     assert response.json()["code"] == "conflict"
+
+
+def test_delete_task_removes_messages_runs_and_queue_entry(client: TestClient) -> None:
+    """删除对话是彻底删除：任务、消息、运行记录一起清掉，排队中的也要摘出队列。"""
+    task_id = client.post(f"{PREFIX}/tasks", json={"description": "待删除的对话"}).json()["data"][
+        "id"
+    ]
+    task_uuid = uuid.UUID(task_id)
+    container = client.app.state.container
+
+    async def _seed() -> None:
+        await container.task_repo.add_messages(
+            task_uuid, [MessageDraft(role="user", content="删除前的消息")]
+        )
+        await container.run_repo.create(
+            run_id="run-delete-1",
+            session_id="session-delete-1",
+            instruction="x",
+            status=DshRunStatus.COMPLETED,
+            task_id=task_uuid,
+        )
+
+    asyncio.run(_seed())
+    assert task_id in [item.task_id for item in container.scheduler.pending()]
+
+    deleted = client.delete(f"{PREFIX}/tasks/{task_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {
+        "id": task_id,
+        "deleted": True,
+        "messages": 1,
+        "runs": 1,
+    }
+
+    assert client.get(f"{PREFIX}/tasks/{task_id}").status_code == 404
+    assert client.get(f"{PREFIX}/tasks/{task_id}/messages").status_code == 404
+    assert task_id not in [task["id"] for task in client.get(f"{PREFIX}/tasks").json()["data"]]
+    assert task_id not in [item.task_id for item in container.scheduler.pending()]
+    assert asyncio.run(container.run_repo.get("run-delete-1")) is None
+
+
+def test_delete_running_task_conflicts_until_stopped(client: TestClient) -> None:
+    """运行中的对话不允许直接删除：先停止，停完才可以删。"""
+    task_id = client.post(f"{PREFIX}/tasks", json={"description": "执行中的对话"}).json()["data"][
+        "id"
+    ]
+    container = client.app.state.container
+    asyncio.run(container.task_repo.set_status(uuid.UUID(task_id), TaskStatus.RUNNING))
+
+    blocked = client.delete(f"{PREFIX}/tasks/{task_id}")
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "conflict"
+    assert "先停止" in blocked.json()["message"]
+
+    assert client.post(f"{PREFIX}/tasks/{task_id}/cancel").status_code == 200
+    assert client.delete(f"{PREFIX}/tasks/{task_id}").status_code == 200
+    assert client.get(f"{PREFIX}/tasks/{task_id}").status_code == 404
+
+
+def test_delete_unknown_or_malformed_task_not_found(client: TestClient) -> None:
+    """未知任务与非法 UUID 的删除都按 404 处理。"""
+    assert client.delete(f"{PREFIX}/tasks/{uuid.uuid4()}").status_code == 404
+    malformed = client.delete(f"{PREFIX}/tasks/不是-uuid")
+    assert malformed.status_code == 404
+    assert malformed.json()["code"] == "not_found"
 
 
 def test_unknown_task_not_found(client: TestClient) -> None:
