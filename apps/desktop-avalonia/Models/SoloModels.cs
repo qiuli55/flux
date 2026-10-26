@@ -63,6 +63,27 @@ public sealed record TaskConfirmationResult(TaskDetail Task, TaskMessage Message
 /// <summary>POST /tasks/{id}/start 的 data：task + run + message。</summary>
 public sealed record TaskStartResult(TaskDetail Task, JsonElement? Run, TaskMessage? Message);
 
+/// <summary>GET /tasks/{id}/context：平台助手这一轮实际能带上的对话上下文占用。</summary>
+public sealed record TaskContextUsage(
+    int Limit,
+    int MessageCount,
+    int UsedMessages,
+    int UsedChars,
+    int BudgetChars,
+    double Ratio,
+    int Percent,
+    string Level,
+    int MessageChars);
+
+/// <summary>POST /tasks/{id}/handoff：旧对话的前情摘要，供新建对话带入。</summary>
+public sealed record HandoffSummary(
+    string Summary,
+    string FromTaskId,
+    string Provider,
+    string Model,
+    int SourceMessages,
+    bool Truncated);
+
 /// <summary>POST /tasks/{id}/decisions/choose 的 data。</summary>
 public sealed record TaskDecisionResult(TaskDetail Task, TaskDecision Decision, TaskMessage Message);
 
@@ -109,7 +130,8 @@ public sealed record AgentSpecDetail(
     string? Runtime,
     string[]? Models,
     string? Model,
-    DshKeyModel[]? KeyModels);
+    DshKeyModel[]? KeyModels,
+    bool? NativeStreaming = null);
 
 /// <summary>GET /agents/{id} 的完整 Agent 档案。</summary>
 public sealed record AgentDetail(string Id, string State, AgentSpecDetail Spec);

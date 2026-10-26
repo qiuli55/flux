@@ -343,7 +343,7 @@ private fun KeyField(
             Modifier
                 .fillMaxWidth()
                 .heightIn(min = if (singleLine) 38.dp else 84.dp)
-                .background(Color.White.copy(alpha = .65f), RoundedCornerShape(10.dp))
+                .background(V2Colors.surface(.65f), RoundedCornerShape(10.dp))
                 .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(10.dp))
                 .padding(horizontal = 10.dp, vertical = 10.dp),
             contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart,

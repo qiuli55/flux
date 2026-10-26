@@ -57,6 +57,8 @@ def test_spec_serialises_without_model_fields(container: Container) -> None:
             "permissions": ["file.write"],
             # UI 要显示"这个 Agent 由谁执行"（2026-10-06 起随 to_dict 输出）
             "runtime": "dsh",
+            # 客户端据此标注「非逐字流式」；内置 DSH 走模型 SSE 旁路，是原生流式
+            "native_streaming": True,
         },
     }
 

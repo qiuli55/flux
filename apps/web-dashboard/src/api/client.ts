@@ -13,7 +13,8 @@ import { getAccessToken, getAuth, refreshAuth } from "./auth";
 import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
-  ApiKeyUpdateRequest, CapabilityImportOutcome, CapabilityKind,
+  ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
+  CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
@@ -239,4 +240,11 @@ export const api = {
   createTerminalSession: (body?: { workspace_root?: string }) => getData<TerminalSession>("POST", "/terminal/sessions", body),
   stopTerminalSession: (id: string, force = false) => getData<TerminalSession>("POST", `/terminal/sessions/${id}/stop`, { force }),
   terminalEvents: (id: string, after?: number) => getData<TerminalEvent[]>("GET", `/terminal/sessions/${id}/events${query({ after_seq: after?.toString() })}`),
+  /** 成本中心：plans 返回所有套餐与各窗口的额度视图，refresh=true 时顺带拉官方快照 */
+  billingPlans: (refresh = false) => getData<BillingOverview>("GET", `/billing/plans${query({ refresh: refresh ? "true" : undefined })}`),
+  billingUsage: (plan: string, refresh = false) => getData<BillingPlan>("GET", `/billing/usage${query({ plan, refresh: refresh ? "true" : undefined })}`),
+  billingRunUsage: (runId: string) => getData<BillingRunUsage>("GET", `/billing/runs/${encodeURIComponent(runId)}`),
+  billingRefresh: (plan?: string) => getData<BillingRefreshResult>("POST", `/billing/refresh${query({ plan })}`),
+  /** 官方 API 价目表（每 100 万 token；CNY 条目已给换算率，由前端展示） */
+  billingPrices: () => getData<BillingPrices>("GET", "/billing/prices"),
 };

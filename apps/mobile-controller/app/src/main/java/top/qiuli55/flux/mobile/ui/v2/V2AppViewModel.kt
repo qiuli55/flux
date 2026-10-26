@@ -1,6 +1,9 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,19 +11,26 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
+import top.qiuli55.flux.mobile.data.BillingOverview
+import top.qiuli55.flux.mobile.data.BillingPrices
 import top.qiuli55.flux.mobile.data.CloudApi
+import top.qiuli55.flux.mobile.data.CodexAccountStatus
+import top.qiuli55.flux.mobile.data.CodexLoginSession
 import top.qiuli55.flux.mobile.data.ConnectionConfig
 import top.qiuli55.flux.mobile.data.DeviceInfo
 import top.qiuli55.flux.mobile.data.FluxApi
 import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.Task
+import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.FluxViewModel
+import top.qiuli55.flux.mobile.ui.tasks.readPickedAttachment
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.LocalDateTime
@@ -52,6 +62,16 @@ data class V2AppState(
     /** 密钥库（/keys）；只在打开密钥库面板时加载。 */
     val keys: List<ApiKeyEntry> = emptyList(),
     val keysLoading: Boolean = false,
+    /** ChatGPT 账号（Codex 订阅通道）；设置页打开时加载。 */
+    val codexAccount: CodexAccountStatus? = null,
+    val codexLogin: CodexLoginSession? = null,
+    val codexLoading: Boolean = false,
+    /** 套餐额度（成本中心）；进首页时加载，失败不影响任务主流程。 */
+    val billing: BillingOverview? = null,
+    /** 官方 API 价目表；与额度一起加载，失败只是不展示。 */
+    val billingPrices: BillingPrices? = null,
+    val billingLoading: Boolean = false,
+    val billingError: String? = null,
 ) {
     val conversations: List<V2Conversation> get() = tasks.map { it.toV2Conversation(deviceLabel) }
     val queueTasks: List<V2Task>
@@ -71,6 +91,8 @@ class V2AppViewModel : FluxViewModel() {
     private var devicesJob: Job? = null
     private var refreshJob: Job? = null
     private var pollingJob: Job? = null
+    private var codexLoginJob: Job? = null
+    private var billingJob: Job? = null
     private var foreground = true
 
     private val _state = MutableStateFlow(V2AppState())
@@ -276,6 +298,8 @@ class V2AppViewModel : FluxViewModel() {
                     error = null,
                 )
                 ensurePolling()
+                // 额度只在显式刷新（进首页 / 切设备 / 下拉刷新）时读，静默轮询不额外打这个接口。
+                if (!quiet) loadBilling()
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(refreshing = false, error = e.message)
             } catch (e: Exception) {
@@ -304,14 +328,45 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    // ------------------------------------------------------------ 套餐额度
+
+    /**
+     * 读成本中心视图；[sync] 为真时先让后端抓一次官方额度（OpenCode Go 接口 / arkcli）。
+     * 对账是可选动作：抓不到只影响官方百分比，本地账本照常展示。
+     */
+    fun loadBilling(sync: Boolean = false) {
+        if (billingJob?.isActive == true && !sync) return
+        billingJob = viewModelScope.launch {
+            _state.value = _state.value.copy(billingLoading = true, billingError = null)
+            try {
+                val api = api()
+                if (sync) runCatching { api.refreshBilling() }
+                val overview = api.billingOverview()
+                val prices = runCatching { api.billingPrices() }.getOrNull()
+                _state.value = _state.value.copy(
+                    billing = overview,
+                    billingPrices = prices,
+                    billingLoading = false,
+                    billingError = null,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(billingLoading = false, billingError = readable(e))
+            }
+        }
+    }
+
     // ------------------------------------------------------------ 动作
 
     fun createTask(
         description: String,
         agentId: String?,
         decisionMode: String = "auto",
+        permissionMode: String = "normal",
         model: String = "",
         keyId: String? = null,
+        summary: String? = null,
+        summaryFrom: String? = null,
+        attachmentIds: List<String> = emptyList(),
         onCreated: (String) -> Unit,
     ) {
         val text = description.trim()
@@ -327,14 +382,68 @@ class V2AppViewModel : FluxViewModel() {
                     text,
                     agentId?.takeIf { it.isNotBlank() },
                     decisionMode,
+                    permissionMode,
                     model.takeIf { it.isNotBlank() },
                     keyId?.takeIf { it.isNotBlank() },
+                    summary = summary?.takeIf { it.isNotBlank() },
+                    summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
+                    attachmentIds = attachmentIds,
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
                 onCreated(task.id)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null, error = readable(e))
+            }
+        }
+    }
+
+    /**
+     * 新建对话草稿区：把选中的文件逐个上传，结果通过回调交给页面的本地状态。
+     * 附件状态不进 ViewModel，避免离开页面后还挂着一组没人用的草稿。
+     */
+    fun uploadDraftAttachments(
+        uris: List<Uri>,
+        resolver: ContentResolver,
+        onUploaded: (UploadedAttachment) -> Unit,
+        onError: (String) -> Unit,
+        onFinished: () -> Unit,
+    ) {
+        if (uris.isEmpty()) {
+            onFinished()
+            return
+        }
+        viewModelScope.launch {
+            val problems = mutableListOf<String>()
+            try {
+                val api = api()
+                uris.forEach { uri ->
+                    val picked = withContext(Dispatchers.IO) { readPickedAttachment(resolver, uri) }
+                    if (picked == null) {
+                        problems += "无法读取所选文件"
+                        return@forEach
+                    }
+                    if (picked.size > UploadedAttachment.MAX_BYTES) {
+                        problems += "「${picked.name}」超过 50MB，已跳过"
+                        return@forEach
+                    }
+                    try {
+                        val uploaded = api.uploadAttachment(
+                            name = picked.name,
+                            mime = picked.mime,
+                            size = picked.size,
+                        ) {
+                            resolver.openInputStream(uri)
+                                ?: throw FluxApiException("attachment_unreadable", "无法读取「${picked.name}」")
+                        }
+                        onUploaded(uploaded)
+                    } catch (e: Exception) {
+                        problems += readable(e)
+                    }
+                }
+                if (problems.isNotEmpty()) onError(problems.take(2).joinToString("；"))
+            } finally {
+                onFinished()
             }
         }
     }
@@ -411,6 +520,83 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    // ------------------------------------------------------------ ChatGPT 账号（Codex 订阅）
+
+    /** 设置页打开时读取账号态；有进行中的设备码登录就继续轮询。 */
+    fun loadCodexAccount() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(codexLoading = true)
+            try {
+                val status = api().codexAccount()
+                val active = status.pendingLogin ?: _state.value.codexLogin?.takeIf { it.isPending }
+                _state.value = _state.value.copy(
+                    codexAccount = status,
+                    codexLogin = active,
+                    codexLoading = false,
+                )
+                if (active != null) pollCodexLogin(active.loginId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(codexLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun startCodexLogin() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(codexLoading = true, error = null)
+            try {
+                val session = api().startCodexLogin()
+                _state.value = _state.value.copy(codexLogin = session, codexLoading = false)
+                if (session.isPending) pollCodexLogin(session.loginId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(codexLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun logoutCodexAccount() {
+        codexLoginJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(codexLoading = true, error = null)
+            try {
+                val result = api().logoutCodexAccount()
+                _state.value = _state.value.copy(
+                    codexAccount = result.status,
+                    codexLogin = null,
+                    codexLoading = false,
+                    notice = "已退出 ChatGPT 账号",
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(codexLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** 设备码有效期 15 分钟：20 分钟内每 2 秒轮询，成功后刷新账号态。 */
+    private fun pollCodexLogin(loginId: String) {
+        codexLoginJob?.cancel()
+        codexLoginJob = viewModelScope.launch {
+            repeat(600) {
+                delay(2000)
+                val current = _state.value.codexLogin ?: return@launch
+                if (current.loginId != loginId || !current.isPending) return@launch
+                val next = runCatching { api().codexLoginState(loginId) }.getOrNull()
+                    ?: return@launch
+                val refreshed = if (next.status == "success") {
+                    runCatching { api().codexAccount() }.getOrNull()
+                } else {
+                    null
+                }
+                _state.value = _state.value.copy(
+                    codexLogin = next,
+                    codexAccount = refreshed ?: _state.value.codexAccount,
+                    notice = if (next.status == "success") "ChatGPT 账号已连接" else _state.value.notice,
+                )
+                if (!next.isPending) return@launch
+            }
+        }
+    }
+
     fun approveDecision(taskId: String, decisionId: String) {
         val decision = _state.value.tasks.firstOrNull { it.id == taskId }?.pendingDecision
         val option = decision?.options?.firstOrNull { it.recommended }?.label
@@ -441,6 +627,34 @@ class V2AppViewModel : FluxViewModel() {
     fun cancelTask(taskId: String) = runAction("cancel:$taskId") {
         api().cancelTask(taskId)
         "任务已取消"
+    }
+
+    /** 删除一段对话（任务 + 消息 + 运行记录）；失败文案回传给删除面板。 */
+    fun deleteConversation(taskId: String, onResult: (String) -> Unit) {
+        if (_state.value.busyAction != null) {
+            onResult("有操作正在进行，稍后再试")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busyAction = "delete:$taskId", error = null, notice = null)
+            try {
+                api().deleteTask(taskId)
+                // 先本地摘掉再刷新：正在进行的轮询可能带着旧列表晚到，避免对话短暂复活。
+                _state.value = _state.value.copy(
+                    busyAction = null,
+                    notice = "对话已删除",
+                    tasks = _state.value.tasks.filterNot { it.id == taskId },
+                )
+                refresh(quiet = true)
+                onResult("")
+            } catch (e: FluxApiException) {
+                _state.value = _state.value.copy(busyAction = null)
+                onResult(e.message)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(busyAction = null)
+                onResult(readable(e))
+            }
+        }
     }
 
     fun interruptTask(taskId: String) = runAction("interrupt:$taskId") {
@@ -514,6 +728,12 @@ private fun deviceKindOf(label: String): V2DeviceKind {
 
 internal fun readable(e: Exception): String = when (e) {
     is FluxApiException -> e.message
+    // 网络层异常的原生 message 往往是一串英文类名，直接摆在页面上用户读不懂
+    is java.net.UnknownHostException -> "连不上服务器，请检查网络或地址"
+    is java.net.SocketTimeoutException -> "请求超时，请稍后重试"
+    is java.net.ConnectException -> "无法连接服务器，请确认服务在运行"
+    is java.net.NoRouteToHostException -> "网络不可达，请检查网络连接"
+    is javax.net.ssl.SSLException -> "HTTPS 证书校验失败，请检查服务器证书"
     else -> e.message?.takeIf { it.isNotBlank() } ?: (e::class.simpleName ?: "操作失败")
 }
 
@@ -538,6 +758,7 @@ internal fun List<Agent>.toV2Agents(tasks: List<Task>): List<V2Agent> =
             load = if (running > 0) 100 else 0,
             running = running,
             tint = agentTints[index % agentTints.size],
+            nativeStreaming = agent.spec?.nativeStreaming ?: true,
         )
     }
 

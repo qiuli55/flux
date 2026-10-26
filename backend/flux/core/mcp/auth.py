@@ -95,6 +95,9 @@ class AgentIdentity:
     scopes: frozenset[Capability]
     name: str = ""
     run_id: str | None = None
+    #: 本次 Run 的权限模式（plan / normal / full），由 MCP 层从 agent_runs 快照读取后附加。
+    #: 不在令牌里：DSH 内置 Agent 用长期令牌，能力位是写死的超集，只能按 Run 判定模式。
+    permission_mode: str = "normal"
 
     def has(self, capability: Capability) -> bool:
         return capability in self.scopes

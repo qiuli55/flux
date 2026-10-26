@@ -1,15 +1,21 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -37,9 +43,11 @@ import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Icon
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,9 +63,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -115,7 +127,7 @@ fun GlassCard(
             .clip(shape)
             .background(
                 Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = .86f), Color.White.copy(alpha = .64f)),
+                    listOf(V2Colors.surface(.86f), V2Colors.surface(.64f)),
                 ),
             )
             .border(1.dp, V2Colors.line, shape)
@@ -135,7 +147,7 @@ fun WhiteCard(
         modifier = modifier
             .shadow(3.dp, shape)
             .clip(shape)
-            .background(Color.White)
+            .background(V2Colors.surface)
             .border(1.dp, V2Colors.lineSoft, shape),
         content = content,
     )
@@ -262,11 +274,13 @@ fun RoundIconButton(
     modifier: Modifier = Modifier,
     size: Dp = 32.dp,
     iconSize: Dp = 16.dp,
-    background: Color = Color.White.copy(alpha = .55f),
+    background: Color = V2Colors.surface(.55f),
     tint: Color = V2Colors.ink(.6f),
+    contentDescription: String? = null,
 ) {
     Box(
         modifier
+            .minimumInteractiveComponentSize()
             .size(size)
             .clip(CircleShape)
             .background(background)
@@ -274,7 +288,7 @@ fun RoundIconButton(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(iconSize))
+        Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(iconSize))
     }
 }
 
@@ -312,7 +326,7 @@ fun PrimaryButton(
             .height(48.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(if (enabled) V2Colors.cyan400 else V2Colors.cyan400.copy(alpha = .35f))
-            .clickable(enabled = enabled, onClick = onClick),
+            .v2Pressable(enabled = enabled, pressScale = .98f, onClick = onClick),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -337,9 +351,9 @@ fun GhostButton(
         modifier = modifier
             .height(48.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = .55f))
+            .background(V2Colors.surface(.55f))
             .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp))
-            .clickable(enabled = enabled, onClick = onClick),
+            .v2Pressable(enabled = enabled, pressScale = .98f, onClick = onClick),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -353,19 +367,36 @@ fun GhostButton(
 
 @Composable
 fun LightSwitch(checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val haptics = LocalV2Haptics.current
+    val reduce = LocalReduceMotion.current
+    val slide by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = if (reduce) tween(120) else spring(stiffness = 380f, dampingRatio = .26f),
+        label = "switch-slide",
+    )
+    val track by animateColorAsState(
+        targetValue = if (checked) V2Colors.cyan500 else V2Colors.ink(.10f),
+        animationSpec = tween(160),
+        label = "switch-track",
+    )
     Box(
         modifier
             .size(width = 52.dp, height = 30.dp)
             .clip(RoundedCornerShape(999.dp))
-            .background(if (checked) V2Colors.cyan500 else V2Colors.ink(.10f))
+            .background(track)
             .border(1.dp, if (checked) V2Colors.cyan700.copy(alpha = .4f) else V2Colors.ink(.10f), RoundedCornerShape(999.dp))
-            .clickable { onChange(!checked) },
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                haptics?.play(V2HapticLevel.TICK)
+                onChange(!checked)
+            },
     ) {
+        val travel = with(LocalDensity.current) { 24.dp.toPx() }
         Box(
             Modifier
-                .padding(top = 3.dp, start = if (checked) 26.dp else 3.dp)
+                .align(Alignment.CenterStart)
+                .graphicsLayer { translationX = 3.dp.toPx() + travel * slide }
                 .size(22.dp)
-                .background(Color.White, CircleShape),
+                .background(V2Colors.surface, CircleShape),
         )
     }
 }
@@ -406,11 +437,28 @@ fun SheetFrame(
 ) {
     val sheetMaxWidth = LocalSheetMaxWidth.current
     val interaction = remember { MutableInteractionSource() }
+    val scope = rememberCoroutineScope()
+    val haptics = LocalV2Haptics.current
+    val reduce = LocalReduceMotion.current
+    val density = LocalDensity.current
+    var expanded by remember { mutableStateOf(false) }
+    var heightPx by remember { mutableFloatStateOf(0f) }
+    val offsetY = remember { Animatable(0f) }
+    val handleZone = with(density) { 96.dp.toPx() }
+    val fraction by animateFloatAsState(
+        targetValue = if (expanded) 1f else maxHeightFraction,
+        animationSpec = if (reduce) tween(120) else spring(stiffness = 360f, dampingRatio = .34f),
+        label = "sheet-fraction",
+    )
+
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(V2Colors.scrim)
+                .graphicsLayer {
+                    alpha = 1f - (offsetY.value / heightPx.coerceAtLeast(1f)).coerceIn(0f, .55f)
+                }
                 .clickable(interactionSource = interaction, indication = null, onClick = onDismiss),
         )
         Column(
@@ -421,11 +469,76 @@ fun SheetFrame(
                     else Modifier,
                 )
                 .fillMaxWidth()
-                .fillMaxHeight(maxHeightFraction)
+                .onSizeChanged { heightPx = it.height.toFloat() }
+                .fillMaxHeight(fraction)
+                .graphicsLayer { translationY = offsetY.value }
                 .shadow(24.dp, V2SheetShape)
                 .clip(V2SheetShape)
-                .background(Brush.verticalGradient(listOf(Color(0xFFF8F9FB), Color(0xFFF1F3F6))))
-                .border(1.dp, V2Colors.line, V2SheetShape),
+                .background(Brush.verticalGradient(listOf(V2Colors.shellTop, V2Colors.shellBottom)))
+                .border(1.dp, V2Colors.line, V2SheetShape)
+                .pointerInput(handleZone) {
+                    // 只在顶部把手区域接管纵向拖动：内容滚动与按钮点击保持原样
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (down.position.y > handleZone) return@awaitEachGesture
+                        var total = 0f
+                        var moved = false
+                        val tracker = VelocityTracker()
+                        tracker.addPosition(down.uptimeMillis, down.position)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            if (!change.pressed) break
+                            val dy = change.position.y - change.previousPosition.y
+                            tracker.addPosition(change.uptimeMillis, change.position)
+                            total += dy
+                            if (kotlin.math.abs(total) > 4f) moved = true
+                            val next = if (expanded) {
+                                total.coerceIn(-heightPx * .1f, heightPx)
+                            } else {
+                                total.coerceIn(-heightPx * .25f, heightPx)
+                            }
+                            scope.launch { offsetY.snapTo(next) }
+                            change.consume()
+                        }
+                        val velocity = tracker.calculateVelocity().y
+                        if (!moved) {
+                            scope.launch {
+                                offsetY.animateTo(0f, spring(stiffness = 420f, dampingRatio = .4f))
+                            }
+                            return@awaitEachGesture
+                        }
+                        val dismissThreshold = with(density) { 90.dp.toPx() }
+                        val expandThreshold = with(density) { 56.dp.toPx() }
+                        when {
+                            expanded && (total > dismissThreshold || velocity > 700f) -> {
+                                expanded = false
+                                haptics?.play(V2HapticLevel.TICK)
+                                scope.launch {
+                                    offsetY.animateTo(0f, spring(stiffness = 380f, dampingRatio = .42f))
+                                }
+                            }
+                            !expanded && total > 0 && (total > heightPx * .3f || velocity > 600f) -> {
+                                scope.launch {
+                                    offsetY.animateTo(heightPx.coerceAtLeast(1f), tween(180))
+                                    onDismiss()
+                                }
+                            }
+                            !expanded && (total < -expandThreshold || velocity < -600f) -> {
+                                expanded = true
+                                haptics?.play(V2HapticLevel.TICK)
+                                scope.launch {
+                                    offsetY.animateTo(0f, spring(stiffness = 360f, dampingRatio = .38f))
+                                }
+                            }
+                            else -> {
+                                scope.launch {
+                                    offsetY.animateTo(0f, spring(stiffness = 380f, dampingRatio = .42f))
+                                }
+                            }
+                        }
+                    }
+                },
         ) {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 Box(
@@ -460,7 +573,7 @@ fun SheetHeader(
                 onClick = onClose,
                 size = 36.dp,
                 iconSize = 16.dp,
-                background = Color.White,
+                background = V2Colors.surface,
                 modifier = Modifier.align(Alignment.CenterEnd),
             )
         }
@@ -481,7 +594,7 @@ fun SheetHeader(
                 onClick = onClose,
                 size = 28.dp,
                 iconSize = 14.dp,
-                background = Color.White.copy(alpha = .6f),
+                background = V2Colors.surface(.6f),
                 tint = V2Colors.ink(.5f),
             )
         }
@@ -499,9 +612,12 @@ fun HoldToConfirm(
     durationMs: Int,
     onConfirmed: () -> Unit,
     modifier: Modifier = Modifier,
+    icon: ImageVector = Icons.Outlined.Security,
+    holdLabel: String = "按住确认",
+    hint: String? = null,
 ) {
     val scope = rememberCoroutineScope()
-    val haptic = LocalHapticFeedback.current
+    val haptics = LocalV2Haptics.current
     var progress by remember { mutableStateOf(0f) }
 
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -512,15 +628,21 @@ fun HoldToConfirm(
                     detectTapGestures(
                         onPress = {
                             var done = false
+                            var milestone = 0
                             val start = android.os.SystemClock.elapsedRealtime()
                             val job = scope.launch {
                                 while (true) {
                                     val elapsed = android.os.SystemClock.elapsedRealtime() - start
                                     val fraction = (elapsed.toFloat() / durationMs).coerceIn(0f, 1f)
                                     progress = fraction
+                                    val reached = (fraction * 3).toInt()
+                                    if (reached > milestone) {
+                                        milestone = reached
+                                        haptics?.play(V2HapticLevel.TICK)
+                                    }
                                     if (fraction >= 1f) {
                                         done = true
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        haptics?.play(V2HapticLevel.SUCCESS)
                                         onConfirmed()
                                         break
                                     }
@@ -558,20 +680,20 @@ fun HoldToConfirm(
                 Modifier
                     .size(78.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = .86f))
+                    .background(V2Colors.surface(.86f))
                     .border(1.dp, V2Colors.ink(.10f), CircleShape),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
                 Icon(
-                    Icons.Outlined.Security,
+                    icon,
                     null,
                     tint = V2Colors.rose,
                     modifier = Modifier.size(24.dp),
                 )
                 Spacer(Modifier.height(4.dp))
                 Label(
-                    if (progress >= 1f) "已确认" else "按住确认",
+                    if (progress >= 1f) "已确认" else holdLabel,
                     9f,
                     V2Colors.ink(.38f),
                 )
@@ -579,7 +701,7 @@ fun HoldToConfirm(
         }
         Spacer(Modifier.height(12.dp))
         Label(
-            "按住 ${if (durationMs >= 1600) "1.6" else "0.8"} 秒批准 · 松手即取消",
+            hint ?: "按住 ${if (durationMs >= 1600) "1.6" else "0.8"} 秒批准 · 松手即取消",
             11f,
             V2Colors.ink(.38f),
         )

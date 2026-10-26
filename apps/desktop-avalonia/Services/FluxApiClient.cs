@@ -45,6 +45,35 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<DshStatus>?> DshStatusAsync(CancellationToken ct = default)
         => GetAsync<DshStatus>("/api/v1/dsh/status", ct);
 
+    // --- 计费 / 成本中心 ---
+
+    public Task<ApiEnvelope<BillingOverview>?> BillingPlansAsync(
+        bool refresh = false,
+        CancellationToken ct = default)
+        => GetAsync<BillingOverview>(
+            $"/api/v1/billing/plans{(refresh ? "?refresh=true" : "")}",
+            ct);
+
+    public Task<ApiEnvelope<BillingPrices>?> BillingPricesAsync(CancellationToken ct = default)
+        => GetAsync<BillingPrices>("/api/v1/billing/prices", ct);
+
+    public Task<ApiEnvelope<BillingRunUsage>?> BillingRunAsync(
+        string runId,
+        CancellationToken ct = default)
+        => GetAsync<BillingRunUsage>(
+            $"/api/v1/billing/runs/{Uri.EscapeDataString(runId)}",
+            ct);
+
+    public Task<ApiEnvelope<BillingRefreshResult>?> BillingRefreshAsync(
+        string? plan = null,
+        CancellationToken ct = default)
+    {
+        var suffix = string.IsNullOrWhiteSpace(plan)
+            ? ""
+            : $"?plan={Uri.EscapeDataString(plan)}";
+        return PostAsync<BillingRefreshResult>($"/api/v1/billing/refresh{suffix}", new { }, ct);
+    }
+
     public Task<ApiEnvelope<ReadyInfo>?> ReadyAsync(CancellationToken ct = default)
         => GetAsync<ReadyInfo>("/api/v1/health/ready", ct);
 
@@ -90,6 +119,8 @@ public sealed class FluxApiClient : IDisposable
         string decisionMode = "auto",
         string? model = null,
         string? keyId = null,
+        string? summary = null,
+        string? summaryFrom = null,
         CancellationToken ct = default)
         => PostAsync<TaskDetail>("/api/v1/tasks", new
         {
@@ -99,7 +130,26 @@ public sealed class FluxApiClient : IDisposable
             decision_mode = decisionMode,
             model,
             key_id = keyId,
+            summary,
+            summary_from = summaryFrom,
         }, ct);
+
+    /// <summary>GET /tasks/{id}/context：对话上下文占用（「上下文快满」提醒的口径）。</summary>
+    public Task<ApiEnvelope<TaskContextUsage>?> GetTaskContextAsync(
+        string taskId,
+        CancellationToken ct = default)
+        => GetAsync<TaskContextUsage>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/context",
+            ct);
+
+    /// <summary>POST /tasks/{id}/handoff：把这段对话压成前情摘要。</summary>
+    public Task<ApiEnvelope<HandoffSummary>?> CreateHandoffSummaryAsync(
+        string taskId,
+        CancellationToken ct = default)
+        => PostAsync<HandoffSummary>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/handoff",
+            new { },
+            ct);
 
     public Task<ApiEnvelope<List<TaskMessage>>?> ListTaskMessagesAsync(
         string taskId,

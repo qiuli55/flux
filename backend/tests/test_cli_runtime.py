@@ -39,6 +39,7 @@ from flux.core.agent_runtime.runtimes.cli import (
     _normalize_codex_event,
     _normalize_opencode_event,
     _opencode_config,
+    _upstream_failure,
     _RunUsage,
 )
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
@@ -50,56 +51,309 @@ PREFIX = "/api/v1"
 
 _COMPLETED_SCRIPT = """#!/usr/bin/env python3
 import json, sys
-print(json.dumps({"type": "message", "text": "working"}), flush=True)
-call = {"type": "tool_call", "name": "workspace.read", "input": {"path": "a.py"}}
-print(json.dumps(call), flush=True)
-result = {"type": "tool_result", "name": "workspace.read", "output": "ok"}
-print(json.dumps(result), flush=True)
-print(json.dumps({"type": "final", "text": "done"}), flush=True)
+
+def send(payload):
+    print(json.dumps(payload), flush=True)
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    rid = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+    elif method == "thread/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"thread": {"id": "t1"}}})
+    elif method == "turn/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        send({"jsonrpc": "2.0", "method": "item/started", "params": {"item": {
+            "id": "c1", "type": "commandExecution", "command": "ls", "status": "inProgress"}}})
+        send({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {
+            "id": "c1", "type": "commandExecution", "command": "ls",
+            "status": "completed", "aggregatedOutput": "ok"}}})
+        for chunk in ["working", " ", "done"]:
+            send({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
+                  "params": {"itemId": "a1", "delta": chunk}})
+        send({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {
+            "id": "a1", "type": "agentMessage", "text": "working done"}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"turn": {"id": "u1", "status": "completed"}}})
+        break
 sys.exit(0)
 """
 
 _FAILED_SCRIPT = """#!/usr/bin/env python3
-import json, sys
-print(json.dumps({"type": "message", "text": "boom"}), flush=True)
+import sys
 sys.exit(2)
 """
 
-_OPENCODE_USAGE_SCRIPT = """#!/usr/bin/env python3
-import json, sys
-print(json.dumps({"type": "step_start", "part": {"type": "step-start"}}), flush=True)
-print(json.dumps({"type": "tool_use", "part": {
-    "type": "tool", "tool": "workspace.read", "state": {"status": "completed"}}}), flush=True)
-print(json.dumps({"type": "tool_use", "part": {
-    "type": "tool", "tool": "workspace.search", "state": {"status": "error"}}}), flush=True)
-print(json.dumps({"type": "step_finish", "part": {
-    "type": "step-finish", "cost": 0.0,
-    "tokens": {"input": 1000, "output": 80, "cache": {"read": 400, "write": 20}}}}), flush=True)
-print(json.dumps({"type": "text", "part": {"type": "text", "text": "done"}}), flush=True)
-sys.exit(0)
-"""
+_FAKE_OPENCODE_SERVER_TEMPLATE = '''#!/usr/bin/env python3
+"""仿 opencode serve：健康检查 / 建会话 / SSE 增量 / 发消息，覆盖 server 模式链路。"""
+import json
+import signal
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+MODE = "__MODE__"
+STARTED = threading.Event()
+FULL = "done"
+TOKENS = {"input": 1000, "output": 80, "reasoning": 0, "cache": {"read": 400, "write": 20}}
+
+if MODE == "cancel":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+if MODE == "quota":
+    print(
+        'level=ERROR run=abc message="stream error" providerID=opencode '
+        'modelID=deepseek-v4.1-flash-free session.id=s1 small=false agent=build mode=primary '
+        'error.error="AI_APICallError: Free usage limit reached. Subscribe to OpenCode Go to keep going"',
+        file=sys.stderr,
+        flush=True,
+    )
+    while True:
+        time.sleep(0.1)
+
+if MODE == "title":
+    print(
+        'level=ERROR run=abc message="stream error" providerID=opencode modelID=gpt-nano '
+        'small=true agent=title error.error="AI_APICallError: Insufficient account funds"',
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def build():
+    events = [
+        {
+            "type": "message.updated",
+            "properties": {
+                "sessionID": "ses_fake",
+                "info": {"id": "msg_a", "role": "assistant", "sessionID": "ses_fake"},
+            },
+        },
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "sessionID": "ses_fake",
+                "part": {"id": "prt_t", "type": "text", "messageID": "msg_a", "text": ""},
+            },
+        },
+    ]
+    if MODE == "stream":
+        chunks = [
+            "流式输出",
+            "已经接通",
+            "，这是第二段正文内容",
+            "。后面还有第三段和第四段，",
+            "用来验证增量是逐段推送的。",
+        ]
+    else:
+        chunks = ["done"]
+    full = "".join(chunks)
+    for chunk in chunks:
+        events.append(
+            {
+                "type": "message.part.delta",
+                "properties": {
+                    "sessionID": "ses_fake",
+                    "messageID": "msg_a",
+                    "partID": "prt_t",
+                    "field": "text",
+                    "delta": chunk,
+                },
+            }
+        )
+    if MODE == "usage":
+        events.append(
+            {
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": "ses_fake",
+                    "part": {
+                        "id": "prt_1",
+                        "type": "tool",
+                        "messageID": "msg_a",
+                        "tool": "workspace.read",
+                        "callID": "call_1",
+                        "state": {
+                            "status": "completed",
+                            "input": {"path": "a.py"},
+                            "output": "ok",
+                        },
+                    },
+                },
+            }
+        )
+        events.append(
+            {
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": "ses_fake",
+                    "part": {
+                        "id": "prt_2",
+                        "type": "tool",
+                        "messageID": "msg_a",
+                        "tool": "workspace.search",
+                        "callID": "call_2",
+                        "state": {"status": "error", "input": {"q": "x"}, "output": ""},
+                    },
+                },
+            }
+        )
+    events.append(
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "sessionID": "ses_fake",
+                "part": {
+                    "id": "prt_s",
+                    "type": "step-finish",
+                    "messageID": "msg_a",
+                    "tokens": TOKENS,
+                    "cost": 0.0,
+                },
+            },
+        }
+    )
+    events.append({"type": "session.idle", "properties": {"sessionID": "ses_fake"}})
+    return events, full
+
+
+EVENTS, FULL = build()
+
+
+def sse_line(payload):
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\\n\\n"
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, status, payload):
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path == "/global/health":
+            self._json(200, {"healthy": True})
+            return
+        if self.path != "/event":
+            self._json(404, {"message": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(sse_line({"type": "server.connected", "properties": {}}).encode())
+        self.wfile.flush()
+        STARTED.wait(30)
+        if MODE == "cancel":
+            while True:
+                self.wfile.write(b": ping\\n\\n")
+                self.wfile.flush()
+                time.sleep(1)
+        for item in EVENTS:
+            self.wfile.write(sse_line(item).encode())
+            self.wfile.flush()
+            time.sleep(0.01)
+        time.sleep(1)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        if self.path == "/session":
+            self._json(200, {"id": "ses_fake", "title": "fake"})
+            return
+        if self.path.startswith("/session/") and self.path.endswith("/message"):
+            STARTED.set()
+            if MODE == "cancel":
+                while True:
+                    time.sleep(1)
+            # 等 SSE 把增量推完，再返回终态 parts（与真实服务端一致）
+            time.sleep(0.3)
+            self._json(
+                200,
+                {
+                    "info": {"id": "msg_a", "role": "assistant", "sessionID": "ses_fake"},
+                    "parts": [{"type": "text", "text": FULL}],
+                },
+            )
+            return
+        self._json(404, {"message": "not found"})
+
+
+ThreadingHTTPServer.daemon_threads = True
+PORT = 0
+for index, value in enumerate(sys.argv):
+    if value == "--port":
+        PORT = int(sys.argv[index + 1])
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+'''
+
+
+def _fake_opencode_server(mode: str) -> str:
+    return _FAKE_OPENCODE_SERVER_TEMPLATE.replace("__MODE__", mode)
+
 
 _CANCEL_SCRIPT = """#!/usr/bin/env python3
 import json, signal, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-print(json.dumps({"type": "message", "text": "holding"}), flush=True)
-while True:
-    time.sleep(0.1)
+
+def send(payload):
+    print(json.dumps(payload), flush=True)
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    rid = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+    elif method == "thread/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"thread": {"id": "t1"}}})
+    elif method == "turn/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        while True:
+            time.sleep(0.1)
 """
 
-#: 仿真实 codex：stdout 是 --json 协议流，stderr 是日志噪声（Info/提示）
+#: 仿真实 codex app-server：stdout 是 JSON-RPC，stderr 是日志噪声（Info/提示）
 _NOISY_CODEX_SCRIPT = """#!/usr/bin/env python3
 import json, sys
 print("2026-10-06T00:00:00Z  INFO codex_otel: noisy log line", file=sys.stderr, flush=True)
-print("Reading additional input from stdin...", file=sys.stderr, flush=True)
-print(json.dumps({"type": "thread.started", "thread_id": "t1"}), flush=True)
-print(json.dumps({"type": "turn.started"}), flush=True)
-print(json.dumps({"type": "item.completed", "item": {"id": "i1", "type": "reasoning"}}), flush=True)
-print(json.dumps({"type": "item.completed", "item": {
-    "id": "i2", "type": "mcp_tool_call", "tool": "context_get"}}), flush=True)
-print(json.dumps({"type": "item.completed", "item": {
-    "id": "i3", "type": "agent_message", "text": "报告：只读完成，未改动任何文件。"}}), flush=True)
-print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}), flush=True)
+
+def send(payload):
+    print(json.dumps(payload), flush=True)
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    rid = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+    elif method == "thread/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"thread": {"id": "t1"}}})
+    elif method == "turn/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        send({"jsonrpc": "2.0", "method": "item/started", "params": {"item": {
+            "id": "m1", "type": "mcpToolCall", "tool": "context_get", "arguments": {}}}})
+        send({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {
+            "id": "m1", "type": "mcpToolCall", "tool": "context_get",
+            "arguments": {}, "status": "completed", "result": {"ok": True}}}})
+        # 不带增量，直接给完成态：验证「整段兜底也只推一次」
+        send({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {
+            "id": "i3", "type": "agentMessage", "text": "报告：只读完成，未改动任何文件。"}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"turn": {"id": "u1", "status": "completed"}}})
+        break
 sys.exit(0)
 """
 
@@ -313,7 +567,19 @@ def test_codex_event_normalisation_maps_items() -> None:
         _type({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}})
         == "message"
     )
-    assert _type({"type": "item.completed", "item": {"type": "reasoning"}}) == "status"
+    assert _type({"type": "item.completed", "item": {"type": "reasoning"}}) == "thinking"
+    reasoning = _normalize_codex_event(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "先看目录"}],
+            },
+        },
+        run_id,
+        RUNTIME_CODEX,
+    )
+    assert reasoning.data["text"] == "先看目录"
     assert (
         _type({"type": "item.completed", "item": {"type": "error", "message": "warn"}}) == "error"
     )
@@ -325,6 +591,24 @@ def test_codex_event_normalisation_maps_items() -> None:
         _type({"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}})
         == "tool_call"
     )
+    command = _normalize_codex_event(
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "c1",
+                "type": "command_execution",
+                "command": "ls -la",
+                "aggregated_output": "a.txt\n",
+                "status": "completed",
+            },
+        },
+        run_id,
+        RUNTIME_CODEX,
+    )
+    assert command.data["name"] == "shell"
+    assert command.data["detail"] == "ls -la"
+    assert command.data["output"] == "a.txt"
+    assert command.data["call_id"] == "c1"
     # 非 JSON 行（parse_event 带 non_json 标记）不进答复：CLI 的日志噪声不许冒充 Agent 输出
     assert (
         _type({"type": "text", "text": "Reading additional input from stdin...", "non_json": True})
@@ -354,7 +638,36 @@ def test_opencode_event_normalisation_reads_part_payload() -> None:
         {"type": "tool_use", "part": {"type": "tool", "tool": "flux_workspace_read"}}
     )
     assert event_type == "tool_call" and data["name"] == "flux_workspace_read"
-    assert _event({"type": "step_start", "part": {"type": "step-start"}})[0] == "status"
+    event_type, data = _event(
+        {
+            "type": "tool_use",
+            "part": {
+                "type": "tool",
+                "tool": "bash",
+                "callID": "call-1",
+                "state": {
+                    "status": "completed",
+                    "title": "ls",
+                    "input": {"command": "ls -la"},
+                    "output": "a.txt\n",
+                    "metadata": {"output": "a.txt\n", "exit": 0},
+                },
+            },
+        }
+    )
+    # 命令卡要拿到命令、状态与输出；只有名字的话手机端只能显示「正在执行」
+    assert event_type == "tool_call"
+    assert data["detail"] == "ls -la"
+    assert data["output"] == "a.txt"
+    assert data["status"] == "completed"
+    assert data["title"] == "ls"
+    assert data["call_id"] == "call-1"
+    # 每一步的起点是一个「思考」刻度；带推理文本的 reasoning 也一样
+    assert _event({"type": "step_start", "part": {"type": "step-start"}})[0] == "thinking"
+    event_type, data = _event(
+        {"type": "reasoning", "part": {"type": "reasoning", "text": "先确认目录结构"}}
+    )
+    assert event_type == "thinking" and data["text"] == "先确认目录结构"
 
 
 def test_execution_instruction_keeps_stable_prefix_before_dynamic_task() -> None:
@@ -415,7 +728,7 @@ def test_opencode_run_records_native_metrics(
     settings: Settings, tmp_path: Path, db_schema: None
 ) -> None:
     """Run 终态后，Flux 自己的 run 记录里要有步数/工具/token，供预算报表使用。"""
-    binary = _write_script(tmp_path / "fake-opencode-usage", _OPENCODE_USAGE_SCRIPT)
+    binary = _write_script(tmp_path / "fake-opencode-usage", _fake_opencode_server("usage"))
     with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
         container = client.app.state.container
         _mark_ready(container, RUNTIME_OPENCODE)
@@ -440,6 +753,35 @@ def test_opencode_run_records_native_metrics(
         assert metrics["tool_calls"] == 2 and metrics["tool_errors"] == 1
         assert metrics["input_tokens"] == 1000 and metrics["output_tokens"] == 80
         assert metrics["cache_read_tokens"] == 400
+
+
+def test_opencode_server_streams_text_incrementally(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """server 模式要逐段推正文：不是等整段生成完才一次性蹦出来。"""
+    binary = _write_script(tmp_path / "fake-opencode-stream", _fake_opencode_server("stream"))
+    with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
+        container = client.app.state.container
+        _mark_ready(container, RUNTIME_OPENCODE)
+        agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
+        started = _start_task(client, agent_id)
+        task_id = started["task"]["id"]
+        run_id = started["task"]["run_id"]
+        _wait_status(client, task_id, "completed")
+
+        last = _wait_last_message(client, task_id, "run_finished")
+        assert "流式输出已经接通" in last["content"]
+
+        chunks = [
+            payload.get("text") or ""
+            for event, payload in container.bus.history
+            if event == "dsh.event"
+            and payload.get("run_id") == run_id
+            and payload.get("event_type") == "message"
+        ]
+        assert len(chunks) >= 2, f"正文只推了 {len(chunks)} 帧，没有流式效果"
+        expected = "流式输出已经接通，这是第二段正文内容。后面还有第三段和第四段，用来验证增量是逐段推送的。"
+        assert "".join(chunks) == expected
 
 
 def test_cli_prepare_sets_pwd_to_workspace(tmp_path: Path) -> None:
@@ -665,7 +1007,10 @@ def test_opencode_auth_probe_does_not_call_empty_auth_missing(
 ) -> None:
     """配置里没有凭据、auth list 显示 0 credentials：降级为 unknown，而非 missing。"""
     monkeypatch.setenv("OPENCODE_CONFIG", str(tmp_path / "empty.json"))
+    # Linux 上 expanduser 读 HOME，Windows 上读 USERPROFILE：两个都指到临时目录，
+    # 否则会读到本机真实配置里的内联 apiKey，用例失去意义。
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     (tmp_path / "empty.json").write_text("{}", encoding="utf-8")
     adapter = OpenCodeAdapter(
         which=lambda _: "/usr/local/bin/opencode",
@@ -701,3 +1046,102 @@ def test_dsh_runtime_wraps_client_behaviour(tmp_path: Path) -> None:
     proc, client = asyncio.run(_exercise())
     assert proc.snapshot == {"run_id": "r1", "status": "pending"}
     assert client.calls[0]["run_id"] == "r1" and client.calls[0]["task_id"] == "t1"
+
+
+def test_dsh_runtime_uses_a_unique_session_per_run(tmp_path: Path) -> None:
+    """同一任务续跑：每轮 Run 必须换一个 session id。
+
+    DSH 运行库的 session id 是全局唯一的，第二节沿用同一个 id 会直接报
+    "session already exists"，续聊的第二轮就起不来（真机复现过）。
+    """
+
+    async def _prepare(run_id: str) -> str:
+        runtime = DshRuntime(client=None, workspace=str(tmp_path))
+        task = type("T", (), {"id": "t1"})()
+        launch = await runtime.prepare(task=task, agent=None, run_id=run_id, instruction="hi")
+        return launch.session_id
+
+    async def _exercise() -> tuple[str, str]:
+        return await _prepare("r1"), await _prepare("r2")
+
+    first, second = asyncio.run(_exercise())
+    assert first != second
+    assert first.endswith("-r1") and second.endswith("-r2")
+
+
+def test_upstream_failure_matches_main_model_only() -> None:
+    """额度/鉴权错误只在主模型（small=false）上判失败，标题模型报错不能误杀。"""
+    main = (
+        'level=ERROR run=abc message="stream error" providerID=opencode '
+        'modelID=deepseek-v4.1-flash-free small=false agent=build '
+        'error.error="AI_APICallError: Free usage limit reached. Subscribe to OpenCode Go"'
+    )
+    reason = _upstream_failure(main, RUNTIME_OPENCODE)
+    assert reason is not None
+    assert "额度" in reason and "deepseek-v4.1-flash-free" in reason
+    assert "Free usage limit reached" in reason
+
+    title = main.replace("small=false", "small=true")
+    assert _upstream_failure(title, RUNTIME_OPENCODE) is None
+
+    # 网络抖动这类可自愈错误不判失败（运行时会自己重试）
+    transient = main.replace("Free usage limit reached", "fetch failed ECONNRESET")
+    assert _upstream_failure(transient, RUNTIME_OPENCODE) is None
+
+    # 非 opencode 的日志格式不同，不能套这套规则
+    assert _upstream_failure(main, RUNTIME_CODEX) is None
+    assert _upstream_failure("INFO all good", RUNTIME_OPENCODE) is None
+
+
+def test_opencode_quota_error_fails_run_immediately(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """上游额度用完：几秒内失败并给出原因，而不是干等到 idle 超时（实测 600 秒）。
+
+    真实 opencode 遇到额度错误时 stdout 一行不吐、进程也不退出；修复前用户只能
+    看到一个永远转圈的对话。这里用假 CLI 复现同样的 stderr 日志。
+    """
+    binary = _write_script(tmp_path / "fake-opencode-quota", _fake_opencode_server("quota"))
+    with _cli_app(
+        settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY"
+    ) as client:
+        container = client.app.state.container
+        _mark_ready(container, RUNTIME_OPENCODE)
+        agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
+        started = _start_task(client, agent_id)
+        task_id = started["task"]["id"]
+        run_id = started["task"]["run_id"]
+
+        # 进程不退出也不会自己报错，必须靠 stderr 识别后立即终止
+        settled = _wait_status(client, task_id, "failed", timeout=8.0)
+        assert settled["run_id"] == run_id
+        last = _wait_last_message(client, task_id, "run_finished")
+        assert "额度或鉴权异常" in last["content"]
+        assert "Free usage limit reached" in last["content"]
+
+        # 对话流里先推一条错误事件，手机端当场能看到，不必等下一次轮询
+        errors = [
+            payload
+            for event, payload in container.bus.history
+            if event == "dsh.event"
+            and payload.get("run_id") == run_id
+            and payload.get("event_type") == "error"
+        ]
+        assert errors and "Free usage limit reached" in errors[0]["message"]
+
+
+def test_opencode_title_model_error_does_not_fail_run(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """标题模型（small=true）报错只是日志噪音：主任务必须照常完成。"""
+    binary = _write_script(tmp_path / "fake-opencode-title", _fake_opencode_server("title"))
+    with _cli_app(
+        settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY"
+    ) as client:
+        container = client.app.state.container
+        _mark_ready(container, RUNTIME_OPENCODE)
+        agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
+        task_id = _start_task(client, agent_id)["task"]["id"]
+
+        settled = _wait_status(client, task_id, "completed", timeout=8.0)
+        assert settled["status"] == "completed"

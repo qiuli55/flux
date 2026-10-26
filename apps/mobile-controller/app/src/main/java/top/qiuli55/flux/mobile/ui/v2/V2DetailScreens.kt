@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -67,17 +70,26 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import top.qiuli55.flux.mobile.data.Change
+import top.qiuli55.flux.mobile.data.DesignPreview
 import top.qiuli55.flux.mobile.data.ConfirmationItem
 import top.qiuli55.flux.mobile.data.Decision
+import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.Run
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.TaskMessage
 import top.qiuli55.flux.mobile.data.TerminalSession
+import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.changes.ChangeViewModel
 import top.qiuli55.flux.mobile.ui.tasks.TaskDetailViewModel
+import top.qiuli55.flux.mobile.ui.tasks.canSwitchTaskAgent
+import top.qiuli55.flux.mobile.ui.tasks.shouldPromptContext
 import top.qiuli55.flux.mobile.ui.terminal.LineKind
 import top.qiuli55.flux.mobile.ui.terminal.TerminalListViewModel
 import top.qiuli55.flux.mobile.ui.terminal.TerminalViewModel
@@ -119,7 +131,13 @@ private fun DetailHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showBack) {
-            RoundIconButton(Icons.Outlined.ArrowBack, onBack, size = 32.dp, iconSize = 16.dp)
+            RoundIconButton(
+                Icons.Outlined.ArrowBack,
+                onBack,
+                size = 32.dp,
+                iconSize = 16.dp,
+                contentDescription = "返回",
+            )
             Spacer(Modifier.width(10.dp))
         }
         Column(Modifier.weight(1f)) {
@@ -135,7 +153,7 @@ private fun DetailHeader(
                 onClick = onRefresh,
                 size = 32.dp,
                 iconSize = 14.dp,
-                background = Color.White.copy(alpha = .55f),
+                background = V2Colors.surface(.55f),
                 tint = V2Colors.cyan700.copy(alpha = .8f),
             )
         }
@@ -235,7 +253,7 @@ private fun V2ActionConfirm(
                 .fillMaxWidth()
                 .shadow(24.dp, V2SheetShape)
                 .clip(V2SheetShape)
-                .background(Brush.verticalGradient(listOf(Color(0xFFF8F9FB), Color(0xFFF1F3F6))))
+                .background(Brush.verticalGradient(listOf(V2Colors.shellTop, V2Colors.shellBottom)))
                 .border(1.dp, V2Colors.line, V2SheetShape)
                 .padding(top = 16.dp),
         ) {
@@ -299,7 +317,8 @@ fun V2TaskDetailScreen(
     Column(Modifier.fillMaxSize()) {
         DetailHeader(
             title = "任务详情",
-            subtitle = task?.id?.take(12) ?: taskId.take(12),
+            // 头部只给可读状态，不在标题行里裸露 UUID
+            subtitle = task?.let { taskStatusLabel(it.status).first }.orEmpty(),
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
@@ -356,12 +375,13 @@ fun V2TaskDetailScreen(
                 )
             }
             item {
-                val last = state.messages.lastOrNull()?.content?.replace('\n', ' ')?.take(40)
+                val chatMessages = state.messages.filter { it.kind != "run_started" }
+                val last = chatMessages.lastOrNull()?.content?.replace('\n', ' ')?.take(40)
                 EntryRow(
                     icon = Icons.Outlined.ChatBubbleOutline,
                     title = "对话",
-                    subtitle = if (state.messages.isEmpty()) "还没有消息" else last.orEmpty(),
-                    badge = if (state.messages.isEmpty()) null else "${state.messages.size}",
+                    subtitle = if (chatMessages.isEmpty()) "还没有消息" else last.orEmpty(),
+                    badge = if (chatMessages.isEmpty()) null else "${chatMessages.size}",
                     onClick = onOpenChat,
                 )
             }
@@ -495,15 +515,29 @@ fun V2TaskChatScreen(
     showBack: Boolean = true,
     onBack: () -> Unit,
     onOpenLogs: () -> Unit,
+    onRequestDelete: () -> Unit,
+    /** 上下文快满时选择「新建并带摘要」：把旧对话摘要交给外层去开一段新对话。 */
+    onHandoffReady: (HandoffSummary) -> Unit = {},
+    /** 设计稿卡片点开：外层切到原生画布。 */
+    onOpenDesign: (String) -> Unit = {},
+    /** 对话里的链接：外层切到内嵌浏览器。 */
+    onOpenUrl: (String) -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
     val task = state.task
+    val context = LocalContext.current
 
     LaunchedEffect(taskId) {
         // 「已开始执行」之类的提示只属于任务详情页，进入对话页不该再看到。
         vm.dismissNotice()
         vm.refresh(quiet = true)
+    }
+
+    // 只在对话页保持实时流：页面退出即断开，避免任务多了以后连接常驻。
+    DisposableEffect(taskId) {
+        vm.startStream()
+        onDispose { vm.stopStream() }
     }
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
@@ -523,19 +557,47 @@ fun V2TaskChatScreen(
         agentId = agentId,
         model = selectedModel?.model ?: "默认模型",
         modelKeyId = selectedModel?.keyId,
+        permissionMode = task?.permissionMode ?: "normal",
     )
-    val messages = remember(state.messages, task?.id) {
-        val mapped = state.messages.mapNotNull { it.toV2Message() }
-        if (mapped.isEmpty() && task != null && task.description.isNotBlank()) {
+    val messages = remember(state.messages, task?.id, task?.decisions) {
+        // 审批记录的唯一真源是 task.decisions：对话里的 decision 消息只保留发起时的文案，
+        // 状态与最终选择每轮刷新都会覆盖，避免卡片一直停在「待处理」。
+        val decisionStates = linkedMapOf<String, Pair<String, String?>>()
+        task?.decisions.orEmpty().forEach { record ->
+            val id = record.id ?: return@forEach
+            decisionStates[id] = (record.status ?: "pending") to record.chosen
+        }
+        val mapped = state.messages.mapNotNull { it.toV2Message() }.map { message ->
+            val card = message.approvalCard
+            if (message.kind == "decision" && card != null && decisionStates.containsKey(card.id)) {
+                val (status, chosen) = decisionStates.getValue(card.id)
+                message.copy(approvalCard = card.copy(status = status, chosen = chosen))
+            } else {
+                message
+            }
+        }
+        // 已有结果消息的审批不再重复渲染发起卡
+        val resolvedIds = mapped
+            .filter { it.kind == "decision_result" }
+            .mapNotNull { it.approvalCard?.id }
+            .toSet()
+        val deduped = mapped.filterNot { it.kind == "decision" && it.approvalCard?.id in resolvedIds }
+        if (deduped.isEmpty() && task != null && task.description.isNotBlank()) {
             // 任务描述本身就是用户的第一条需求：还没有消息时先把它当成首条用户消息展示。
             listOf(V2Message(V2MessageRole.USER, task.description.trim(), clockLabel(task.createdAt)))
         } else {
-            mapped
+            deduped
         }
     }
-    val locked = task?.isFinished == true
-    // 正在执行时 Agent 已接手，先停止再切换；终态任务聊天只读，不提供切换。
-    val canSwitchAgent = task != null && !locked && task.status != "running"
+    // 只在任务还没加载出来时锁输入；已结束的对话可以继续发消息（后端会把任务重开并起新一轮）。
+    val locked = task == null
+    // 执行中 Agent 已接手，先停止再切换；已结束的对话也能切换，切换只影响下一次续聊。
+    val canSwitchAgent = canSwitchTaskAgent(task)
+    // run_id → 该轮的耗时与概览：答案气泡上方的「任务耗时」入口按它渲染
+    val runSummaries = remember(state.runs) { state.runs.associateBy { it.runId } }
+    // 上下文占用：同一等级点过「继续聊」就不再打扰，涨到 full 会再提醒一次。
+    val usage = state.contextUsage
+    val contextPromptVisible = shouldPromptContext(usage, state.contextDismissedLevel)
 
     Box(Modifier.fillMaxSize()) {
         V2ChatScreen(
@@ -545,15 +607,35 @@ fun V2TaskChatScreen(
             showBack = showBack,
             onBack = onBack,
             onOpenLogs = onOpenLogs,
-            onDelete = {},
+            onDelete = onRequestDelete,
             onOpenAgentPicker = {},
             onSend = { text ->
                 vm.onDraftChange(text)
                 vm.send()
             },
+            attachments = state.pendingAttachments,
+            uploading = state.uploading,
+            onAddAttachments = { uris ->
+                val remaining = UploadedAttachment.MAX_FILES - state.pendingAttachments.size
+                if (remaining <= 0) {
+                    Toast.makeText(context, "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件", Toast.LENGTH_SHORT).show()
+                } else {
+                    if (uris.size > remaining) {
+                        Toast.makeText(context, "最多 5 个附件，已忽略多选的 ${uris.size - remaining} 个", Toast.LENGTH_SHORT).show()
+                    }
+                    vm.addAttachments(uris, context.contentResolver)
+                }
+            },
+            onRemoveAttachment = { vm.removeAttachment(it) },
             sending = state.sending,
+            liveText = state.liveText,
+            liveLabel = state.liveLabel,
+            liveActive = state.liveActive,
+            runItems = state.runItems,
+            runSummaries = runSummaries,
+            onOpenRunTrace = { vm.openRunTrace(it) },
             locked = locked,
-            showDelete = false,
+            showDelete = true,
             canSwitchAgent = canSwitchAgent,
             notice = state.error?.let { it } ?: state.notice,
             suggestions = emptyList(),
@@ -564,19 +646,184 @@ fun V2TaskChatScreen(
             // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型）。
             modelOptions = if (canSwitchAgent) models else emptyList(),
             onSwitchModel = { vm.switchModel(it.model, it.keyId) },
+            contextUsage = usage,
+            contextPromptVisible = contextPromptVisible,
+            onContinueContext = { vm.continueInCurrentChat() },
+            onStartNewWithSummary = {
+                // 失败只会在当前页提示，不会把用户踢出这段对话
+                vm.createHandoff { summary -> onHandoffReady(summary) }
+            },
+            handoffBusy = state.handoffBusy,
+            onOpenUrl = onOpenUrl,
+            onOpenDesign = onOpenDesign,
+            // 权限模式只影响后续消息；审批走既有决策点接口（允许 / 拒绝）
+            onPermissionModeChange = { vm.setPermissionMode(it) },
+            onAllowApproval = { decisionId -> vm.chooseDecision(decisionId, "允许", reject = false) },
+            onDenyApproval = { decisionId -> vm.chooseDecision(decisionId, null, reject = true) },
+            // 执行中常驻停止条：随时能停，不用滚到消息尾部
+            taskRunning = task?.status == "running" || state.liveActive,
+            stopping = state.busyAction == "cancel",
+            onStopTask = { vm.cancel() },
+            // 审批卡固定在输入框上方，提交期间禁用按钮
+            approvalBusy = state.busyAction == "decision",
+            // 下拉刷新：重新拉任务与历史消息（真实数据，不是假骨架）
+            onRefresh = { vm.refresh(quiet = true) },
         )
+        // 执行详情弹层：概览 → 思考过程 → 命令与输出（与内容平级叠放，避免拿不到高度）
+        val traceRunId = state.traceRunId
+        if (traceRunId != null) {
+            RunTraceSheet(
+                summary = runSummaries[traceRunId],
+                trace = state.trace,
+                loading = state.traceLoading,
+                onDismiss = { vm.closeRunTrace() },
+            )
+        }
     }
 }
 
 private fun TaskMessage.toV2Message(): V2Message? {
+    // 「已开始执行」气泡已经下线：旧对话里残留的同 kind 消息不再展示
+    if (kind == "run_started") return null
     val text = content.trim()
-    if (text.isEmpty()) return null
     val mapped = when (role.lowercase()) {
         "user", "human" -> V2MessageRole.USER
         "assistant", "agent", "ai" -> V2MessageRole.AGENT
         else -> V2MessageRole.SYSTEM
     }
-    return V2Message(mapped, text, clockLabel(createdAt))
+    // 设计稿卡片：payload 里带设计稿摘要与第一屏预览，点开进原生画布
+    if (kind == "design_card") {
+        parseDesignCard(payload)?.let { card ->
+            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, designCard = card)
+        }
+    }
+    // Plan 模式产出的计划卡：标题 + 步骤 + 涉及文件 + 计划文档路径
+    if (kind == "plan_card") {
+        parsePlanCard(payload)?.let { card ->
+            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, planCard = card)
+        }
+    }
+    // 审批卡：payload.decision 是决策记录本身（含 kind / meta.command / status / chosen）
+    if (kind == "decision" || kind == "decision_result") {
+        parseApprovalCard(payload)?.let { card ->
+            val expired = (payload as? JsonObject)?.get("expired")?.let {
+                (it as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
+            } ?: false
+            return V2Message(
+                mapped,
+                text,
+                clockLabel(createdAt),
+                kind = kind,
+                approvalCard = card.copy(expired = card.expired || expired),
+            )
+        }
+    }
+    // 附件消息的 content 可能是空的：先按 payload.files 转成文件 chip，不要被空文本过滤掉。
+    if (kind == "attachments") {
+        val files = parseAttachmentFiles(payload)
+        if (files.isNotEmpty()) {
+            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, attachments = files)
+        }
+    }
+    if (text.isEmpty()) return null
+    // run_finished 携带 run_id：答案气泡上方据此显示「任务耗时」入口
+    val runId = if (kind == "run_finished") payloadRunId(payload) else ""
+    return V2Message(mapped, text, clockLabel(createdAt), kind = kind, runId = runId)
+}
+
+/** 从消息 payload 里取 run_id（run_finished 才有）。 */
+private fun payloadRunId(payload: JsonElement?): String =
+    ((payload as? JsonObject)?.get("run_id") as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+/** 设计稿载荷里节点字段很多，按宽松模式解析，未知字段一律忽略。 */
+private val designPayloadJson = Json { ignoreUnknownKeys = true }
+
+/** 解析 design_card 消息 payload → 对话里的设计稿卡片（单测直接覆盖这条关键路径）。 */
+internal fun parseDesignCard(payload: JsonElement?): V2DesignCard? {
+    val root = payload as? JsonObject ?: return null
+    val id = root.stringField("design_id") ?: return null
+    val preview = (root["preview"] as? JsonObject)?.let { element ->
+        runCatching { designPayloadJson.decodeFromJsonElement(DesignPreview.serializer(), element) }
+            .getOrNull()
+    }
+    return V2DesignCard(
+        id = id,
+        name = root.stringField("name") ?: id,
+        project = root.stringField("project").orEmpty(),
+        description = root.stringField("description").orEmpty(),
+        version = root.intField("version"),
+        screenCount = root.intField("screen_count"),
+        layerCount = root.intField("layer_count"),
+        updatedAt = root.stringField("updated_at").orEmpty(),
+        bg = root.stringField("bg") ?: "#F4F6F9",
+        preview = preview,
+    )
+}
+
+/** 解析 plan_card 消息 payload（plan.write 产出）→ 计划卡。 */
+internal fun parsePlanCard(payload: JsonElement?): V2PlanCard? {
+    val root = payload as? JsonObject ?: return null
+    val title = root.stringField("title") ?: return null
+    val steps = (root["steps"] as? JsonArray)?.toList().orEmpty().mapNotNull { element ->
+        val step = element as? JsonObject ?: return@mapNotNull null
+        val stepTitle = step.stringField("title") ?: return@mapNotNull null
+        V2PlanStep(stepTitle, step.stringField("detail"))
+    }
+    val files = (root["files"] as? JsonArray)?.toList().orEmpty()
+        .mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { path -> path.isNotBlank() } }
+    return V2PlanCard(
+        title = title,
+        steps = steps,
+        files = files,
+        planPath = root.stringField("plan_path").orEmpty(),
+        markdown = root.stringField("markdown"),
+    )
+}
+
+/**
+ * 解析审批消息 payload.decision → 审批卡。
+ *
+ * 只有逐次审批（高风险命令 / 受保护操作）才转成审批卡；其它普通决策仍按文字气泡渲染，
+ * 不改变既有决策中心的展示方式。
+ */
+internal fun parseApprovalCard(payload: JsonElement?): V2ApprovalCard? {
+    val root = payload as? JsonObject ?: return null
+    val decision = root["decision"] as? JsonObject ?: return null
+    val kind = decision.stringField("kind") ?: return null
+    if (kind != "high_risk_command" && kind != "protected_access") return null
+    val id = decision.stringField("id") ?: return null
+    val meta = decision["meta"] as? JsonObject
+    val status = decision.stringField("status") ?: "pending"
+    return V2ApprovalCard(
+        id = id,
+        kind = kind,
+        question = decision.stringField("question").orEmpty(),
+        detail = decision.stringField("context").orEmpty(),
+        command = meta?.stringField("command").orEmpty(),
+        reason = meta?.stringField("reason").orEmpty(),
+        status = status,
+        chosen = decision.stringField("chosen"),
+        expired = status == "expired",
+    )
+}
+
+private fun JsonObject.stringField(key: String): String? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+
+private fun JsonObject.intField(key: String): Int =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
+
+/** 解析附件消息 payload 里的 files → [{id,name,size,mime,path}]。 */
+private fun parseAttachmentFiles(payload: JsonElement?): List<V2MessageFile> {
+    val root = payload as? JsonObject ?: return emptyList()
+    val files = root["files"] as? JsonArray ?: return emptyList()
+    return files.mapNotNull { element ->
+        val obj = element as? JsonObject ?: return@mapNotNull null
+        val name = (obj["name"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: return@mapNotNull null
+        val size = (obj["size"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: 0L
+        V2MessageFile(name, size)
+    }
 }
 
 private fun clockLabel(raw: String?): String {
@@ -1138,7 +1385,7 @@ private fun SegmentChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else Color.White.copy(alpha = .35f))
+            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
             .border(
                 1.dp,
                 if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
@@ -1173,7 +1420,7 @@ private fun MonoBlock(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = .55f))
+            .background(V2Colors.surface(.55f))
             .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(12.dp))
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -1478,7 +1725,7 @@ fun V2TerminalSessionScreen(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = .72f))
+                        .background(V2Colors.surface(.72f))
                         .border(1.dp, V2Colors.line, RoundedCornerShape(14.dp))
                         .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,

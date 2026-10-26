@@ -63,6 +63,12 @@ def settings(tmp_path) -> Settings:
         auth_token=None,
         desktop_control_token=None,
         workspace_root=None,
+        # 不读开发机 ~/.flux 里的自定义套餐，避免扩展套餐影响内置断言
+        billing_plans_file="",
+        # 同理：价目表用内置条目，不读开发机覆盖文件
+        billing_prices_file="",
+        # 附件默认落到临时目录：测试绝不能往真实 /opt/flux/uploads 写文件
+        uploads_dir=str(tmp_path / "uploads"),
         cloud_secret_key=None,
         cloud_login_required=False,
     )

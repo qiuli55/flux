@@ -49,4 +49,17 @@ class FluxApiTest {
         assertEquals("ok", envelope.code)
         assertEquals("server", envelope.data?.jsonObject?.get("env")?.jsonPrimitive?.content)
     }
+
+    @Test
+    fun decodePolledTaskEventsList() {
+        // 中转模式轮询 /tasks/{id}/events 拿到的事件数组：结构与 /stream 一致
+        val events = json.decodeFromString<List<TaskStreamEvent>>(
+            """[{"seq":3,"type":"assistant_delta","data":{"text":"你"}},
+               {"seq":4,"type":"run_event","data":{"kind":"tool","command":"ls"}}]""",
+        )
+        assertEquals(2, events.size)
+        assertEquals("assistant_delta", events.first().type)
+        assertEquals("你", events.first().data["text"]?.jsonPrimitive?.content)
+        assertEquals("tool", events.last().data["kind"]?.jsonPrimitive?.content)
+    }
 }

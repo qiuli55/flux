@@ -328,6 +328,7 @@ public partial class MainWindowViewModel : ViewModelBase
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, new TasksViewModel(() => _api, NavigateTo), "layers") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, new SkillsViewModel(() => _api), "puzzle") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("billing", "成本中心", GroupPlatform, new BillingViewModel(() => _api), "credit") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, new DiagnosticsViewModel(() => _api), "activity") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("settings", "设置", GroupPlatform, new SettingsViewModel(() => _api, this), "settings") { ActivateCommand = ActivateCommand });
     }
@@ -423,6 +424,9 @@ public partial class MainWindowViewModel : ViewModelBase
                 break;
             case DiagnosticsViewModel diagnostics:
                 _ = diagnostics.RefreshAsync();
+                break;
+            case BillingViewModel billing:
+                _ = billing.RefreshAsync();
                 break;
             case SettingsViewModel settings:
                 _ = settings.RefreshAsync();

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from flux.core.agent_runtime.protocol import RUNTIME_ENTRY, RUNTIME_RULES
+from flux.core.agent_runtime.protocol import MODE_RULES, RUNTIME_ENTRY
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, McpServer, _attach_run_id
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
@@ -295,8 +295,8 @@ def test_workspace_read_many_reads_files_and_reports_per_item_errors(
     mcp_client: TestClient, workspace_root
 ) -> None:
     """单条失败不拖垮整批：批量读取要带回每个路径的结果/原因，Agent 才能继续。"""
-    (workspace_root / "a.py").write_text("a = 1\n", encoding="utf-8")
-    (workspace_root / "b.py").write_text("b = 2\n", encoding="utf-8")
+    (workspace_root / "a.py").write_text("a = 1\n", encoding="utf-8", newline="\n")
+    (workspace_root / "b.py").write_text("b = 2\n", encoding="utf-8", newline="\n")
     token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
     data = payload(
         call(
@@ -721,7 +721,8 @@ def test_flux_context_reports_runtime_and_capabilities(mcp_client: TestClient) -
     assert "rollback" not in capabilities  # 未实现的能力不虚报
     assert data["workspace"]["path"]
     # 批次①：rules / entry 与 Runtime Bootstrap 同一份真源（§4.1 契约），不是各写各的
-    assert data["rules"] == list(RUNTIME_RULES)
+    # 无 Run 上下文时模式按 normal 兜底，规则即 Normal 模式的完整规则段
+    assert data["rules"] == list(MODE_RULES["normal"])
     assert data["entry"] == list(RUNTIME_ENTRY)
 
 

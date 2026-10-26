@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from flux.core.model_gateway.base import ChatMessage
+from flux.core.model_gateway.base import ChatMessage, TokenUsage
 from flux.core.model_gateway.router import ModelRouter
 from flux.errors import ValidationError
 from flux.logging import get_logger
@@ -101,8 +103,13 @@ class TaskAssistant:
         message: str,
         history: list[ChatMessage] | None = None,
         context: str | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> AssistantTurn:
-        """调用模型生成一轮回复。history 为早前的对话（只含纯文本消息，升序）。"""
+        """调用模型生成一轮回复。history 为早前的对话（只含纯文本消息，升序）。
+
+        `on_delta` 非空时走流式：把模型输出里用户可见的回复部分（JSON 协议的
+        `reply` 字段或纯文本）按增量回调出去，前端据此逐字渲染气泡。
+        """
         system = SYSTEM_PROMPT.format(
             description=description,
             context=f"项目上下文（来自 Project Brain）：\n{context}\n" if context else "",
@@ -112,30 +119,147 @@ class TaskAssistant:
         messages.extend((history or [])[-self._max_history :])
         messages.append(ChatMessage(role="user", content=message))
 
-        result = await self._router.chat(messages)
-        reply, questions, confirmation, steps = parse_turn(result.content)
+        if on_delta is None:
+            result = await self._router.chat(messages)
+            reply, questions, confirmation, steps = parse_turn(result.content)
+            logger.info(
+                "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d",
+                result.provider,
+                result.model,
+                len(questions),
+                len(confirmation),
+                len(steps),
+            )
+            return AssistantTurn(
+                reply=reply,
+                questions=questions,
+                confirmation=confirmation,
+                steps=steps,
+                provider=str(result.provider),
+                model=result.model,
+                usage={
+                    "input_tokens": result.usage.input_tokens,
+                    "output_tokens": result.usage.output_tokens,
+                    "total_tokens": result.usage.total_tokens,
+                },
+                latency_ms=result.latency_ms,
+            )
+
+        instance = self._router.select()
+        started = time.perf_counter()
+        raw = ""
+        shown = ""
+        provider_name = str(instance.provider)
+        model_name = instance.model_name
+        usage = TokenUsage()
+
+        async def emit(text: str) -> None:
+            nonlocal shown
+            if text.startswith(shown):
+                delta = text[len(shown) :]
+                if delta:
+                    shown = text
+                    await on_delta(delta)
+            else:
+                # 回复前缀被模型改写（极少见）：只更新快照，不追发互相矛盾的片段
+                shown = text
+
+        try:
+            async for chunk in instance.stream(messages):
+                if not chunk:
+                    continue
+                raw += chunk
+                await emit(visible_reply_prefix(raw))
+        except Exception:  # noqa: BLE001 - 已经开始推增量时不能悄悄换成另一条回复
+            if raw:
+                raise
+            logger.warning(
+                "助手流式调用失败，回退非流式 provider=%s", provider_name, exc_info=True
+            )
+            result = await self._router.chat(messages)
+            raw = result.content
+            provider_name, model_name = str(result.provider), result.model
+            usage = result.usage
+            await emit(visible_reply_prefix(raw))
+
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        reply, questions, confirmation, steps = parse_turn(raw)
         logger.info(
-            "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d",
-            result.provider,
-            result.model,
+            "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d streaming=%s",
+            provider_name,
+            model_name,
             len(questions),
             len(confirmation),
             len(steps),
+            True,
         )
         return AssistantTurn(
             reply=reply,
             questions=questions,
             confirmation=confirmation,
             steps=steps,
-            provider=str(result.provider),
-            model=result.model,
+            provider=provider_name,
+            model=model_name,
             usage={
-                "input_tokens": result.usage.input_tokens,
-                "output_tokens": result.usage.output_tokens,
-                "total_tokens": result.usage.total_tokens,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
             },
-            latency_ms=result.latency_ms,
+            latency_ms=latency_ms,
         )
+
+
+def visible_reply_prefix(raw: str) -> str:
+    """从模型原始输出里投影出"用户可见的回复前缀"，供流式渲染。
+
+    - 纯文本输出：原样返回，逐字流式；
+    - JSON 协议输出：只取 `reply` 字段的内容，按已到达的部分解码转义字符，
+      避免把 `{"reply": ...}` 的协议外壳当成回复内容展示给用户。
+    """
+    text = raw.lstrip()
+    if not (text.startswith("{") or text.startswith("```") or '"reply"' in raw):
+        return raw
+
+    key = raw.find('"reply"')
+    if key < 0:
+        return ""
+    colon = raw.find(":", key + len('"reply"'))
+    if colon < 0:
+        return ""
+    quote = raw.find('"', colon + 1)
+    if quote < 0:
+        return ""
+
+    decoded: list[str] = []
+    index = quote + 1
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            break
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(raw):
+            break
+        marker = raw[index + 1]
+        if marker in escapes:
+            decoded.append(escapes[marker])
+            index += 2
+            continue
+        if marker == "u":
+            if index + 6 > len(raw):
+                break
+            try:
+                decoded.append(chr(int(raw[index + 2 : index + 6], 16)))
+            except ValueError:
+                break
+            index += 6
+            continue
+        # 未知转义：先跳过反斜杠，避免把半个转义序列发给前端
+        index += 2
+    return "".join(decoded)
 
 
 def parse_turn(raw: str) -> tuple[str, list[str], list[dict[str, str]], list[str]]:

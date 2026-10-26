@@ -4,8 +4,11 @@ from fastapi import APIRouter
 
 from flux.api.v1 import (
     agents,
+    billing,
     capabilities,
+    codex_account,
     connectors,
+    designs,
     dsh,
     git,
     health,
@@ -16,12 +19,14 @@ from flux.api.v1 import (
     projects,
     tasks,
     terminal,
+    uploads,
     workspace,
 )
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(agents.router)
+api_v1_router.include_router(billing.router)
 api_v1_router.include_router(keys.router)
 api_v1_router.include_router(installations.router)
 api_v1_router.include_router(tasks.router)
@@ -34,5 +39,8 @@ api_v1_router.include_router(models.router)
 api_v1_router.include_router(connectors.router)
 api_v1_router.include_router(dsh.router)
 api_v1_router.include_router(capabilities.router)
+api_v1_router.include_router(designs.router)
+api_v1_router.include_router(uploads.router)
+api_v1_router.include_router(codex_account.router)
 
 __all__ = ["api_v1_router"]

@@ -35,6 +35,8 @@ public partial class SoloViewModel : ViewModelBase
     private bool _autoApplying;
     private string? _lastTaskId;
     private string? _lastStatus;
+    private string? _contextDismissedLevel;
+    private string? _pendingSummaryFrom;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsPipeline))]
@@ -154,6 +156,36 @@ public partial class SoloViewModel : ViewModelBase
     [ObservableProperty]
     private ModelChoice? _selectedModel;
 
+    /// <summary>当前对话的上下文占用；新建任务草稿为 null。</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasContextUsage))]
+    private TaskContextUsage? _contextUsage;
+
+    [ObservableProperty]
+    private string _contextPercentText = "";
+
+    [ObservableProperty]
+    private string _contextHintText = "";
+
+    /// <summary>「上下文快满」提示是否可见：normal 不提示，同一等级继续后不再打扰。</summary>
+    [ObservableProperty]
+    private bool _contextPromptVisible;
+
+    [ObservableProperty]
+    private string _contextPromptDetail = "";
+
+    /// <summary>从旧对话接手的前情摘要；非空时在对话区顶部显示摘要卡。</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasPendingSummary))]
+    private string? _pendingSummary;
+
+    [ObservableProperty]
+    private bool _isHandoffBusy;
+
+    public bool HasContextUsage => ContextUsage is not null;
+
+    public bool HasPendingSummary => !string.IsNullOrWhiteSpace(PendingSummary);
+
     public SoloViewModel()
         : this(() => null, _ => { })
     {
@@ -254,6 +286,16 @@ public partial class SoloViewModel : ViewModelBase
             row.IsActive = false;
         }
 
+        // 新建任务 = 全新上下文：清掉上一段的用量读数与已生成但未使用的摘要
+        _contextDismissedLevel = null;
+        ContextUsage = null;
+        ContextPercentText = "";
+        ContextHintText = "";
+        ContextPromptVisible = false;
+        ContextPromptDetail = "";
+        PendingSummary = null;
+        _pendingSummaryFrom = null;
+
         SwitchChat(null);
         AppLog.Info("Solo 新建任务草稿");
     }
@@ -298,7 +340,14 @@ public partial class SoloViewModel : ViewModelBase
             var taskId = SelectedTask?.Id;
             if (taskId is null)
             {
-                var created = (await api.CreateTaskAsync(content, null, null, "auto"))?.Data;
+                // 从「上下文快满 → 新建并带摘要」接手：只带摘要，不搬旧消息
+                var created = (await api.CreateTaskAsync(
+                    content,
+                    null,
+                    null,
+                    "auto",
+                    summary: PendingSummary,
+                    summaryFrom: _pendingSummaryFrom))?.Data;
                 if (created is null)
                 {
                     throw new InvalidOperationException("创建任务没有返回数据");
@@ -307,6 +356,8 @@ public partial class SoloViewModel : ViewModelBase
                 ApplyTask(created);
                 IsNewTask = false;
                 taskId = created.Id;
+                PendingSummary = null;
+                _pendingSummaryFrom = null;
                 await RefreshTaskListAsync(api);
             }
             else if (SoloRules.IsTerminalStatus(SelectedTask?.Status))
@@ -324,6 +375,7 @@ public partial class SoloViewModel : ViewModelBase
             AppendMessages(result.Messages);
             ConfirmationHint = $"已落库 · {result.Messages.Length} 条消息";
             await RefreshTaskListAsync(api);
+            await RefreshContextUsageAsync(api, taskId);
             AppLog.Info($"Solo 发送消息 · task={taskId} · {result.Messages.Length} 条");
         }
         catch (Exception ex)
@@ -745,6 +797,7 @@ public partial class SoloViewModel : ViewModelBase
             ApplyTask(task);
             await ReloadMessagesAsync(taskId);
             await RefreshChangesAsync(taskId);
+            await RefreshContextUsageAsync(api, taskId);
             AppLog.Info($"Solo 载入任务 · {taskId} · {task.Status}");
         }
         catch (Exception ex)
@@ -1000,6 +1053,7 @@ public partial class SoloViewModel : ViewModelBase
                 await ReloadMessagesAsync(taskId);
             }
 
+            await RefreshContextUsageAsync(api, taskId);
             await RefreshChangesAsync(taskId);
             await MaybeAutoApplyPipelineAsync(api);
         }
@@ -1010,6 +1064,100 @@ public partial class SoloViewModel : ViewModelBase
         finally
         {
             _polling = false;
+        }
+    }
+
+    /// <summary>刷新上下文占用：取不到时保留上一次读数，不影响对话本身。</summary>
+    private async Task RefreshContextUsageAsync(FluxApiClient api, string taskId)
+    {
+        try
+        {
+            var usage = (await api.GetTaskContextAsync(taskId))?.Data;
+            if (usage is not null)
+            {
+                ApplyContextUsage(usage);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"Solo 上下文用量获取失败 · task={taskId} · {ex.Message}");
+        }
+    }
+
+    private void ApplyContextUsage(TaskContextUsage? usage)
+    {
+        ContextUsage = usage;
+        if (usage is null)
+        {
+            ContextPercentText = "";
+            ContextHintText = "";
+            ContextPromptVisible = false;
+            return;
+        }
+
+        ContextPercentText = $"{usage.Percent}%";
+        ContextHintText = usage.Level switch
+        {
+            "full" => $"{usage.UsedMessages}/{usage.Limit} 条 · 更早的消息已被挤出模型视野",
+            "warning" => $"{usage.UsedMessages}/{usage.Limit} 条 · 再聊几轮就要溢出",
+            _ => $"{usage.UsedMessages}/{usage.Limit} 条",
+        };
+        ContextPromptDetail = usage.Level == "full"
+            ? "再聊下去，最早的消息就会被挤出模型视野。新建一段对话，这段的摘要会一起带过去。"
+            : "再聊几轮，最早的消息就会被挤出模型视野。要新建一段对话吗？";
+        ContextPromptVisible = usage.Level != "normal" && usage.Level != _contextDismissedLevel;
+    }
+
+    /// <summary>「继续聊」：同一占用等级不再打扰，涨到 full 会再提醒一次。</summary>
+    [RelayCommand]
+    private void ContinueContext()
+    {
+        _contextDismissedLevel = ContextUsage?.Level;
+        ContextPromptVisible = false;
+        AppLog.Info($"Solo 继续当前对话 · task={SelectedTask?.Id} · 上下文 {ContextUsage?.Percent ?? 0}%");
+    }
+
+    /// <summary>
+    /// 「新建并带摘要」：生成前情摘要后开一段全新对话草稿。
+    /// 摘要随首条消息的 CreateTaskAsync 落库，新对话不拷贝任何旧消息。
+    /// </summary>
+    [RelayCommand]
+    private async Task StartHandoffAsync()
+    {
+        var api = Api();
+        var taskId = SelectedTask?.Id;
+        if (api is null || taskId is null || IsHandoffBusy)
+        {
+            return;
+        }
+
+        IsHandoffBusy = true;
+        try
+        {
+            var handoff = (await api.CreateHandoffSummaryAsync(taskId))?.Data;
+            if (handoff is null || string.IsNullOrWhiteSpace(handoff.Summary))
+            {
+                throw new InvalidOperationException("摘要生成为空，请稍后重试");
+            }
+
+            var sourceTitle = SoloRules.Title(SelectedTask?.Description ?? "上一段对话");
+            NewTask();
+            PendingSummary = handoff.Summary;
+            _pendingSummaryFrom = handoff.FromTaskId;
+            TaskTitle = $"延续 · {sourceTitle}";
+            TaskMeta = "已带上上一段对话的摘要 · 发出第一条消息后才创建";
+            ConfirmationHint = "已生成前情摘要，接着说你想做的事。";
+            AppLog.Info(
+                $"Solo 新建带摘要对话 · from={SoloRules.ShortId(taskId)} · 摘要 {handoff.Summary.Length} 字");
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"生成摘要失败：{ex.Message}";
+            AppLog.Error($"Solo 生成摘要失败 · task={taskId}", ex);
+        }
+        finally
+        {
+            IsHandoffBusy = false;
         }
     }
 
@@ -1039,6 +1187,11 @@ public partial class SoloViewModel : ViewModelBase
         foreach (var agent in agents)
         {
             var label = $"{agent.Spec.Name} · {agent.Spec.Role ?? agent.Spec.Runtime ?? "agent"}";
+            // 非逐字流式的 Agent 仍可正常使用，只在选项上如实标注
+            if (agent.Spec.NativeStreaming == false)
+            {
+                label += " · 非逐字流式";
+            }
             AgentChoices.Add(new AgentChoice(agent.Id, label));
         }
 
@@ -1355,7 +1508,10 @@ public sealed class MessageRow
             _ => message.Role,
         };
         Content = message.Content;
-        Meta = $"{Author} · {ClockText(message.CreatedAt)}";
+        IsSummary = message.Kind == "summary";
+        Meta = IsSummary
+            ? $"前情摘要 · {ClockText(message.CreatedAt)}"
+            : $"{Author} · {ClockText(message.CreatedAt)}";
     }
 
     public bool IsUser { get; }
@@ -1363,6 +1519,8 @@ public sealed class MessageRow
     public string Author { get; }
 
     public string Content { get; }
+
+    public bool IsSummary { get; }
 
     public string Meta { get; }
 

@@ -13,6 +13,7 @@ from flux.enums import (
     CapabilityKind,
     DecisionMode,
     ModelProvider,
+    PermissionMode,
 )
 
 
@@ -53,9 +54,17 @@ class TaskCreateRequest(BaseModel):
     priority: int = 100
     # 任务级决策策略（文档 §5）：建任务时就定下来，之后可单独切换
     decision_mode: DecisionMode = DecisionMode.AUTO
+    # 对话级权限模式（2026-10-25）：新建对话默认「正常模式」
+    permission_mode: PermissionMode = PermissionMode.NORMAL
     # 任务级模型选择：model + key_id。key_id 留空 = 原生模型；两者都留空 = Agent 默认。
     model: str | None = Field(default=None, max_length=128)
     key_id: str | None = Field(default=None, max_length=64)
+    # 「上下文快满 → 新建对话带摘要」：旧对话的前情摘要随新任务一起落库，
+    # 既进入助手历史，也拼进 Agent 执行指令；summary_from 仅用于溯源旧对话。
+    summary: str | None = Field(default=None, max_length=8000)
+    summary_from: str | None = Field(default=None, max_length=64)
+    # 随首条消息一起发来的附件（先 POST /uploads 换 id，再在发送时带上）
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class TaskMessageCreateRequest(BaseModel):
@@ -63,9 +72,11 @@ class TaskMessageCreateRequest(BaseModel):
 
     只有 user 能由调用方写入：assistant 的回复必须来自平台真实模型调用，
     不接受客户端伪造（role 不在请求体里，由服务端决定）。
+    正文可以留空——只发附件也是合法的一条消息（"看看这个"）。
     """
 
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(default="", max_length=8000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class ConfirmationItem(BaseModel):
@@ -85,6 +96,15 @@ class DecisionModeRequest(BaseModel):
     """切换任务级决策策略（文档 §5 模式 A / B）。"""
 
     mode: DecisionMode
+
+
+class PermissionModeRequest(BaseModel):
+    """切换对话级权限模式（Plan / Normal / Full）。
+
+    任何任务状态都允许切换；正在执行的 Run 按启动时的模式跑完，新模式从下一轮生效。
+    """
+
+    mode: PermissionMode
 
 
 class TaskAgentRequest(BaseModel):

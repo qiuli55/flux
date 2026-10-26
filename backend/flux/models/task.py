@@ -36,6 +36,12 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     decision_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="auto", server_default="auto"
     )
+    # 对话级权限模式（2026-10-25）：plan = 只读+计划文档 / normal = 高风险命令审批 /
+    # full = 跳过逐步审批（受保护对象仍逐次问）。取值见 flux.enums.PermissionMode。
+    # 切换只影响后续消息：Run 启动时把当前值快照进 agent_runs.permission_mode。
+    permission_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="normal", server_default="normal"
+    )
     # 需求确认六维度（文档 §4 P0-06）。结构 {"items": [{label, value}], "actor": ...}，
     # actor 取 assistant / user；用户改过之后以最后一次写入为准，执行时用的就是最终版本。
     confirmation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -74,6 +80,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "result": self.result,
             "created_at": self.created_at.isoformat() if self.created_at is not None else None,
             "decision_mode": self.decision_mode,
+            "permission_mode": self.permission_mode or "normal",
             "confirmation": self.confirmation,
             "decisions": list(self.decisions or []),
             "pending_decision": self.pending_decision(),

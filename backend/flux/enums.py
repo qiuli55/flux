@@ -56,6 +56,24 @@ class DecisionStatus(StrEnum):
     RESOLVED = "resolved"
     #: 用户拒绝全部候选方案，要求重新给方案
     REJECTED = "rejected"
+    #: 审批超时（10 分钟无人响应）：命令不执行，任务回到 running，Agent 需重新征询
+    EXPIRED = "expired"
+
+
+class PermissionMode(StrEnum):
+    """对话级权限模式（2026-10-25 三模式定案 + 2026-10-26 免审核）。
+
+    - PLAN：只读 + 只写计划文档，不执行 shell、不改代码、不分享设计稿；
+    - NORMAL（默认）：正常执行，低风险命令自动放行，高风险命令逐次等用户允许；
+    - FULL：跳过逐步审批（可直写工作区、跑 git 提交推送），但受保护对象仍需逐次申请；
+    - UNATTENDED：免审核（无人值守），高风险命令与受保护对象都不再打断用户。
+      仅用于用户明确离开设备、希望任务自行跑完的场景；风险与后果由用户承担。
+    """
+
+    PLAN = "plan"
+    NORMAL = "normal"
+    FULL = "full"
+    UNATTENDED = "unattended"
 
 
 class TaskMessageRole(StrEnum):
@@ -245,6 +263,9 @@ class Capability(StrEnum):
     DEPLOY = "deploy"
     SECRET_ACCESS = "secret.access"
     DEVICE_COMMAND = "device.command"
+    #: 只写 Flux 自有计划目录（/opt/flux/plans/），不涉及任何代码写入；
+    #: Plan 模式下签发的令牌只带 file.read + plan.write。
+    PLAN_WRITE = "plan.write"
 
 
 class CapabilityKind(StrEnum):

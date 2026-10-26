@@ -151,6 +151,14 @@ def _wait_status(client: TestClient, task_id: str, wanted: str, *, timeout: floa
     raise AssertionError(f"任务未在 {timeout}s 内进入 {wanted}，当前 {task.get('status')}")
 
 
+def _wait_harnesses(factory: Any, count: int, *, timeout: float = 5.0) -> None:
+    """Run 的 harness 在后台任务里创建：HTTP 返回时可能还没到位，等它出现再断言。"""
+    deadline = time.monotonic() + timeout
+    while len(factory.created) < count and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(factory.created) == count
+
+
 def _messages(client: TestClient, task_id: str) -> list[dict]:
     return client.get(f"{PREFIX}/tasks/{task_id}/messages").json()["data"]
 
@@ -299,7 +307,8 @@ def test_start_runs_the_agent_and_settles_the_task(settings: Settings, tmp_path:
         assert started["task"]["status"] == "running"
         run_id = started["task"]["run_id"]
         assert run_id and started["run"]["run_id"] == run_id
-        assert started["message"]["kind"] == "run_started"
+        # 开始执行不再落「已开始执行」气泡：执行过程只走流事件
+        assert started["message"] is None
 
         # 指令里带着用户确认过的需求与能力边界（Agent 拿到的就是这份）
         instruction = started["run"]["instruction"]
@@ -339,7 +348,7 @@ def test_start_twice_is_rejected(settings: Settings, tmp_path: Path) -> None:
         again = client.post(f"{PREFIX}/tasks/{task['id']}/start", json={})
         assert again.status_code == 409
         assert "已开始执行" in again.json()["message"]
-        assert len(factory.created) == 1
+        _wait_harnesses(factory, 1)
 
 
 def test_start_fails_loudly_when_dsh_is_disabled(settings: Settings, tmp_path: Path) -> None:
@@ -426,6 +435,85 @@ def test_cancel_after_run_completed_keeps_task_completed(
         finally:
             for harness in factory.created:
                 harness.cancel_event.set()
+
+
+def test_continue_reopens_a_finished_conversation(settings: Settings, tmp_path: Path) -> None:
+    """终态对话收到新消息：重开同一任务并起第二轮 Run，历史与用户消息都保留。"""
+    with _solo(settings, tmp_path, behavior=default_dsh_behavior) as (client, factory):
+        task = _create(client, description="给待办服务加过滤接口")
+        started = _start(client, task["id"])
+        first_run_id = started["task"]["run_id"]
+        _wait_status(client, task["id"], "completed")
+        _wait_last_message(client, task["id"], "run_finished")
+        history_before = len(_messages(client, task["id"]))
+
+        continued = client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue", json={"content": "再补一个按关键字搜索的参数"}
+        )
+        assert continued.status_code == 200, continued.text
+        data = continued.json()["data"]
+        assert data["task"]["status"] == "running"
+        assert data["task"]["run_id"] and data["task"]["run_id"] != first_run_id
+        assert data["messages"][0]["role"] == "user"
+        assert "再补一个按关键字搜索的参数" in data["messages"][0]["content"]
+        # 续跑只回用户消息：执行过程由流事件呈现，不再落 run_started 气泡
+        assert len(data["messages"]) == 1
+
+        # 起了第二轮 Run，且这一轮的指令就是新消息（不再叠加上一轮的确认卡）
+        _wait_harnesses(factory, 2)
+        # Run 在后台线程里执行，prompt 可能在 HTTP 返回后才记下来，这里等一小会儿
+        deadline = time.monotonic() + 5
+        while not factory.created[1].prompts and time.monotonic() < deadline:
+            time.sleep(0.01)
+        followup_instruction = factory.created[1].prompts[0]
+        assert "再补一个按关键字搜索的参数" in followup_instruction
+        assert "## 本轮任务" in followup_instruction
+        assert "需求确认" not in followup_instruction
+        # 两轮必须用不同 session：DSH 复用同一个 id 起第二轮会报 already exists
+        assert factory.created[0].session_ids and factory.created[1].session_ids
+        assert factory.created[0].session_ids[0] != factory.created[1].session_ids[0]
+
+        # 历史没被清掉：旧消息还在，新消息追加在后面
+        messages = _messages(client, task["id"])
+        assert len(messages) > history_before
+        assert messages[history_before]["role"] == "user"
+
+        _wait_status(client, task["id"], "completed")
+        assert _task(client, task["id"])["run_id"] == data["task"]["run_id"]
+
+
+def test_continue_rejects_a_conversation_still_running(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """还在执行的对话不需要续跑：直接追加消息即可，续跑接口明确 409。"""
+    with _solo(settings, tmp_path) as (client, factory):
+        task = _create(client)
+        _start(client, task["id"])
+        response = client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue", json={"content": "再改一处"}
+        )
+        assert response.status_code == 409
+        assert "仍在进行中" in response.json()["message"]
+        _wait_harnesses(factory, 1)
+
+
+def test_continue_works_after_the_conversation_was_cancelled(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """取消也是终态：用户后悔了可以接着聊，不用重建一个新对话。"""
+    with _solo(settings, tmp_path) as (client, factory):
+        task = _create(client)
+        _start(client, task["id"])
+        cancelled = client.post(f"{PREFIX}/tasks/{task['id']}/cancel", json={})
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["data"]["status"] == "cancelled"
+
+        continued = client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue", json={"content": "还是继续做吧"}
+        )
+        assert continued.status_code == 200, continued.text
+        assert continued.json()["data"]["task"]["status"] == "running"
+        _wait_harnesses(factory, 2)
 
 
 # --- §5 决策模式 ---

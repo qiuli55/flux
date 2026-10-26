@@ -15,9 +15,10 @@ from flux.models.context import ContextBlob, ContextStep, ContextStepToken
 from flux.models.imported_capability import ImportedCapability
 from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
+from flux.models.run_trace import RunTraceItem
 from flux.models.task import Task, TaskMessage
 from flux.models.terminal import TerminalEvent, TerminalSession
-from flux.models.usage import UsageRecord
+from flux.models.usage import UsageRecord, UsageSnapshot
 from flux.models.user import Organization, OrganizationMember, ProviderAccount, User
 from flux.models.workspace import VirtualChange
 
@@ -43,11 +44,13 @@ __all__ = [
     "Project",
     "ProjectMemory",
     "ProviderAccount",
+    "RunTraceItem",
     "Task",
     "TaskMessage",
     "TerminalEvent",
     "TerminalSession",
     "UsageRecord",
+    "UsageSnapshot",
     "User",
     "VirtualChange",
 ]

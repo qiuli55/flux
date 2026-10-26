@@ -36,8 +36,77 @@ def to_flux_event(notification: Notification) -> tuple[str, dict[str, Any]]:
                 body["text"] = _assistant_text(data)
             elif event_type == "turn/end":
                 body["finish_reason"] = _finish_reason(data)
+            elif event_type == "tool/call":
+                body.update(_tool_call(data))
+            elif event_type == "tool/result":
+                body.update(_tool_result(data))
 
     return Events.DSH_EVENT, body
+
+
+def _tool_call(data: Any) -> dict[str, Any]:
+    """tool/call → 时间线命令卡字段（与 codex/opencode 的归一化字段同名）。
+
+    内置 DSH Agent 的 bash/read/write/edit 调用就靠这里进入执行轨迹；
+    以前只映射 assistant 文本，导致内置 Agent 永远没有命令与文件统计。
+    """
+    if not isinstance(data, dict):
+        return {}
+    fields: dict[str, Any] = {"status": "running"}
+    name = data.get("name")
+    if isinstance(name, str) and name:
+        fields["name"] = name
+    arguments = data.get("arguments")
+    if (isinstance(arguments, str) and arguments) or isinstance(arguments, (dict, list)):
+        fields["detail"] = arguments
+    call_id = data.get("callId")
+    if isinstance(call_id, str) and call_id:
+        fields["call_id"] = call_id
+    return fields
+
+
+def _tool_result(data: Any) -> dict[str, Any]:
+    """tool/result → 同一条命令卡的收尾（输出 + 成功/失败）。"""
+    if not isinstance(data, dict):
+        return {}
+    message = data.get("message")
+    message = message if isinstance(message, dict) else {}
+    call_id = data.get("callId")
+    if not isinstance(call_id, str) or not call_id:
+        source = message.get("source")
+        if isinstance(source, dict) and isinstance(source.get("callId"), str):
+            call_id = source["callId"]
+    fields: dict[str, Any] = {}
+    if isinstance(call_id, str) and call_id:
+        fields["call_id"] = call_id
+    output, is_error = _tool_output(message)
+    if output:
+        fields["output"] = output
+    fields["status"] = "error" if is_error else "completed"
+    return fields
+
+
+def _tool_output(message: dict[str, Any]) -> tuple[str, bool]:
+    """取工具结果的文本与是否失败（tool-result 的 content 里可能有多段文本）。"""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return "", False
+    texts: list[str] = []
+    is_error = False
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool-result":
+            continue
+        if block.get("isError") is True:
+            is_error = True
+        nested = block.get("content")
+        if not isinstance(nested, list):
+            continue
+        for part in nested:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    texts.append(text)
+    return "".join(texts), is_error
 
 
 def _assistant_text(data: Any) -> str:

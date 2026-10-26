@@ -22,6 +22,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "overview", label: "概览", icon: "home" },
       { id: "tasks", label: "任务", icon: "layers" },
       { id: "skills", label: "Skills", icon: "puzzle" },
+      { id: "billing", label: "成本中心", icon: "credit" },
       { id: "diagnostics", label: "系统诊断", icon: "activity" },
       { id: "settings", label: "设置", icon: "settings" },
     ],
@@ -35,6 +36,7 @@ export const VIEW_LABEL: Record<View, string> = {
   solo: "Solo 执行",
   ide: "IDE 工作台",
   skills: "Skills",
+  billing: "成本中心",
   diagnostics: "系统诊断",
   settings: "设置",
 };
@@ -46,6 +48,7 @@ export const VIEW_GROUP: Record<View, string> = {
   solo: "核心",
   ide: "核心",
   skills: "平台",
+  billing: "平台",
   diagnostics: "平台",
   settings: "平台",
 };

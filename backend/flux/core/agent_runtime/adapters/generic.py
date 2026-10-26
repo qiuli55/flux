@@ -125,7 +125,9 @@ class GenericCliAdapter(CliAgentAdapter):
 
     # --- 起一轮 ---
 
-    def build_run_argv(self, instruction: str, *, bootstrap: bool = True) -> tuple[str, ...]:
+    def build_run_argv(
+        self, instruction: str, *, bootstrap: bool = True, mode: str = "normal"
+    ) -> tuple[str, ...]:
         """拼出"跑一条指令"的命令；具体 Agent 的子命令由 run_args 配置。
 
         `bootstrap=True`（默认）时把 Flux Runtime Bootstrap 拼在指令前（收口方案 §8.2）：
@@ -134,5 +136,5 @@ class GenericCliAdapter(CliAgentAdapter):
         `build_runtime_env` 注入 `env`，与 DSH 侧同一份真源。
         """
         executable = self._path or self._executable
-        prompt = compose_instruction(instruction) if bootstrap else instruction
+        prompt = compose_instruction(instruction, mode) if bootstrap else instruction
         return (executable, *self._run_args, prompt)

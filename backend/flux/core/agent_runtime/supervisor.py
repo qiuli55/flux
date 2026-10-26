@@ -173,6 +173,7 @@ class RunSupervisor:
         instruction: str,
         agent_id: str | None = None,
         task_id: object | None = None,
+        permission_mode: str = "normal",
     ) -> None:
         """登记一次 Run：建库行（PENDING）+ 建内存监视器，并发布 started 事件。"""
         now_mono = self._clock()
@@ -194,6 +195,7 @@ class RunSupervisor:
             task_id=_as_uuid_or_none(task_id),
             owner_pid=self._owner_pid,
             started_at=datetime.now(timezone.utc),
+            permission_mode=permission_mode,
         )
         await self._publish(
             Events.DSH_RUN_STARTED,
@@ -204,6 +206,7 @@ class RunSupervisor:
                 "status": str(DshRunStatus.PENDING),
                 "agent_id": agent_id,
                 "task_id": str(task_id) if task_id else None,
+                "permission_mode": permission_mode,
             },
         )
 
