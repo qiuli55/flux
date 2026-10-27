@@ -372,14 +372,24 @@ class CliRuntime:
         effective_model = model_override or resolve_default_model(self._settings, self.runtime_id)
         workspace = self._settings.workspace_root or self._settings.dsh_workspace
         run_dir = Path(self._settings.dsh_home).expanduser() / "runs" / run_id
+        # codex 的 thread 存在 CODEX_HOME 里：按任务固定目录才能跨轮 thread/resume；
+        # 登录态与 config 每轮仍由 _write_runtime_config 重写，隔离性不降级。
+        config_dir = run_dir
+        task_key = str(getattr(task, "id", "") or "")
+        if self.runtime_id == RUNTIME_CODEX and task_key:
+            config_dir = Path(self._settings.dsh_home).expanduser() / "runs" / f"task-{task_key}"
         token_id: str | None = None
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(OSError):
                 os.chmod(run_dir, 0o700)
+            if config_dir != run_dir:
+                config_dir.mkdir(parents=True, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    os.chmod(config_dir, 0o700)
             token_id, token_raw = await self._issue_token(agent_id, run_id, mode)
             runtime_env = self._write_runtime_config(
-                run_dir, token_raw, run_id, model=model_override, channel=channel, mode=mode
+                config_dir, token_raw, run_id, model=model_override, channel=channel, mode=mode
             )
         except Exception:
             await self._revoke(token_id)
@@ -738,7 +748,23 @@ class CliRuntime:
             process_alive=lambda: process.popen.poll() is None,
             approval_handler=on_native_approval,
         )
-        result = await client.run(compose_instruction(launch.instruction, launch.permission_mode))
+        # 跨轮复用：记住上一轮的会话 id，本轮优先续聊（会话失效时客户端会自动新建）。
+        # 按 Agent 隔离：换了 Agent 就不复用上一个 Agent 的会话。
+        previous = await self._stored_session(launch.task_id, launch.agent_id)
+        result = await client.run(
+            compose_instruction(launch.instruction, launch.permission_mode),
+            title=f"flux-task-{launch.task_id or run_id}",
+            session_id=previous,
+        )
+        if result.session_id:
+            await self._remember_session(launch.task_id, result.session_id, launch.agent_id)
+            logger.info(
+                "opencode 会话绑定 run=%s task=%s %s session=%s",
+                run_id,
+                launch.task_id or "未关联",
+                "复用" if previous and previous == result.session_id else "新建",
+                result.session_id,
+            )
         await self._stop_process(process)
         if result.error:
             logger.warning("opencode server 本轮出错 run=%s %s", run_id, result.error)
@@ -811,9 +837,24 @@ class CliRuntime:
             permission_mode=launch.permission_mode,
             approval_handler=on_native_approval,
         )
+        previous = await self._stored_session(launch.task_id, launch.agent_id)
         result = await session.run(
-            compose_instruction(launch.instruction, launch.permission_mode)
+            compose_instruction(launch.instruction, launch.permission_mode),
+            thread_id=previous,
+            # 任务级模型选择必须显式覆盖：codex thread 会记住创建时的模型，
+            # 续聊不传就沿用旧模型（切到别的模型后表现为「没切成功」）。
+            model=launch.model,
+            model_provider=_codex_provider_override(self._settings, launch.channel),
         )
+        if result.thread_id:
+            await self._remember_session(launch.task_id, result.thread_id, launch.agent_id)
+            logger.info(
+                "codex thread 绑定 run=%s task=%s %s thread=%s",
+                run_id,
+                launch.task_id or "未关联",
+                "复用" if previous and previous == result.thread_id else "新建",
+                result.thread_id,
+            )
         await self._stop_process(process)
         if result.error or result.status != "completed":
             reason = result.error or f"codex 本轮以 {result.status} 结束"
@@ -833,6 +874,45 @@ class CliRuntime:
         await self._finalize(
             launch, DshRunStatus.COMPLETED, 0, result.text or "".join(texts), queue
         )
+
+    async def _stored_session(self, task_id: str | None, agent_id: str | None) -> str:
+        """取该任务在当前 Agent + runtime 上记住的外部会话 id；没有/读失败时返回空串。"""
+        if not task_id:
+            return ""
+        repo = getattr(self._container, "runtime_sessions", None)
+        if repo is None:
+            return ""
+        try:
+            return await repo.get(task_id, self.runtime_id, agent_id)
+        except Exception:  # noqa: BLE001 - 会话绑定不可用时退回每轮新建
+            logger.warning(
+                "读取外部会话绑定失败 task=%s agent=%s runtime=%s",
+                task_id,
+                agent_id,
+                self.runtime_id,
+                exc_info=True,
+            )
+            return ""
+
+    async def _remember_session(
+        self, task_id: str | None, session_id: str, agent_id: str | None
+    ) -> None:
+        """记住本轮实际使用的会话 id，供同一 Agent 的下一轮续聊。"""
+        if not task_id or not session_id:
+            return
+        repo = getattr(self._container, "runtime_sessions", None)
+        if repo is None:
+            return
+        try:
+            await repo.set(task_id, self.runtime_id, session_id, agent_id)
+        except Exception:  # noqa: BLE001 - 写失败只影响下一轮是否复用，不影响本轮
+            logger.warning(
+                "保存外部会话绑定失败 task=%s agent=%s runtime=%s",
+                task_id,
+                agent_id,
+                self.runtime_id,
+                exc_info=True,
+            )
 
     async def _stop_process(self, process: Any) -> None:
         with contextlib.suppress(Exception):
@@ -1388,6 +1468,21 @@ def _codex_config(
             "",
         ]
     return "\n".join(lines)
+
+
+def _codex_provider_override(settings: Settings, channel: Any) -> str:
+    """本轮 codex thread 应使用的 provider id（覆盖 thread 里存的历史值）。
+
+    provider 与模型同时决定「走哪个通道、扣谁的额度」：只覆盖模型不覆盖 provider，
+    从原生 ChatGPT 切到密钥库模型（或反向）时仍会按旧 provider 发请求。
+    """
+    if channel is not None:
+        return _key_provider_id(channel)
+    provider = (settings.codex_provider or "").strip().lower()
+    if provider in ("", "openai", "chatgpt"):
+        # ChatGPT 订阅通道与内置 openai 供应商同构，codex 侧的 provider id 是 openai
+        return "openai"
+    return provider
 
 
 def _codex_provider_lines(

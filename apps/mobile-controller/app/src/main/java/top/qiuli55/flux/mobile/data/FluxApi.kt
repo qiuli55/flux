@@ -284,6 +284,39 @@ class FluxApi(
     suspend fun setKeyEnabled(keyId: String, enabled: Boolean): ApiKeyEntry =
         patch("api/v1/keys/$keyId", buildJsonObject { put("enabled", enabled) })
 
+    // ---------------------------------------------------------- 账号级用户记忆
+
+    suspend fun listUserMemories(): List<UserMemoryEntry> =
+        get("api/v1/memory/entries?layer=user")
+
+    suspend fun createUserMemory(content: String): UserMemoryEntry = post(
+        "api/v1/memory/entries",
+        buildJsonObject {
+            put("content", content.trim())
+            put("source", "user")
+        },
+    )
+
+    suspend fun updateUserMemory(memoryId: String, content: String): UserMemoryEntry =
+        putRequest(
+            "api/v1/memory/entries/$memoryId",
+            buildJsonObject { put("content", content.trim()) },
+        )
+
+    suspend fun deleteUserMemory(memoryId: String): JsonElement =
+        delete("api/v1/memory/entries/$memoryId")
+
+    suspend fun memorySettings(): MemorySettings = get("api/v1/memory/settings")
+
+    suspend fun setMemoryAutoCapture(enabled: Boolean): JsonElement = putRequest(
+        "api/v1/memory/settings",
+        buildJsonObject { put("auto_capture", enabled) },
+    )
+
+    /** 立即和账号云对一次账（下拉刷新用）。 */
+    suspend fun syncUserMemories(): JsonElement =
+        post("api/v1/memory/sync", buildJsonObject {})
+
     suspend fun getRun(runId: String): Run = get("api/v1/dsh/runs/$runId")
     suspend fun listRuns(): List<Run> = get("api/v1/dsh/runs")
     suspend fun interruptRun(runId: String): Run = post("api/v1/dsh/runs/$runId/interrupt", buildJsonObject {})

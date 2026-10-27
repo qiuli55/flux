@@ -335,6 +335,12 @@ class UserMemoryWriteRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class UserMemorySettingsRequest(BaseModel):
+    """设备侧「自动记录用户记忆」开关。"""
+
+    auto_capture: bool
+
+
 class ScanRequest(BaseModel):
     """扫描被登记项目的工作区目录（⑩）。
 

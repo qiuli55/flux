@@ -23,7 +23,8 @@ from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.core.context.budget import history_message_limit
 from flux.core.permissions.modes import normalize_mode
 from flux.core.task_engine.assistant import validate_confirmation_items
-from flux.enums import AgentInstallStatus, TaskMessageRole, TaskStatus
+from flux.core.task_engine.conversation_trace import build_dialogue_trace
+from flux.enums import AgentInstallStatus, MemoryLayer, TaskMessageRole, TaskStatus
 from flux.errors import AIOSError, ConflictError, NotFoundError
 from flux.logging import get_logger
 from flux.models.task import Task
@@ -75,11 +76,22 @@ class TaskRunService:
             confirmation = {"items": items, "actor": "user", "updated_at": _now_iso()}
             task = await container.task_repo.set_confirmation(task_uuid, confirmation)
 
+        agent = self._agent(task)
+        runtime_id = _runtime_of(agent)
+        await self._require_ready(runtime_id)
+        # 会话是否已在该 Agent + runtime 上存在：决定要不要省掉「原任务背景」（会话里本来就有）
+        resumed = await _has_session(container, task_uuid, runtime_id, task.agent_id)
+
         # 续跑：新消息是这一轮的唯一指令，不叠加上一轮的确认卡与计划（那是历史上下文，
         # 由 Agent 自己的会话/项目 Brain 承接）。
         steps = [] if followup else await _latest_plan(container, task_uuid)
         summary = await _latest_summary(container, task_uuid)
         attachments = await _latest_attachments(container, task_uuid)
+        # 跨轮记忆：最近对话轨迹 + 上一轮工作记忆卡，两者都进本轮指令
+        messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
+        trace = build_dialogue_trace(messages, exclude_text=followup or "")
+        memory = await _latest_memory(container, task_uuid)
+        user_memory = await _user_memory_instruction(container)
         instruction = _execution_instruction(
             task,
             None if followup else confirmation,
@@ -88,11 +100,11 @@ class TaskRunService:
             followup=followup,
             attachments=attachments,
             mode=normalize_mode(getattr(task, "permission_mode", None)),
+            trace=trace,
+            memory=memory,
+            user_memory=user_memory,
+            resumed=resumed,
         )
-
-        agent = self._agent(task)
-        runtime_id = _runtime_of(agent)
-        await self._require_ready(runtime_id)
         # 额度闸门：默认只告警（FLUX_BILLING_ENFORCE=false）；开启拦截且已超额时在这里拒单。
         # 此刻还没预登记 run_id，抛错不需要回滚任务状态。
         billing = getattr(container, "billing", None)
@@ -131,6 +143,42 @@ class TaskRunService:
             {"run_id": run_id, "runtime": runtime_id},
         )
         return RunStartResult(task=task, run=proc.snapshot)
+
+    async def preview_instruction(self, task: Task) -> str:
+        """算出「下一轮开工会收到的执行指令」原文（上下文占用按它统计）。
+
+        与 `start()` 共用同一套装配：约束 / 任务 / 摘要 / 工作记忆 / 对话轨迹 /
+        附件 / 确认 / 计划。取数失败时返回空串，接口层只少算字符，不因此 500。
+        """
+        container = self._container
+        try:
+            steps = await _latest_plan(container, task.id)
+            summary = await _latest_summary(container, task.id)
+            attachments = await _latest_attachments(container, task.id)
+            messages, _ = await container.task_repo.list_messages(
+                task.id, limit=_HISTORY_LIMIT
+            )
+            trace = build_dialogue_trace(messages)
+            memory = await _latest_memory(container, task.id)
+            user_memory = await _user_memory_instruction(container)
+            runtime_id = _runtime_of(self._agent(task))
+            resumed = await _has_session(container, task.id, runtime_id, task.agent_id)
+            return _execution_instruction(
+                task,
+                task.confirmation,
+                steps,
+                summary=summary,
+                followup=None,
+                attachments=attachments,
+                mode=normalize_mode(getattr(task, "permission_mode", None)),
+                trace=trace,
+                memory=memory,
+                user_memory=user_memory,
+                resumed=resumed,
+            )
+        except Exception:  # noqa: BLE001 - 预览失败不影响对话本身
+            logger.warning("预演执行指令失败 task=%s", task.id, exc_info=True)
+            return ""
 
     # --- runtime 解析 ---
 
@@ -209,6 +257,92 @@ async def _latest_attachments(container: Container, task_uuid: uuid.UUID) -> lis
     return [item for item in files if isinstance(item, dict)] if isinstance(files, list) else []
 
 
+async def _has_session(
+    container: Container,
+    task_uuid: uuid.UUID,
+    runtime_id: str,
+    agent_id: uuid.UUID | None,
+) -> bool:
+    """该任务是否已在该 Agent + runtime 上存有可复用的会话；读失败按「没有」处理。"""
+    repo = getattr(container, "runtime_sessions", None)
+    if repo is None:
+        return False
+    try:
+        return bool(await repo.get(task_uuid, runtime_id, agent_id))
+    except Exception:  # noqa: BLE001 - 会话表不可用时退回每轮新建
+        logger.warning(
+            "读取任务会话绑定失败 task=%s agent=%s runtime=%s",
+            task_uuid,
+            agent_id,
+            runtime_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def _latest_memory(container: Container, task_uuid: uuid.UUID) -> str:
+    """取最近一张工作记忆卡；没有或表不存在时返回空串。"""
+    repo = getattr(container, "task_memory", None)
+    if repo is None:
+        return ""
+    try:
+        card = await repo.latest(task_uuid)
+    except Exception:  # noqa: BLE001 - 记忆卡读取失败不能挡住任务启动
+        logger.warning("读取工作记忆卡失败 task=%s", task_uuid, exc_info=True)
+        return ""
+    return card.content.strip() if card is not None else ""
+
+
+#: 执行指令里最多注入多少条用户长期记忆 / 多少字符（防止画像越滚越大挤占任务）
+_USER_MEMORY_MAX_ENTRIES = 8
+_USER_MEMORY_MAX_CHARS = 1200
+
+
+#: 执行指令里提醒 Agent 顺手记录用户偏好（开关在手机端设置里，关掉后不出现）
+_REMEMBER_HINT = (
+    "## 记录用户长期记忆\n"
+    "如果本轮对话里用户明确表达了稳定的偏好、习惯或禁忌（换项目、换设备仍然成立），"
+    "调用 memory.remember 记下来：每轮最多 3 条，每条不超过 60 字。"
+    "不要记项目细节、文件路径、一次性任务和密钥；已经记过的不要重复写。"
+)
+
+
+async def _user_memory_instruction(container: Container) -> str:
+    """把账号级用户记忆压成一段背景（最近 8 条 / 1200 字），并附上记录提示。"""
+    blocks: list[str] = []
+    prefs = getattr(container, "memory_prefs", None)
+    if prefs is None or prefs.auto_capture():
+        blocks.append(_REMEMBER_HINT)
+    memory = getattr(container, "memory", None)
+    if memory is None:
+        return "\n\n".join(blocks)
+    try:
+        entries = await memory.list_entries(layer=MemoryLayer.USER)
+    except Exception:  # noqa: BLE001 - 记忆读取失败不能挡住任务启动
+        logger.warning("读取用户长期记忆失败", exc_info=True)
+        return "\n\n".join(blocks)
+    if entries:
+        picked = entries[-_USER_MEMORY_MAX_ENTRIES:]
+        lines: list[str] = []
+        used = 0
+        for entry in reversed(picked):
+            text = " ".join(entry.content.split())
+            if not text:
+                continue
+            if used + len(text) > _USER_MEMORY_MAX_CHARS:
+                break
+            lines.append(f"- {text}")
+            used += len(text)
+        if lines:
+            lines.reverse()
+            blocks.append(
+                "\n".join(
+                    ["## 用户长期记忆（账号级，跨设备；仅作背景，不要逐条复述）", *lines]
+                )
+            )
+    return "\n\n".join(blocks)
+
+
 def _mode_constraints(mode: str) -> list[str]:
     """三种权限模式的执行约束（与 protocol.compose_instruction 的模式段保持一致）。"""
     if mode == "plan":
@@ -258,6 +392,10 @@ def _execution_instruction(
     followup: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
     mode: str = "normal",
+    trace: str = "",
+    memory: str = "",
+    user_memory: str = "",
+    resumed: bool = False,
 ) -> str:
     """拼出交给 Agent 的执行指令。
 
@@ -273,10 +411,16 @@ def _execution_instruction(
             *constraints,
             "## 本轮任务（同一对话的后续消息，只执行这一条）",
             followup.strip(),
-            "",
-            "## 原任务背景（对话最初的目标，此前已处理；除非本轮任务明确要求返工，不要重新执行）",
-            task.description.strip(),
         ]
+        if not resumed:
+            # 会话已复用（opencode/codex 续聊）时，最初的需求就在会话历史里，不再重复；
+            # 没复用（DSH / 新建会话）时仍要给背景，并明确「不要重做」。
+            lines += [
+                "",
+                "## 原任务背景（对话最初的目标，此前已处理；"
+                "除非本轮任务明确要求返工，不要重新执行）",
+                task.description.strip(),
+            ]
     else:
         lines = [*constraints, task.description.strip()]
     if summary:
@@ -286,6 +430,15 @@ def _execution_instruction(
             "## 前情摘要（来自上一段对话，供你接着做）",
             summary.strip(),
         ]
+    if memory:
+        # 上一轮结束由平台生成的事实卡：改过哪些文件、结果如何、为什么失败
+        lines += ["", memory.strip()]
+    if user_memory:
+        # 账号级长期记忆：稳定的个人偏好/禁忌，跨设备跨项目都适用
+        lines += ["", user_memory.strip()]
+    if trace:
+        # 最近几轮的真实对话：用户改了什么要求、助手承诺过什么，避免只记住最初任务
+        lines += ["", trace.strip()]
     if attachments:
         # 用户从手机附上的文件：路径是服务端真实落盘位置，直接用原生读文件/终端看
         lines += ["", "## 附件（用户随本轮消息上传，可直接按路径读取）"]

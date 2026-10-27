@@ -28,6 +28,7 @@ from typing import Any
 
 from flux.config import Settings
 from flux.core.agent_runtime.platforms import executable_argv, popen_kwargs, secure_file
+from flux.core.billing.plans import PLAN_CODEX
 from flux.errors import ConfigurationError
 from flux.logging import get_logger
 
@@ -170,6 +171,33 @@ class CodexAccountService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._logins: dict[str, _LoginSession] = {}
+        #: 计费服务（容器装配后注入）：登录成功立刻补一次 Codex 额度快照
+        self._billing: Any = None
+        self._billing_jobs: set[asyncio.Task[None]] = set()
+
+    def set_billing(self, billing: Any) -> None:
+        """注入计费服务；避免 codex_account ↔ billing.sources 的循环导入，用 Any。"""
+        self._billing = billing
+
+    def _schedule_billing_snapshot(self) -> None:
+        """登录成功后异步采集一次 ChatGPT 额度，失败不影响登录结果。"""
+        billing = self._billing
+        if billing is None:
+            return
+
+        async def snapshot() -> None:
+            try:
+                await billing.refresh(PLAN_CODEX)
+            except Exception:  # noqa: BLE001 - 采集失败不改变登录态
+                logger.warning("登录后采集 Codex 额度失败", exc_info=True)
+
+        try:
+            task = asyncio.create_task(snapshot())
+        except RuntimeError:  # 没有运行中的事件循环（同步调用场景）时跳过
+            logger.warning("没有事件循环，跳过登录后的 Codex 额度采集")
+            return
+        self._billing_jobs.add(task)
+        task.add_done_callback(self._billing_jobs.discard)
 
     # --- 路径 ---
 
@@ -360,6 +388,8 @@ class CodexAccountService:
             session.status = "success"
             session.message = ""
             logger.info("codex 账号登录成功 login=%s", session.login_id)
+            # 登录即采集一次套餐额度，账单系统立刻有 ChatGPT 的官方口径
+            self._schedule_billing_snapshot()
             return
         session.status = "failed"
         session.message = _tail(session.output) or f"codex 登录进程退出码 {returncode}"

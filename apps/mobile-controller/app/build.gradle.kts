@@ -17,8 +17,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装
-        versionCode = 42
-        versionName = "0.8.0"
+        versionCode = 45
+        versionName = "0.8.3"
     }
 
     buildFeatures {

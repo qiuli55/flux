@@ -161,8 +161,13 @@ fun V2ChatScreen(
     locked: Boolean = false,
     /** 真实任务对话没有「删除会话」接口，隐藏该按钮。 */
     showDelete: Boolean = true,
-    /** 任务创建后 Agent 已固定，不允许再切换。 */
+    /** 能不能切换执行 Agent（执行中也可以：排队到本轮结束后生效）。 */
     canSwitchAgent: Boolean = true,
+    /** 能不能切换模型（执行中不行）。 */
+    canSwitchModel: Boolean = true,
+    /** 已排队的切换目标 id / 展示名：标题栏与下拉里标出「本轮结束后切换」。 */
+    pendingAgentId: String? = null,
+    pendingAgentLabel: String? = null,
     notice: String? = null,
     /** 关掉会话内提示条（上下文/审批类提示可手动收起）。 */
     onDismissNotice: () -> Unit = {},
@@ -341,7 +346,7 @@ fun V2ChatScreen(
                                 maxLines = 1,
                                 modifier = Modifier.weight(1f, fill = false),
                             )
-                            if (canSwitchAgent && modelOptions.isNotEmpty()) {
+                            if (canSwitchModel && modelOptions.isNotEmpty()) {
                                 Spacer(Modifier.width(6.dp))
                                 Row(
                                     Modifier
@@ -371,6 +376,29 @@ fun V2ChatScreen(
                                         null,
                                         tint = V2Colors.cyan800.copy(alpha = .7f),
                                         modifier = Modifier.padding(start = 2.dp).size(10.dp),
+                                    )
+                                }
+                            }
+                            // 已排队的 Agent 切换：告诉用户当前这轮还是原 Agent，结束后才换人
+                            if (pendingAgentLabel != null) {
+                                Spacer(Modifier.width(6.dp))
+                                Row(
+                                    Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(V2Colors.amber.copy(alpha = .12f))
+                                        .border(
+                                            1.dp,
+                                            V2Colors.amber.copy(alpha = .30f),
+                                            RoundedCornerShape(999.dp),
+                                        )
+                                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Label(
+                                        "→ $pendingAgentLabel · 本轮结束后",
+                                        8.5f,
+                                        V2Colors.amber700,
+                                        maxLines = 1,
                                     )
                                 }
                             }
@@ -413,11 +441,21 @@ fun V2ChatScreen(
                                         V2Colors.ink(.40f),
                                         maxLines = 1,
                                     )
+                                    if (option.agent.id == pendingAgentId) {
+                                        Spacer(Modifier.height(2.dp))
+                                        Label(
+                                            "本轮结束后切换",
+                                            8.5f,
+                                            V2Colors.amber700,
+                                            mono = true,
+                                        )
+                                    }
                                 }
                             },
                             onClick = {
                                 agentMenuOpen = false
-                                if (!selected) onSwitchAgent(option.agent.id)
+                                // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
+                                if (!selected || pendingAgentId != null) onSwitchAgent(option.agent.id)
                             },
                         )
                     }
@@ -1063,6 +1101,50 @@ private fun RunningStopBar(stopping: Boolean, onStop: () -> Unit) {
 }
 
 @Composable
+private fun HandoffCard(message: V2Message) {
+    var expanded by remember(message.text) { mutableStateOf(false) }
+    val from = message.handoffFrom.ifBlank { "原 Agent" }
+    val to = message.handoffTo.ifBlank { "新 Agent" }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(V2Colors.amber.copy(alpha = .07f))
+            .border(1.dp, V2Colors.amber.copy(alpha = .22f), RoundedCornerShape(14.dp))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Refresh,
+                null,
+                tint = V2Colors.amber700,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Label("Agent 交接", 10f, V2Colors.amber700, weight = FontWeight.Medium, mono = true)
+            Spacer(Modifier.weight(1f))
+            Label(if (expanded) "收起" else "展开", 9f, V2Colors.amber700)
+        }
+        Spacer(Modifier.height(5.dp))
+        Label("$from → $to", 11.5f, V2Colors.ink(.82f), weight = FontWeight.Medium, maxLines = 1)
+        Spacer(Modifier.height(4.dp))
+        Label(
+            message.text,
+            10.5f,
+            V2Colors.ink(.58f),
+            maxLines = if (expanded) Int.MAX_VALUE else 4,
+        )
+        Spacer(Modifier.height(4.dp))
+        Label(
+            "下一轮由 $to 按这张卡接手 · ${message.time}",
+            8.5f,
+            V2Colors.ink(.26f),
+        )
+    }
+}
+
+@Composable
 private fun SummaryCard(text: String, time: String, note: String = "来自上一段对话") {
     var expanded by remember(text) { mutableStateOf(false) }
     Column(
@@ -1154,6 +1236,11 @@ private fun MessageRow(
     if (message.kind == "summary") {
         // 上一段对话的前情摘要：默认收成 3 行，点开看全
         SummaryCard(message.text, message.time)
+        return
+    }
+    if (message.kind == "handoff") {
+        // 平台生成的 Agent 交接卡：切换生效时出现，新 Agent 就是照这张卡接手的
+        HandoffCard(message)
         return
     }
     if (message.kind == "attachments") {

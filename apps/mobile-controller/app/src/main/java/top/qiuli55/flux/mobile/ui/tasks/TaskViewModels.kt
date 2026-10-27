@@ -152,10 +152,16 @@ internal fun shouldPromptContext(usage: TaskContextUsage?, dismissedLevel: Strin
     usage != null && usage.level != "normal" && usage.level != dismissedLevel
 
 /**
- * 对话页能不能切换 Agent / 模型：执行中不行（先停止）；
- * 已结束的对话可以——切换只决定下一条消息由谁承接，续聊时按新的选择起 Run。
+ * 对话页能不能切换 Agent：执行中也可以——切换会排队到本轮结束后生效
+ * （`pending_agent_id`），当前这一轮仍由原 Agent 跑完；已结束的对话立即生效。
  */
-internal fun canSwitchTaskAgent(task: Task?): Boolean =
+internal fun canSwitchTaskAgent(task: Task?): Boolean = task != null
+
+/**
+ * 能不能切换模型：执行中不行（模型只影响下一轮，但正在跑的一轮已按快照执行，
+ * 中途换模型容易让用户误以为本轮已换）；已结束/等待决策时可以。
+ */
+internal fun canSwitchTaskModel(task: Task?): Boolean =
     task != null && task.status != "running"
 
 /** 系统文件选择器返回的 Uri 对应的展示信息。 */
@@ -592,6 +598,40 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 )
                 refresh(quiet = true)
             }
+
+            // 多端同步：别的设备发起的 Agent 切换，在本端也要看到排队/生效/失败
+            "agent_switch_queued" -> {
+                val name = streamString(event, "to_agent")
+                if (name.isNotBlank()) {
+                    _state.value = current.copy(notice = "已排队：本轮结束后切换到「$name」")
+                }
+                refresh(quiet = true)
+            }
+
+            "agent_switched" -> {
+                val name = streamString(event, "to_agent")
+                _state.value = current.copy(
+                    notice = if (name.isBlank()) {
+                        "Agent 已切换，后续执行交给新 Agent"
+                    } else {
+                        "已切换到「$name」，新 Agent 已接手"
+                    },
+                )
+                // 交接卡已落库：强制重拉一次，别让进行中的旧刷新把卡片漏掉
+                refresh()
+            }
+
+            "agent_switch_failed" -> {
+                val reason = streamString(event, "reason")
+                _state.value = current.copy(
+                    notice = if (reason.isBlank()) {
+                        "排队的 Agent 切换未生效，仍由原 Agent 执行"
+                    } else {
+                        "Agent 切换未生效：$reason"
+                    },
+                )
+                refresh(quiet = true)
+            }
         }
     }
 
@@ -785,10 +825,20 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(run = run, notice = "已请求停止 Agent：${run.status}")
     }
 
-    /** 对话页切换执行 Agent：历史消息保留，后续执行由新 Agent 承接。 */
+    /** 对话页切换执行 Agent：历史消息保留；执行中只排队，本轮结束后自动生效。 */
     fun switchAgent(agentId: String) = runAction("switch-agent") { api ->
         val task = api.setTaskAgent(taskId, agentId)
-        _state.value = _state.value.copy(task = task, notice = "已切换 Agent，后续执行交给新 Agent")
+        val queued = task.pendingAgentId == agentId
+        _state.value = _state.value.copy(
+            task = task,
+            notice = if (queued) {
+                "已排队：本轮结束后自动切换 Agent，当前这一轮仍由原 Agent 跑完"
+            } else {
+                "已切换 Agent，后续执行交给新 Agent"
+            },
+        )
+        // 立即生效会落一张交接卡：刷新一次把它带进对话
+        if (!queued) refresh(quiet = true)
     }
 
     /** 对话页切换模型：必须是当前 Agent 支持的模型，后续 Run 用它执行；keyId 非空表示来自密钥库。 */

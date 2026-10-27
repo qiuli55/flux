@@ -329,14 +329,20 @@ async def get_task_context(
 ) -> dict[str, object]:
     """对话上下文占用（「上下文快满」提醒的唯一口径）。
 
-    度量的不是模型标称窗口，而是平台助手这一轮实际能带上的那段历史：
-    条数上限与字符预算都来自 §6.1。客户端据此画占用条并在阈值处提醒新建对话。
+    度量的不是模型标称窗口，而是执行 Agent 下一轮实际会收到的内容：
+    与 `TaskRunService.start()` 同源装配的执行指令（约束 / 任务 / 工作记忆 /
+    压缩后的对话轨迹 / 计划）。历史已压缩在指令里，这里不再把原始消息重复计入，
+    否则对话一长就永远停在 100%。条数只作为解释信息返回。
     """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    # 与真实开跑共用一套装配，避免「占用条」与「Agent 实际收到」两套口径
+    instruction = await container.task_run_service.preview_instruction(task)
     limit = context_message_limit()
-    messages, total = await container.task_repo.context_snapshot(
-        _task_id(task_id), limit=limit, kinds=CONTEXT_MESSAGE_KINDS
+    _, total = await container.task_repo.context_snapshot(
+        task_uuid, limit=limit, kinds=CONTEXT_MESSAGE_KINDS
     )
-    usage = measure_context(messages, message_count=total, limit=limit)
+    usage = measure_context([], message_count=total, limit=limit, extra_chars=len(instruction))
     return ok(usage.to_dict())
 
 
@@ -681,22 +687,30 @@ async def switch_task_agent(
 ) -> dict[str, object]:
     """切换执行该任务的 Agent（移动端对话页的 Agent 下拉）。
 
-    同一任务/对话保留历史消息，后续「开始执行」或续聊改由新 Agent 承接；
-    正在执行时不允许切换（先停止）。终态对话也允许切换：切换本身不执行任何东西，
-    只决定下一条消息由谁承接，续聊时按新的 Agent 起 Run。
+    同一任务/对话保留历史消息，后续消息改由新 Agent 承接。
+    - 执行中切换：只排队（`pending_agent_id`），本轮 Run 收尾后自动生效，
+      当前这一轮仍由原 Agent 跑完；响应 `queued=true`、`effective_from=next_run`。
+    - 空闲/终态切换：立即生效，生成一张交接卡（`kind=handoff`）供新 Agent 接手。
+    - 预检失败（Agent 不存在 / runtime 未接入）：保留原 Agent，按真实原因报错。
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
-    if task.status == TaskStatus.RUNNING.value:
-        raise ConflictError(
-            f"任务 {task_id} 正在执行，先停止 Agent 再切换",
-            details={"task_id": task_id, "status": task.status},
-        )
-    agent_id = _parse_uuid(payload.agent_id, field="agent_id")
-    # Agent 注册表是 Agent 存在性的唯一权威：API 边界 fail-closed。
-    container.agents.get(payload.agent_id)
-    task = await container.task_repo.set_agent(task_uuid, agent_id)
-    return ok(_task_dict(task))
+    _parse_uuid(payload.agent_id, field="agent_id")
+    result = await container.agent_switch.switch(task, payload.agent_id)
+    body = {
+        **_task_dict(result.task),
+        "queued": result.queued,
+        "target_agent_id": str(result.target.agent_id),
+        "target_agent": result.target.name,
+        "effective_from": "next_run" if result.queued else "now",
+    }
+    logger.info(
+        "task.agent_switch task=%s target=%s queued=%s",
+        task_uuid,
+        result.target.agent_id,
+        result.queued,
+    )
+    return ok(body)
 
 
 @router.post("/{task_id}/model")
@@ -941,6 +955,17 @@ async def delete_task(
     with contextlib.suppress(NotFoundError):
         container.scheduler.cancel(str(task.id))
     messages, runs = await container.task_repo.delete(task_uuid)
+    # 工作记忆卡与会话绑定同样随任务清除：任务没了，旧会话也不能被继承。
+    cards = await container.task_memory.delete_for_task(task_uuid)
+    sessions = await container.runtime_sessions.delete_for_task(task_uuid)
+    logger.info(
+        "删除对话 %s 完成：消息=%d 运行=%d 记忆卡=%d 会话绑定=%d",
+        task_id,
+        messages,
+        runs,
+        cards,
+        sessions,
+    )
     return ok({"id": task_id, "deleted": True, "messages": messages, "runs": runs})
 
 

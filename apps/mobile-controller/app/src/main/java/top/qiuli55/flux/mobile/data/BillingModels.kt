@@ -35,12 +35,25 @@ data class BillingOfficialWindow(
 )
 
 @Serializable
+data class BillingExternal(
+    val snapshots: Int = 0,
+    val since: String? = null,
+    @SerialName("latest_at") val latestAt: String? = null,
+    @SerialName("official_increase") val officialIncrease: Double = 0.0,
+    // 官方增长中 Flux 空闲时段的部分（可归给外部客户端）
+    val points: Double = 0.0,
+    // 官方增长中 Flux 同时在跑、无法拆分归因的部分
+    @SerialName("mixed_points") val mixedPoints: Double = 0.0,
+)
+
+@Serializable
 data class BillingWindow(
     val key: String = "",
     val label: String = "",
     val since: String = "",
     val local: BillingTotals = BillingTotals(),
     val official: BillingOfficialWindow? = null,
+    val external: BillingExternal? = null,
 )
 
 @Serializable

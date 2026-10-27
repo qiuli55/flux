@@ -144,14 +144,50 @@ class TaskRepository:
         """切换执行该任务的 Agent：只影响后续 Run，不改历史消息与决策记录。
 
         换 Agent 时清掉任务级模型覆盖：旧 Agent 的模型/密钥不一定在新 Agent 的支持列表里。
+        直接切换（空闲时）会一并作废已排队的切换目标。
         """
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.agent_id = agent_id
             task.model = None
             task.api_key_id = None
+            task.pending_agent_id = None
             await self._commit(session)
             return task
+
+    async def set_pending_agent(self, task_id: uuid.UUID, agent_id: uuid.UUID) -> Task:
+        """记下「本轮结束后要切到哪个 Agent」，当前 Agent 与模型保持不变。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.pending_agent_id = agent_id
+            await self._commit(session)
+            return task
+
+    async def clear_pending_agent(self, task_id: uuid.UUID) -> Task:
+        """撤销排队切换（用户在生效前改回原 Agent，或目标已不可用）。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.pending_agent_id = None
+            await self._commit(session)
+            return task
+
+    async def apply_pending_agent(self, task_id: uuid.UUID) -> tuple[Task, uuid.UUID | None]:
+        """把排队目标落成当前 Agent；没有排队时原样返回（None）。
+
+        与 `set_agent` 同一口径：换人即清任务级模型覆盖，避免旧 Agent 的模型
+        在新 Agent 上不可用。返回值第二项是本次实际应用的 Agent id。
+        """
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            pending = task.pending_agent_id
+            if pending is None:
+                return task, None
+            task.agent_id = pending
+            task.pending_agent_id = None
+            task.model = None
+            task.api_key_id = None
+            await self._commit(session)
+            return task, pending
 
     async def set_model(
         self,

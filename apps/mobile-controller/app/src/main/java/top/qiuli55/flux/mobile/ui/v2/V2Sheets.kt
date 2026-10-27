@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
@@ -93,6 +94,7 @@ fun SettingsSheet(
     onOpenDevices: () -> Unit,
     onOpenTerminals: () -> Unit,
     onOpenKeyVault: () -> Unit,
+    onOpenMemories: () -> Unit,
     codexAccount: CodexAccountStatus?,
     codexLogin: CodexLoginSession?,
     codexLoading: Boolean,
@@ -220,6 +222,14 @@ fun SettingsSheet(
                     description = "管理 Agent 模型通道的 API Key",
                     danger = false,
                     onClick = onOpenKeyVault,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                SettingsActionRow(
+                    icon = Icons.Outlined.Psychology,
+                    title = "用户记忆",
+                    description = "跨设备的长期偏好与禁忌，可编辑、可关闭自动记录",
+                    danger = false,
+                    onClick = onOpenMemories,
                 )
                 ThinDivider(V2Colors.ink(.05f))
                 SettingsActionRow(
@@ -1082,7 +1092,7 @@ private fun CodexAccountHeader(
     val loggedIn = account?.loggedIn == true
     val plan = codexPlanLabel(account?.plan)
     val subtitle = when {
-        loggedIn && account?.plan == "free" -> "Free 套餐不含 Codex 额度，需 Plus 及以上"
+        loggedIn && account?.plan == "free" -> "Free 套餐 · 本地 Codex 用 GPT-5.6 Luna（额度较少）"
         loggedIn -> account?.email ?: "已连接 ChatGPT 账号"
         login?.isPending == true -> "等待浏览器授权…"
         loading -> "读取账号状态…"

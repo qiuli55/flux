@@ -80,6 +80,10 @@ SPEC_TABLES = {
     # 执行轨迹持久化：思考段 / 工具调用 / 错误行按 Run 落库，
     # 对话页的「任务耗时 · 概览 · 思考过程 · 命令输出」刷新与换设备后仍可回看。
     "run_trace_items",
+    # 跨轮记忆：每轮结束平台生成的工作记忆卡，下一轮开工注入执行指令。
+    "task_memory_cards",
+    # 任务 ↔ 外部 Agent 会话绑定（opencode / codex 跨轮续聊）。
+    "task_runtime_sessions",
 }
 
 

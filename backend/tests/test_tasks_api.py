@@ -36,6 +36,8 @@ _RESPONSE_KEYS = {
     "api_key_id",
     # 对话权限三模式（plan / normal / full）
     "permission_mode",
+    # 执行中切换 Agent 的排队目标（本轮 Run 收尾后生效）
+    "pending_agent_id",
 }
 
 
@@ -141,6 +143,8 @@ def test_delete_task_removes_messages_runs_and_queue_entry(client: TestClient) -
             status=DshRunStatus.COMPLETED,
             task_id=task_uuid,
         )
+        await container.task_memory.add(task_uuid, "run-delete-1", "记忆卡内容")
+        await container.runtime_sessions.set(task_uuid, "opencode", "ses-delete-1")
 
     asyncio.run(_seed())
     assert task_id in [item.task_id for item in container.scheduler.pending()]
@@ -159,6 +163,9 @@ def test_delete_task_removes_messages_runs_and_queue_entry(client: TestClient) -
     assert task_id not in [task["id"] for task in client.get(f"{PREFIX}/tasks").json()["data"]]
     assert task_id not in [item.task_id for item in container.scheduler.pending()]
     assert asyncio.run(container.run_repo.get("run-delete-1")) is None
+    # 工作记忆卡与会话绑定也必须一起清掉，否则重建同名任务会继承旧会话。
+    assert asyncio.run(container.task_memory.latest(task_uuid)) is None
+    assert asyncio.run(container.runtime_sessions.get(task_uuid, "opencode")) == ""
 
 
 def test_delete_running_task_conflicts_until_stopped(client: TestClient) -> None:

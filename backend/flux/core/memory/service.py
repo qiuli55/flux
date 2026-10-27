@@ -77,6 +77,13 @@ class MemoryService:
         self._environment_seed = (
             ENVIRONMENT_MEMORY_SEED if environment_seed is None else environment_seed
         )
+        # 账号云同步（可选）：本机写入后推到云端；云端快照回填本地缓存。
+        # 未装配时行为与原来完全一致（纯本地三层记忆）。
+        self._cloud: Any = None
+
+    def attach_cloud(self, sync: Any) -> None:
+        """接线账号级记忆同步；同步失败不能影响本地读写，错误由同步组件自行记账。"""
+        self._cloud = sync
 
     # --- User Memory（用户确认后写入；可查可删）---
 
@@ -100,7 +107,32 @@ class MemoryService:
         await self._repository.prune_layer(
             MemoryLayer.USER, keep=self._policies[MemoryLayer.USER].max_entries
         )
+        if self._cloud is not None:
+            # 推到账号云并回填 cloud_id；云端不可达时保留本地条目，等待下一次同步补推
+            pushed = await self._cloud.push_entry(entry)
+            if pushed is not None:
+                entry = pushed
         return entry
+
+    async def update_user(self, entry_id: str | uuid.UUID, *, content: str) -> MemoryEntry:
+        """修改一条 User Memory（手动编辑）；同步失败时退回待补推，避免下轮被云端旧值覆盖。"""
+        entry = await self._repository.get(entry_id)
+        if entry.layer != MemoryLayer.USER.value:
+            raise PermissionDeniedError(
+                "只有 User Memory 可修改；Environment / Project 记忆由平台或项目流程维护",
+                details={"memory_id": str(entry_id), "layer": entry.layer},
+            )
+        text = self._validate(content, where="User Memory")
+        updated = await self._repository.update_content(entry.id, content=text)
+        cloud_id = str((updated.meta or {}).get("cloud_id") or "")
+        if self._cloud is not None and cloud_id:
+            ok = await self._cloud.update_remote(cloud_id, updated)
+            if not ok:
+                # 云端没改成功：去掉 cloud_id，下一次同步按「新条目」重推并清掉旧行
+                meta = {k: v for k, v in (updated.meta or {}).items() if k != "cloud_id"}
+                meta["stale_cloud_id"] = cloud_id
+                updated = await self._repository.update_meta(updated.id, meta=meta)
+        return updated
 
     # --- Environment Memory（平台维护：种子 upsert + 平台写入）---
 
@@ -175,7 +207,66 @@ class MemoryService:
                 "只有 User Memory 可删除；Environment / Project 记忆由平台或项目流程维护",
                 details={"memory_id": str(entry_id), "layer": entry.layer},
             )
+        cloud_id = (entry.meta or {}).get("cloud_id")
+        if self._cloud is not None and cloud_id:
+            # 先删云端再删本地：云端失败时本地仍保留（可重试），不会出现"云端有、本地没了"
+            await self._cloud.delete_remote(str(cloud_id))
         await self._repository.delete(entry_id)
+
+    async def update_entry_meta(self, entry_id: str | uuid.UUID, meta: dict) -> MemoryEntry:
+        """更新一条 User 记忆的 meta（云端同步回填 cloud_id 用）。"""
+        return await self._repository.update_meta(entry_id, meta=meta)
+
+    async def apply_cloud_snapshot(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        """把账号云快照合并进本地 User 缓存（多设备一致性）。
+
+        - 云端有、本地没有 → 插入（meta.cloud_id 标记来源）；
+        - 两边都有且内容不同 → 以云端为准刷新本地内容；
+        - 本地有 cloud_id 但云端已删除 → 本地一并删除。
+        """
+        local = await self._live(MemoryLayer.USER)
+        by_cloud: dict[str, MemoryEntry] = {}
+        for entry in local:
+            cloud_id = str((entry.meta or {}).get("cloud_id") or "")
+            if cloud_id:
+                by_cloud[cloud_id] = entry
+
+        cloud_ids: set[str] = set()
+        inserted = updated = 0
+        for item in items:
+            cloud_id = str(item.get("id") or "")
+            content = str(item.get("content") or "").strip()
+            if not cloud_id or not content:
+                continue
+            cloud_ids.add(cloud_id)
+            current = by_cloud.get(cloud_id)
+            if current is None:
+                await self._repository.insert(
+                    layer=MemoryLayer.USER,
+                    content=content,
+                    source=str(item.get("source") or "auto"),
+                    meta={
+                        "cloud_id": cloud_id,
+                        "origin_device": item.get("origin_device"),
+                    },
+                )
+                inserted += 1
+            elif current.content.strip() != content:
+                await self._repository.update_content(current.id, content=content)
+                updated += 1
+
+        removed = 0
+        stale = [
+            entry.id
+            for cloud_id, entry in by_cloud.items()
+            if cloud_id not in cloud_ids
+        ]
+        if stale:
+            removed = await self._repository.delete_many(stale)
+        await self._repository.prune_layer(
+            MemoryLayer.USER, keep=self._policies[MemoryLayer.USER].max_entries
+        )
+        return {"inserted": inserted, "updated": updated, "removed": removed}
 
     async def recall(self, *, project_id: str | uuid.UUID | None = None) -> dict[str, Any]:
         """三层统一只读出口：Environment → User → Project（仅当前项目）。"""

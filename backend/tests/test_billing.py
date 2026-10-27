@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -11,12 +12,12 @@ from fastapi.testclient import TestClient
 
 from flux.container import Container
 from flux.core.billing.plans import (
-    PLANS,
     PLAN_AGENT_PLAN,
     PLAN_CLAUDE,
     PLAN_CODEX,
     PLAN_OPENCODE_GO,
     PLAN_OPENCODE_ZEN,
+    PLANS,
     load_plan_registry,
     resolve_plan,
 )
@@ -319,3 +320,147 @@ def test_billing_api_endpoints(client: TestClient) -> None:
     run = client.get("/api/v1/billing/runs/run-404")
     assert run.status_code == 200, run.text
     assert run.json()["data"]["totals"]["records"] == 0
+
+
+def test_external_points_count_flux_idle_intervals(client: TestClient) -> None:
+    """官方百分比差分：Flux 空闲时段的增长归外部客户端，并发时段单列 mixed。"""
+    container: Container = client.app.state.container
+    container.billing._sources = {}  # noqa: SLF001 - 不联网，只看库里已有的快照
+    now = datetime.now(timezone.utc)
+
+    async def seed() -> None:
+        # 只有第一段（-3h → -2h）里有 Flux 调用：这一段官方增长无法拆分
+        await container.billing.record_step(
+            run_id="run-external",
+            model="opencode-go/deepseek-v4.1-flash",
+            provider="opencode-go",
+            input_tokens=1000,
+            output_tokens=200,
+            occurred_at=now - timedelta(hours=2, minutes=30),
+        )
+        for hours, percent in ((3, 10.0), (2, 12.0), (1, 15.0)):
+            await container.billing._repo.add_snapshot(  # noqa: SLF001 - 直接落快照
+                plan_key=PLAN_OPENCODE_GO,
+                window_key="rolling_5h",
+                percent=percent,
+                source="opencode_go",
+                fetched_at=now - timedelta(hours=hours),
+            )
+
+    asyncio.run(seed())
+
+    data = client.get("/api/v1/billing/usage", params={"plan": PLAN_OPENCODE_GO}).json()["data"]
+    window = next(item for item in data["windows"] if item["key"] == "rolling_5h")
+    external = window["external"]
+    assert external["snapshots"] == 3
+    assert external["official_increase"] == 5.0
+    assert external["mixed_points"] == 2.0
+    assert external["points"] == 3.0  # -2h → -1h 没有 Flux 调用，全是外部客户端
+
+
+def test_run_settle_triggers_billing_snapshot() -> None:
+    """Run 收尾要补一次官方额度快照，给外部消耗差分切出区间边界。"""
+    from flux.core.task_engine.dsh_bridge import TaskRunBridge
+
+    class FakeBilling:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def refresh(self) -> None:
+            self.calls += 1
+
+    async def scenario() -> int:
+        bridge = TaskRunBridge(None, None)  # type: ignore[arg-type]
+        billing = FakeBilling()
+        bridge.set_billing(billing)
+        bridge._schedule_billing_snapshot()  # noqa: SLF001 - 直接验证收尾钩子
+        await asyncio.gather(*bridge._snapshot_jobs)  # noqa: SLF001
+        return billing.calls
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_chatgpt_usage_source_maps_official_windows(tmp_path) -> None:
+    """Codex 官方额度：primary=5h、secondary=周，按 limit_window_seconds 归到本地窗口。"""
+    from flux.config import Settings
+    from flux.core.billing.sources import ChatGptCodexUsageSource
+
+    home = tmp_path / "codex-account"
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "at-123", "account_id": "acc-1"}}),
+        encoding="utf-8",
+    )
+    payload = {
+        "plan_type": "plus",
+        "rate_limit": {
+            "limit_reached": False,
+            "primary_window": {
+                "used_percent": 12.5,
+                "limit_window_seconds": 18000,
+                "reset_at": 1_700_000_000,
+            },
+            "secondary_window": {
+                "used_percent": 30,
+                "limit_window_seconds": 604800,
+                "reset_after_seconds": 3600,
+            },
+        },
+    }
+
+    async def fetcher(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+        assert headers["Authorization"] == "Bearer at-123"
+        assert headers["chatgpt-account-id"] == "acc-1"
+        return 200, json.dumps(payload).encode()
+
+    settings = Settings(env="test", codex_account_home=str(home))
+    source = ChatGptCodexUsageSource(settings, fetcher=fetcher)
+    result = asyncio.run(source.fetch())
+    assert result.error is None
+    rows = {row.window_key: row for row in result.rows}
+    assert rows["rolling_5h"].percent == 12.5
+    assert rows["rolling_5h"].resets_at == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
+    assert rows["weekly"].percent == 30.0
+    assert rows["weekly"].resets_at is not None  # reset_after_seconds 兜底
+
+
+def test_chatgpt_usage_source_reports_missing_login(tmp_path) -> None:
+    """没登录时给出明确文案，而不是空窗口或崩溃。"""
+    from flux.config import Settings
+    from flux.core.billing.sources import ChatGptCodexUsageSource
+
+    settings = Settings(env="test", codex_account_home=str(tmp_path / "missing"))
+    result = asyncio.run(ChatGptCodexUsageSource(settings).fetch())
+    assert result.rows == []
+    assert result.error and "还没有登录 ChatGPT" in result.error
+
+
+def test_codex_login_success_schedules_quota_snapshot(tmp_path) -> None:
+    """ChatGPT 设备码登录成功后，自动采集一次 Codex 套餐额度。"""
+    from flux.config import Settings
+    from flux.core.agent_runtime.codex_account import CodexAccountService, _LoginSession
+
+    home = tmp_path / "codex-account"
+    home.mkdir()
+    (home / "auth.json").write_text("{}", encoding="utf-8")
+
+    class FakeBilling:
+        def __init__(self) -> None:
+            self.plans: list[str | None] = []
+
+        async def refresh(self, plan_key: str | None = None) -> None:
+            self.plans.append(plan_key)
+
+    async def scenario() -> list[str | None]:
+        service = CodexAccountService(Settings(env="test", codex_account_home=str(home)))
+        billing = FakeBilling()
+        service.set_billing(billing)
+        session = _LoginSession(login_id="login-test", process=None)
+        service._settle(session, 0)  # noqa: SLF001 - 验证登录成功的收尾钩子
+        assert session.status == "success"
+        await asyncio.gather(*service._billing_jobs)  # noqa: SLF001
+        return billing.plans
+
+    assert asyncio.run(scenario()) == [PLAN_CODEX]
+
+

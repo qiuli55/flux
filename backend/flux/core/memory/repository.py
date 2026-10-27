@@ -95,6 +95,18 @@ class MemoryRepository:
             await session.refresh(entry)
             return entry
 
+    async def update_meta(self, entry_id: str | uuid.UUID, *, meta: dict) -> MemoryEntry:
+        """更新条目的附加信息（云端同步回填 cloud_id 等）。"""
+        async with self._session_factory() as session:
+            entry = await session.get(MemoryEntry, _as_uuid(entry_id))
+            if entry is None:
+                raise NotFoundError(f"记忆 {entry_id} 不存在", details={"memory_id": str(entry_id)})
+            entry.meta = meta
+            entry.updated_at = _utcnow()
+            await session.commit()
+            await session.refresh(entry)
+            return entry
+
     async def list_layer(self, layer: MemoryLayer) -> list[MemoryEntry]:
         statement = (
             select(MemoryEntry)

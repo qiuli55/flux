@@ -6,7 +6,8 @@
 2. 密钥红线：sk- / gh / fxt_ / AWS / 私钥 / 赋值口令六类样本在 User、Project、Environment
    三条写入路径与 REST 入口全部拒收，且拒收后库里不留任何痕迹；
 3. 容量与 TTL：写时裁掉最旧、过期条目读取不可见并在下次写入时被清扫；
-4. 受控写入面：MCP 面只有只读 `memory.recall`，没有任何记忆写工具；删除只对 User 层开放。
+4. 受控写入面：MCP 面只有 `memory.recall`（读）与 `memory.remember`（运行中写用户偏好）；
+   删除只对 User 层开放。
 
 全部走真实数据库与真实 REST / MCP 链路，不 mock 仓储。
 """
@@ -295,10 +296,13 @@ def test_project_layer_listing_is_directed_to_the_project_api(container: Contain
     assert "/projects/" in excinfo.value.message
 
 
-def test_mcp_surface_exposes_recall_as_the_only_memory_tool() -> None:
-    """Agent 面没有任何记忆直写工具：memory.* 只有只读的 recall。"""
+def test_mcp_surface_exposes_recall_and_remember() -> None:
+    """Agent 面只有受控的两个记忆工具：读取 + 运行中记录用户偏好。"""
     names = {tool.name for tool in ALL_TOOLS}
-    assert {name for name in names if name.startswith("memory.")} == {"memory.recall"}
+    assert {name for name in names if name.startswith("memory.")} == {
+        "memory.recall",
+        "memory.remember",
+    }
 
 
 # --- 6. REST 面 ---

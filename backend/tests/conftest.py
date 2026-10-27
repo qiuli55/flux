@@ -52,6 +52,9 @@ def settings(tmp_path) -> Settings:
         env="test",
         log_level="WARNING",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'flux-test.db'}",
+        # 测试一律不碰账号云：开发机 /etc 下可能有真实设备凭据，必须显式关掉
+        memory_cloud_sync=False,
+        memory_prefs_file=str(tmp_path / "memory-prefs.json"),
         openai_api_key=None,
         anthropic_api_key=None,
         deepseek_api_key=None,
