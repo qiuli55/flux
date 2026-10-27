@@ -29,6 +29,7 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
+import top.qiuli55.flux.mobile.data.UserMemoryEntry
 import top.qiuli55.flux.mobile.ui.FluxViewModel
 import top.qiuli55.flux.mobile.ui.tasks.readPickedAttachment
 import java.text.SimpleDateFormat
@@ -62,6 +63,13 @@ data class V2AppState(
     /** 密钥库（/keys）；只在打开密钥库面板时加载。 */
     val keys: List<ApiKeyEntry> = emptyList(),
     val keysLoading: Boolean = false,
+    /** 账号级用户记忆；只在打开「用户记忆」面板时加载。 */
+    val memories: List<UserMemoryEntry> = emptyList(),
+    val memoriesLoading: Boolean = false,
+    val memorySaving: Boolean = false,
+    val memoryAutoCapture: Boolean = true,
+    val memoryCloudReady: Boolean = false,
+    val memoryCloudError: String = "",
     /** ChatGPT 账号（Codex 订阅通道）；设置页打开时加载。 */
     val codexAccount: CodexAccountStatus? = null,
     val codexLogin: CodexLoginSession? = null,
@@ -513,6 +521,127 @@ class V2AppViewModel : FluxViewModel() {
                 api().setKeyEnabled(keyId, enabled)
                 val keys = api().listKeys()
                 _state.value = _state.value.copy(keys = keys, error = null)
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 账号级用户记忆
+
+    /** 打开面板时加载：条目 + 自动记录开关 + 云端就绪状态。 */
+    fun loadMemories(force: Boolean = false) {
+        if (_state.value.memoriesLoading && !force) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(memoriesLoading = true)
+            try {
+                val memories = api().listUserMemories()
+                val settings = api().memorySettings()
+                _state.value = _state.value.copy(
+                    memories = memories,
+                    memoriesLoading = false,
+                    memoryAutoCapture = settings.autoCapture,
+                    memoryCloudReady = settings.cloudReady,
+                    memoryCloudError = settings.cloudError,
+                    error = null,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    memoriesLoading = false,
+                    memoryCloudError = readable(e),
+                )
+            }
+        }
+    }
+
+    /** 手动添加一条记忆；onResult 为空串表示成功。 */
+    fun addMemory(content: String, onResult: (String) -> Unit = {}) {
+        val text = content.trim()
+        if (text.isBlank()) {
+            onResult("内容不能为空")
+            return
+        }
+        if (_state.value.memorySaving) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(memorySaving = true)
+            try {
+                api().createUserMemory(text)
+                val memories = api().listUserMemories()
+                _state.value = _state.value.copy(
+                    memories = memories,
+                    memorySaving = false,
+                    error = null,
+                )
+                onResult("")
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(memorySaving = false)
+                onResult(readable(e))
+            }
+        }
+    }
+
+    /** 修改一条记忆；云端同步失败时后端会退化为待补推，不影响本地内容。 */
+    fun updateMemory(memoryId: String, content: String, onResult: (String) -> Unit = {}) {
+        val text = content.trim()
+        if (text.isBlank()) {
+            onResult("内容不能为空")
+            return
+        }
+        if (_state.value.memorySaving) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(memorySaving = true)
+            try {
+                api().updateUserMemory(memoryId, text)
+                val memories = api().listUserMemories()
+                _state.value = _state.value.copy(
+                    memories = memories,
+                    memorySaving = false,
+                    error = null,
+                )
+                onResult("")
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(memorySaving = false)
+                onResult(readable(e))
+            }
+        }
+    }
+
+    fun deleteMemory(memoryId: String, onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                api().deleteUserMemory(memoryId)
+                val memories = api().listUserMemories()
+                _state.value = _state.value.copy(memories = memories, error = null)
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    /** 自动记录开关；失败时回滚到服务端实际值。 */
+    fun setMemoryAutoCapture(enabled: Boolean) {
+        viewModelScope.launch {
+            val previous = _state.value.memoryAutoCapture
+            _state.value = _state.value.copy(memoryAutoCapture = enabled)
+            try {
+                api().setMemoryAutoCapture(enabled)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    memoryAutoCapture = previous,
+                    error = readable(e),
+                )
+            }
+        }
+    }
+
+    /** 立即与账号云对一次账，然后刷新列表。 */
+    fun syncMemories(onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                api().syncUserMemories()
+                loadMemories(force = true)
                 onResult("")
             } catch (e: Exception) {
                 onResult(readable(e))

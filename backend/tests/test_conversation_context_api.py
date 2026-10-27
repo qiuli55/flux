@@ -42,31 +42,37 @@ def _seed(
     asyncio.run(container.task_repo.add_messages(uuid.UUID(task_id), drafts))
 
 
-def test_context_usage_moves_from_normal_to_warning_to_full(client, container):
+def test_context_usage_recomputes_from_compressed_trace(client, container):
+    """历史再多也按压缩后的轨迹计：不会因为条数到顶就永远显示 100%。
+
+    平台每轮投喂的是「执行指令（含压缩轨迹）」，原始消息不会整段进模型。
+    """
     task = _create_task(client)
     limit = context_message_limit()
 
-    empty = client.get(f"{PREFIX}/tasks/{task['id']}/context")
-    assert empty.status_code == 200, empty.text
-    data = empty.json()["data"]
-    assert data["level"] == "normal"
-    assert data["message_count"] == 0
-    assert data["limit"] == limit
+    empty = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
+    assert empty["level"] == "normal"
+    assert empty["message_count"] == 0
+    assert empty["limit"] == limit
+    assert empty["used_chars"] == empty["instruction_chars"]
 
-    warning_count = int(limit * 0.85)
-    _seed(container, task["id"], warning_count)
-    warning = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
-    assert warning["level"] == "warning"
-    assert warning["used_messages"] == warning_count
-    assert warning["percent"] >= 80
+    _seed(container, task["id"], limit * 3, chars=2000)
+    compressed = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
+    assert compressed["message_count"] == limit * 3
+    # 条数只作解释信息：即使已到上限，也不参与比例与等级
+    assert compressed["used_messages"] == limit
+    assert compressed["used_chars"] == compressed["instruction_chars"]
+    assert compressed["used_chars"] < compressed["budget_chars"]
+    assert compressed["level"] == "normal"
+    assert compressed["percent"] < 80
 
-    _seed(container, task["id"], limit)
-    full = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
-    assert full["level"] == "full"
-    assert full["message_count"] == warning_count + limit
-    # 只有最近 limit 条会进模型；多出来的旧消息不再计入这一轮上下文
-    assert full["used_messages"] == limit
-    assert full["percent"] == 100
+    # 继续加同样体量的消息：压缩轨迹封顶，占用不应继续上涨，更不该卡在 100%
+    before = compressed["used_chars"]
+    _seed(container, task["id"], limit * 2, chars=2000)
+    more = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
+    assert more["message_count"] == limit * 5
+    assert more["used_chars"] == before
+    assert more["level"] == "normal"
 
 
 def test_context_usage_skips_messages_outside_context(client, container):
@@ -74,7 +80,9 @@ def test_context_usage_skips_messages_outside_context(client, container):
     _seed(container, task["id"], 1, chars=5000, role="assistant", kind="run_started")
     data = client.get(f"{PREFIX}/tasks/{task['id']}/context").json()["data"]
     assert data["message_count"] == 0
-    assert data["used_chars"] == 0
+    # 占用按真实投喂算：即使没有历史消息，下一轮执行指令本身也占字符
+    assert data["instruction_chars"] > 0
+    assert data["used_chars"] == data["instruction_chars"]
     assert data["level"] == "normal"
 
 

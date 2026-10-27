@@ -1,4 +1,4 @@
-"""只读记忆工具 `memory.recall`（批次② §4.2 / §4.3）。
+"""记忆工具：`memory.recall`（只读）与 `memory.remember`（运行中写入用户偏好）。
 
 三层记忆的统一读取口（D3：与 `context.get` / `flux_context` 并存不合并）：
 
@@ -6,8 +6,9 @@
 - `context.get`  = 这个项目是什么（项目事实，只读现状）；
 - `memory.recall` = Flux 记住的结论（Environment / User / Project 三层，跨会话）。
 
-只读，不改任何状态；Agent 没有任何记忆直写接口——写入必须走受控路径
-（User Memory 由用户确认，Project Memory 由扫描与工作沉淀产生）。
+`memory.remember` 让 Agent 在**任务执行过程中**把用户表现出的稳定偏好/习惯/禁忌写进
+User Memory：用的是本轮任务自己的模型通道，不需要任务结束后再单独调模型提炼。
+写入仍受控：密钥红线、去重、单条长度与总量上限都由 MemoryService 统一执行。
 """
 
 from __future__ import annotations
@@ -15,8 +16,14 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
-from flux.enums import Capability
+from flux.core.mcp.tools.base import (
+    ToolContext,
+    ToolSpec,
+    optional_str,
+    reject_unknown,
+    require_str,
+)
+from flux.enums import Capability, MemoryLayer
 from flux.errors import ValidationError
 
 MEMORY_RECALL_SCHEMA: dict[str, Any] = {
@@ -32,6 +39,25 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
 }
 
 
+MEMORY_REMEMBER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": (
+                "一条跨项目长期有效的用户偏好/习惯/禁忌，尽量 30 字以内；"
+                "不要放项目细节、文件路径、密钥"
+            ),
+        }
+    },
+    "required": ["content"],
+    "additionalProperties": False,
+}
+
+#: 单条上限与任务级提炼器一致：太长的「记忆」通常是把执行日志抄了一遍
+MAX_REMEMBER_CHARS = 200
+
+
 async def memory_recall(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"project_id", "task_id"})
     project_id = optional_str(params, "project_id")
@@ -40,6 +66,32 @@ async def memory_recall(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
         if task_id is not None:
             project_id = await _project_from_task(ctx, task_id)
     return await ctx.container.memory.recall(project_id=project_id)
+
+
+async def memory_remember(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """写一条 User Memory；重复内容直接返回 duplicate，不新增条目。"""
+    reject_unknown(params, {"content"})
+    content = require_str(params, "content")
+    if len(content) > MAX_REMEMBER_CHARS:
+        raise ValidationError(
+            f"记忆内容不能超过 {MAX_REMEMBER_CHARS} 字",
+            details={"param": "content", "max": MAX_REMEMBER_CHARS},
+        )
+    entries = await ctx.container.memory.list_entries(layer=MemoryLayer.USER)
+    normalized = _normalize(content)
+    for entry in entries:
+        if _normalize(entry.content) == normalized:
+            return {"saved": False, "duplicate": True, "id": str(entry.id)}
+    entry = await ctx.container.memory.write_user(
+        content=content,
+        source="auto",
+        meta={"auto": True, "origin": "agent", "agent_id": ctx.identity.agent_id},
+    )
+    return {"saved": True, "duplicate": False, "id": str(entry.id), "content": entry.content}
+
+
+def _normalize(text: str) -> str:
+    return " ".join((text or "").split()).lower()
 
 
 async def _project_from_task(ctx: ToolContext, task_id: str) -> str | None:
@@ -67,5 +119,17 @@ def memory_tools() -> tuple[ToolSpec, ...]:
             input_schema=MEMORY_RECALL_SCHEMA,
             capability=Capability.FILE_READ,
             handler=memory_recall,
+        ),
+        ToolSpec(
+            name="memory.remember",
+            title="记下用户的长期偏好",
+            description=(
+                "把本轮对话里用户表现出的稳定偏好、习惯或禁忌写进账号级 User Memory"
+                "（跨设备、跨项目长期有效）。只记长期有效的信息，不记项目细节、文件路径、"
+                "一次性任务和密钥；同一内容已存在时不会重复写入。"
+            ),
+            input_schema=MEMORY_REMEMBER_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=memory_remember,
         ),
     )

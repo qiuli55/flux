@@ -97,6 +97,15 @@ class BillingRepository:
             "cost": round(float(row[6] or 0.0), 6),
         }
 
+    async def record_times(self, *, plan_key: str | None, since: datetime) -> list[datetime]:
+        """某套餐自 `since` 起的调用时刻（只取时间，用于判断区间内 Flux 是否在跑）。"""
+        statement = select(UsageRecord.occurred_at).where(UsageRecord.occurred_at >= since)
+        if plan_key:
+            statement = statement.where(UsageRecord.plan_key == plan_key)
+        statement = statement.order_by(UsageRecord.occurred_at)
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
     async def records_by_run(self, run_id: str, *, limit: int = 200) -> list[UsageRecord]:
         statement = (
             select(UsageRecord)
@@ -140,6 +149,32 @@ class BillingRepository:
         async with self._session_factory() as session:
             session.add(row)
             await session.commit()
+
+    async def snapshots_since(
+        self, *, plan_key: str, window_key: str, since: datetime
+    ) -> list[dict]:
+        """某窗口自 `since` 起的成功快照（按采集时刻正序），用于外部消耗差分。"""
+        statement = (
+            select(UsageSnapshot)
+            .where(
+                UsageSnapshot.plan_key == plan_key,
+                UsageSnapshot.window_key == window_key,
+                UsageSnapshot.fetched_at >= since,
+                UsageSnapshot.percent.is_not(None),
+                UsageSnapshot.error.is_(None),
+            )
+            .order_by(UsageSnapshot.fetched_at)
+        )
+        async with self._session_factory() as session:
+            rows = list(await session.scalars(statement))
+        return [
+            {
+                "percent": float(row.percent or 0.0),
+                "fetched_at": row.fetched_at,
+                "resets_at": row.resets_at,
+            }
+            for row in rows
+        ]
 
     async def latest_snapshots(self, plan_key: str, *, lookback_days: int = 2) -> list[dict]:
         """每个窗口取最新一条（按 fetched_at 倒序去重）。"""

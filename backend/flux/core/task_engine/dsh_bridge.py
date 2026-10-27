@@ -26,6 +26,7 @@ from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, i
 from flux.core.context.redact import redact
 from flux.core.event.bus import EventBus, Events
 from flux.core.task_engine.repository import MessageDraft, TaskRepository
+from flux.core.task_engine.work_memory import build_memory_card
 from flux.enums import BrainSection, DshRunStatus, TaskMessageRole, TaskStatus
 from flux.logging import get_logger
 
@@ -112,6 +113,8 @@ class TaskRunBridge:
         workspace: Any = None,
         stream: Any = None,
         trace: Any = None,
+        trace_repo: Any = None,
+        memory: Any = None,
     ) -> None:
         self._tasks = tasks
         # 对账要拿 Run 的权威状态；纯事件转发（单测）可以不装配
@@ -126,9 +129,18 @@ class TaskRunBridge:
         # 执行轨迹记录器（可选）：收尾时先把思考/命令轨迹落库，
         # 客户端刷新任务详情时「任务耗时 / 概览」立刻可读（不必等 SSE 订阅者处理完）
         self._trace = trace
+        # 轨迹仓储（可选）：工作记忆卡要读本轮 write 类路径与命令统计
+        self._trace_repo = trace_repo
+        # 工作记忆卡仓储（可选）：Run 收尾时平台自动写一张，下一轮开工必带
+        self._memory = memory
         # 自动重试（可选）：上游瞬时故障（429 / ReadTimeout）时由容器注入「再起一轮」的回调；
         # 没装配时退化为原有的失败收尾，行为不变。
         self._retry_handler: Callable[[Any], Awaitable[None]] | None = None
+        # 排队切换 Agent（可选）：Run 真实收尾后应用「本轮结束后切换」的目标；
+        # 没装配时切换只支持空闲时立即生效，行为不变。
+        self._switch_handler: (
+            Callable[[Any, str | None, str], Awaitable[Any]] | None
+        ) = None
         #: task_id → 本轮失败链剩余的自动重试次数（成功后清零）
         self._retry_budget: dict[str, int] = {}
         #: 正在冷却、等待自动重试的任务：此时 run_id 还是刚失败的那个 Run，
@@ -136,10 +148,25 @@ class TaskRunBridge:
         self._retry_pending: set[str] = set()
         #: 重试协程的强引用，避免 create_task 后被 GC 提前回收
         self._retry_jobs: set[asyncio.Task[Any]] = set()
+        #: 计费服务（可选）：Run 收尾时补一次官方额度快照，
+        #: 给「外部客户端消耗」的差分估算切出干净的区间边界。
+        self._billing: Any | None = None
+        #: 额度快照协程的强引用
+        self._snapshot_jobs: set[asyncio.Task[Any]] = set()
+
+    def set_billing(self, billing: Any | None) -> None:
+        """注入计费服务：容器在 BillingService 装配完成后调用。"""
+        self._billing = billing
 
     def set_retry_handler(self, handler: Callable[[Any], Awaitable[None]] | None) -> None:
         """注入自动重试回调：参数是任务对象，由容器转交 TaskRunService 重新起 Run。"""
         self._retry_handler = handler
+
+    def set_switch_handler(
+        self, handler: Callable[[Any, str | None, str], Awaitable[Any]] | None
+    ) -> None:
+        """注入排队切换回调：参数是任务、本轮 run_id、任务终态。"""
+        self._switch_handler = handler
 
     def attach(self, bus: EventBus) -> None:
         for event in _STATUS_BY_EVENT:
@@ -209,6 +236,11 @@ class TaskRunBridge:
                     )
                 ],
             )
+            await self._write_memory_card(
+                task, run_id, status=status, body={"run_id": run_id, "error": error}
+            )
+            # 本轮真的结束了：排队中的 Agent 切换在这里应用（交接卡 + 事件）
+            await self._apply_pending_switch(task, run_id, status)
             logger.warning(
                 "任务对账修正 task=%s running → %s（Run %s 已终态/不存在）",
                 task.id,
@@ -225,6 +257,7 @@ class TaskRunBridge:
         task = await self._tasks.get_by_run_id(run_id)
         if task is None:
             return
+        self._schedule_billing_snapshot()
         if task.status in _FINAL_STATUSES:
             return
         if task.status == TaskStatus.WAITING_FOR_USER_DECISION.value:
@@ -272,6 +305,90 @@ class TaskRunBridge:
         # 上下文闭环：任务收尾把"这轮做了什么、结果如何"写进项目 Brain 的累积区，
         # 下一轮（可能是另一个 Agent）开工时 context.get 就能看到，不必从人审队列反推。
         await self._sediment(task, status=status, run_id=run_id, body=body)
+        # 跨轮记忆：再落一张工作记忆卡，下一轮执行指令必须带上（不依赖用户手动摘要）
+        await self._write_memory_card(task, run_id, status=status, body=body)
+        # 无感切换：本轮已真实收尾，排队中的 Agent 切换此刻生效并生成交接卡
+        await self._apply_pending_switch(task, run_id, status)
+
+    async def _apply_pending_switch(
+        self, task: Any, run_id: str | None, status: TaskStatus
+    ) -> None:
+        """应用排队切换；失败只记日志，不影响任务终态与结果消息。"""
+        if self._switch_handler is None:
+            return
+        try:
+            await self._switch_handler(task, run_id, str(status))
+        except Exception:  # noqa: BLE001 - 切换失败不能回滚已经完成的一轮
+            logger.warning(
+                "应用排队 Agent 切换失败 task=%s", getattr(task, "id", "?"), exc_info=True
+            )
+
+    def _schedule_billing_snapshot(self) -> None:
+        """Run 收尾补一次官方额度快照：让「Flux 在跑」和「Flux 空闲」的区间有边界。
+
+        官方额度只有整数百分比、没有任务归因，外部客户端消耗只能靠区间差分估算；
+        没有收尾快照时，一个长区间里只要有过一次 Flux 调用，整段增长都会被判成
+        「无法拆分」。这次采集异步执行，失败只记日志，不影响 Run 收尾。
+        """
+        if self._billing is None:
+            return
+        job = asyncio.create_task(self._snapshot_billing())
+        self._snapshot_jobs.add(job)
+        job.add_done_callback(self._snapshot_jobs.discard)
+
+    async def _snapshot_billing(self) -> None:
+        try:
+            await self._billing.refresh()
+        except Exception:
+            logger.warning("Run 收尾采集额度快照失败", exc_info=True)
+
+    async def _write_memory_card(
+        self,
+        task: Any,
+        run_id: str,
+        *,
+        status: TaskStatus,
+        body: dict[str, Any],
+    ) -> None:
+        """Run 收尾时写一张工作记忆卡；失败只记日志，不影响任务终态与结果消息。"""
+        if self._memory is None:
+            return
+        try:
+            if await self._memory.exists(task.id, run_id):
+                return
+            run = await self._runs.get(run_id) if self._runs is not None else None
+            trace_rows = (
+                await self._trace_repo.list_for_runs([run_id])
+                if self._trace_repo is not None
+                else []
+            )
+            changes = (
+                await self._workspace.list(task_id=task.id)
+                if self._workspace is not None
+                else []
+            )
+            card = build_memory_card(
+                task=task,
+                run=run,
+                instruction=(
+                    run.instruction if run is not None else str(task.description or "")
+                ),
+                final_response=str(body.get("final_response") or ""),
+                status=str(status),
+                trace_rows=trace_rows,
+                changes=changes,
+                confirmation=getattr(task, "confirmation", None),
+            )
+            await self._memory.add(task.id, run_id, card)
+            logger.info(
+                "已生成工作记忆卡 task=%s run=%s status=%s 字数=%d",
+                task.id,
+                run_id,
+                status,
+                len(card),
+            )
+        except Exception:  # noqa: BLE001 - 记忆卡写失败不能改写任务终态
+            logger.warning("生成工作记忆卡失败 task=%s run=%s", task.id, run_id, exc_info=True)
 
     # --- 上游瞬时故障的自动重试 ---
 

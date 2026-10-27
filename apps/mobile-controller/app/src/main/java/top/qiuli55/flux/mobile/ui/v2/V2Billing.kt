@@ -55,7 +55,7 @@ fun BillingSheet(
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         SheetHeader(
             title = "套餐额度",
-            subtitle = "官方额度按套餐对账；本地账本由 Flux 逐次调用记账",
+            subtitle = "官方额度按套餐对账；本地账本由 Flux 逐次调用记账；外部客户端按官方百分比差分估算",
             onClose = onDismiss,
         )
         Column(
@@ -225,6 +225,20 @@ private fun WindowRow(window: BillingWindow) {
             mono = true,
             maxLines = 1,
         )
+        val external = window.external
+        if (external != null && external.officialIncrease > 0) {
+            val mixed = if (external.mixedPoints > 0) {
+                " · 另有 ${priceText(external.mixedPoints)}pp 与 Flux 并发、无法拆分"
+            } else {
+                ""
+            }
+            Label(
+                "外部客户端 ≈ +${priceText(external.points)}pp（Flux 空闲时段）$mixed",
+                9.5f,
+                V2Colors.ink(.44f),
+                maxLines = 2,
+            )
+        }
     }
 }
 

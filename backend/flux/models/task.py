@@ -56,6 +56,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), nullable=True, index=True
     )
+    # 排队切换的目标 Agent（2026-10-27）：任务执行中切换 Agent 时只记在这里，
+    # 等本轮 Run 真正收尾后再应用，避免中途换人把当前进度交给另一个 Agent。
+    pending_agent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -87,6 +90,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "run_id": self.run_id,
             "model": self.model,
             "api_key_id": str(self.api_key_id) if self.api_key_id is not None else None,
+            "pending_agent_id": (
+                str(self.pending_agent_id) if self.pending_agent_id is not None else None
+            ),
         }
 
 

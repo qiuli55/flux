@@ -508,7 +508,10 @@ def test_cli_run_completes_and_emits_unified_events(
         # run 目录保留（供排障），配置已收权
         run_dir = Path(container.settings.dsh_home) / "runs" / run_id
         assert run_dir.is_dir()
-        config = run_dir / "codex-home" / "config.toml"
+        # codex 的 CODEX_HOME 按任务固定，才能跨轮 thread/resume；
+        # 登录态与 config 仍每轮重写，隔离性不变。
+        task_home = Path(container.settings.dsh_home) / "runs" / f"task-{task_id}"
+        config = task_home / "codex-home" / "config.toml"
         assert config.is_file()
         # 收敛到仅属主可访问：POSIX 直接用 st_mode；Windows 的 stat 不反映 chmod，
         # 校验平台原语 secure_file（icacls）确实成功，而不是删掉这条断言。

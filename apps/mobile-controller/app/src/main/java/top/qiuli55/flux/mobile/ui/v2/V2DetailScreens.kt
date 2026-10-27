@@ -89,6 +89,7 @@ import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.changes.ChangeViewModel
 import top.qiuli55.flux.mobile.ui.tasks.TaskDetailViewModel
 import top.qiuli55.flux.mobile.ui.tasks.canSwitchTaskAgent
+import top.qiuli55.flux.mobile.ui.tasks.canSwitchTaskModel
 import top.qiuli55.flux.mobile.ui.tasks.shouldPromptContext
 import top.qiuli55.flux.mobile.ui.terminal.LineKind
 import top.qiuli55.flux.mobile.ui.terminal.TerminalListViewModel
@@ -591,8 +592,14 @@ fun V2TaskChatScreen(
     }
     // 只在任务还没加载出来时锁输入；已结束的对话可以继续发消息（后端会把任务重开并起新一轮）。
     val locked = task == null
-    // 执行中 Agent 已接手，先停止再切换；已结束的对话也能切换，切换只影响下一次续聊。
+    // 执行中也能切换 Agent：排队到本轮结束后生效；模型仍只在非执行中可换。
     val canSwitchAgent = canSwitchTaskAgent(task)
+    val canSwitchModel = canSwitchTaskModel(task)
+    // 已排队的切换目标：标题栏显示「A → B · 本轮结束后切换」，下拉里也标出来源
+    val pendingAgentId = task?.pendingAgentId
+    val pendingAgentLabel = pendingAgentId?.let { id ->
+        agentsForDevice(chat.device).firstOrNull { it.agent.id == id }?.agent?.name
+    }
     // run_id → 该轮的耗时与概览：答案气泡上方的「任务耗时」入口按它渲染
     val runSummaries = remember(state.runs) { state.runs.associateBy { it.runId } }
     // 上下文占用：同一等级点过「继续聊」就不再打扰，涨到 full 会再提醒一次。
@@ -637,6 +644,9 @@ fun V2TaskChatScreen(
             locked = locked,
             showDelete = true,
             canSwitchAgent = canSwitchAgent,
+            canSwitchModel = canSwitchModel,
+            pendingAgentId = pendingAgentId,
+            pendingAgentLabel = pendingAgentLabel,
             notice = state.error?.let { it } ?: state.notice,
             suggestions = emptyList(),
             showHandoff = false,
@@ -644,7 +654,7 @@ fun V2TaskChatScreen(
             agentOptions = if (canSwitchAgent) agentsForDevice(chat.device) else emptyList(),
             onSwitchAgent = { vm.switchAgent(it) },
             // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型）。
-            modelOptions = if (canSwitchAgent) models else emptyList(),
+            modelOptions = if (canSwitchModel) models else emptyList(),
             onSwitchModel = { vm.switchModel(it.model, it.keyId) },
             contextUsage = usage,
             contextPromptVisible = contextPromptVisible,
@@ -717,6 +727,18 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 approvalCard = card.copy(expired = card.expired || expired),
             )
         }
+    }
+    // Agent 交接卡：平台在切换生效时自动落库，标题展示「原 Agent → 新 Agent」
+    if (kind == "handoff") {
+        val root = payload as? JsonObject
+        return V2Message(
+            mapped,
+            text,
+            clockLabel(createdAt),
+            kind = kind,
+            handoffFrom = root?.stringField("from_agent").orEmpty(),
+            handoffTo = root?.stringField("to_agent").orEmpty(),
+        )
     }
     // 附件消息的 content 可能是空的：先按 payload.files 转成文件 chip，不要被空文本过滤掉。
     if (kind == "attachments") {

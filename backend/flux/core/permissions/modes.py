@@ -21,6 +21,7 @@ PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "context.fetch",
         "context.steps",
         "memory.recall",
+        "memory.remember",
         "workspace.read",
         "workspace.read_many",
         "workspace.search",
@@ -66,7 +67,12 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
     PermissionMode.PLAN.value: {
         "label": "Plan · 只读",
         "summary": "只读上下文并写计划文档；不执行 shell、不改代码、不分享设计稿。",
-        "can": ["workspace.read/search/tree/diff", "design.list/get", "plan.write"],
+        "can": [
+            "workspace.read/search/tree/diff",
+            "design.list/get",
+            "plan.write",
+            "memory.remember",
+        ],
         "cannot": ["terminal.execute", "proposal.create/preview", "design.create/update/share"],
     },
     PermissionMode.NORMAL.value: {

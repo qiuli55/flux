@@ -108,6 +108,9 @@ data class V2Message(
     val approvalCard: V2ApprovalCard? = null,
     /** run_finished 关联的 Run：有值时答案上方显示「任务耗时」入口。 */
     val runId: String = "",
+    /** kind = handoff 时的交接双方（平台自动生成的 Agent 交接卡）。 */
+    val handoffFrom: String = "",
+    val handoffTo: String = "",
 )
 
 /**

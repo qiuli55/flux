@@ -56,6 +56,8 @@ class CodexTurnResult:
     status: str = "completed"
     error: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    #: 本轮实际使用的 thread id（用于跨轮续聊）
+    thread_id: str = ""
 
 
 class CodexAppServerSession:
@@ -110,7 +112,20 @@ class CodexAppServerSession:
             "sandbox": "read-only" if plan else "workspace-write",
         }
 
-    async def run(self, instruction: str) -> CodexTurnResult:
+    async def run(
+        self,
+        instruction: str,
+        *,
+        thread_id: str = "",
+        model: str = "",
+        model_provider: str = "",
+    ) -> CodexTurnResult:
+        """执行一轮；传入 `thread_id` 时优先续用该 thread（恢复失败则新建）。
+
+        `model` / `model_provider` 是任务当前的模型选择：codex 的 thread 会记住创建时的
+        模型，续聊时不显式覆盖就会一直用旧模型（实测 2026-10-27：任务切到 gpt-5.6-luna
+        后仍按 thread 里的 gpt-6-sol 请求，原生 ChatGPT 通道直接 400 model_not_found）。
+        """
         self._loop = asyncio.get_running_loop()
         self._pump = _TextPump(self._on_text, self._on_thinking)
         thread = threading.Thread(
@@ -125,23 +140,44 @@ class CodexAppServerSession:
             {"clientInfo": {"name": "flux", "title": "Flux", "version": "1"}},
             timeout=INITIALIZE_TIMEOUT_SECONDS,
         )
-        response = await self._request(
-            "thread/start",
-            self._thread_start_params(),
-            timeout=THREAD_START_TIMEOUT_SECONDS,
-        )
-        thread_id = _thread_id(response)
+        overrides = _model_overrides(model, model_provider)
+        previous = thread_id.strip()
+        thread_id = ""
+        if previous:
+            try:
+                resumed = await self._request(
+                    "thread/resume",
+                    {"threadId": previous, **self._thread_start_params(), **overrides},
+                    timeout=THREAD_START_TIMEOUT_SECONDS,
+                )
+                thread_id = _thread_id(resumed) or previous
+                logger.info("codex 复用已有 thread=%s", thread_id)
+            except Exception as exc:  # noqa: BLE001 - 旧 thread 失效时退回新建
+                logger.warning("codex thread %s 恢复失败（%s），改为新建", previous, exc)
         if not thread_id:
-            raise RuntimeError("codex app-server 没有返回 threadId")
+            response = await self._request(
+                "thread/start",
+                {**self._thread_start_params(), **overrides},
+                timeout=THREAD_START_TIMEOUT_SECONDS,
+            )
+            thread_id = _thread_id(response)
+            if not thread_id:
+                raise RuntimeError("codex app-server 没有返回 threadId")
+        # `turn/start` 没有 modelProvider 字段；模型仍要显式带一次，覆盖 resumed thread 的旧值
+        turn_params: dict[str, Any] = {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": instruction}],
+        }
+        if model.strip():
+            turn_params["model"] = model.strip()
         await self._request(
             "turn/start",
-            {
-                "threadId": thread_id,
-                "input": [{"type": "text", "text": instruction}],
-            },
+            turn_params,
             timeout=TURN_START_TIMEOUT_SECONDS,
         )
-        return await self._consume_turn()
+        result = await self._consume_turn()
+        result.thread_id = thread_id
+        return result
 
     # --- 读 stdout（线程）---
     def _read_stdout(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -294,6 +330,10 @@ class CodexAppServerSession:
         code: int | None = None
         with contextlib.suppress(Exception):
             code = self._popen.poll()
+            if code is None:
+                # 写入 stdin 失败时子进程可能刚退出、还没被回收：
+                # 稍等一下再取退出码，否则失败原因会丢掉最有用的「退出码 N」。
+                code = self._popen.wait(timeout=0.2)
         if code is not None:
             reason = f"{reason}（退出码 {code}）"
         return reason
@@ -508,6 +548,16 @@ class _TextPump:
                 await self._on_thinking(text)
             else:
                 await self._on_text(text)
+
+
+def _model_overrides(model: str, model_provider: str) -> dict[str, str]:
+    """`thread/start` / `thread/resume` 的模型覆盖参数（空值不传，沿用配置默认）。"""
+    overrides: dict[str, str] = {}
+    if model.strip():
+        overrides["model"] = model.strip()
+    if model_provider.strip():
+        overrides["modelProvider"] = model_provider.strip()
+    return overrides
 
 
 def _thread_id(response: Any) -> str:

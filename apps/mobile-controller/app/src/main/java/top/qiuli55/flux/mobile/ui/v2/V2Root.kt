@@ -142,6 +142,7 @@ fun FluxV2Root() {
 
     var settingsOpen by remember { mutableStateOf(false) }
     var keyVaultOpen by remember { mutableStateOf(false) }
+    var memoryOpen by remember { mutableStateOf(false) }
     var billingOpen by remember { mutableStateOf(false) }
     var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
@@ -362,7 +363,7 @@ fun FluxV2Root() {
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
         confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
         groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
-        designExitOpen
+        designExitOpen || memoryOpen
 
     BackHandler(enabled = hasBack) {
         when {
@@ -378,6 +379,7 @@ fun FluxV2Root() {
             groupDetail != null -> groupDetail = null
             newChatOpen -> newChatOpen = false
             keyVaultOpen -> keyVaultOpen = false
+            memoryOpen -> memoryOpen = false
             logsOpen -> logsOpen = false
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
@@ -846,6 +848,11 @@ fun FluxV2Root() {
                                 keyVaultOpen = true
                                 vm.loadKeys()
                             },
+                            onOpenMemories = {
+                                settingsOpen = false
+                                memoryOpen = true
+                                vm.loadMemories()
+                            },
                             codexAccount = app.codexAccount,
                             codexLogin = app.codexLogin,
                             codexLoading = app.codexLoading,
@@ -894,6 +901,26 @@ fun FluxV2Root() {
                             },
                             onDelete = { entry, onResult -> vm.deleteKey(entry.id, onResult) },
                             onDismiss = { keyVaultOpen = false },
+                        )
+                    }
+
+                    if (memoryOpen) {
+                        MemorySheet(
+                            memories = app.memories,
+                            loading = app.memoriesLoading,
+                            saving = app.memorySaving,
+                            autoCapture = app.memoryAutoCapture,
+                            cloudReady = app.memoryCloudReady,
+                            cloudError = app.memoryCloudError,
+                            onRefresh = { vm.loadMemories(force = true) },
+                            onSync = { onResult -> vm.syncMemories(onResult) },
+                            onToggleAuto = { vm.setMemoryAutoCapture(it) },
+                            onAdd = { content, onResult -> vm.addMemory(content, onResult) },
+                            onUpdate = { id, content, onResult ->
+                                vm.updateMemory(id, content, onResult)
+                            },
+                            onDelete = { id, onResult -> vm.deleteMemory(id, onResult) },
+                            onDismiss = { memoryOpen = false },
                         )
                     }
 

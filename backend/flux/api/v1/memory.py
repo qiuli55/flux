@@ -18,7 +18,8 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.enums import MemoryLayer
-from flux.schemas.api import UserMemoryWriteRequest
+from flux.errors import ValidationError
+from flux.schemas.api import UserMemorySettingsRequest, UserMemoryWriteRequest
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -33,6 +34,49 @@ async def recall_memory(
     """三层统一读取口：Environment → User →（可选）Project，按优先级排序并附来源。"""
     data = await container.memory.recall(project_id=project_id)
     return ok(data, metadata={"layers": len(data["layers"])})
+
+
+@router.get("/settings")
+async def read_memory_settings(
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """手机端设置页用：自动记录开关 + 云端同步是否就绪（不返回任何凭据）。"""
+    prefs = getattr(container, "memory_prefs", None)
+    sync = getattr(container, "memory_cloud", None)
+    credentials = sync.credentials() if sync is not None else None
+    return ok(
+        {
+            "auto_capture": bool(prefs.auto_capture()) if prefs is not None else True,
+            "cloud_sync": bool(sync.enabled) if sync is not None else False,
+            "cloud_ready": credentials is not None
+            and (sync.last_ok if sync is not None else False),
+            "cloud_error": (sync.last_error if sync is not None else ""),
+        }
+    )
+
+
+@router.put("/settings")
+async def update_memory_settings(
+    payload: UserMemorySettingsRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """切换「每轮结束自动提炼用户记忆」；手动添加与云同步不受影响。"""
+    prefs = getattr(container, "memory_prefs", None)
+    if prefs is None:
+        raise ValidationError("当前环境未启用用户记忆偏好", details={"param": "auto_capture"})
+    enabled = prefs.set_auto_capture(payload.auto_capture)
+    return ok({"auto_capture": enabled})
+
+
+@router.post("/sync")
+async def sync_memory_with_cloud(
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """立即和账号云对一次账（手机端下拉刷新用）；未配置设备凭据时返回原因。"""
+    sync = getattr(container, "memory_cloud", None)
+    if sync is None:
+        raise ValidationError("当前环境未启用账号云记忆同步", details={"param": "memory_cloud"})
+    return ok(await sync.sync_once())
 
 
 @router.get("/entries")
@@ -55,6 +99,17 @@ async def write_memory_entry(
     entry = await container.memory.write_user(
         content=payload.content, source=payload.source, meta=payload.metadata or None
     )
+    return ok(entry.to_dict())
+
+
+@router.put("/entries/{entry_id}")
+async def update_memory_entry(
+    entry_id: uuid.UUID,
+    payload: UserMemoryWriteRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """手动修改一条 User Memory（手机端编辑）；云端会同步更新。"""
+    entry = await container.memory.update_user(entry_id, content=payload.content)
     return ok(entry.to_dict())
 
 

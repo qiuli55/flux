@@ -81,6 +81,8 @@ class TurnResult:
 
     text: str = ""
     error: str = ""
+    #: 本轮实际使用的会话 id（用于跨轮复用；空串表示没拿到）
+    session_id: str = ""
 
 
 class _DeltaBuffer:
@@ -153,7 +155,14 @@ class OpenCodeServerClient:
 
     # --- 对外 ---
 
-    async def run(self, instruction: str, *, title: str = "") -> TurnResult:
+    async def run(
+        self, instruction: str, *, title: str = "", session_id: str = ""
+    ) -> TurnResult:
+        """执行一轮；传入 `session_id` 时优先续用该会话（不存在则自动新建）。
+
+        opencode 的会话存储随 HOME 持久化，所以上一轮 serve 退出后仍能续聊；
+        `TurnResult.session_id` 回传本轮实际使用的会话，调用方据此记住绑定。
+        """
         timeout = httpx.Timeout(TURN_TIMEOUT_SECONDS, connect=5.0)
         # 目标永远是本机 serve：不能跟着系统代理走，否则开着 HTTP_PROXY 的机器
         # 会把 127.0.0.1 的请求转发出去，健康检查永远不通过、整轮 Run 卡在 running。
@@ -162,15 +171,32 @@ class OpenCodeServerClient:
         ) as client:
             self._client = client
             await self._wait_ready()
-            session_id = await self._create_session(title)
+            target = await self._resolve_session(session_id, title)
             listener = asyncio.create_task(
-                self._listen(session_id), name=f"opencode-sse-{session_id}"
+                self._listen(target), name=f"opencode-sse-{target}"
             )
             body: dict[str, Any] = {}
             try:
                 # 先订阅再发消息：首字增量可能紧跟在请求之后，不能漏
                 await asyncio.sleep(0.05)
-                body = await self._send_message(session_id, instruction)
+                try:
+                    body = await self._send_message(target, instruction)
+                except httpx.HTTPStatusError as exc:
+                    # 记住的会话可能已被用户清理（opencode 对不存在的会话常回 500）：
+                    # 只要本轮本来就在续用旧会话，就重开一个新会话再发一次。
+                    if not session_id or exc.response.status_code not in (404, 410, 500):
+                        raise
+                    logger.warning(
+                        "opencode 会话 %s 已不存在，改为新建会话重发本轮消息", target
+                    )
+                    await _cancel(listener)
+                    target = await self._create_session(title)
+                    self._reset_turn_state()
+                    listener = asyncio.create_task(
+                        self._listen(target), name=f"opencode-sse-{target}"
+                    )
+                    await asyncio.sleep(0.05)
+                    body = await self._send_message(target, instruction)
             except Exception as exc:  # noqa: BLE001 - 网络/上游错误统一转成失败原因
                 message = _http_error_text(exc)
                 if not self._error:
@@ -184,13 +210,20 @@ class OpenCodeServerClient:
                     await listener
             final = _final_text(body)
             if final:
-                return TurnResult(text=final)
+                return TurnResult(text=final, session_id=target)
             streamed = self._text.all_text.strip()
             if streamed:
-                return TurnResult(text=streamed)
+                return TurnResult(text=streamed, session_id=target)
             if self._error:
-                return TurnResult(error=self._error)
-            return TurnResult()
+                return TurnResult(error=self._error, session_id=target)
+            return TurnResult(session_id=target)
+
+    def _reset_turn_state(self) -> None:
+        """换会话重发前清掉上一轮的会话内状态，避免把旧增量算进本轮。"""
+        self._assistant_ids.clear()
+        self._part_types.clear()
+        self._idle.clear()
+        self._error = ""
 
     # --- 服务端就绪 ---
 
@@ -239,6 +272,26 @@ class OpenCodeServerClient:
         raise RuntimeError(
             f"opencode 建会话超时（{SESSION_TIMEOUT_SECONDS:.0f} 秒）：{last_error}"
         )
+
+    async def _resolve_session(self, session_id: str, title: str) -> str:
+        """优先复用已有会话；确认不可用时新建（不因一条过期绑定让整轮失败）。"""
+        assert self._client is not None
+        if session_id:
+            try:
+                response = await self._client.get(
+                    f"/session/{session_id}", timeout=SESSION_TIMEOUT_SECONDS
+                )
+                if response.status_code == 200:
+                    logger.info("opencode 复用已有会话 session=%s", session_id)
+                    return session_id
+                logger.warning(
+                    "opencode 会话 %s 不可用（HTTP %s），改为新建",
+                    session_id,
+                    response.status_code,
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("opencode 校验会话 %s 失败（%s），改为新建", session_id, exc)
+        return await self._create_session(title)
 
     async def _send_message(self, session_id: str, instruction: str) -> dict[str, Any]:
         assert self._client is not None
@@ -426,7 +479,14 @@ def _error_text(error: Any) -> str:
     return str(name or "").strip()
 
 
-def _http_error_text(exc: Exception) -> str:
+async def _cancel(task: asyncio.Task[Any]) -> None:
+    """取消并回收一个后台任务（换会话时旧 SSE 监听必须停掉）。"""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+def _http_error_text(exc: BaseException) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         detail = ""
         with contextlib.suppress(Exception):

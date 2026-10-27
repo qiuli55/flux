@@ -29,10 +29,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(app_settings.log_level, app_settings.log_dir_path)
     container = Container(app_settings)
     log_upload_task: asyncio.Task[None] | None = None
+    memory_sync_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        nonlocal log_upload_task
+        nonlocal log_upload_task, memory_sync_task
         # P3-16：Agent 档案的权威在 agents 表，启动时重建内存注册表（canonical UUID 不因重启而变），
         # 并把历史"自由字符串"令牌迁移到 canonical id 上。
         await container.agents.load_from_db()
@@ -60,9 +61,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # log_dir 未配置时整体关闭（测试与本地零配置不触发）。
         if app_settings.log_dir_path is not None:
             log_upload_task = asyncio.create_task(upload_previous_run(app_settings))
+        # 账号级用户记忆：启动先拉一次云端快照，之后每 15 分钟对账；未配置设备凭据时
+        # 循环内部直接跳过，不产生任何网络请求。
+        if app_settings.memory_cloud_sync:
+            memory_sync_task = asyncio.create_task(container.memory_cloud.start())
         yield
         if log_upload_task is not None and not log_upload_task.done():
             log_upload_task.cancel()
+        if memory_sync_task is not None and not memory_sync_task.done():
+            memory_sync_task.cancel()
         # Container.dispose() owns service shutdown ordering, including Human PTY.
         await container.dispose()
         # 内部旁路的上游连接池随应用一起关闭

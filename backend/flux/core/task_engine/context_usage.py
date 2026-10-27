@@ -1,17 +1,15 @@
 """对话上下文占用度量（手机端 / 桌面端「上下文快满」提醒的同一份口径）。
 
-这里度量的不是模型标称窗口，而是**平台助手每一轮真正能带上的那段上下文**：
-`TaskAssistant` 只带最近 `history_message_limit()` 条消息（条数由 §6.1 的字符预算
-折算而来），更早的消息不会进模型。所以「上下文快满」的真实含义是：
-再聊几轮，最早的消息就要被挤出模型视野。
+这里度量的不是模型标称窗口，而是**执行 Agent 下一轮真正会收到的内容**：
+平台每轮装配的执行指令已经把历史压成「对话轨迹」（最近 12 条 / 3000 字封顶）
+与「上一轮工作记忆」（1200 字封顶），所以对话再长，投喂体积也不会无限增长。
 
-两个信号取较大者，任一先到阈值都算快满：
+因此占用只看字符体积，不再把「消息条数」当成满格信号：条数一旦达到上限就
+永远显示 100%，会让用户误以为压缩没生效，而实际投喂的仍是压缩后的那段内容。
+原始消息条数 / 条数上限只作为解释信息返回，不参与比例与等级。
 
-- 条数：已用条数 / 可带条数；
-- 体积：最近这段消息的字符数 / 分给对话历史的字符预算。
-
-两个分母都由 `flux.core.context.budget` 推导，不在这里另写常量，
-换模型或调预算时只改那一处。
+预算由 `flux.core.context.budget` 推导，不在这里另写常量，换模型或调预算时
+只改那一处。
 """
 
 from __future__ import annotations
@@ -22,13 +20,12 @@ from typing import Any
 from flux.core.context.budget import (
     DEFAULT_BUDGET_CHARS,
     ESTIMATED_MESSAGE_CHARS,
-    HISTORY_BUDGET_SHARE,
     history_message_limit,
 )
 
 #: 进入模型上下文的消息类型：正文消息与上一段对话的前情摘要。
 #: 助手历史、上下文度量、摘要注入必须共用这一份清单，否则三处口径会漂移。
-CONTEXT_MESSAGE_KINDS: tuple[str, ...] = ("text", "summary")
+CONTEXT_MESSAGE_KINDS: tuple[str, ...] = ("text", "summary", "handoff")
 
 #: 达到这个占用比例就提醒「上下文快满了，要不要新建对话」。
 CONTEXT_WARNING_RATIO = 0.8
@@ -40,8 +37,12 @@ LEVEL_FULL = "full"
 
 
 def context_budget_chars() -> int:
-    """分给对话历史的字符预算（§6.1 的可投喂预算 × 历史占比）。"""
-    return int(DEFAULT_BUDGET_CHARS * HISTORY_BUDGET_SHARE)
+    """执行 Agent 一轮真正能收到的字符预算（§6.1 的完整可投喂预算）。
+
+    旧口径只算「分给对话历史的 40%」，与执行 Agent 实际收到的
+    「指令（含对话轨迹/工作记忆）+ 最近消息」不是同一件事，百分比会偏乐观。
+    """
+    return DEFAULT_BUDGET_CHARS
 
 
 def context_message_limit() -> int:
@@ -59,9 +60,11 @@ class ContextUsage:
     message_count: int
     #: 实际进入下一轮的条数（超过 limit 时等于 limit）
     used_messages: int
-    #: 实际进入下一轮的字符数
+    #: 实际进入下一轮的字符数（执行指令本身；历史已压缩在指令内）
     used_chars: int
-    #: 对话历史的字符预算
+    #: 其中执行指令（约束 + 任务 + 对话轨迹 + 工作记忆 + 计划）的字符数
+    instruction_chars: int
+    #: 执行 Agent 一轮可投喂的字符预算
     budget_chars: int
     #: 原始占用比例（可能 > 1，客户端展示时再夹到 100%）
     ratio: float
@@ -78,6 +81,7 @@ class ContextUsage:
             "message_count": self.message_count,
             "used_messages": self.used_messages,
             "used_chars": self.used_chars,
+            "instruction_chars": self.instruction_chars,
             "budget_chars": self.budget_chars,
             "ratio": self.ratio,
             "percent": self.percent,
@@ -91,24 +95,31 @@ def measure_context(
     *,
     message_count: int,
     limit: int | None = None,
+    extra_chars: int = 0,
 ) -> ContextUsage:
     """按最近 `limit` 条消息算占用。`messages` 为按 seq 升序的尾部消息。
 
     `message_count` 是任务内可进上下文的消息总数（由仓储统计，不受本次取数
     limit 影响）；两者在条数维度上不混用——否则「只取了 30 条」会被误判成
     「整段对话只有 30 条」。
+
+    `extra_chars` 是这一轮执行指令的真实字符数（约束 + 任务 + 压缩后的对话轨迹 +
+    工作记忆 + 计划）。历史在指令里已经是压缩态，调用方不要再把原始消息传进来
+    重复计一次；`messages` 只用于尚未装配指令的兼容场景。
+
+    比例只由字符体积决定：条数不在比例与等级里，否则对话一旦达到条数上限就会
+    永远显示 100%，而实际投喂的已经是压缩后的轨迹。
     """
     effective_limit = max(1, limit if limit is not None else context_message_limit())
     window = messages[-effective_limit:]
-    used_chars = sum(len((message.content or "").strip()) for message in window)
+    instruction_chars = max(extra_chars, 0)
+    used_chars = sum(len((message.content or "").strip()) for message in window) + instruction_chars
     budget_chars = max(1, context_budget_chars())
 
     used_messages = min(max(message_count, 0), effective_limit)
-    message_ratio = used_messages / effective_limit
-    char_ratio = used_chars / budget_chars
-    raw_ratio = max(message_ratio, char_ratio)
+    raw_ratio = used_chars / budget_chars
 
-    if message_ratio >= 1.0 or char_ratio >= 1.0:
+    if raw_ratio >= 1.0:
         level = LEVEL_FULL
     elif raw_ratio >= CONTEXT_WARNING_RATIO:
         level = LEVEL_WARNING
@@ -120,6 +131,7 @@ def measure_context(
         message_count=max(message_count, 0),
         used_messages=used_messages,
         used_chars=used_chars,
+        instruction_chars=instruction_chars,
         budget_chars=budget_chars,
         ratio=round(raw_ratio, 3),
         percent=min(100, int(round(raw_ratio * 100))),

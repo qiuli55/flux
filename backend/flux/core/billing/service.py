@@ -56,6 +56,18 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _row_time(value: Any) -> datetime | None:
+    """快照行的 fetched_at 可能已是 datetime，也可能是 to_dict 后的 ISO 字符串。"""
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if isinstance(value, str) and value:
+        try:
+            return _as_utc(datetime.fromisoformat(value))
+        except ValueError:
+            return None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class GateDecision:
     """一次额度闸门判定。"""
@@ -290,15 +302,41 @@ class BillingService:
 
     async def _plan_view(self, plan: PlanDefinition, rows: list[dict[str, Any]]) -> dict[str, Any]:
         official = {str(row.get("window_key")): row for row in rows}
+        # 同一套餐只要有一次采集成功，比它更早的错误快照就不再代表当前状态：
+        # 例如 Free 版 Codex 只有月度窗口，旧版本写下的 5h/周 报错不应一直挂着。
+        latest_ok = max(
+            (
+                moment
+                for row in rows
+                if not row.get("error") and row.get("percent") is not None
+                for moment in (_row_time(row.get("fetched_at")),)
+                if moment is not None
+            ),
+            default=None,
+        )
+        earliest = min((window.start() for window in plan.windows), default=None)
+        flux_times = (
+            await self._repo.record_times(plan_key=plan.key, since=earliest)
+            if earliest is not None
+            else []
+        )
         windows: list[dict[str, Any]] = []
         for window in plan.windows:
+            official_row = official.get(window.key)
+            if official_row is not None and official_row.get("error") and latest_ok is not None:
+                fetched = _row_time(official_row.get("fetched_at"))
+                if fetched is not None and fetched < latest_ok:
+                    official_row = None
             windows.append(
                 {
                     "key": window.key,
                     "label": window.label,
                     "since": window.start().isoformat(),
                     "local": await self._repo.totals(plan_key=plan.key, since=window.start()),
-                    "official": official.get(window.key),
+                    "official": official_row,
+                    "external": await self._external_view(
+                        plan.key, window.key, window.start(), flux_times
+                    ),
                 }
             )
         decision = await self._gate_for_plan(plan, rows)
@@ -314,6 +352,54 @@ class BillingService:
             "gate": decision.to_dict(),
             "windows": windows,
         }
+
+    async def _external_view(
+        self,
+        plan_key: str,
+        window_key: str,
+        since: datetime,
+        flux_times: list[datetime],
+    ) -> dict[str, Any]:
+        """官方百分比差分：估算 Flux 之外的客户端消耗（如 Trae）。
+
+        官方接口只给整数百分比、没有任务归因，所以这里只能给出「至少有多少个
+        百分点不是 Flux 花掉的」：区间内 Flux 没有任何调用时，官方百分比的增长
+        全部归给外部客户端；Flux 同时在跑的区间无法拆分，单独记为 mixed。
+        窗口重置（resets_at 变化或百分比回落）时清空重算，不把重置当用量。
+        """
+        snaps = await self._repo.snapshots_since(
+            plan_key=plan_key, window_key=window_key, since=since
+        )
+        points = mixed = increase = 0.0
+        if len(snaps) >= 2:
+            times = [_as_utc(value) for value in flux_times]
+            previous = snaps[0]
+            for current in snaps[1:]:
+                baseline = previous["percent"]
+                delta = current["percent"] - baseline
+                reset = current["resets_at"] != previous["resets_at"] or delta < 0
+                if reset:
+                    points = mixed = increase = 0.0
+                elif delta > 0:
+                    increase += delta
+                    start = _as_utc(previous["fetched_at"])
+                    end = _as_utc(current["fetched_at"])
+                    if any(start < moment <= end for moment in times):
+                        mixed += delta
+                    else:
+                        points += delta
+                previous = current
+        first = snaps[0]["fetched_at"] if snaps else None
+        latest = snaps[-1]["fetched_at"] if snaps else None
+        return {
+            "snapshots": len(snaps),
+            "since": _as_utc(first).isoformat() if first else None,
+            "latest_at": _as_utc(latest).isoformat() if latest else None,
+            "official_increase": round(increase, 1),
+            "points": round(points, 1),
+            "mixed_points": round(mixed, 1),
+        }
+
 
     async def _gate_for_plan(
         self, plan: PlanDefinition, rows: list[dict[str, Any]]

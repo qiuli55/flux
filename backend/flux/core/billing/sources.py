@@ -20,8 +20,10 @@ import json
 import os
 import re
 import shlex
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,8 +32,12 @@ import httpx
 from flux.config import Settings
 from flux.core.billing.plans import (
     PLAN_AGENT_PLAN,
+    PLAN_CODEX,
     PLAN_OPENCODE_GO,
+    WINDOW_DAILY,
     WINDOW_MONTHLY,
+    WINDOW_ROLLING_5H,
+    WINDOW_WEEKLY,
     PlanDefinition,
     SourceSpec,
     default_plans,
@@ -48,6 +54,20 @@ OPENCODE_UA = "opencode/1.0 (flux-billing)"
 
 #: arkcli 默认命令；输出格式由 CLI 决定，解析是尽力而为
 DEFAULT_ARKCLI_CMD = "arkcli usage plan --product agent-plan"
+
+#: Codex 订阅额度接口（2026-10 实测）：Bearer 用账号目录 auth.json 里的 access_token
+CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
+#: 官方接口按客户端识别，缺 originator 会被拒
+CHATGPT_UA = "codex-cli/0.157.1"
+CHATGPT_ORIGINATOR = "codex_cli_rs"
+
+#: 官方窗口时长（秒）→ 本地窗口键；Codex 用 primary / secondary 两个窗口
+_CODEX_WINDOWS: tuple[tuple[float, str], ...] = (
+    (18_000.0, WINDOW_ROLLING_5H),
+    (86_400.0, WINDOW_DAILY),
+    (604_800.0, WINDOW_WEEKLY),
+    (2_592_000.0, WINDOW_MONTHLY),
+)
 
 
 @dataclass(slots=True)
@@ -210,6 +230,162 @@ class OpenCodeGoUsageSource:
         if not rows:
             return SourceResult(source=self.name, error="Go 额度接口没有可识别的窗口")
         return SourceResult(source=self.name, rows=rows)
+
+
+# --- ChatGPT / Codex 订阅 ---
+
+
+class Fetcher(Protocol):
+    """一次 GET：返回 (HTTP 状态码, 原始响应体)。"""
+
+    async def __call__(self, url: str, headers: dict[str, str]) -> tuple[int, bytes]: ...
+
+
+async def _http_get(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+    """chatgpt.com 封 httpx 的握手特征（403），urllib 实测 200，所以在工作线程里用它。"""
+    return await asyncio.to_thread(_http_get_sync, url, headers, 15.0)
+
+
+def _http_get_sync(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+class ChatGptCodexUsageSource:
+    """ChatGPT 账号的 Codex 额度（plan_type + primary/secondary 两个窗口）。
+
+    凭据来自 Flux 自己的账号目录（`FLUX_CODEX_ACCOUNT_HOME/auth.json`），
+    只读 access_token / account_id，不刷新、不落任何 token 副本。
+    官方返回 `rate_limit.primary_window / secondary_window`：
+    `used_percent`、`limit_window_seconds`、`reset_at`（Unix 秒）。
+    """
+
+    name = "chatgpt_codex"
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fetcher: Fetcher | None = None,
+    ) -> None:
+        self._settings = settings
+        #: 测试注入；生产走 urllib（httpx 的握手特征会被 chatgpt.com 判成 403）
+        self._fetcher = fetcher
+
+    async def fetch(self) -> SourceResult:
+        tokens, error = _codex_tokens(self._settings)
+        if error or tokens is None:
+            return SourceResult(source=self.name, error=error or "ChatGPT 账号凭据不可用")
+        headers = {
+            "Authorization": f"Bearer {tokens['access_token']}",
+            "chatgpt-account-id": tokens["account_id"],
+            "User-Agent": CHATGPT_UA,
+            "originator": CHATGPT_ORIGINATOR,
+            "Accept": "application/json",
+        }
+        fetcher = self._fetcher or _http_get
+        try:
+            status, body = await fetcher(CHATGPT_USAGE_URL, headers)
+        except Exception as exc:  # noqa: BLE001 - 网络异常一律记成采集失败
+            return SourceResult(source=self.name, error=f"请求 ChatGPT 额度接口失败：{exc}")
+        if status == 401:
+            return SourceResult(
+                source=self.name,
+                error="ChatGPT 登录态已失效：请在「设置 → ChatGPT 账号」重新登录",
+            )
+        if status != 200:
+            detail = body.decode("utf-8", "replace").strip().replace("\n", " ")[:160]
+            return SourceResult(
+                source=self.name,
+                error=f"ChatGPT 额度接口返回 HTTP {status}：{detail}",
+            )
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return SourceResult(source=self.name, error="ChatGPT 额度接口返回的不是 JSON")
+        rows = _rows_from_chatgpt_usage(payload, PLAN_CODEX)
+        if not rows:
+            return SourceResult(source=self.name, error="ChatGPT 额度接口没有可识别的窗口")
+        return SourceResult(source=self.name, rows=rows)
+
+
+def _codex_tokens(settings: Settings) -> tuple[dict[str, str] | None, str | None]:
+    """读账号目录的 auth.json，返回 (access_token/account_id, 错误文案)。"""
+    # 延迟导入：codex_account 会导入 billing.plans，顶层互相引用会形成循环
+    from flux.core.agent_runtime.codex_account import codex_account_home
+
+    path = codex_account_home(settings) / "auth.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "还没有登录 ChatGPT 账号：登录后会自动采集额度"
+    except (OSError, ValueError):
+        return None, f"ChatGPT 登录态不可读：{path}"
+    tokens = raw.get("tokens") if isinstance(raw, dict) else None
+    tokens = tokens if isinstance(tokens, dict) else {}
+    access_token = str(tokens.get("access_token") or "").strip()
+    account_id = str(tokens.get("account_id") or "").strip()
+    if not access_token or not account_id:
+        return None, "ChatGPT 登录态缺少 access_token / account_id：请重新登录"
+    return {"access_token": access_token, "account_id": account_id}, None
+
+
+def _rows_from_chatgpt_usage(payload: Any, plan_key: str) -> list[SnapshotRow]:
+    """把 official `rate_limit` 的两个窗口转成快照行。"""
+    block = payload.get("rate_limit") if isinstance(payload, dict) else None
+    if not isinstance(block, dict):
+        return []
+    limit_reached = bool(block.get("limit_reached"))
+    status = "limit_reached" if limit_reached else "ok"
+    rows: list[SnapshotRow] = []
+    seen: set[str] = set()
+    for slot in ("primary_window", "secondary_window"):
+        item = block.get(slot)
+        if not isinstance(item, dict):
+            continue
+        percent = _float_of(item.get("used_percent"))
+        if percent is None:
+            continue
+        window_key = _codex_window_key(_float_of(item.get("limit_window_seconds")))
+        if window_key in seen:
+            continue
+        seen.add(window_key)
+        rows.append(
+            SnapshotRow(
+                plan_key=plan_key,
+                window_key=window_key,
+                percent=round(percent, 4),
+                unit="percent",
+                status=status,
+                resets_at=_codex_reset_at(item),
+            )
+        )
+    return rows
+
+
+def _codex_window_key(seconds: float | None) -> str:
+    """按窗口时长归到本地窗口；未知时长取最接近的一档，避免前端出现陌生窗口键。"""
+    if seconds is None:
+        return WINDOW_MONTHLY
+    return min(_CODEX_WINDOWS, key=lambda item: abs(item[0] - seconds))[1]
+
+
+def _codex_reset_at(item: dict[str, Any]) -> datetime | None:
+    """官方同时给 `reset_at`（Unix 秒）与 `reset_after_seconds`，优先前者。"""
+    reset_at = _float_of(item.get("reset_at"))
+    if reset_at is not None:
+        try:
+            return datetime.fromtimestamp(reset_at, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            pass
+    after = _float_of(item.get("reset_after_seconds"))
+    if after is not None:
+        return datetime.now(timezone.utc) + timedelta(seconds=max(after, 0.0))
+    return None
 
 
 # --- 命令采集（火山 arkcli / 自定义 CLI）---
@@ -527,13 +703,18 @@ def build_sources(
             sources[key] = OpenCodeGoUsageSource(settings)
         elif key == PLAN_AGENT_PLAN:
             sources[key] = CommandUsageSource(settings, plan_key=key, name="arkcli")
+        elif key == PLAN_CODEX and plan.builtin:
+            # 账号未登录时采集器返回明确错误，登录成功后登录流程会立刻补一次采集
+            sources[key] = ChatGptCodexUsageSource(settings)
     return sources
 
 
 __all__ = [
+    "CHATGPT_USAGE_URL",
     "DEFAULT_ARKCLI_CMD",
     "OPENCODE_GO_USAGE_URL",
     "ArkCliUsageSource",
+    "ChatGptCodexUsageSource",
     "CommandUsageSource",
     "HttpUsageSource",
     "OpenCodeGoUsageSource",

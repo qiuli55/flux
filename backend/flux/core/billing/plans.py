@@ -222,6 +222,8 @@ def default_plans() -> dict[str, PlanDefinition]:
             model_prefixes=(PLAN_CODEX,),
             windows=(WINDOW_5H, WINDOW_7D, WINDOW_1M),
             runtime_ids=(PLAN_CODEX,),
+            # ChatGPT 账号的 Codex 额度：登录后自动采集 plan_type + 官方窗口百分比
+            official_source="chatgpt_codex",
             builtin=True,
         ),
         PLAN_CLAUDE: PlanDefinition(

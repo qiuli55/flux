@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flux.cloud.memory_sync import CloudMemorySync
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.adapters import build_default_adapters
@@ -21,6 +22,7 @@ from flux.core.agent_runtime.manager import AgentManager
 from flux.core.agent_runtime.repository import AgentRepository
 from flux.core.agent_runtime.run_repository import AgentRunRepository
 from flux.core.agent_runtime.runtimes.service import TaskRunService
+from flux.core.agent_runtime.session_repository import TaskRuntimeSessionRepository
 from flux.core.agent_runtime.trace import RunTraceRecorder
 from flux.core.agent_runtime.trace_repository import RunTraceRepository
 from flux.core.billing.service import BillingService
@@ -38,6 +40,7 @@ from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
 from flux.core.key_vault.service import KeyVaultService
 from flux.core.mcp.auth import AgentTokenService
+from flux.core.memory.prefs import MemoryPrefsStore
 from flux.core.memory.repository import MemoryRepository
 from flux.core.memory.service import MemoryService
 from flux.core.model_gateway.providers.registry import build_providers
@@ -48,9 +51,11 @@ from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
+from flux.core.task_engine.agent_switch import AgentSwitchService
 from flux.core.task_engine.assistant import TaskAssistant
 from flux.core.task_engine.conversation_summary import ConversationSummarizer
 from flux.core.task_engine.dsh_bridge import AUTO_RETRY_FOLLOWUP, TaskRunBridge
+from flux.core.task_engine.memory_repository import TaskMemoryRepository
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.task_engine.stream import TaskStreamHub, TaskStreamRelay
@@ -92,6 +97,8 @@ class Container:
     task_repo: TaskRepository = field(init=False)
     key_vault: KeyVaultService = field(init=False)
     task_runs: TaskRunBridge = field(init=False)
+    #: Agent 切换（执行中排队、本轮收尾后生效、交接卡）
+    agent_switch: AgentSwitchService = field(init=False)
     assistant: TaskAssistant = field(init=False)
     #: 对话交接摘要（「上下文快满 → 新建对话带前情」）
     conversation_summarizer: ConversationSummarizer = field(init=False)
@@ -220,6 +227,13 @@ class Container:
         # 写入必须走受控路径（用户 REST / 平台代码），Agent 面只有只读的 memory.recall
         self.memory_repo = MemoryRepository(self.session_factory)  # type: ignore[attr-defined]
         self.memory = MemoryService(self.memory_repo, brain=self.brain)
+        # 账号级用户记忆：本地只做缓存，云端是权威存储；同步失败不影响本地读写
+        self.memory_prefs = MemoryPrefsStore(
+            self.settings.memory_prefs_path,
+            default_auto_capture=self.settings.memory_auto_capture,
+        )
+        self.memory_cloud = CloudMemorySync(self.settings, self.memory)
+        self.memory.attach_cloud(self.memory_cloud)
         # MCP 能力面的鉴权（目标架构 §3.2）：令牌是 agent 进入平台的唯一凭据，
         # 与权限策略同源——工具要求的 Capability 直接取自 flux.enums.Capability。
         # 先于 DSH 装配：DSH 起 Run 时要拿内置 Agent 的令牌注入 MCP patch（P0-01）。
@@ -230,6 +244,12 @@ class Container:
         # 执行轨迹（思考 / 命令 / 错误）按 Run 落库：对话页的「任务耗时 · 概览 · 详情」靠它
         self.run_trace_repo = RunTraceRepository(self.session_factory)  # type: ignore[attr-defined]
         self.run_trace = RunTraceRecorder(self.run_trace_repo)
+        # 工作记忆卡（每轮结束平台自动写，下一轮注入执行指令）
+        self.task_memory = TaskMemoryRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 任务 ↔ 外部 Agent 会话（opencode / codex 跨轮复用）
+        self.runtime_sessions = TaskRuntimeSessionRepository(
+            self.session_factory  # type: ignore[attr-defined]
+        )
         # DSH Agent Runtime（集成方案 §18 Phase 1）：内置 agent 的接入层，
         # 未启用（FLUX_DSH_ENABLED=false）时调用 ensure_ready() 才报错，装配本身无副作用。
         self.dsh = FluxDshClient(
@@ -248,6 +268,8 @@ class Container:
             workspace=self.workspace,
             stream=self.task_stream,
             trace=self.run_trace,
+            trace_repo=self.run_trace_repo,
+            memory=self.task_memory,
         )
         self.task_runs.attach(self.bus)
         # DSH / CLI 的运行事件 → 任务流：前端订阅 SSE 就能看到 Agent 正在干什么
@@ -282,10 +304,17 @@ class Container:
         # 计费账本与额度闸门：CLI runtime 的每一步用量都落到这里；先于 TaskRunService
         # 装配，因为 Run 创建前的额度检查要读它。
         self.billing = BillingService(self.settings, self.session_factory)  # type: ignore[attr-defined]
+        # Run 收尾补一次官方额度快照，给外部客户端消耗的差分估算切区间
+        self.task_runs.set_billing(self.billing)
+        # ChatGPT 账号登录成功时自动采集一次 Codex 额度（plan + 窗口百分比）
+        self.codex_account.set_billing(self.billing)
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
         # 上游瞬时故障（429 / ReadTimeout）自动续跑一轮：事件桥只做判定与冷却，
         # 真正重新起 Run 交给 TaskRunService（沿用任务自己的 Agent / 模型 / 权限模式）。
         self.task_runs.set_retry_handler(self._auto_retry_task)
+        # 无感切换 Agent：排队目标在本轮真实收尾后应用（自动重试冷却期间不应用）
+        self.agent_switch = AgentSwitchService(self)
+        self.task_runs.set_switch_handler(self.agent_switch.apply_pending)
         # 上下文机制（设计文档 §8）：step 事件日志是唯一真相源（§8.1 不变量 I1），
         # 原文单独进内容寻址库（I2 满保真）；两者都是纯存储，无副作用。
         self.context_steps = ContextStepRepository(self.session_factory)  # type: ignore[attr-defined]

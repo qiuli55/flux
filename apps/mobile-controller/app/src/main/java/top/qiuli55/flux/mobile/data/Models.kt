@@ -149,6 +149,8 @@ data class Task(
     val model: String? = null,
     /** 任务级模型来自哪条 key 库条目；null = 原生模型。 */
     @SerialName("api_key_id") val apiKeyId: String? = null,
+    /** 执行中切换 Agent 的排队目标：非空表示本轮结束后自动换人。 */
+    @SerialName("pending_agent_id") val pendingAgentId: String? = null,
 )
 
 /** 密钥库条目（GET /keys）：只有掩码，没有明文/密文。 */
@@ -174,6 +176,29 @@ data class ApiKeyEntry(
             else -> provider
         }
 }
+
+/** 账号级用户长期记忆：云端权威，本机只做缓存与编辑。 */
+@Serializable
+data class UserMemoryEntry(
+    val id: String = "",
+    val content: String = "",
+    val source: String = "user",
+    val meta: Map<String, JsonElement> = emptyMap(),
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+) {
+    /** 自动提炼（每轮结束由平台写入） vs 用户手动添加。 */
+    val isAuto: Boolean get() = source == "auto"
+}
+
+/** 用户记忆设置：自动记录开关 + 云端同步就绪状态。 */
+@Serializable
+data class MemorySettings(
+    @SerialName("auto_capture") val autoCapture: Boolean = true,
+    @SerialName("cloud_sync") val cloudSync: Boolean = true,
+    @SerialName("cloud_ready") val cloudReady: Boolean = false,
+    @SerialName("cloud_error") val cloudError: String = "",
+)
 
 @Serializable
 data class Run(

@@ -216,6 +216,15 @@ class Settings(BaseSettings):
     # 运行日志落盘目录（相对路径按仓库根解析）。留空 = 不落盘、也不自动上传。
     # 生产必须配上：Flux 启动时会把「上一轮运行日志」自动上传到账号云。
     log_dir: str | None = None
+    # 本机设备身份凭据（flux-device-agent 写入，0600）。用户记忆的账号级同步
+    # 用设备令牌，而不是「本机是否登录了账号云」。留空 = /etc/flux-device-credentials。
+    device_credentials_file: str | None = None
+    # 用户长期记忆：任务执行中由 Agent 调 memory.remember 自行记录并同步到账号云；
+    # 关闭后仍可在手机端手动编辑。
+    memory_auto_capture: bool = True
+    memory_cloud_sync: bool = True
+    # 自动记录开关的落盘位置；留空 = ~/.flux/memory-prefs.json
+    memory_prefs_file: str | None = None
 
     @property
     def is_sqlite(self) -> bool:
@@ -238,6 +247,24 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "cloud.json"
+
+    @property
+    def device_credentials_path(self) -> Path:
+        """设备身份凭据路径；未配置时为 /etc/flux-device-credentials。"""
+        raw = (self.device_credentials_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path("/etc/flux-device-credentials")
+
+    @property
+    def memory_prefs_path(self) -> Path:
+        """用户记忆自动记录开关的落盘路径。"""
+        raw = (self.memory_prefs_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "memory-prefs.json"
 
     @property
     def key_vault_key_path(self) -> Path:
