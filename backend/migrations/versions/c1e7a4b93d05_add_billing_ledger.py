@@ -87,9 +87,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     with op.batch_alter_table("usage_snapshots", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_usage_snapshots_plan_key"), ["plan_key"], unique=False
-        )
+        batch_op.create_index(batch_op.f("ix_usage_snapshots_plan_key"), ["plan_key"], unique=False)
         batch_op.create_index(
             batch_op.f("ix_usage_snapshots_window_key"), ["window_key"], unique=False
         )

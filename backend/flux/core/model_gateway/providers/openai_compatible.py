@@ -195,4 +195,3 @@ def _openai_stream_text(line: str) -> str | None:
     delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
     content = delta.get("content") if isinstance(delta, dict) else None
     return content if isinstance(content, str) else ""
-

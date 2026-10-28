@@ -51,6 +51,10 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008"]  # FastAPI 的 Depends() 作为默认参数是框架约定
 
+[tool.ruff.lint.per-file-ignores]
+# 该文件内嵌 HTML/CSS/JS 单行字符串，拆行会改变渲染输出
+"flux/core/design_render.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

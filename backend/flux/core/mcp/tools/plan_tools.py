@@ -114,9 +114,7 @@ async def _task_for_run(ctx: ToolContext) -> uuid.UUID:
         raise ValidationError("plan.write 必须在 Flux 任务 Run 内调用（当前调用没有关联 Run）")
     run = await ctx.container.run_repo.get(run_id)
     if run is None or run.task_id is None:
-        raise ValidationError(
-            "plan.write 找不到当前 Run 归属的任务", details={"run_id": run_id}
-        )
+        raise ValidationError("plan.write 找不到当前 Run 归属的任务", details={"run_id": run_id})
     return run.task_id
 
 

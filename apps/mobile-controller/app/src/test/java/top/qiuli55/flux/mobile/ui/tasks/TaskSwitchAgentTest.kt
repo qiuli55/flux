@@ -5,12 +5,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.qiuli55.flux.mobile.data.Task
 
-/** 对话页 Agent / 模型切换的可用条件：执行中禁用，结束的对话仍可切换（切换只影响下一次续聊）。 */
+/** 对话页 Agent 切换的可用条件：执行中也可以切（排队到本轮结束后生效），只有没有任务时才不可切。 */
 class TaskSwitchAgentTest {
 
     @Test
-    fun `running task cannot switch`() {
-        assertFalse(canSwitchTaskAgent(Task(id = "t1", status = "running")))
+    fun `running task can queue switch`() {
+        assertTrue(canSwitchTaskAgent(Task(id = "t1", status = "running")))
     }
 
     @Test

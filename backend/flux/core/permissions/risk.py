@@ -284,28 +284,44 @@ def _classify_segment(segment: str) -> tuple[str, str, str] | None:
 
 def _classify_low(name: str, args: list[str]) -> tuple[str, str, str] | None:
     if name == "cargo":
-        return None if args[:1] and args[0] in ("test", "build", "check", "clippy", "fmt") else (
-            LEVEL_HIGH,
-            "cargo",
-            "cargo 仅 test/build/check/clippy/fmt 自动放行",
+        return (
+            None
+            if args[:1] and args[0] in ("test", "build", "check", "clippy", "fmt")
+            else (
+                LEVEL_HIGH,
+                "cargo",
+                "cargo 仅 test/build/check/clippy/fmt 自动放行",
+            )
         )
     if name == "go":
-        return None if args[:1] and args[0] in ("test", "build", "vet") else (
-            LEVEL_HIGH,
-            "go",
-            "go 仅 test/build/vet 自动放行",
+        return (
+            None
+            if args[:1] and args[0] in ("test", "build", "vet")
+            else (
+                LEVEL_HIGH,
+                "go",
+                "go 仅 test/build/vet 自动放行",
+            )
         )
     if name in ("gradle", "gradlew"):
-        return None if any(arg in ("build", "test", "assemble", "check") for arg in args) else (
-            LEVEL_HIGH,
-            "gradle",
-            "gradle 仅 build/test/assemble/check 自动放行",
+        return (
+            None
+            if any(arg in ("build", "test", "assemble", "check") for arg in args)
+            else (
+                LEVEL_HIGH,
+                "gradle",
+                "gradle 仅 build/test/assemble/check 自动放行",
+            )
         )
     if name == "mvn":
-        return None if args[:1] and args[0] in ("test", "verify", "package") else (
-            LEVEL_HIGH,
-            "mvn",
-            "mvn 仅 test/verify/package 自动放行",
+        return (
+            None
+            if args[:1] and args[0] in ("test", "verify", "package")
+            else (
+                LEVEL_HIGH,
+                "mvn",
+                "mvn 仅 test/verify/package 自动放行",
+            )
         )
     if name == "make":
         # make 可以执行任意 recipe；只有不带目标（默认测试目标）或明确测试目标才放行

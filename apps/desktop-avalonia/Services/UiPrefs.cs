@@ -5,7 +5,14 @@ using System.Text.Json;
 namespace Flux.Desktop.Services;
 
 /// <summary>本机界面偏好（对齐 web 端 localStorage 里的 flux.fx.prefs）。</summary>
-public sealed record UiPrefsData(bool RailWide, bool StatusBar, bool ReduceMotion);
+public sealed record UiPrefsData(bool RailWide, bool StatusBar, bool ReduceMotion)
+{
+    /// <summary>内置浏览器代理模式：system / direct / custom。</summary>
+    public string ProxyMode { get; init; } = "system";
+
+    /// <summary>只在 ProxyMode=custom 时使用，形如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891。</summary>
+    public string ProxyUrl { get; init; } = "";
+}
 
 /// <summary>
 /// 界面偏好落盘：web 端存在浏览器 localStorage，桌面端存在数据目录下的 prefs.json。

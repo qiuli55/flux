@@ -20,6 +20,8 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.22" />
+    <!-- 内置浏览器：官方 WebView（11.4 起 MIT 开源），Windows 用 WebView2、Linux 用 WebKitGTK/WPE -->
+    <PackageReference Include="Avalonia.Controls.WebView" Version="11.4.1" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
 </Project>

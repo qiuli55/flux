@@ -156,13 +156,25 @@ class OpenCodeServerClient:
     # --- 对外 ---
 
     async def run(
-        self, instruction: str, *, title: str = "", session_id: str = ""
+        self,
+        instruction: str,
+        *,
+        title: str = "",
+        session_id: str = "",
+        model: str = "",
     ) -> TurnResult:
         """执行一轮；传入 `session_id` 时优先续用该会话（不存在则自动新建）。
 
         opencode 的会话存储随 HOME 持久化，所以上一轮 serve 退出后仍能续聊；
         `TurnResult.session_id` 回传本轮实际使用的会话，调用方据此记住绑定。
+        `model`（`provider/model`）是本轮要用的模型：会话与消息接口都会记住模型，
+        必须每轮显式下发，否则切换模型后仍会沿用旧会话的模型。
         """
+        if model and not all(_split_model(model)):
+            logger.warning(
+                "opencode 模型标识无法解析（应为 provider/model）：%s，本轮沿用会话默认模型",
+                model,
+            )
         timeout = httpx.Timeout(TURN_TIMEOUT_SECONDS, connect=5.0)
         # 目标永远是本机 serve：不能跟着系统代理走，否则开着 HTTP_PROXY 的机器
         # 会把 127.0.0.1 的请求转发出去，健康检查永远不通过、整轮 Run 卡在 running。
@@ -171,32 +183,28 @@ class OpenCodeServerClient:
         ) as client:
             self._client = client
             await self._wait_ready()
-            target = await self._resolve_session(session_id, title)
-            listener = asyncio.create_task(
-                self._listen(target), name=f"opencode-sse-{target}"
-            )
+            target = await self._resolve_session(session_id, title, model)
+            listener = asyncio.create_task(self._listen(target), name=f"opencode-sse-{target}")
             body: dict[str, Any] = {}
             try:
                 # 先订阅再发消息：首字增量可能紧跟在请求之后，不能漏
                 await asyncio.sleep(0.05)
                 try:
-                    body = await self._send_message(target, instruction)
+                    body = await self._send_message(target, instruction, model)
                 except httpx.HTTPStatusError as exc:
                     # 记住的会话可能已被用户清理（opencode 对不存在的会话常回 500）：
                     # 只要本轮本来就在续用旧会话，就重开一个新会话再发一次。
                     if not session_id or exc.response.status_code not in (404, 410, 500):
                         raise
-                    logger.warning(
-                        "opencode 会话 %s 已不存在，改为新建会话重发本轮消息", target
-                    )
+                    logger.warning("opencode 会话 %s 已不存在，改为新建会话重发本轮消息", target)
                     await _cancel(listener)
-                    target = await self._create_session(title)
+                    target = await self._create_session(title, model)
                     self._reset_turn_state()
                     listener = asyncio.create_task(
                         self._listen(target), name=f"opencode-sse-{target}"
                     )
                     await asyncio.sleep(0.05)
-                    body = await self._send_message(target, instruction)
+                    body = await self._send_message(target, instruction, model)
             except Exception as exc:  # noqa: BLE001 - 网络/上游错误统一转成失败原因
                 message = _http_error_text(exc)
                 if not self._error:
@@ -244,9 +252,13 @@ class OpenCodeServerClient:
             await asyncio.sleep(0.1)
         raise RuntimeError(f"opencode 服务端 {HEALTH_TIMEOUT_SECONDS:.0f} 秒内未就绪")
 
-    async def _create_session(self, title: str) -> str:
+    async def _create_session(self, title: str, model: str = "") -> str:
         assert self._client is not None
-        payload = {"title": title} if title else {}
+        payload: dict[str, Any] = {"title": title} if title else {}
+        # 新建会话时就带上模型：否则会话默认落回全局配置里的默认模型
+        session_model = _session_model(model)
+        if session_model:
+            payload["model"] = session_model
         # 冷启动的 serve 偶尔会先挂起再回包：超时/连接抖动重试一次，避免整轮直接失败。
         last_error: httpx.HTTPError | None = None
         for attempt in range(1, SESSION_CREATE_ATTEMPTS + 1):
@@ -269,11 +281,9 @@ class OpenCodeServerClient:
                 )
                 if attempt < SESSION_CREATE_ATTEMPTS:
                     await asyncio.sleep(0.5)
-        raise RuntimeError(
-            f"opencode 建会话超时（{SESSION_TIMEOUT_SECONDS:.0f} 秒）：{last_error}"
-        )
+        raise RuntimeError(f"opencode 建会话超时（{SESSION_TIMEOUT_SECONDS:.0f} 秒）：{last_error}")
 
-    async def _resolve_session(self, session_id: str, title: str) -> str:
+    async def _resolve_session(self, session_id: str, title: str, model: str = "") -> str:
         """优先复用已有会话；确认不可用时新建（不因一条过期绑定让整轮失败）。"""
         assert self._client is not None
         if session_id:
@@ -291,13 +301,21 @@ class OpenCodeServerClient:
                 )
             except httpx.HTTPError as exc:
                 logger.warning("opencode 校验会话 %s 失败（%s），改为新建", session_id, exc)
-        return await self._create_session(title)
+        return await self._create_session(title, model)
 
-    async def _send_message(self, session_id: str, instruction: str) -> dict[str, Any]:
+    async def _send_message(
+        self, session_id: str, instruction: str, model: str = ""
+    ) -> dict[str, Any]:
         assert self._client is not None
+        payload: dict[str, Any] = {"parts": [{"type": "text", "text": instruction}]}
+        # 会话会记住创建/上次使用的模型：续聊时必须每轮显式带本轮模型，
+        # 否则任务切了模型仍沿用旧会话的模型（表现为「切换没生效」）。
+        message_model = _message_model(model)
+        if message_model:
+            payload["model"] = message_model
         response = await self._client.post(
             f"/session/{session_id}/message",
-            json={"parts": [{"type": "text", "text": instruction}]},
+            json=payload,
         )
         response.raise_for_status()
         body = response.json()
@@ -435,6 +453,30 @@ class OpenCodeServerClient:
         except httpx.HTTPError:
             # 回复失败不拖垮整轮：opencode 侧会一直等，最终由 Run 超时收口
             logger.exception("opencode 审批回复失败 permission=%s", permission_id)
+
+
+def _split_model(model: str) -> tuple[str, str]:
+    """把 `provider/model` 拆成 (providerID, modelID)；不含 `/` 视为无有效选择。"""
+    provider_id, _, model_id = str(model or "").strip().partition("/")
+    if not provider_id or not model_id:
+        return "", ""
+    return provider_id, model_id
+
+
+def _message_model(model: str) -> dict[str, str]:
+    """`POST /session/{id}/message` 的 model 字段（providerID + modelID）。"""
+    provider_id, model_id = _split_model(model)
+    if not provider_id:
+        return {}
+    return {"providerID": provider_id, "modelID": model_id}
+
+
+def _session_model(model: str) -> dict[str, str]:
+    """`POST /session` 的 model 字段（这里模型 id 的键是 `id`）。"""
+    provider_id, model_id = _split_model(model)
+    if not provider_id:
+        return {}
+    return {"id": model_id, "providerID": provider_id}
 
 
 def _permission_command(props: dict[str, Any]) -> str:

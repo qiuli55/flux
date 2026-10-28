@@ -236,4 +236,3 @@ def _anthropic_stream_text(line: str) -> str:
         return ""
     text = delta.get("text")
     return text if isinstance(text, str) else ""
-

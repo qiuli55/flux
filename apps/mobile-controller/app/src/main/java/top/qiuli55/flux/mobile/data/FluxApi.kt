@@ -2,6 +2,7 @@ package top.qiuli55.flux.mobile.data
 
 import android.net.Uri
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -394,25 +395,96 @@ class FluxApi(
     /** 删除整份设计稿；不可恢复。 */
     suspend fun deleteDesign(designId: String): JsonElement = delete("api/v1/designs/$designId")
 
-    /** 对单个组件提修改要求；服务端只返回作用于该节点的属性补丁。 */
+    /** 对选中组件或整屏提修改要求；服务端收敛出 set/add/remove/reorder。 */
     suspend fun askDesignAi(
         designId: String,
-        node: DesignNode,
-        screen: DesignScreen,
+        nodes: List<JsonObject>,
+        screen: JsonObject,
+        mode: String,
         prompt: String,
     ): DesignAiResult =
         post(
             "api/v1/designs/$designId/ai",
             buildJsonObject {
-                put("node", json.encodeToJsonElement(DesignNode.serializer(), node))
-                put("screen", json.encodeToJsonElement(DesignScreen.serializer(), screen))
+                put("nodes", JsonArray(nodes))
+                put("screen", screen)
+                put("mode", mode)
                 put("prompt", prompt.trim())
+            },
+        )
+
+    /** 历史版本列表（不含节点正文），用于画布「历史」面板。 */
+    suspend fun listDesignRevisions(designId: String): List<DesignRevision> =
+        get("api/v1/designs/$designId/revisions")
+
+    /** 恢复到某个历史版本；上游会生成新版本号，当前版本自动留档。 */
+    suspend fun revertDesign(designId: String, version: Int, baseVersion: Int): DesignDocument =
+        post(
+            "api/v1/designs/$designId/revert",
+            buildJsonObject {
+                put("version", version)
+                put("base_version", baseVersion)
             },
         )
 
     /** 把设计稿渲染成单文件 HTML，供内嵌浏览器离线交互预览。 */
     suspend fun designWebPreview(designId: String): DesignWebPreview =
         get("api/v1/designs/$designId/preview")
+
+    /**
+     * 导入 Figma(.fig) / Sketch(.sketch) / SVG，生成一份新的 Luma 设计稿。
+     *
+     * 和附件上传一样走裸请求体，[openStream] 在写请求时才打开，16MB 的文件不进内存。
+     */
+    suspend fun importDesign(
+        name: String,
+        size: Long,
+        project: String? = null,
+        openStream: () -> InputStream,
+    ): DesignDocument = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val query = buildString {
+            append("api/v1/designs/import?filename=").append(Uri.encode(name.ifBlank { "import.svg" }))
+            if (!project.isNullOrBlank()) append("&project=").append(Uri.encode(project))
+        }
+        val requestBody = InputStreamRequestBody("application/octet-stream".toMediaType(), size, openStream)
+        val request = Request.Builder().url(url(query)).post(requestBody).build()
+        val response = try {
+            uploadClient.newCall(request).execute()
+        } catch (e: Exception) {
+            val detail = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "网络请求失败"
+            throw FluxApiException("network_error", "导入失败（$detail）")
+        }
+        response.use {
+            val text = it.body?.string().orEmpty()
+            if (!it.isSuccessful) throw apiExceptionFrom(text, it.code)
+            if (text.isBlank()) throw FluxApiException("empty_response", "服务端返回为空")
+            val envelope = runCatching { json.decodeFromString<Envelope<JsonElement>>(text) }.getOrElse {
+                throw FluxApiException("invalid_response", "服务端返回格式无法识别：${it.message ?: "未知格式"}")
+            }
+            if (!envelope.success) {
+                throw FluxApiException(envelope.code.ifBlank { "api_error" }, envelope.message.ifBlank { "导入失败" })
+            }
+            val data = envelope.data ?: throw FluxApiException("empty_data", "服务端响应缺少 data")
+            json.decodeFromJsonElement(DesignDocument.serializer(), data)
+        }
+    }
+
+    /** 导出 SVG：all 是全部画板横向排一张，也可以传画板序号或画板 id。 */
+    suspend fun exportDesignSvg(designId: String, screen: String = "all"): ByteArray =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val path = "api/v1/designs/$designId/export.svg?screen=${Uri.encode(screen)}"
+            val request = Request.Builder().url(url(path)).get().build()
+            val response = try {
+                uploadClient.newCall(request).execute()
+            } catch (e: Exception) {
+                val detail = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "网络请求失败"
+                throw FluxApiException("network_error", "导出失败（$detail）")
+            }
+            response.use {
+                if (!it.isSuccessful) throw apiExceptionFrom(it.body?.string().orEmpty(), it.code)
+                it.body?.bytes() ?: throw FluxApiException("empty_response", "服务端返回为空")
+            }
+        }
 
     suspend fun listTerminalSessions(): List<TerminalSession> = get("api/v1/terminal/sessions")
 

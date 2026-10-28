@@ -62,9 +62,7 @@ class RunTraceRepository:
 
     async def list_for_run(self, run_id: str) -> list[RunTraceItem]:
         statement = (
-            select(RunTraceItem)
-            .where(RunTraceItem.run_id == run_id)
-            .order_by(RunTraceItem.seq)
+            select(RunTraceItem).where(RunTraceItem.run_id == run_id).order_by(RunTraceItem.seq)
         )
         async with self._session_factory() as session:
             return list(await session.scalars(statement))

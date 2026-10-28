@@ -187,9 +187,12 @@ class PriceBook:
         for name in candidates:
             best: PriceEntry | None = None
             for entry in self.entries:
-                if any(ch in entry.model for ch in "*?[") and fnmatch(name, entry.model.lower()):
-                    if best is None or len(entry.model) > len(best.model):
-                        best = entry
+                if (
+                    any(ch in entry.model for ch in "*?[")
+                    and fnmatch(name, entry.model.lower())
+                    and (best is None or len(entry.model) > len(best.model))
+                ):
+                    best = entry
             if best is not None:
                 return best
         # 带日期后缀的模型（`gpt-5.5-2026-01-01`）按最长前缀归到系列价目
@@ -198,9 +201,10 @@ class PriceBook:
             for entry in self.entries:
                 if any(ch in entry.model for ch in "*?["):
                     continue
-                if name.startswith(f"{entry.model.lower()}-"):
-                    if best is None or len(entry.model) > len(best.model):
-                        best = entry
+                if name.startswith(f"{entry.model.lower()}-") and (
+                    best is None or len(entry.model) > len(best.model)
+                ):
+                    best = entry
             if best is not None:
                 return best
         return None
@@ -317,9 +321,9 @@ def load_price_book(
                         continue
                     overrides[entry.model.lower()] = entry
                 # 同 model 的自定义条目顶掉内置，其余保持
-                entries = [
-                    overrides.pop(entry.model.lower(), entry) for entry in entries
-                ] + list(overrides.values())
+                entries = [overrides.pop(entry.model.lower(), entry) for entry in entries] + list(
+                    overrides.values()
+                )
     return PriceBook(entries=entries, as_of=as_of, cny_per_usd=cny_per_usd)
 
 

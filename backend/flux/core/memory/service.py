@@ -256,11 +256,7 @@ class MemoryService:
                 updated += 1
 
         removed = 0
-        stale = [
-            entry.id
-            for cloud_id, entry in by_cloud.items()
-            if cloud_id not in cloud_ids
-        ]
+        stale = [entry.id for cloud_id, entry in by_cloud.items() if cloud_id not in cloud_ids]
         if stale:
             removed = await self._repository.delete_many(stale)
         await self._repository.prune_layer(

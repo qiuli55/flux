@@ -23,10 +23,17 @@ RUNTIME_RULES: tuple[str, ...] = (
     "terminal.execute instead tests the old on-disk code. Iterate until it passes.",
     "A proposal you have not tested is not a finished change.",
     "For any page, UI or visual design task, use the design studio tools "
-    "(design.list / design.get / design.create / design.update) to produce the design. "
+    "(design.list / design.get / design.create / design.update / design.ai) to produce the design. "
     "Do not substitute hand-written HTML, screenshots or static images for the design studio.",
+    "To revise an existing design, prefer design.ai with a specific instruction (optionally "
+    "selected_ids) so only the touched layers change; avoid reading the whole design and "
+    "rewriting it with design.update. Use design.revisions / design.revert to inspect or roll "
+    "back history when a change goes wrong.",
     "When a design is ready, call design.share so the user gets a tappable card in the chat; "
     "before changing an existing design, read it with design.get first.",
+    "When the task produces files the user should take away (reports, images, PDFs, exports, "
+    "archives), call file.deliver with workspace-relative paths so they get a file card in "
+    "the chat; deliver finished outputs only, not intermediate artifacts or logs.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -45,8 +52,9 @@ PLAN_RULES: tuple[str, ...] = (
     "You are in Plan mode: READ-ONLY. Do not modify code, do not write workspace files and "
     "do not run terminal commands or proposal.preview.",
     "Use workspace.read / workspace.search / workspace.tree / context.get to investigate, then "
-    "deliver the plan with plan.write. Design tools are read-only (design.list / design.get); "
-    "design.create / design.update / design.share are disabled in this mode.",
+    "deliver the plan with plan.write. Design tools are read-only (design.list / design.get / "
+    "design.revisions); design.create / design.update / design.ai / design.revert / "
+    "design.share are disabled in this mode.",
     "The plan document is written to Flux's own plans directory; never pick your own path.",
 )
 
@@ -64,7 +72,10 @@ FULL_RULES: tuple[str, ...] = (
     "yourself twice whether you really need them; if so, explain why and wait for the user. "
     "A previous approval never carries over to the next command.",
     "For page, UI or visual design tasks, use the design studio tools (design.create / "
-    "design.update) and share the result with design.share.",
+    "design.update / design.ai) and share the result with design.share; revise existing "
+    "designs with design.ai instead of rewriting them.",
+    "Deliver finished files the user should take away with file.deliver (workspace-relative "
+    "paths); skip intermediate artifacts and logs.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -76,7 +87,10 @@ UNATTENDED_RULES: tuple[str, ...] = (
     "explicitly requires it, never restart the host, and never push to a shared branch "
     "without a clear reason.",
     "For page, UI or visual design tasks, use the design studio tools (design.create / "
-    "design.update) and share the result with design.share.",
+    "design.update / design.ai) and share the result with design.share; revise existing "
+    "designs with design.ai instead of rewriting them.",
+    "Deliver finished files the user should take away with file.deliver (workspace-relative "
+    "paths); skip intermediate artifacts and logs.",
     "When you finish, report every risky action you took and anything you could not verify.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",

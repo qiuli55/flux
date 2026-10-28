@@ -119,7 +119,7 @@ Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），
 | 应用 | 技术栈 | 状态 |
 | --- | --- | --- |
 | `apps/web-dashboard` | React 19 + Vite（含 `@xterm/xterm`） | 工作台主界面：Solo / IDE 双模式、diff 双视图、内嵌终端 |
-| `apps/desktop-avalonia` | Avalonia + .NET 8（原生桌面端） | 登录、概览、任务、Skills、系统诊断、设置、Solo 任务台（流水线 + 单 Agent）、项目列表、Agent 面板、Agent Terminal 已接真实接口；IDE 工作台待实现 |
+| `apps/desktop-avalonia` | Avalonia + .NET 8（原生桌面端） | 登录、概览、任务、Skills、系统诊断、设置、Solo 任务台（流水线 + 单 Agent）、项目列表、Agent 面板、Agent Terminal 已接真实接口；内置浏览器（Windows / Linux，带代理开关）已接入；IDE 工作台待实现 |
 | `apps/mobile-controller` | Android（Kotlin + Gradle） | 手机远程控制端 |
 | `apps/showcase-web` | React | 展示页 |
 | `apps/vscode-extension` | — | 待建 |
@@ -167,6 +167,13 @@ cd apps/web-dashboard && npm ci && npm run dev
 ```bash
 cd apps/desktop-avalonia && dotnet run
 ```
+
+内置浏览器需要系统 WebView 运行时，缺失时「浏览器」页会直接给出安装提示：
+
+- Linux（WebKitGTK）：`sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0`
+- Windows（WebView2）：装 Edge WebView2 Runtime（Win10 1809+ / Win11 一般已自带）
+
+代理开关在「设置 → 网络」，只有跟随系统 / 直连 / 自定义（http、socks5）三档，仅作用于内置浏览器；macOS 版本暂未接入。
 
 打包 Linux x64 产物：`bash scripts/build_desktop_avalonia_linux.sh`，产物落在 `apps/desktop-avalonia/release/`。
 

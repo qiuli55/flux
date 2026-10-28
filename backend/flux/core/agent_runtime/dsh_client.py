@@ -505,12 +505,8 @@ class FluxDshClient:
                 or self._settings.deepseek_base_url
                 or DEFAULT_UPSTREAM
             )
-            tap_token = llm_stream_tap.register(
-                run_id=run_id, upstream=upstream, bus=self._bus
-            )
-            base_url = (
-                f"{tap_base_url(self._settings.dsh_mcp_url).rstrip('/')}/{tap_token}"
-            )
+            tap_token = llm_stream_tap.register(run_id=run_id, upstream=upstream, bus=self._bus)
+            base_url = f"{tap_base_url(self._settings.dsh_mcp_url).rstrip('/')}/{tap_token}"
         try:
             harness = self._harness_factory(
                 dsh_home=self._settings.dsh_home,

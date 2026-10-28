@@ -138,9 +138,7 @@ def test_key_models_are_exposed_per_runtime(client: TestClient) -> None:
     assert dsh.status_code == 200, dsh.text
 
     agents = {a["spec"]["name"]: a for a in client.get(f"{PREFIX}/agents").json()["data"]}
-    builtin_models = {
-        (m["key_id"], m["model"]) for m in agents["dsh-agent"]["spec"]["key_models"]
-    }
+    builtin_models = {(m["key_id"], m["model"]) for m in agents["dsh-agent"]["spec"]["key_models"]}
     codex_models = {(m["key_id"], m["model"]) for m in agents["codex-agent"]["spec"]["key_models"]}
     # dsh 只吃 DeepSeek 协议；codex 同时能看到 DeepSeek 与 OpenAI
     assert (deepseek["id"], "deepseek-v4-pro") in builtin_models
@@ -151,9 +149,9 @@ def test_key_models_are_exposed_per_runtime(client: TestClient) -> None:
 
 def test_switch_model_with_key_and_agent_switch_clears_it(client: TestClient) -> None:
     key = _create_key(client)
-    task = client.post(
-        f"{PREFIX}/tasks", json={"description": "切模型", "agent_id": None}
-    ).json()["data"]
+    task = client.post(f"{PREFIX}/tasks", json={"description": "切模型", "agent_id": None}).json()[
+        "data"
+    ]
     agent_id = client.post(
         f"{PREFIX}/agents",
         json={"name": "builtin-2", "role": "developer", "runtime": "dsh"},

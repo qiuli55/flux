@@ -48,9 +48,7 @@ async def llm_tap(token: str, path: str, request: Request) -> Response:
     url = target.join(path, request.url.query)
 
     client = llm_stream_tap.client()
-    upstream_request = client.build_request(
-        request.method, url, headers=headers, content=body
-    )
+    upstream_request = client.build_request(request.method, url, headers=headers, content=body)
     try:
         upstream = await client.send(upstream_request, stream=True)
     except httpx.HTTPError as exc:

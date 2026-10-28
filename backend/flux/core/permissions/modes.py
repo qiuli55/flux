@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from flux.enums import Capability, PermissionMode
 
-#: Plan 模式允许的工具：只读 + 计划文档。design.create / design.update / design.share
+#: Plan 模式允许的工具：只读 + 计划文档。
+#: design.create / design.update / design.ai / design.revert / design.share
 #: 与 proposal.* / terminal.execute 一律不在名单里（不靠"Agent 自觉"）。
 PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
     {
@@ -29,6 +30,7 @@ PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "workspace.diff",
         "design.list",
         "design.get",
+        "design.revisions",
         "plan.write",
     }
 )
@@ -69,11 +71,15 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
         "summary": "只读上下文并写计划文档；不执行 shell、不改代码、不分享设计稿。",
         "can": [
             "workspace.read/search/tree/diff",
-            "design.list/get",
+            "design.list/get/revisions",
             "plan.write",
             "memory.remember",
         ],
-        "cannot": ["terminal.execute", "proposal.create/preview", "design.create/update/share"],
+        "cannot": [
+            "terminal.execute",
+            "proposal.create/preview",
+            "design.create/update/ai/revert/share",
+        ],
     },
     PermissionMode.NORMAL.value: {
         "label": "正常模式",

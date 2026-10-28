@@ -41,9 +41,7 @@ HANDOFF_TRACE_MESSAGES = 6
 #: 交接卡里最近对话的字符预算
 HANDOFF_TRACE_CHARS = 900
 
-_ACTIVE_STATUSES = frozenset(
-    {TaskStatus.RUNNING.value, TaskStatus.WAITING_FOR_USER_DECISION.value}
-)
+_ACTIVE_STATUSES = frozenset({TaskStatus.RUNNING.value, TaskStatus.WAITING_FOR_USER_DECISION.value})
 
 
 @dataclass(slots=True)

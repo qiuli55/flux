@@ -36,12 +36,14 @@ class _FakeClient:
         self._get = get
         self._post = post or _FakeResponse(200, {"id": "fresh-session"})
         self.posted: list[str] = []
+        self.bodies: list[dict] = []
 
     async def get(self, path: str, timeout: float = 0) -> _FakeResponse:
         return self._get
 
     async def post(self, path: str, json: dict | None = None, timeout: float = 0):
         self.posted.append(path)
+        self.bodies.append(json or {})
         return self._post
 
 
@@ -89,6 +91,42 @@ def test_opencode_falls_back_when_session_missing():
     client._client = _FakeClient(get=_FakeResponse(404))
     assert asyncio.run(client._resolve_session("gone", "t")) == "fresh-session"
     assert client._client.posted == ["/session"]
+
+
+def test_opencode_message_carries_task_model():
+    """任务切了模型后，每条消息都要显式下发模型（会话会记住旧模型）。"""
+    client = _opencode_client()
+    fake = _FakeClient(
+        get=_FakeResponse(200, {"id": "old-session"}),
+        post=_FakeResponse(200, {"parts": []}),
+    )
+    client._client = fake
+    asyncio.run(client._send_message("old-session", "hi", "opencode-go/gemini-4-argon"))
+    assert fake.bodies[-1]["model"] == {
+        "providerID": "opencode-go",
+        "modelID": "gemini-4-argon",
+    }
+
+
+def test_opencode_new_session_carries_task_model():
+    """新建会话也要带模型：否则会话默认落回全局配置的默认模型。"""
+    client = _opencode_client()
+    fake = _FakeClient(get=_FakeResponse(404))
+    client._client = fake
+    asyncio.run(client._resolve_session("gone", "t", "opencode-go/gemini-4-argon"))
+    assert fake.bodies[-1]["model"] == {
+        "id": "gemini-4-argon",
+        "providerID": "opencode-go",
+    }
+
+
+def test_opencode_without_model_keeps_server_default():
+    """没选模型时不要伪造 model 字段，保持 opencode 自己的默认行为。"""
+    client = _opencode_client()
+    fake = _FakeClient(get=_FakeResponse(404), post=_FakeResponse(200, {"parts": []}))
+    client._client = fake
+    asyncio.run(client._send_message("s1", "hi"))
+    assert "model" not in fake.bodies[-1]
 
 
 def _codex_session(request_handler) -> CodexAppServerSession:

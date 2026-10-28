@@ -50,9 +50,7 @@ def test_upload_roundtrip_writes_file(client: TestClient) -> None:
 
 
 def test_upload_rejects_empty_body(client: TestClient) -> None:
-    response = client.post(
-        f"{PREFIX}/uploads", params={"name": "empty.txt"}, content=b""
-    )
+    response = client.post(f"{PREFIX}/uploads", params={"name": "empty.txt"}, content=b"")
     assert response.status_code >= 400
     assert "空" in response.json()["message"]
 
@@ -60,9 +58,7 @@ def test_upload_rejects_empty_body(client: TestClient) -> None:
 def test_upload_rejects_oversize_chunk(client: TestClient) -> None:
     """超限在上传时就拒绝，不等人发消息；半成品文件不留在磁盘。"""
     oversized = b"x" * (ATTACHMENT_MAX_BYTES + 1)
-    response = client.post(
-        f"{PREFIX}/uploads", params={"name": "big.bin"}, content=oversized
-    )
+    response = client.post(f"{PREFIX}/uploads", params={"name": "big.bin"}, content=oversized)
     assert response.status_code >= 400
     assert "50MB" in response.json()["message"]
     # 上传目录里不应留下任何半成品目录
@@ -123,9 +119,7 @@ def test_unknown_attachment_id_is_rejected(client: TestClient) -> None:
 
 def test_more_than_five_attachments_rejected(client: TestClient) -> None:
     ids = [_upload(client, f"{index}.txt", b"x")["id"] for index in range(5)]
-    response = client.post(
-        f"{PREFIX}/uploads", params={"name": "extra.txt"}, content=b"y"
-    )
+    response = client.post(f"{PREFIX}/uploads", params={"name": "extra.txt"}, content=b"y")
     assert response.status_code == 200
     extra = response.json()["data"]["id"]
     response = client.post(

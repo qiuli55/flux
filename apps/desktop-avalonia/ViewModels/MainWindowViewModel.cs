@@ -101,6 +101,14 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isReduceMotion;
 
+    /// <summary>内置浏览器代理模式：system / direct / custom（与 prefs.json 同步）。</summary>
+    [ObservableProperty]
+    private string _browserProxyMode = "system";
+
+    /// <summary>内置浏览器自定义代理地址（仅 custom 模式使用）。</summary>
+    [ObservableProperty]
+    private string _browserProxyUrl = "";
+
     [ObservableProperty]
     private bool _isPaletteOpen;
 
@@ -120,6 +128,8 @@ public partial class MainWindowViewModel : ViewModelBase
         _isRailWide = prefs.RailWide;
         _isStatusBarVisible = prefs.StatusBar;
         _isReduceMotion = prefs.ReduceMotion;
+        _browserProxyMode = prefs.ProxyMode;
+        _browserProxyUrl = prefs.ProxyUrl;
 
         Account = new AccountViewModel
         {
@@ -328,6 +338,8 @@ public partial class MainWindowViewModel : ViewModelBase
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, new TasksViewModel(() => _api, NavigateTo), "layers") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, new SkillsViewModel(() => _api), "puzzle") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("designs", "设计", GroupPlatform, new DesignsViewModel(() => _api), "design") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("browser", "浏览器", GroupPlatform, new BrowserViewModel(), "globe") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("billing", "成本中心", GroupPlatform, new BillingViewModel(() => _api), "credit") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, new DiagnosticsViewModel(() => _api), "activity") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("settings", "设置", GroupPlatform, new SettingsViewModel(() => _api, this), "settings") { ActivateCommand = ActivateCommand });
@@ -422,6 +434,9 @@ public partial class MainWindowViewModel : ViewModelBase
             case SkillsViewModel skills:
                 _ = skills.RefreshAsync();
                 break;
+            case DesignsViewModel designs:
+                _ = designs.RefreshAsync();
+                break;
             case DiagnosticsViewModel diagnostics:
                 _ = diagnostics.RefreshAsync();
                 break;
@@ -478,17 +493,27 @@ public partial class MainWindowViewModel : ViewModelBase
 
     partial void OnIsReduceMotionChanged(bool value) => SavePrefs();
 
-    /// <summary>把三个界面偏好恢复默认（设置页的「重置」用）。</summary>
+    partial void OnBrowserProxyModeChanged(string value) => SavePrefs();
+
+    partial void OnBrowserProxyUrlChanged(string value) => SavePrefs();
+
+    /// <summary>把界面偏好恢复默认（设置页的「重置」用）。</summary>
     [RelayCommand]
     public void ResetPrefs()
     {
         IsRailWide = UiPrefs.Defaults.RailWide;
         IsStatusBarVisible = UiPrefs.Defaults.StatusBar;
         IsReduceMotion = UiPrefs.Defaults.ReduceMotion;
+        BrowserProxyMode = UiPrefs.Defaults.ProxyMode;
+        BrowserProxyUrl = UiPrefs.Defaults.ProxyUrl;
     }
 
     private void SavePrefs() =>
-        UiPrefs.Save(new UiPrefsData(IsRailWide, IsStatusBarVisible, IsReduceMotion));
+        UiPrefs.Save(new UiPrefsData(IsRailWide, IsStatusBarVisible, IsReduceMotion)
+        {
+            ProxyMode = BrowserProxyMode,
+            ProxyUrl = BrowserProxyUrl,
+        });
 
     [RelayCommand]
     private void OpenPalette()

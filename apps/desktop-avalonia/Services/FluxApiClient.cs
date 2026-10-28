@@ -3,17 +3,24 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Flux.Desktop.Models;
 
 namespace Flux.Desktop.Services;
 
-/// <summary>后端统一响应信封。</summary>
-public sealed record ApiEnvelope<T>(bool Success, string? Code, string? Message, T? Data);
+/// <summary>后端统一响应信封；Metadata 目前只有设计稿导入用（携带上游 warnings）。</summary>
+public sealed record ApiEnvelope<T>(
+    bool Success,
+    string? Code,
+    string? Message,
+    T? Data,
+    JsonObject? Metadata = null);
 
 /// <summary>本机后端 HTTP 客户端（/api/v1）。</summary>
 public sealed class FluxApiClient : IDisposable
@@ -26,6 +33,9 @@ public sealed class FluxApiClient : IDisposable
 
     private readonly HttpClient _http;
 
+    /// <summary>AI 改写要等模型返回，Flux 代理本身给了 60s，这里留足 120s。</summary>
+    private readonly HttpClient _aiHttp;
+
     public FluxApiClient(string baseUrl)
     {
         // 只与本机 127.0.0.1 后端通信。必须显式关闭代理：
@@ -36,6 +46,11 @@ public sealed class FluxApiClient : IDisposable
         {
             BaseAddress = new Uri(baseUrl),
             Timeout = TimeSpan.FromSeconds(30),
+        };
+        _aiHttp = new HttpClient(handler, disposeHandler: false)
+        {
+            BaseAddress = new Uri(baseUrl),
+            Timeout = TimeSpan.FromSeconds(120),
         };
     }
 
@@ -361,6 +376,141 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<CloudSession>?> GetCloudSessionAsync(CancellationToken ct = default)
         => GetAsync<CloudSession>("/api/v1/cloud/session", ct);
 
+    // --- Luma 设计稿（/api/v1/designs 代理到本机 Luma Studio） ---
+
+    public Task<ApiEnvelope<List<DesignSummary>>?> ListDesignsAsync(CancellationToken ct = default)
+        => GetAsync<List<DesignSummary>>("/api/v1/designs", ct, DesignJson.Options);
+
+    public Task<ApiEnvelope<JsonObject>?> GetDesignAsync(string designId, CancellationToken ct = default)
+        => GetAsync<JsonObject>(
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}",
+            ct,
+            DesignJson.Options);
+
+    public Task<ApiEnvelope<JsonObject>?> SaveDesignAsync(
+        string designId,
+        JsonObject design,
+        int baseVersion,
+        CancellationToken ct = default)
+    {
+        var payload = new JsonObject
+        {
+            ["design"] = design.DeepClone(),
+            ["base_version"] = baseVersion,
+        };
+        return SendAsync<JsonObject>(
+            HttpMethod.Put,
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}",
+            payload,
+            ct,
+            DesignJson.Options);
+    }
+
+    public Task<ApiEnvelope<List<DesignRevision>>?> ListDesignRevisionsAsync(
+        string designId,
+        CancellationToken ct = default)
+        => GetAsync<List<DesignRevision>>(
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}/revisions",
+            ct,
+            DesignJson.Options);
+
+    public Task<ApiEnvelope<JsonObject>?> RevertDesignAsync(
+        string designId,
+        int version,
+        int baseVersion,
+        CancellationToken ct = default)
+    {
+        var payload = new JsonObject
+        {
+            ["version"] = version,
+            ["base_version"] = baseVersion,
+        };
+        return PostAsync<JsonObject>(
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}/revert",
+            payload,
+            ct,
+            DesignJson.Options);
+    }
+
+    public Task<ApiEnvelope<DesignAiResult>?> AskDesignAiAsync(
+        string designId,
+        JsonObject payload,
+        CancellationToken ct = default)
+        => PostAsync<DesignAiResult>(
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}/ai",
+            payload,
+            ct,
+            DesignJson.Options,
+            _aiHttp);
+
+    /// <summary>POST /designs/import：裸请求体上传 .svg/.fig/.sketch，16 MB 上限由后端把关。</summary>
+    public async Task<ApiEnvelope<JsonObject>?> ImportDesignAsync(
+        string filePath,
+        string? project = null,
+        CancellationToken ct = default)
+    {
+        var query = "?filename=" + Uri.EscapeDataString(Path.GetFileName(filePath));
+        if (!string.IsNullOrWhiteSpace(project))
+        {
+            query += "&project=" + Uri.EscapeDataString(project);
+        }
+
+        try
+        {
+            await using var stream = File.OpenRead(filePath);
+            using var content = new StreamContent(stream);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            return await SendContentAsync<JsonObject>(
+                "/api/v1/designs/import" + query,
+                content,
+                ct,
+                DesignJson.Options).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"POST /designs/import -> {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>GET /designs/{id}/export.svg：响应体是 SVG 字节而不是 JSON，单独处理。</summary>
+    public async Task<(byte[]? Svg, string? Error)> ExportDesignSvgAsync(
+        string designId,
+        string screen = "all",
+        CancellationToken ct = default)
+    {
+        var path = $"/api/v1/designs/{Uri.EscapeDataString(designId)}/export.svg"
+            + $"?screen={Uri.EscapeDataString(screen)}";
+        try
+        {
+            using var res = await _http.GetAsync(path, ct).ConfigureAwait(false);
+            if (res.IsSuccessStatusCode)
+            {
+                return (await res.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false), null);
+            }
+
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var envelope = JsonSerializer.Deserialize<ApiEnvelope<JsonObject>>(body, JsonOptions);
+            return (null, envelope?.Message is { Length: > 0 } message
+                ? message
+                : $"导出失败（HTTP {(int)res.StatusCode}）");
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"GET {path} -> {ex.GetType().Name}: {ex.Message}");
+            return (null, "导出失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>GET /designs/{id}/preview：后端渲染好的单文件交互 HTML。</summary>
+    public Task<ApiEnvelope<DesignWebPreview>?> GetDesignPreviewAsync(
+        string designId,
+        CancellationToken ct = default)
+        => GetAsync<DesignWebPreview>(
+            $"/api/v1/designs/{Uri.EscapeDataString(designId)}/preview",
+            ct,
+            DesignJson.Options);
+
     public Task<ApiEnvelope<CloudTokens>?> ExchangeCodeAsync(string code, CancellationToken ct = default)
         => PostAsync<CloudTokens>("/api/v1/cloud/exchange", new { code }, ct);
 
@@ -384,21 +534,25 @@ public sealed class FluxApiClient : IDisposable
         HttpMethod method,
         string path,
         object? payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        JsonSerializerOptions? options = null,
+        HttpClient? client = null)
     {
+        var json = options ?? JsonOptions;
+        var http = client ?? _http;
         try
         {
             using var request = new HttpRequestMessage(method, path);
             if (payload is not null)
             {
                 request.Content = new StringContent(
-                    JsonSerializer.Serialize(payload, JsonOptions),
+                    JsonSerializer.Serialize(payload, json),
                     Encoding.UTF8,
                     "application/json");
             }
-            using var res = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            using var res = await http.SendAsync(request, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, json));
         }
         catch (Exception ex)
         {
@@ -407,17 +561,43 @@ public sealed class FluxApiClient : IDisposable
         }
     }
 
+    /// <summary>收 JSON 但发的是裸字节流（设计稿导入），和 SendAsync 只差请求体。</summary>
+    private async Task<ApiEnvelope<T>?> SendContentAsync<T>(
+        string path,
+        HttpContent content,
+        CancellationToken ct,
+        JsonSerializerOptions? options = null)
+    {
+        var json = options ?? JsonOptions;
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
+            using var res = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, json));
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"POST {path} -> {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>Base URL 去掉空白与末尾斜杠；留空表示用供应商默认地址。</summary>
     private static string NormalizeUrl(string? value)
         => string.IsNullOrWhiteSpace(value) ? "" : value.Trim().TrimEnd('/');
 
-    private async Task<ApiEnvelope<T>?> GetAsync<T>(string path, CancellationToken ct)
+    private async Task<ApiEnvelope<T>?> GetAsync<T>(
+        string path,
+        CancellationToken ct,
+        JsonSerializerOptions? options = null)
     {
+        var json = options ?? JsonOptions;
         try
         {
             using var res = await _http.GetAsync(path, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, json));
         }
         catch (Exception ex)
         {
@@ -426,13 +606,20 @@ public sealed class FluxApiClient : IDisposable
         }
     }
 
-    private async Task<ApiEnvelope<T>?> PostAsync<T>(string path, object payload, CancellationToken ct)
+    private async Task<ApiEnvelope<T>?> PostAsync<T>(
+        string path,
+        object payload,
+        CancellationToken ct,
+        JsonSerializerOptions? options = null,
+        HttpClient? client = null)
     {
+        var json = options ?? JsonOptions;
+        var http = client ?? _http;
         try
         {
-            using var res = await _http.PostAsJsonAsync(path, payload, JsonOptions, ct).ConfigureAwait(false);
+            using var res = await http.PostAsJsonAsync(path, payload, json, ct).ConfigureAwait(false);
             var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, JsonOptions));
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, json));
         }
         catch (Exception ex)
         {
@@ -462,5 +649,9 @@ public sealed class FluxApiClient : IDisposable
         }
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _aiHttp.Dispose();
+        _http.Dispose();
+    }
 }

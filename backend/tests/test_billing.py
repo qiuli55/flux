@@ -48,7 +48,9 @@ def _rows(plan_key: str, percent: float, windows: tuple[str, ...]) -> list[Snaps
     return [SnapshotRow(plan_key=plan_key, window_key=w, percent=percent) for w in windows]
 
 
-def _service(container: Container, *, percent: float = 10.0, enforce: bool = False) -> BillingService:
+def _service(
+    container: Container, *, percent: float = 10.0, enforce: bool = False
+) -> BillingService:
     settings = container.settings.model_copy(
         update={"billing_enforce": enforce, "billing_refresh_seconds": 300}
     )
@@ -103,7 +105,11 @@ def test_custom_plans_extend_registry_without_code(tmp_path) -> None:
                     # 同 key 覆盖内置定义（只记账）
                     {"key": PLAN_CODEX, "model_prefixes": ["codex"], "windows": ["weekly"]},
                     # kind=none 显式关掉内置套餐的官方采集
-                    {"key": PLAN_AGENT_PLAN, "model_prefixes": ["agent-plan"], "source": {"kind": "none"}},
+                    {
+                        "key": PLAN_AGENT_PLAN,
+                        "model_prefixes": ["agent-plan"],
+                        "source": {"kind": "none"},
+                    },
                     # 缺 key / 缺前缀的条目跳过，不让一条写错拖垮整套
                     {"label": "broken"},
                     {"key": "broken-2"},
@@ -191,7 +197,9 @@ def test_price_book_estimates_from_official_prices() -> None:
     peak = datetime(2026, 10, 26, 2, 0, tzinfo=timezone.utc)
     off_peak = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
     assert book.estimate_cost("deepseek-flash", input_tokens=1_000_000, occurred_at=peak) == 0.3
-    assert book.estimate_cost("deepseek-flash", input_tokens=1_000_000, occurred_at=off_peak) == 0.15
+    assert (
+        book.estimate_cost("deepseek-flash", input_tokens=1_000_000, occurred_at=off_peak) == 0.15
+    )
 
     # 火山价目是人民币：6 元 / 7.2
     assert book.estimate_cost("agent-plan/doubao-seed", input_tokens=1_000_000) == round(6 / 7.2, 6)
@@ -239,10 +247,18 @@ async def test_record_step_fills_missing_cost_from_price_book(container: Contain
 async def test_record_step_aggregates_into_plan_windows(container: Container) -> None:
     service = _service(container)
     await service.record_step(
-        run_id="run-1", model="opencode-go/gemini-4-argon", input_tokens=100, output_tokens=50, cost=1.5
+        run_id="run-1",
+        model="opencode-go/gemini-4-argon",
+        input_tokens=100,
+        output_tokens=50,
+        cost=1.5,
     )
     await service.record_step(
-        run_id="run-1", model="opencode-go/gemini-4-argon", input_tokens=20, output_tokens=10, cost=0.5
+        run_id="run-1",
+        model="opencode-go/gemini-4-argon",
+        input_tokens=20,
+        output_tokens=10,
+        cost=0.5,
     )
     # 未登记套餐的模型只记账，不进任何套餐合计
     await service.record_step(run_id="run-2", model="deepseek/deepseek-chat", input_tokens=999)
@@ -462,5 +478,3 @@ def test_codex_login_success_schedules_quota_snapshot(tmp_path) -> None:
         return billing.plans
 
     assert asyncio.run(scenario()) == [PLAN_CODEX]
-
-

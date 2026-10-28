@@ -50,7 +50,10 @@ def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
 
 
 SEED_TURNS = [
-    ("我想把手机端的对话上下文做成可轮换的", "可以，先确认口径：以平台助手每轮实际能带上的历史为准。"),
+    (
+        "我想把手机端的对话上下文做成可轮换的",
+        "可以，先确认口径：以平台助手每轮实际能带上的历史为准。",
+    ),
     ("对，就按实际能带上的算，不要按模型窗口", "明白，阈值定在 80%，满了再提醒一次。"),
     ("提醒出现后我能选继续聊或者新建", "继续聊就按当前等级不再打扰，新建会把摘要带过去。"),
     ("摘要要写进新对话里，旧对话别动", "旧对话原样保留，新对话只带一份摘要，不拷贝消息。"),
@@ -93,7 +96,8 @@ def main() -> int:
         usage = ctx["data"]
         print(
             f"上下文 {usage['used_messages']}/{usage['limit']} 条 · "
-            f"{usage['used_chars']}/{usage['budget_chars']} 字 · {usage['percent']}% · {usage['level']}"
+            f"{usage['used_chars']}/{usage['budget_chars']} 字 · "
+            f"{usage['percent']}% · {usage['level']}"
         )
         assert usage["message_count"] == len(SEED_TURNS) * 2, usage
         assert usage["used_messages"] == min(usage["message_count"], usage["limit"]), usage
@@ -124,7 +128,10 @@ def main() -> int:
             assert code == 200, (code, msgs)
             kinds = [m["kind"] for m in msgs["data"]]
             assert kinds == ["summary"], kinds
-            print(f"新任务 {new_id[:8]} 只有一条 kind=summary 消息，正文 {len(msgs['data'][0]['content'])} 字")
+            print(
+                f"新任务 {new_id[:8]} 只有一条 kind=summary 消息，"
+                f"正文 {len(msgs['data'][0]['content'])} 字"
+            )
 
             code, new_ctx = call("GET", f"/api/v1/tasks/{new_id}/context")
             assert code == 200 and new_ctx["data"]["used_messages"] == 1, new_ctx

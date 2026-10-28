@@ -284,7 +284,9 @@ class BillingService:
             return GateDecision(plan_key="", level=LEVEL_DISABLED)
         effective = (model or "").strip() or resolve_default_model(self._settings, runtime_id)
         if not effective:
-            return GateDecision(plan_key="", level=LEVEL_UNKNOWN, message="无法确定模型，跳过额度检查")
+            return GateDecision(
+                plan_key="", level=LEVEL_UNKNOWN, message="无法确定模型，跳过额度检查"
+            )
         decision = await self.gate_for_model(effective, runtime_id=runtime_id, refresh=True)
         if decision.blocked:
             raise ConflictError(decision.message, code="billing_quota_exceeded")
@@ -399,7 +401,6 @@ class BillingService:
             "points": round(points, 1),
             "mixed_points": round(mixed, 1),
         }
-
 
     async def _gate_for_plan(
         self, plan: PlanDefinition, rows: list[dict[str, Any]]
@@ -525,9 +526,7 @@ class BillingService:
             error = f"未配置采集器：{plan.key}"
             rows: list[dict[str, Any]] = []
             for window in plan.windows:
-                await self._store_snapshot(
-                    plan, window.key, source="", error=error, fetched_at=now
-                )
+                await self._store_snapshot(plan, window.key, source="", error=error, fetched_at=now)
             self._cache[plan.key] = rows
             self._cache_at[plan.key] = now
             return rows, error
@@ -611,7 +610,9 @@ class BillingService:
                 fetched_at=fetched_at,
             )
         except Exception:  # 快照写不进去不影响本次返回
-            logger.warning("额度快照落库失败 plan=%s window=%s", plan.key, window_key, exc_info=True)
+            logger.warning(
+                "额度快照落库失败 plan=%s window=%s", plan.key, window_key, exc_info=True
+            )
 
 
 __all__ = [

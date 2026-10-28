@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from flux.core.mcp.tools.base import ToolContext, ToolSpec
+from flux.core.mcp.tools.delivery_tools import delivery_tools
 from flux.core.mcp.tools.design_tools import design_tools
 from flux.core.mcp.tools.memory_tools import memory_tools
 from flux.core.mcp.tools.plan_tools import plan_tools
@@ -32,6 +33,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     *terminal_tools(),
     *preview_tools(),
     *design_tools(),
+    *delivery_tools(),
     *plan_tools(),
 )
 

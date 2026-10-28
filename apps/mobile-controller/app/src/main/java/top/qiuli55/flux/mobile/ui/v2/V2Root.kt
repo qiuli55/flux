@@ -539,6 +539,15 @@ fun FluxV2Root() {
                             },
                             onRename = { designId, name -> designVm.renameDesign(designId, name) },
                             onDelete = { designId -> designVm.deleteDesign(designId) },
+                            onImport = { name, size, openStream ->
+                                designVm.importDesign(name, size, openStream) {
+                                    designOrigin = V2Route.Designs
+                                    route = V2Route.DesignCanvas
+                                }
+                            },
+                            onExport = { designId, onReady ->
+                                designVm.exportDesignSvg(designId, onReady = onReady)
+                            },
                             onDismissMessages = { designVm.clearMessages() },
                         )
 
@@ -556,6 +565,17 @@ fun FluxV2Root() {
                             },
                             onSelectNode = { designVm.selectNode(it) },
                             onSelectScreen = { designVm.selectScreen(it) },
+                            onToggleMultiSelect = { designVm.toggleMultiSelect() },
+                            onSetAiScope = { designVm.setAiScope(it) },
+                            onUndo = { designVm.undo() },
+                            onBeginDrag = { designVm.beginNodeDrag(it) },
+                            onDrag = { ids, dx, dy -> designVm.dragNodes(ids, dx, dy) },
+                            onMoveLayer = { id, up -> designVm.moveLayer(id, up) },
+                            onDeleteLayer = { designVm.deleteLayer(it) },
+                            onDuplicateLayer = { designVm.duplicateLayer(it) },
+                            onRenameLayer = { id, name -> designVm.renameLayer(id, name) },
+                            onLoadHistory = { designVm.loadRevisions() },
+                            onRevert = { designVm.revertTo(it) },
                             onSave = { designVm.save() },
                             onWebPreview = {
                                 val designId = designState.document?.id

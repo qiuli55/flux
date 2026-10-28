@@ -353,9 +353,7 @@ async def _allowed() -> str:
     return "allowed"
 
 
-async def test_unattended_mode_never_asks_even_for_protected(
-    apply_container, monkeypatch
-) -> None:
+async def test_unattended_mode_never_asks_even_for_protected(apply_container, monkeypatch) -> None:
     """免审核模式：高风险与受保护对象都不落审批卡，只留审计日志。"""
     task, run_id = await _seed_task_and_run(apply_container, mode="unattended")
     ctx = _ctx(apply_container, mode="unattended", run_id=run_id)
@@ -534,9 +532,7 @@ def test_create_task_with_plan_mode_and_switch(client: TestClient) -> None:
     task = created.json()["data"]
     assert task["permission_mode"] == "plan"
 
-    switched = client.post(
-        f"{PREFIX}/tasks/{task['id']}/permission-mode", json={"mode": "full"}
-    )
+    switched = client.post(f"{PREFIX}/tasks/{task['id']}/permission-mode", json={"mode": "full"})
     assert switched.status_code == 200, switched.text
     data = switched.json()["data"]
     assert data["permission_mode"] == "full"
@@ -566,9 +562,7 @@ def test_switch_to_unattended_mode(client: TestClient) -> None:
 def test_permission_mode_rejects_unknown_value(client: TestClient) -> None:
     created = client.post(f"{PREFIX}/tasks", json={"description": "模式校验"})
     task = created.json()["data"]
-    response = client.post(
-        f"{PREFIX}/tasks/{task['id']}/permission-mode", json={"mode": "yolo"}
-    )
+    response = client.post(f"{PREFIX}/tasks/{task['id']}/permission-mode", json={"mode": "yolo"})
     assert response.status_code == 422
 
 
@@ -596,9 +590,7 @@ def test_opencode_config_disables_native_tools_in_plan_mode() -> None:
     assert normal["permission"]["bash"] == "ask"
     for key in ("edit", "write"):
         assert normal.get("permission", {}).get(key) != "deny"
-    full = json.loads(
-        cli._opencode_config("https://example.test/mcp", "tok", "run1", mode="full")
-    )
+    full = json.loads(cli._opencode_config("https://example.test/mcp", "tok", "run1", mode="full"))
     assert full["permission"]["bash"] == "ask"
 
 

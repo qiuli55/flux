@@ -155,9 +155,7 @@ class TaskRunService:
             steps = await _latest_plan(container, task.id)
             summary = await _latest_summary(container, task.id)
             attachments = await _latest_attachments(container, task.id)
-            messages, _ = await container.task_repo.list_messages(
-                task.id, limit=_HISTORY_LIMIT
-            )
+            messages, _ = await container.task_repo.list_messages(task.id, limit=_HISTORY_LIMIT)
             trace = build_dialogue_trace(messages)
             memory = await _latest_memory(container, task.id)
             user_memory = await _user_memory_instruction(container)
@@ -336,9 +334,7 @@ async def _user_memory_instruction(container: Container) -> str:
         if lines:
             lines.reverse()
             blocks.append(
-                "\n".join(
-                    ["## 用户长期记忆（账号级，跨设备；仅作背景，不要逐条复述）", *lines]
-                )
+                "\n".join(["## 用户长期记忆（账号级，跨设备；仅作背景，不要逐条复述）", *lines])
             )
     return "\n\n".join(blocks)
 
@@ -347,8 +343,9 @@ def _mode_constraints(mode: str) -> list[str]:
     """三种权限模式的执行约束（与 protocol.compose_instruction 的模式段保持一致）。"""
     if mode == "plan":
         return [
-            "- 当前是 Plan 模式（只读）：只读项目上下文与设计稿（design.list / design.get），"
-            "不要执行 shell、不要改代码、不要提交提案、不要 design.create/update/share。",
+            "- 当前是 Plan 模式（只读）：只读项目上下文与设计稿（design.list / design.get / "
+            "design.revisions），不要执行 shell、不要改代码、不要提交提案、"
+            "不要 design.create/update/ai/revert/share。",
             "- 用 plan.write 输出实施计划（标题 + 1–12 个步骤 + 涉及文件），计划文档由服务端"
             "写入固定目录；计划卡会自动出现在对话里。",
             "- 交付的是可执行、可验收的计划，不是“已完成的改动”。",
@@ -364,8 +361,7 @@ def _mode_constraints(mode: str) -> list[str]:
         ]
     if mode == "full":
         return [
-            "- 当前是完全访问模式：可以直接修改工作区、执行命令、提交 git，"
-            "不必逐步提交提案审批。",
+            "- 当前是完全访问模式：可以直接修改工作区、执行命令、提交 git，不必逐步提交提案审批。",
             "- 受保护对象（.env / *.pem / SSH 私钥等敏感文件，systemctl / service / reboot 等"
             "系统服务操作）仍会逐次请求用户确认；先自问两次是否真的需要，再说明理由申请，"
             "不要假设上一次允许继续有效，也不要尝试绕过闸门。",

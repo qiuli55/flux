@@ -282,7 +282,10 @@ class CodexAccountService:
         if shutil.which(binary) is None:
             raise ConfigurationError(
                 "没有找到 codex 命令行，无法登录 ChatGPT 账号",
-                details={"binary": binary, "hint": "安装 @openai/codex 或设置 FLUX_CODEX_CLI_BINARY"},
+                details={
+                    "binary": binary,
+                    "hint": "安装 @openai/codex 或设置 FLUX_CODEX_CLI_BINARY",
+                },
             )
         # 已有进行中的登录：直接复用，避免开出两条设备码让用户困惑
         existing = self._latest_pending()
