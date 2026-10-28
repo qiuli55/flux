@@ -28,6 +28,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsAppearance))]
     [NotifyPropertyChangedFor(nameof(IsWorkspace))]
+    [NotifyPropertyChangedFor(nameof(IsNetwork))]
     [NotifyPropertyChangedFor(nameof(IsKeys))]
     [NotifyPropertyChangedFor(nameof(IsAbout))]
     private string _selectedTab = "appearance";
@@ -44,6 +45,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public bool IsAppearance => SelectedTab == "appearance";
 
     public bool IsWorkspace => SelectedTab == "workspace";
+
+    public bool IsNetwork => SelectedTab == "network";
 
     public bool IsKeys => SelectedTab == "keys";
 
@@ -138,9 +141,31 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
     }
 
+    // --- 内置浏览器代理 ---
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsProxySystem))]
+    [NotifyPropertyChangedFor(nameof(IsProxyDirect))]
+    [NotifyPropertyChangedFor(nameof(IsProxyCustom))]
+    private string _proxyMode = "system";
+
+    [ObservableProperty]
+    private string _proxyUrl = "";
+
+    [ObservableProperty]
+    private string _proxyStatus = "";
+
+    public bool IsProxySystem => ProxyMode == "system";
+
+    public bool IsProxyDirect => ProxyMode == "direct";
+
+    public bool IsProxyCustom => ProxyMode == "custom";
+
     public async Task RefreshAsync()
     {
         ApiPrefix = _shell.Account.BackendUrl + "/api/v1";
+        ProxyMode = _shell.BrowserProxyMode;
+        ProxyUrl = _shell.BrowserProxyUrl;
 
         var api = _api();
         if (api is null)
@@ -192,6 +217,52 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             await LoadKeysAsync().ConfigureAwait(true);
         }
+    }
+
+    [RelayCommand]
+    private void SetProxyMode(string? mode)
+    {
+        ProxyMode = BrowserProxy.ParseMode(mode) switch
+        {
+            BrowserProxyMode.Direct => "direct",
+            BrowserProxyMode.Custom => "custom",
+            _ => "system",
+        };
+        ProxyStatus = "";
+
+        // 跟随系统 / 直连不依赖地址，点选即保存
+        if (!IsProxyCustom)
+        {
+            SaveProxy();
+        }
+    }
+
+    [RelayCommand]
+    private void SaveProxy()
+    {
+        var mode = BrowserProxy.ParseMode(ProxyMode);
+        var url = "";
+
+        if (mode == BrowserProxyMode.Custom)
+        {
+            if (!BrowserProxy.TryNormalizeProxy(ProxyUrl, out var normalized, out var error))
+            {
+                ProxyStatus = error;
+                return;
+            }
+
+            url = normalized;
+            ProxyUrl = normalized;
+        }
+
+        _shell.BrowserProxyMode = mode switch
+        {
+            BrowserProxyMode.Direct => "direct",
+            BrowserProxyMode.Custom => "custom",
+            _ => "system",
+        };
+        _shell.BrowserProxyUrl = url;
+        ProxyStatus = "已保存，重新进入「浏览器」页后生效";
     }
 
     [RelayCommand]
@@ -380,5 +451,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
         OnPropertyChanged(nameof(RailWide));
         OnPropertyChanged(nameof(StatusBar));
         OnPropertyChanged(nameof(ReduceMotion));
+        ProxyMode = _shell.BrowserProxyMode;
+        ProxyUrl = _shell.BrowserProxyUrl;
+        ProxyStatus = "";
     }
 }

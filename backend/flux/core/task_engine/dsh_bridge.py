@@ -138,9 +138,7 @@ class TaskRunBridge:
         self._retry_handler: Callable[[Any], Awaitable[None]] | None = None
         # 排队切换 Agent（可选）：Run 真实收尾后应用「本轮结束后切换」的目标；
         # 没装配时切换只支持空闲时立即生效，行为不变。
-        self._switch_handler: (
-            Callable[[Any, str | None, str], Awaitable[Any]] | None
-        ) = None
+        self._switch_handler: Callable[[Any, str | None, str], Awaitable[Any]] | None = None
         #: task_id → 本轮失败链剩余的自动重试次数（成功后清零）
         self._retry_budget: dict[str, int] = {}
         #: 正在冷却、等待自动重试的任务：此时 run_id 还是刚失败的那个 Run，
@@ -363,16 +361,12 @@ class TaskRunBridge:
                 else []
             )
             changes = (
-                await self._workspace.list(task_id=task.id)
-                if self._workspace is not None
-                else []
+                await self._workspace.list(task_id=task.id) if self._workspace is not None else []
             )
             card = build_memory_card(
                 task=task,
                 run=run,
-                instruction=(
-                    run.instruction if run is not None else str(task.description or "")
-                ),
+                instruction=(run.instruction if run is not None else str(task.description or "")),
                 final_response=str(body.get("final_response") or ""),
                 status=str(status),
                 trace_rows=trace_rows,

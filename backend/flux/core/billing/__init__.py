@@ -12,12 +12,12 @@
 """
 
 from flux.core.billing.plans import (
-    PLANS,
     PLAN_AGENT_PLAN,
     PLAN_CLAUDE,
     PLAN_CODEX,
     PLAN_OPENCODE_GO,
     PLAN_OPENCODE_ZEN,
+    PLANS,
     WINDOW_DAILY,
     WINDOW_MONTHLY,
     WINDOW_ROLLING_5H,

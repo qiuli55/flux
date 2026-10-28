@@ -29,9 +29,7 @@ class TaskRuntimeSessionRepository:
         self._session_factory = session_factory
 
     @staticmethod
-    def _scope(
-        task_uuid: uuid.UUID, runtime_id: str, agent_uuid: uuid.UUID | None
-    ) -> tuple:
+    def _scope(task_uuid: uuid.UUID, runtime_id: str, agent_uuid: uuid.UUID | None) -> tuple:
         clause = (
             TaskRuntimeSession.task_id == task_uuid,
             TaskRuntimeSession.runtime_id == runtime_id,

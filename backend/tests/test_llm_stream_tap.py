@@ -64,16 +64,11 @@ def test_is_agent_request_filters_helper_calls() -> None:
         {"messages": [{"role": "system", "content": "You are DeepSeek Harness"}]}
     )
     # 标题生成这类辅助请求：没有工具、也不是 Agent 系统提示词
-    assert not is_agent_request(
-        {"messages": [{"role": "system", "content": "生成一个标题"}]}
-    )
+    assert not is_agent_request({"messages": [{"role": "system", "content": "生成一个标题"}]})
 
 
 def test_tap_base_url_derives_from_mcp_url() -> None:
-    assert (
-        tap_base_url("http://127.0.0.1:8801/mcp")
-        == "http://127.0.0.1:8801/internal/llm-tap"
-    )
+    assert tap_base_url("http://127.0.0.1:8801/mcp") == "http://127.0.0.1:8801/internal/llm-tap"
     assert tap_base_url("") == "http://127.0.0.1:8801/internal/llm-tap"
 
 
@@ -99,9 +94,7 @@ async def test_relay_tees_sse_deltas_and_keeps_bytes() -> None:
             )
             target = tap.target(token)
             assert target is not None
-            forwarded = b"".join(
-                [chunk async for chunk in tap.relay(target, response, tap=True)]
-            )
+            forwarded = b"".join([chunk async for chunk in tap.relay(target, response, tap=True)])
         assert forwarded == payload  # 原样透传，DSH 侧不受影响
         kinds = [(item["event_type"], item["text"]) for item in bus.published]
         # 相邻同类 delta 会合并；攒批在流结束时会兜底 flush
@@ -131,9 +124,7 @@ async def test_relay_does_not_emit_for_helper_requests() -> None:
             )
             target = tap.target(token)
             assert target is not None
-            forwarded = b"".join(
-                [chunk async for chunk in tap.relay(target, response, tap=False)]
-            )
+            forwarded = b"".join([chunk async for chunk in tap.relay(target, response, tap=False)])
         assert forwarded == payload
         assert bus.published == []
         assert not tap.has_streamed(token)

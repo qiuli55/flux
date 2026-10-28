@@ -21,7 +21,7 @@ from flux.core.mcp.server import SERVER_INSTRUCTIONS
 from flux.core.mcp.tools import TOOLS
 from flux.core.mcp.tools.base import ToolContext
 from flux.enums import Capability
-from flux.errors import ConflictError, NotFoundError, ValidationError
+from flux.errors import AIOSError, ConflictError, NotFoundError, ValidationError
 
 # 包 __init__ 里导出了同名函数 design_tools，直接 `import ... as module` 会拿到函数；
 # 这里显式取模块本身，monkeypatch 才能替换 _client。
@@ -96,9 +96,7 @@ class FakeTaskRepo:
 
     async def add_messages(self, task_id, drafts):
         self.drafts.extend(drafts)
-        return [
-            SimpleNamespace(id=uuid.uuid4(), kind=draft.kind) for draft in drafts
-        ]
+        return [SimpleNamespace(id=uuid.uuid4(), kind=draft.kind) for draft in drafts]
 
 
 def _ctx(run_id: str | None, task_id: uuid.UUID | None = None) -> tuple[ToolContext, FakeTaskRepo]:
@@ -140,12 +138,23 @@ def upstream(monkeypatch):
 
 
 def test_design_tools_are_registered_and_instructed() -> None:
-    for name in ("design.list", "design.get", "design.create", "design.update", "design.share"):
+    for name in (
+        "design.list",
+        "design.get",
+        "design.create",
+        "design.update",
+        "design.ai",
+        "design.revisions",
+        "design.revert",
+        "design.share",
+    ):
         assert name in TOOLS
         assert TOOLS[name].description
     assert "design.share" in RUNTIME_BOOTSTRAP
     assert "design studio" in RUNTIME_BOOTSTRAP
+    assert "design.ai" in RUNTIME_BOOTSTRAP
     assert "design.share" in SERVER_INSTRUCTIONS
+    assert "design.ai" in SERVER_INSTRUCTIONS
 
 
 async def test_design_list_filters_by_project(upstream) -> None:
@@ -263,3 +272,135 @@ async def test_design_share_requires_a_run(upstream) -> None:
     with pytest.raises(ValidationError, match="必须在 Flux 任务 Run 内调用"):
         await module.design_share(ctx, {"design_id": DESIGN_ID})
     assert task_repo.drafts == []
+
+
+# ---------------------------------------------------------------- design.ai / revisions / revert
+
+
+def test_design_ai_is_read_only_in_plan_mode() -> None:
+    from flux.core.permissions.modes import PLAN_ALLOWED_TOOLS
+
+    assert "design.ai" not in PLAN_ALLOWED_TOOLS
+    assert "design.revert" not in PLAN_ALLOWED_TOOLS
+    assert "design.revisions" in PLAN_ALLOWED_TOOLS
+
+
+async def test_design_ai_applies_ops_and_puts_with_base_version(upstream) -> None:
+    holder, seen = upstream
+    asked_ops = {"ops": [{"op": "set", "target": "t1", "set": {"text": "新标题"}}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design(version=4)})
+        if request.method == "POST":
+            return httpx.Response(
+                200, json={"ok": True, **asked_ops, "reply": "改好了", "model": "m"}
+            )
+        assert request.method == "PUT"
+        saved = _design(version=5)
+        saved["screens"][0]["nodes"][0]["text"] = "新标题"
+        return httpx.Response(200, json={"ok": True, "design": saved})
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_ai(
+        ctx, {"design_id": DESIGN_ID, "instruction": "把标题改成新标题"}
+    )
+
+    assert result["changed"] is True
+    assert result["version"] == 5
+    assert result["applied"] == 1
+    assert result["skipped"] == []
+    assert result["mode"] == "screen"
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("GET", f"/api/designs/{DESIGN_ID}"),
+        ("POST", "/api/ask"),
+        ("PUT", f"/api/designs/{DESIGN_ID}"),
+    ]
+    sent = json.loads(seen[1].content)
+    assert sent["mode"] == "screen"
+    assert sent["screen"]["w"] == 390
+    assert sent["screen"]["nodes"][0]["id"] == "t1"
+    put = json.loads(seen[2].content)
+    assert put["base_version"] == 4
+
+
+async def test_design_ai_validates_selected_ids(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(200, json={"ok": True, "design": _design()})
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError, match="不在该画板"):
+        await module.design_ai(
+            ctx,
+            {
+                "design_id": DESIGN_ID,
+                "instruction": "改标题",
+                "selected_ids": ["t1", "ghost"],
+            },
+        )
+    with pytest.raises(ValidationError, match="必须传 selected_ids"):
+        await module.design_ai(
+            ctx, {"design_id": DESIGN_ID, "instruction": "改标题", "mode": "node"}
+        )
+
+
+async def test_design_ai_missing_upstream_ops_maps_to_validation(upstream) -> None:
+    holder, seen = upstream
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design()})
+        assert request.method == "POST"
+        calls["n"] += 1
+        return httpx.Response(502, json={"ok": False, "error": "AI 连续两次没有给出可应用的修改"})
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    # 502 是「AI 没产出」的可重试失败，翻译成 ai_step_failed 而不是服务不可用
+    with pytest.raises(AIOSError, match="AI 连续两次") as excinfo:
+        await module.design_ai(ctx, {"design_id": DESIGN_ID, "instruction": "随便改"})
+    assert excinfo.value.code == "ai_step_failed"
+    assert calls["n"] == 1
+
+
+async def test_design_ai_rejects_unknown_params(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(200, json={"ok": True, "design": _design()})
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError):
+        await module.design_ai(ctx, {"design_id": DESIGN_ID, "instruction": "x", "bogus": 1})
+
+
+async def test_design_revisions_lists_history(upstream) -> None:
+    holder, seen = upstream
+    revisions = [{"version": 2, "at": "2026-10-27T00:00:00Z", "note": "手动保存"}]
+    holder["handler"] = lambda request: httpx.Response(
+        200, json={"ok": True, "revisions": revisions}
+    )
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_revisions(ctx, {"design_id": DESIGN_ID})
+    assert result["count"] == 1
+    assert result["revisions"] == revisions
+    assert seen[0].url.path == f"/api/designs/{DESIGN_ID}/revisions"
+
+
+async def test_design_revert_posts_version(upstream) -> None:
+    holder, seen = upstream
+    restored = _design(version=9)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        return httpx.Response(200, json={"ok": True, "design": restored})
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_revert(
+        ctx, {"design_id": DESIGN_ID, "version": 2, "base_version": 8}
+    )
+    assert result["reverted"] is True
+    assert result["version"] == 9
+    assert seen[0].url.path == f"/api/designs/{DESIGN_ID}/revert"
+    assert json.loads(seen[0].content) == {"version": 2, "base_version": 8}
+    with pytest.raises(ValidationError):
+        await module.design_revert(ctx, {"design_id": DESIGN_ID, "version": 0})

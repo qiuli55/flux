@@ -74,9 +74,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "task_id", "runtime_id", name="uq_task_runtime_sessions_task_runtime"
-        ),
+        sa.UniqueConstraint("task_id", "runtime_id", name="uq_task_runtime_sessions_task_runtime"),
     )
     op.create_index(
         op.f("ix_task_runtime_sessions_task_id"),

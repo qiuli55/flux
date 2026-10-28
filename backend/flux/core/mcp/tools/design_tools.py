@@ -43,9 +43,7 @@ class DesignStudioUnavailable(AIOSError):
 def _require_design_id(raw: Any) -> str:
     design_id = require_str({"design_id": raw}, "design_id")
     if not _DESIGN_ID_RE.match(design_id):
-        raise ValidationError(
-            f"设计稿 id 不合法：{design_id}", details={"param": "design_id"}
-        )
+        raise ValidationError(f"设计稿 id 不合法：{design_id}", details={"param": "design_id"})
     return design_id
 
 
@@ -118,9 +116,7 @@ def _screens(params: dict[str, Any]) -> list[dict[str, Any]] | None:
     if screens is None:
         return None
     if not isinstance(screens, list) or not screens:
-        raise ValidationError(
-            "screens 必须是非空数组（1–20 个画板）", details={"param": "screens"}
-        )
+        raise ValidationError("screens 必须是非空数组（1–20 个画板）", details={"param": "screens"})
     if len(screens) > 20:
         raise ValidationError("screens 最多 20 个画板", details={"param": "screens"})
     for screen in screens:
@@ -158,9 +154,7 @@ def _layer_count(nodes: list[Any]) -> int:
 def _summary(design: dict[str, Any]) -> dict[str, Any]:
     screens = design.get("screens") if isinstance(design.get("screens"), list) else []
     layers = sum(
-        _layer_count(screen.get("nodes") or [])
-        for screen in screens
-        if isinstance(screen, dict)
+        _layer_count(screen.get("nodes") or []) for screen in screens if isinstance(screen, dict)
     )
     return {
         "design_id": design.get("id"),
@@ -326,12 +320,323 @@ async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
     return {"created": False, "design": updated, "summary": _summary(updated)}
 
 
+# ---------------------------------------------------------------- AI 局部修改
+
+
+def _find_node(nodes: list[Any], node_id: str) -> tuple[list[Any], int, dict[str, Any]] | None:
+    """在图层树里定位节点，返回 (父数组, 下标, 节点)。"""
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        if node.get("id") == node_id:
+            return nodes, index, node
+        children = node.get("children")
+        if isinstance(children, list):
+            hit = _find_node(children, node_id)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _apply_ops(screen: dict[str, Any], ops: list[Any]) -> tuple[int, list[str]]:
+    """把 Luma 返回的 set/add/remove/reorder 补丁应用到完整画板。
+
+    Luma 已做过字段白名单、越权与画板边界校验，这里只做防御性处理：
+    目标不存在或结构不对就跳过，并记下原因返回给 Agent。
+    """
+    nodes = screen.get("nodes")
+    if not isinstance(nodes, list):
+        nodes = []
+        screen["nodes"] = nodes
+    applied = 0
+    skipped: list[str] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        kind = op.get("op")
+        target = op.get("target")
+        target = target if isinstance(target, str) else ""
+        if kind == "set":
+            hit = _find_node(nodes, target)
+            patch = op.get("set")
+            if hit is None or not isinstance(patch, dict):
+                skipped.append(f"set {target or '?'}: 目标不存在")
+                continue
+            hit[2].update(patch)
+            applied += 1
+        elif kind == "add":
+            node = op.get("node")
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+                skipped.append("add: 节点结构不合法")
+                continue
+            if _find_node(nodes, node["id"]) is not None:
+                skipped.append(f"add {node['id']}: id 已存在")
+                continue
+            if target and target != "@screen":
+                hit = _find_node(nodes, target)
+                if hit is None:
+                    skipped.append(f"add {node['id']}: 父级 {target} 不存在")
+                    continue
+                children = hit[2].get("children")
+                if not isinstance(children, list):
+                    children = []
+                    hit[2]["children"] = children
+                parent = children
+            else:
+                parent = nodes
+            index = op.get("index")
+            position = (
+                index if isinstance(index, int) and not isinstance(index, bool) else len(parent)
+            )
+            position = max(0, min(position, len(parent)))
+            parent.insert(position, node)
+            applied += 1
+        elif kind == "remove":
+            hit = _find_node(nodes, target)
+            if hit is None:
+                skipped.append(f"remove {target or '?'}: 目标不存在")
+                continue
+            hit[0].pop(hit[1])
+            applied += 1
+        elif kind == "reorder":
+            hit = _find_node(nodes, target)
+            if hit is None:
+                skipped.append(f"reorder {target or '?'}: 目标不存在")
+                continue
+            parent, at, node = hit
+            parent.pop(at)
+            index = op.get("index")
+            position = (
+                index if isinstance(index, int) and not isinstance(index, bool) else len(parent)
+            )
+            parent.insert(max(0, min(position, len(parent))), node)
+            applied += 1
+        else:
+            skipped.append(f"未知 op：{kind}")
+    return applied, skipped
+
+
+def _pick_screen(design: dict[str, Any], params: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    screens = design.get("screens")
+    if not isinstance(screens, list) or not screens:
+        raise ValidationError("设计稿没有任何画板，AI 无从下手")
+    screen_id = optional_str(params, "screen_id")
+    if screen_id is not None:
+        for index, screen in enumerate(screens):
+            if isinstance(screen, dict) and screen.get("id") == screen_id:
+                return screen, index
+        raise ValidationError(f"画板不存在：{screen_id}", details={"param": "screen_id"})
+    index = params.get("screen_index", 0)
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise ValidationError("screen_index 必须是整数", details={"param": "screen_index"})
+    if index < 0 or index >= len(screens):
+        raise ValidationError(
+            f"screen_index 越界：{index}（共 {len(screens)} 块画板）",
+            details={"param": "screen_index"},
+        )
+    screen = screens[index]
+    if not isinstance(screen, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常画板")
+    return screen, index
+
+
+def _selected_ids(params: dict[str, Any]) -> list[str]:
+    raw = params.get("selected_ids")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 40:
+        raise ValidationError(
+            "selected_ids 必须是最多 40 个 id 的数组", details={"param": "selected_ids"}
+        )
+    ids: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValidationError(
+                "selected_ids 里的每一项都必须是非空字符串",
+                details={"param": "selected_ids"},
+            )
+        ids.append(item.strip())
+    return ids
+
+
+_AI_MODES = {"auto", "node", "multi", "screen"}
+
+
+async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """对设计稿做局部 AI 修改：只改当前画板，服务端应用 ops 并落盘。"""
+    reject_unknown(
+        params,
+        {
+            "design_id",
+            "instruction",
+            "screen_index",
+            "screen_id",
+            "selected_ids",
+            "mode",
+            "base_version",
+        },
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    instruction = require_str(params, "instruction").strip()
+    if len(instruction) > 400:
+        raise ValidationError("instruction 太长，控制在 400 字内", details={"param": "instruction"})
+    selected_ids = _selected_ids(params)
+    mode = optional_str(params, "mode") or "auto"
+    if mode not in _AI_MODES:
+        raise ValidationError(f"mode 只能是 {sorted(_AI_MODES)}", details={"param": "mode"})
+    base_version = params.get("base_version")
+    if base_version is not None and (
+        isinstance(base_version, bool) or not isinstance(base_version, int)
+    ):
+        raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+
+    async with _client(ctx) as client:
+        current = await _request(client, "GET", f"/api/designs/{design_id}")
+        design = current.get("design")
+        if not isinstance(design, dict):
+            raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+        screen, screen_index = _pick_screen(design, params)
+        nodes = screen.get("nodes")
+        nodes = nodes if isinstance(nodes, list) else []
+        selected: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for node_id in selected_ids:
+            hit = _find_node(nodes, node_id)
+            if hit is None:
+                missing.append(node_id)
+            else:
+                selected.append(hit[2])
+        if missing:
+            raise ValidationError(
+                f"选中的图层不在该画板：{'、'.join(missing[:5])}",
+                details={"param": "selected_ids"},
+            )
+        if mode == "auto":
+            mode = "screen" if not selected_ids else ("multi" if len(selected_ids) > 1 else "node")
+        if mode != "screen" and not selected:
+            raise ValidationError(
+                "mode=node/multi 时必须传 selected_ids", details={"param": "selected_ids"}
+            )
+        if not nodes:
+            raise ValidationError("该画板还没有图层，先用 design.update 搭出版式再让 AI 调")
+
+        try:
+            asked = await _request(
+                client,
+                "POST",
+                "/api/ask",
+                {
+                    "prompt": instruction,
+                    "mode": mode,
+                    "nodes": selected,
+                    # design id 供 Luma 建立多轮修改记录；bg 供其按底色选择深/浅基调
+                    "design": design_id,
+                    "screen": {
+                        "id": screen.get("id"),
+                        "name": screen.get("name") or "",
+                        "w": screen.get("w") or 390,
+                        "h": screen.get("h") or 844,
+                        "bg": design.get("bg") or "",
+                        "nodes": nodes,
+                    },
+                },
+            )
+        except DesignStudioUnavailable as exc:
+            # /api/ask 的 502 多半是「AI 连续两次没给出可应用修改」这类可重试失败，
+            # 不是设计服务宕机：翻译成 ai_step_failed，让 Agent 看到原因并重试。
+            raise AIOSError(str(exc), code="ai_step_failed", http_status=502) from exc
+        ops = asked.get("ops")
+        if not isinstance(ops, list) or not ops:
+            raise ValidationError("AI 没有给出可应用的修改，换个说法或缩小改动范围再试")
+        applied, skipped = _apply_ops(screen, ops)
+        if applied == 0:
+            raise ValidationError(
+                "AI 返回的修改无法应用到当前画板，请重试", details={"skipped": skipped[:5]}
+            )
+        merged = {
+            key: design.get(key)
+            for key in (
+                "name",
+                "project",
+                "project_id",
+                "description",
+                "status",
+                "bg",
+                "file",
+            )
+        }
+        merged["screens"] = design.get("screens")
+        saved = await _request(
+            client,
+            "PUT",
+            f"/api/designs/{design_id}",
+            {
+                "base_version": base_version if base_version is not None else design.get("version"),
+                "design": merged,
+            },
+        )
+    updated = saved.get("design")
+    if not isinstance(updated, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    return {
+        "changed": True,
+        "design_id": design_id,
+        "screen_index": screen_index,
+        "screen_id": screen.get("id"),
+        "version": updated.get("version"),
+        "applied": applied,
+        "skipped": skipped[:5],
+        "ops": ops,
+        "reply": asked.get("reply"),
+        "mode": asked.get("mode") or mode,
+        "model": asked.get("model"),
+        "summary": _summary(updated),
+        "design": updated,
+    }
+
+
+async def design_revisions(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown(params, {"design_id"})
+    design_id = _require_design_id(params.get("design_id"))
+    async with _client(ctx) as client:
+        body = await _request(client, "GET", f"/api/designs/{design_id}/revisions")
+    revisions = body.get("revisions") or []
+    if not isinstance(revisions, list):
+        raise DesignStudioUnavailable("设计服务返回了异常历史列表")
+    return {"design_id": design_id, "count": len(revisions), "revisions": revisions}
+
+
+async def design_revert(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown(params, {"design_id", "version", "base_version"})
+    design_id = _require_design_id(params.get("design_id"))
+    version = params.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+        raise ValidationError("version 必须是正整数", details={"param": "version"})
+    base_version = params.get("base_version")
+    if base_version is not None and (
+        isinstance(base_version, bool) or not isinstance(base_version, int)
+    ):
+        raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+    payload: dict[str, Any] = {"version": version}
+    if base_version is not None:
+        payload["base_version"] = base_version
+    async with _client(ctx) as client:
+        restored = await _request(client, "POST", f"/api/designs/{design_id}/revert", payload)
+    design = restored.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    return {
+        "reverted": True,
+        "design": design,
+        "summary": _summary(design),
+        "version": design.get("version"),
+    }
+
+
 async def _task_for_run(ctx: ToolContext) -> uuid.UUID:
     run_id = getattr(ctx.identity, "run_id", None)
     if not run_id:
-        raise ValidationError(
-            "design.share 必须在 Flux 任务 Run 内调用（当前调用没有关联 Run）"
-        )
+        raise ValidationError("design.share 必须在 Flux 任务 Run 内调用（当前调用没有关联 Run）")
     run = await ctx.container.run_repo.get(run_id)
     if run is None or run.task_id is None:
         raise ValidationError(
@@ -492,6 +797,92 @@ def design_tools() -> tuple[ToolSpec, ...]:
             },
             capability=Capability.FILE_WRITE,
             handler=design_update,
+        ),
+        ToolSpec(
+            name="design.ai",
+            title="AI 局部修改设计稿",
+            description=(
+                "让设计工作室的 AI 只改当前画板的局部（改文案/配色/间距、加删单个模块、调整"
+                "层级），服务端把改动落盘并返回新版本。改已有设计优先用它，不要 design.get 后"
+                "整份 design.update 覆盖：那样既费 token，也容易冲掉别人的改动。"
+                "mode=auto 时按 selected_ids 推断；要改整屏可不传选中项。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "instruction": {
+                        "type": "string",
+                        "description": "修改要求，具体到对象与效果，例如「把标题改成深色并右移 8」",
+                    },
+                    "screen_index": {
+                        "type": "integer",
+                        "description": "目标画板下标，默认 0（与 screen_id 二选一）",
+                    },
+                    "screen_id": {"type": "string", "description": "目标画板 id（优先于下标）"},
+                    "selected_ids": {
+                        "type": "array",
+                        "description": "要改的图层 id（最多 40 个）；mode=node/multi 时必填",
+                        "items": {"type": "string"},
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "node", "multi", "screen"],
+                        "description": (
+                            "auto 按选中项推断；node 改一个、multi 改多个、screen 改整屏"
+                        ),
+                    },
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本修改（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id", "instruction"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_ai,
+        ),
+        ToolSpec(
+            name="design.revisions",
+            title="查看设计稿历史",
+            description=(
+                "列出设计稿的历史快照（只读）。改坏了、想对比或要回滚时先看这里，"
+                "拿到 version 再调 design.revert。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                },
+                "required": ["design_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_READ,
+            handler=design_revisions,
+        ),
+        ToolSpec(
+            name="design.revert",
+            title="回滚设计稿",
+            description=(
+                "把设计稿恢复到指定历史版本（会生成一个新版本，不删除历史）。"
+                "配合 design.revisions 使用；带 base_version 做乐观锁。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "version": {"type": "integer", "description": "要恢复到的历史版本号"},
+                    "base_version": {
+                        "type": "integer",
+                        "description": "当前版本号，用于乐观锁（可空）",
+                    },
+                },
+                "required": ["design_id", "version"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_revert,
         ),
         ToolSpec(
             name="design.share",

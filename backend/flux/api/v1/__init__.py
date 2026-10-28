@@ -8,6 +8,7 @@ from flux.api.v1 import (
     capabilities,
     codex_account,
     connectors,
+    deliveries,
     designs,
     dsh,
     git,
@@ -40,6 +41,7 @@ api_v1_router.include_router(connectors.router)
 api_v1_router.include_router(dsh.router)
 api_v1_router.include_router(capabilities.router)
 api_v1_router.include_router(designs.router)
+api_v1_router.include_router(deliveries.router)
 api_v1_router.include_router(uploads.router)
 api_v1_router.include_router(codex_account.router)
 

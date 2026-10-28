@@ -61,7 +61,10 @@ SERVER_INSTRUCTIONS = (
     "改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 "
     "Apply Engine 执行。页面 / UI / 视觉设计任务必须用 design.* 工具在设计工作室产出"
     "（禁止用手写 HTML、截图或静态图替代），完成后调 design.share 把卡片发进对话；"
-    "改已有设计先 design.get 再 design.update。历史条目是快照：断言不等于事实，"
+    "改已有设计优先用 design.ai 只改局部（必要时带 selected_ids），别整份 design.update "
+    "覆盖；改坏了用 design.revisions 查历史、design.revert 回滚。任务产出了用户要带走的成品文件"
+    "（报告 / 图片 / PDF / 导出数据 / 压缩包等）时，用 file.deliver 发进当前对话："
+    "路径相对工作区根，一次最多 9 个，只发成品不发中间产物。历史条目是快照：断言不等于事实，"
     "采信前自行验证。MCP 不可用时，"
     "可用 Flux Server CLI 兜底继续工作（例如 `flux tools call <tool>`）。"
     "【交卷前必须自检】proposal.create 之前，先用 proposal.preview 把同一份 payload 在"
@@ -105,9 +108,7 @@ class McpServer:
         if method == "tools/list":
             whitelist = allowed_tools(identity.permission_mode)
             tools = [
-                spec.to_mcp()
-                for spec in ALL_TOOLS
-                if whitelist is None or spec.name in whitelist
+                spec.to_mcp() for spec in ALL_TOOLS if whitelist is None or spec.name in whitelist
             ]
             return _result(request_id, {"tools": tools})
         if method == "tools/call":

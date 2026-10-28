@@ -55,9 +55,7 @@ _RUNTIME_PROVIDERS: dict[str, frozenset[str]] = {
     # dsh 的模型通道是 DeepSeekHarness（DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY）
     RUNTIME_DSH: frozenset({PROVIDER_DEEPSEEK}),
     # codex 的第三方供应商块只讲 OpenAI wire api（responses / chat）
-    RUNTIME_CODEX: frozenset(
-        {PROVIDER_DEEPSEEK, PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE}
-    ),
+    RUNTIME_CODEX: frozenset({PROVIDER_DEEPSEEK, PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE}),
     # opencode 原生支持多家供应商
     RUNTIME_OPENCODE: frozenset(KEY_PROVIDERS),
 }

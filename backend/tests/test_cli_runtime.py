@@ -39,8 +39,8 @@ from flux.core.agent_runtime.runtimes.cli import (
     _normalize_codex_event,
     _normalize_opencode_event,
     _opencode_config,
-    _upstream_failure,
     _RunUsage,
+    _upstream_failure,
 )
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.enums import AgentInstallStatus, AgentRole
@@ -106,8 +106,9 @@ if MODE == "cancel":
 if MODE == "quota":
     print(
         'level=ERROR run=abc message="stream error" providerID=opencode '
-        'modelID=deepseek-v4.1-flash-free session.id=s1 small=false agent=build mode=primary '
-        'error.error="AI_APICallError: Free usage limit reached. Subscribe to OpenCode Go to keep going"',
+        'modelID=deepseek-v4.1-flash-free session.id=s1 small=false agent=build '
+        'mode=primary error.error="AI_APICallError: Free usage limit reached. '
+        'Subscribe to OpenCode Go to keep going"',
         file=sys.stderr,
         flush=True,
     )
@@ -783,7 +784,10 @@ def test_opencode_server_streams_text_incrementally(
             and payload.get("event_type") == "message"
         ]
         assert len(chunks) >= 2, f"正文只推了 {len(chunks)} 帧，没有流式效果"
-        expected = "流式输出已经接通，这是第二段正文内容。后面还有第三段和第四段，用来验证增量是逐段推送的。"
+        expected = (
+            "流式输出已经接通，这是第二段正文内容。"
+            "后面还有第三段和第四段，用来验证增量是逐段推送的。"
+        )
         assert "".join(chunks) == expected
 
 
@@ -1076,7 +1080,7 @@ def test_upstream_failure_matches_main_model_only() -> None:
     """额度/鉴权错误只在主模型（small=false）上判失败，标题模型报错不能误杀。"""
     main = (
         'level=ERROR run=abc message="stream error" providerID=opencode '
-        'modelID=deepseek-v4.1-flash-free small=false agent=build '
+        "modelID=deepseek-v4.1-flash-free small=false agent=build "
         'error.error="AI_APICallError: Free usage limit reached. Subscribe to OpenCode Go"'
     )
     reason = _upstream_failure(main, RUNTIME_OPENCODE)
@@ -1105,9 +1109,7 @@ def test_opencode_quota_error_fails_run_immediately(
     看到一个永远转圈的对话。这里用假 CLI 复现同样的 stderr 日志。
     """
     binary = _write_script(tmp_path / "fake-opencode-quota", _fake_opencode_server("quota"))
-    with _cli_app(
-        settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY"
-    ) as client:
+    with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
         container = client.app.state.container
         _mark_ready(container, RUNTIME_OPENCODE)
         agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
@@ -1138,9 +1140,7 @@ def test_opencode_title_model_error_does_not_fail_run(
 ) -> None:
     """标题模型（small=true）报错只是日志噪音：主任务必须照常完成。"""
     binary = _write_script(tmp_path / "fake-opencode-title", _fake_opencode_server("title"))
-    with _cli_app(
-        settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY"
-    ) as client:
+    with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
         container = client.app.state.container
         _mark_ready(container, RUNTIME_OPENCODE)
         agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)

@@ -28,6 +28,8 @@ artifacts/
 
 # 账号云服务独立维护，不随个人版仓库分发
 apps/cloud/
+# 部署脚本的现场备份（含线上配置与环境变量，禁止入库）
+.deploy-backup/
 
 # --- Node ---
 node_modules/

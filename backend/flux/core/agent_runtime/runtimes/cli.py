@@ -755,7 +755,11 @@ class CliRuntime:
             compose_instruction(launch.instruction, launch.permission_mode),
             title=f"flux-task-{launch.task_id or run_id}",
             session_id=previous,
+            # 任务级模型必须每轮显式下发：会话会记住创建时的模型，
+            # 续聊不传就沿用旧模型（切到别的模型后表现为「没切成功」）。
+            model=launch.model,
         )
+        logger.info("opencode 本轮模型 run=%s model=%s", run_id, launch.model or "默认")
         if result.session_id:
             await self._remember_session(launch.task_id, result.session_id, launch.agent_id)
             logger.info(
@@ -1237,8 +1241,10 @@ def _clip(value: Any, limit: int) -> str:
     """把任意值压成限长文本；None / 空值一律给空串（前端据此判断字段缺省）。"""
     if value is None:
         return ""
-    text = value if isinstance(value, str) else json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), default=str
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
     )
     text = text.strip()
     if len(text) > limit:
@@ -1408,9 +1414,7 @@ def _normalize_codex_event(parsed: dict[str, Any], run_id: str, runtime_id: str)
             )
         if item_type == "reasoning":
             # 推理摘要单独成「思考」事件：时间线可见，但不进最终答复
-            return RuntimeEvent(
-                EVENT_THINKING, run_id, {**data, "text": _reasoning_text(item)}
-            )
+            return RuntimeEvent(EVENT_THINKING, run_id, {**data, "text": _reasoning_text(item)})
         if "tool_call" in item_type or item_type == "command_execution":
             return RuntimeEvent(
                 EVENT_TOOL_CALL,
@@ -1485,9 +1489,7 @@ def _codex_provider_override(settings: Settings, channel: Any) -> str:
     return provider
 
 
-def _codex_provider_lines(
-    settings: Settings, *, model: str = "", channel: Any = None
-) -> list[str]:
+def _codex_provider_lines(settings: Settings, *, model: str = "", channel: Any = None) -> list[str]:
     """codex 的模型通道：openai（内置供应商）不写，第三方供应商写一块 model_providers。
 
     `model` 是任务级覆盖；留空用 `FLUX_CODEX_MODEL`，再留空用 codex 自带默认。

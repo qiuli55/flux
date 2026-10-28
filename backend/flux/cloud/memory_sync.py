@@ -217,9 +217,7 @@ class CloudMemorySync:
     async def push_pending(self) -> int:
         """把本地还没有 cloud_id 的 User 记忆补推上去，返回推送条数。"""
         entries = await self._memory.list_entries(layer=MemoryLayer.USER)
-        pending = [
-            entry for entry in entries if not str((entry.meta or {}).get("cloud_id") or "")
-        ]
+        pending = [entry for entry in entries if not str((entry.meta or {}).get("cloud_id") or "")]
         if not pending:
             return 0
         pushed = await self.push_entries(pending)
@@ -275,9 +273,7 @@ class CloudMemorySync:
         headers = {"Authorization": f"Bearer {creds.token}"}
         base = self._settings.cloud_base_url.rstrip("/")
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            response = await client.request(
-                method, f"{base}{path}", headers=headers, json=body
-            )
+            response = await client.request(method, f"{base}{path}", headers=headers, json=body)
         if response.status_code >= 400:
             raise RuntimeError(f"账号云返回 {response.status_code}：{response.text[:200]}")
         if not response.content:

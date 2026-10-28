@@ -117,9 +117,7 @@ async def _record_attachments(
             ],
         )
     )[0]
-    await container.task_stream.publish(
-        task_uuid, "user_message", {"message": message.to_dict()}
-    )
+    await container.task_stream.publish(task_uuid, "user_message", {"message": message.to_dict()})
 
 
 def _attachments_brief(files: list[UploadedFile]) -> str:
@@ -363,9 +361,7 @@ async def create_task_handoff(
             "这段对话正在执行，结束后再新建带摘要的对话",
             details={"task_id": task_id, "status": task.status},
         )
-    messages, _ = await container.task_repo.list_messages(
-        task_uuid, limit=_HANDOFF_MESSAGE_LIMIT
-    )
+    messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HANDOFF_MESSAGE_LIMIT)
     pairs = [
         (message.role, message.content)
         for message in messages
@@ -447,9 +443,7 @@ async def create_task_message(
             on_delta=_on_delta,
         )
     except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
-        await container.task_stream.publish(
-            task_uuid, "assistant_error", {"error": str(exc)[:500]}
-        )
+        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
         raise
     reply = (
         await container.task_repo.add_messages(

@@ -36,9 +36,7 @@ async def login_state(
     """轮询登录结果：starting / pending / success / failed。"""
     state = container.codex_account.login_state(login_id)
     if state is None:
-        raise NotFoundError(
-            f"登录会话不存在或已过期：{login_id}", details={"login_id": login_id}
-        )
+        raise NotFoundError(f"登录会话不存在或已过期：{login_id}", details={"login_id": login_id})
     return ok(state)
 
 

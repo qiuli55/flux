@@ -145,9 +145,7 @@ def _node_html(node: dict[str, Any]) -> str:
     children = node.get("children")
     child_html = ""
     if isinstance(children, list):
-        child_html = "".join(
-            _node_html(child) for child in children if isinstance(child, dict)
-        )
+        child_html = "".join(_node_html(child) for child in children if isinstance(child, dict))
 
     if ntype == "text":
         if fill is None:
@@ -249,9 +247,7 @@ def _text_span(node: dict[str, Any], text: str) -> str:
     return f'<span class="tx" style="{_text_css(node)}">{html.escape(text)}</span>'
 
 
-def _element(
-    classes: list[str], style: list[str], attrs: dict[str, str], inner: str
-) -> str:
+def _element(classes: list[str], style: list[str], attrs: dict[str, str], inner: str) -> str:
     attr_text = "".join(
         f' {key}="{html.escape(value, quote=True)}"' for key, value in attrs.items()
     )

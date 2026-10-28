@@ -31,9 +31,7 @@ class ApiKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     models: Mapped[list[Any]] = mapped_column(JSON, default=list)
     key_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     key_hint: Mapped[str] = mapped_column(String(16), default="", server_default="")
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default="1", nullable=False
-    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
 
     def to_dict(self) -> dict[str, Any]:
         """对外表示**不含**密文：密钥库列表只回元数据与掩码。"""

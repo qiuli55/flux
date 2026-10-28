@@ -102,9 +102,7 @@ def test_relay_skips_noise_without_text() -> None:
         hub.bind_run("r1", "t1")
         bus = EventBus()
         TaskStreamRelay(hub).attach(bus)
-        await bus.publish(
-            Events.DSH_EVENT, {"run_id": "r1", "event_type": "session/heartbeat"}
-        )
+        await bus.publish(Events.DSH_EVENT, {"run_id": "r1", "event_type": "session/heartbeat"})
         stream = hub.stream("t1")
         # 心跳类事件不转发：下一个事件只能靠主动发布制造
         await hub.publish("t1", "sentinel", {})
@@ -322,13 +320,19 @@ def test_openai_compatible_stream_parses_sse_chunks() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
-        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, content=body.encode(), headers={"content-type": "text/event-stream"}
+        )
 
     async def collect() -> str:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            provider = DeepSeekProvider("deepseek-chat", api_key="test-key", base_url="https://example.test", client=client)
-            return "".join([chunk async for chunk in provider.stream([ChatMessage(role="user", content="hi")])])
+            provider = DeepSeekProvider(
+                "deepseek-chat", api_key="test-key", base_url="https://example.test", client=client
+            )
+            return "".join(
+                [chunk async for chunk in provider.stream([ChatMessage(role="user", content="hi")])]
+            )
         finally:
             await client.aclose()
 
@@ -342,7 +346,9 @@ def test_openai_compatible_stream_reports_upstream_error() -> None:
     async def collect() -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            provider = DeepSeekProvider("deepseek-chat", api_key="test-key", base_url="https://example.test", client=client)
+            provider = DeepSeekProvider(
+                "deepseek-chat", api_key="test-key", base_url="https://example.test", client=client
+            )
             async for _ in provider.stream([ChatMessage(role="user", content="hi")]):
                 raise AssertionError("不应产出任何增量")
         finally:

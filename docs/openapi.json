@@ -90,6 +90,161 @@
         "title": "AgentTokenIssueRequest",
         "type": "object"
       },
+      "ApiKeyCreateRequest": {
+        "description": "在密钥库中登记一条 API Key。明文只在请求体里出现，落库即加密。",
+        "properties": {
+          "api_key": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Api Key",
+            "type": "string"
+          },
+          "base_url": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "deepseek",
+              "openai",
+              "openai_compatible",
+              "anthropic"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "wire_api": {
+            "default": "",
+            "maxLength": 16,
+            "title": "Wire Api",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "api_key"
+        ],
+        "title": "ApiKeyCreateRequest",
+        "type": "object"
+      },
+      "ApiKeyUpdateRequest": {
+        "description": "修改密钥库条目；未出现的字段保持不变，api_key 留空也表示不改。",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Models"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "deepseek",
+                  "openai",
+                  "openai_compatible",
+                  "anthropic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "wire_api": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wire Api"
+          }
+        },
+        "title": "ApiKeyUpdateRequest",
+        "type": "object"
+      },
       "BrainSection": {
         "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n前四个是\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n后两个是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
         "enum": [
@@ -113,7 +268,8 @@
           "browser.open",
           "deploy",
           "secret.access",
-          "device.command"
+          "device.command",
+          "plan.write"
         ],
         "title": "Capability",
         "type": "string"
@@ -554,6 +710,30 @@
             "title": "Instruction",
             "type": "string"
           },
+          "key_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -796,6 +976,30 @@
         "title": "ModelProvider",
         "type": "string"
       },
+      "PermissionMode": {
+        "description": "对话级权限模式（2026-10-25 三模式定案 + 2026-10-26 免审核）。\n\n- PLAN：只读 + 只写计划文档，不执行 shell、不改代码、不分享设计稿；\n- NORMAL（默认）：正常执行，低风险命令自动放行，高风险命令逐次等用户允许；\n- FULL：跳过逐步审批（可直写工作区、跑 git 提交推送），但受保护对象仍需逐次申请；\n- UNATTENDED：免审核（无人值守），高风险命令与受保护对象都不再打断用户。\n  仅用于用户明确离开设备、希望任务自行跑完的场景；风险与后果由用户承担。",
+        "enum": [
+          "plan",
+          "normal",
+          "full",
+          "unattended"
+        ],
+        "title": "PermissionMode",
+        "type": "string"
+      },
+      "PermissionModeRequest": {
+        "description": "切换对话级权限模式（Plan / Normal / Full）。\n\n任何任务状态都允许切换；正在执行的 Run 按启动时的模式跑完，新模式从下一轮生效。",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/PermissionMode"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "PermissionModeRequest",
+        "type": "object"
+      },
       "ProjectCreateRequest": {
         "description": "登记一个项目（⑪ Project Brain 的宿主实体）。",
         "properties": {
@@ -904,6 +1108,21 @@
         "title": "ScanRequest",
         "type": "object"
       },
+      "TaskAgentRequest": {
+        "description": "切换任务的执行 Agent：同一对话继续，后续 Run 交给新 Agent。",
+        "properties": {
+          "agent_id": {
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "TaskAgentRequest",
+        "type": "object"
+      },
       "TaskCreateRequest": {
         "properties": {
           "agent_id": {
@@ -917,6 +1136,14 @@
             ],
             "title": "Agent Id"
           },
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Attachment Ids",
+            "type": "array"
+          },
           "decision_mode": {
             "$ref": "#/components/schemas/DecisionMode",
             "default": "auto"
@@ -925,6 +1152,34 @@
             "minLength": 1,
             "title": "Description",
             "type": "string"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "default": "normal"
           },
           "priority": {
             "default": 100,
@@ -941,6 +1196,30 @@
               }
             ],
             "title": "Project Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "summary_from": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary From"
           }
         },
         "required": [
@@ -950,19 +1229,52 @@
         "type": "object"
       },
       "TaskMessageCreateRequest": {
-        "description": "发一条任务消息（任务执行中心的对话输入）。\n\n只有 user 能由调用方写入：assistant 的回复必须来自平台真实模型调用，\n不接受客户端伪造（role 不在请求体里，由服务端决定）。",
+        "description": "发一条任务消息（任务执行中心的对话输入）。\n\n只有 user 能由调用方写入：assistant 的回复必须来自平台真实模型调用，\n不接受客户端伪造（role 不在请求体里，由服务端决定）。\n正文可以留空——只发附件也是合法的一条消息（\"看看这个\"）。",
         "properties": {
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Attachment Ids",
+            "type": "array"
+          },
           "content": {
+            "default": "",
             "maxLength": 8000,
-            "minLength": 1,
             "title": "Content",
             "type": "string"
           }
         },
-        "required": [
-          "content"
-        ],
         "title": "TaskMessageCreateRequest",
+        "type": "object"
+      },
+      "TaskModelRequest": {
+        "description": "切换任务的执行模型：必须是该 Agent runtime 支持的模型。\n\n`key_id` 非空表示模型来自密钥库；留空 = 原生模型。",
+        "properties": {
+          "key_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "TaskModelRequest",
         "type": "object"
       },
       "TaskStartRequest": {
@@ -1030,6 +1342,20 @@
           }
         },
         "title": "TerminalStopRequest",
+        "type": "object"
+      },
+      "UserMemorySettingsRequest": {
+        "description": "设备侧「自动记录用户记忆」开关。",
+        "properties": {
+          "auto_capture": {
+            "title": "Auto Capture",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "auto_capture"
+        ],
+        "title": "UserMemorySettingsRequest",
         "type": "object"
       },
       "UserMemoryWriteRequest": {
@@ -1522,6 +1848,252 @@
         ]
       }
     },
+    "/api/v1/billing/plans": {
+      "get": {
+        "operationId": "list_plans_api_v1_billing_plans_get",
+        "parameters": [
+          {
+            "description": "是否立即拉取官方额度",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "是否立即拉取官方额度",
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Plans Api V1 Billing Plans Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Plans",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/prices": {
+      "get": {
+        "description": "官方价目表：每百万 token 单价 + 基准日期 + 人民币换算率。",
+        "operationId": "list_prices_api_v1_billing_prices_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Prices Api V1 Billing Prices Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Prices",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/refresh": {
+      "post": {
+        "operationId": "refresh_usage_api_v1_billing_refresh_post",
+        "parameters": [
+          {
+            "description": "只刷新指定套餐；空表示全部",
+            "in": "query",
+            "name": "plan",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "只刷新指定套餐；空表示全部",
+              "title": "Plan",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh Usage Api V1 Billing Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Refresh Usage",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/runs/{run_id}": {
+      "get": {
+        "operationId": "run_usage_api_v1_billing_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Usage Api V1 Billing Runs  Run Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run Usage",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/usage": {
+      "get": {
+        "operationId": "plan_usage_api_v1_billing_usage_get",
+        "parameters": [
+          {
+            "description": "套餐 key：opencode-go / agent-plan / opencode",
+            "in": "query",
+            "name": "plan",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "套餐 key：opencode-go / agent-plan / opencode",
+              "title": "Plan",
+              "type": "string"
+            }
+          },
+          {
+            "description": "是否立即拉取官方额度",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "是否立即拉取官方额度",
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Plan Usage Api V1 Billing Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan Usage",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/capabilities": {
       "get": {
         "description": "已导入能力的注册表（同一 kind+name 只有一条）。",
@@ -1791,6 +2363,143 @@
         ]
       }
     },
+    "/api/v1/codex-account": {
+      "get": {
+        "description": "当前 ChatGPT 账号的登录态（不含任何令牌）。",
+        "operationId": "account_status_api_v1_codex_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Account Status Api V1 Codex Account Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Account Status",
+        "tags": [
+          "codex-account"
+        ]
+      }
+    },
+    "/api/v1/codex-account/login": {
+      "post": {
+        "description": "发起设备码登录；返回授权链接与设备码，前端据此引导用户授权。",
+        "operationId": "start_login_api_v1_codex_account_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Login Api V1 Codex Account Login Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Start Login",
+        "tags": [
+          "codex-account"
+        ]
+      }
+    },
+    "/api/v1/codex-account/login/{login_id}": {
+      "get": {
+        "description": "轮询登录结果：starting / pending / success / failed。",
+        "operationId": "login_state_api_v1_codex_account_login__login_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "login_id",
+            "required": true,
+            "schema": {
+              "title": "Login Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Login State Api V1 Codex Account Login  Login Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Login State",
+        "tags": [
+          "codex-account"
+        ]
+      }
+    },
+    "/api/v1/codex-account/logout": {
+      "post": {
+        "description": "退出 ChatGPT 账号：删除 Flux 账号目录里的 auth.json。",
+        "operationId": "logout_api_v1_codex_account_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Logout Api V1 Codex Account Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Logout",
+        "tags": [
+          "codex-account"
+        ]
+      }
+    },
     "/api/v1/connectors/execute": {
       "post": {
         "operationId": "execute_connector_api_v1_connectors_execute_post",
@@ -1836,6 +2545,828 @@
         "summary": "Execute Connector",
         "tags": [
           "connectors"
+        ]
+      }
+    },
+    "/api/v1/deliveries/{delivery_id}": {
+      "get": {
+        "operationId": "get_delivery_api_v1_deliveries__delivery_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Delivery Api V1 Deliveries  Delivery Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Delivery",
+        "tags": [
+          "deliveries"
+        ]
+      }
+    },
+    "/api/v1/deliveries/{delivery_id}/files/{index}": {
+      "get": {
+        "operationId": "get_delivery_file_api_v1_deliveries__delivery_id__files__index__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "true 时按附件下载，否则尽量内联",
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "true 时按附件下载，否则尽量内联",
+              "title": "Download",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Delivery File",
+        "tags": [
+          "deliveries"
+        ]
+      }
+    },
+    "/api/v1/designs": {
+      "get": {
+        "operationId": "list_designs_api_v1_designs_get",
+        "parameters": [
+          {
+            "description": "按 Flux 项目过滤；缺省返回全部",
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按 Flux 项目过滤；缺省返回全部",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Designs Api V1 Designs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Designs",
+        "tags": [
+          "designs"
+        ]
+      },
+      "post": {
+        "operationId": "create_design_api_v1_designs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Design Api V1 Designs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Design",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/import": {
+      "post": {
+        "description": "导入 Figma(.fig) / Sketch(.sketch) / SVG，落成一份新的 Luma 设计稿。\n\n与附件上传一致走裸请求体 + 查询参数，手机端不必把文件读进内存再 base64。",
+        "operationId": "import_design_api_v1_designs_import_post",
+        "parameters": [
+          {
+            "description": "原始文件名",
+            "in": "query",
+            "name": "filename",
+            "required": true,
+            "schema": {
+              "description": "原始文件名",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Filename",
+              "type": "string"
+            }
+          },
+          {
+            "description": "归入哪个 Flux 项目",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "归入哪个 Flux 项目",
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Design Api V1 Designs Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import Design",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}": {
+      "delete": {
+        "description": "删除整份设计稿；不可恢复，手机端需要长按确认后才调用。",
+        "operationId": "delete_design_api_v1_designs__design_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Design Api V1 Designs  Design Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Design",
+        "tags": [
+          "designs"
+        ]
+      },
+      "get": {
+        "operationId": "get_design_api_v1_designs__design_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Design Api V1 Designs  Design Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Design",
+        "tags": [
+          "designs"
+        ]
+      },
+      "put": {
+        "description": "保存整份设计稿；带 base_version 时做乐观锁，冲突返回 409 + 当前版本。",
+        "operationId": "save_design_api_v1_designs__design_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Design Api V1 Designs  Design Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save Design",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/ai": {
+      "post": {
+        "description": "对选中组件或整块画板提修改要求；上游把模型输出收敛成 set/add/remove/reorder 补丁。",
+        "operationId": "ask_design_ai_api_v1_designs__design_id__ai_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ask Design Ai Api V1 Designs  Design Id  Ai Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ask Design Ai",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/export.svg": {
+      "get": {
+        "description": "导出 SVG 交给客户端另存；Figma / Sketch / Illustrator 都能直接打开。",
+        "operationId": "export_design_svg_api_v1_designs__design_id__export_svg_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "all / 序号 / 画板 id",
+            "in": "query",
+            "name": "screen",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "description": "all / 序号 / 画板 id",
+              "maxLength": 80,
+              "title": "Screen",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Design Svg",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/preview": {
+      "get": {
+        "description": "把设计稿渲染成可交互单文件 HTML，供 App 内 WebView 离线预览。",
+        "operationId": "preview_design_api_v1_designs__design_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Design Api V1 Designs  Design Id  Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Design",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/revert": {
+      "post": {
+        "description": "恢复历史版本：上游会以新版本号落盘，当前版本先留档，可再次回滚。",
+        "operationId": "revert_design_api_v1_designs__design_id__revert_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revert Design Api V1 Designs  Design Id  Revert Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revert Design",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/revisions": {
+      "get": {
+        "description": "历史版本列表：只给版本号与概要，不带整份节点树，列表响应保持轻量。",
+        "operationId": "list_revisions_api_v1_designs__design_id__revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Revisions Api V1 Designs  Design Id  Revisions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Revisions",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/revisions/{version}": {
+      "get": {
+        "description": "取某一历史版本的完整设计稿，用于回滚前预览差异。",
+        "operationId": "get_revision_api_v1_designs__design_id__revisions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Revision Api V1 Designs  Design Id  Revisions  Version  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Revision",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/dsh/models": {
+      "get": {
+        "description": "dsh 当前可选的模型：原生模型 + 密钥库中 DeepSeek 协议的模型（Web Solo 用）。",
+        "operationId": "list_models_api_v1_dsh_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Models Api V1 Dsh Models Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Models",
+        "tags": [
+          "dsh"
         ]
       }
     },
@@ -2547,6 +4078,190 @@
         ]
       }
     },
+    "/api/v1/keys": {
+      "get": {
+        "description": "列出密钥库条目（按创建时间）；响应只含掩码与元数据。",
+        "operationId": "list_keys_api_v1_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Keys Api V1 Keys Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Keys",
+        "tags": [
+          "keys"
+        ]
+      },
+      "post": {
+        "description": "登记一条 API Key；同一名称只能有一条。",
+        "operationId": "create_key_api_v1_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Key Api V1 Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Key",
+        "tags": [
+          "keys"
+        ]
+      }
+    },
+    "/api/v1/keys/{key_id}": {
+      "delete": {
+        "description": "删除密钥库条目；引用它的任务会回到 Agent 默认模型（fail-safe）。",
+        "operationId": "delete_key_api_v1_keys__key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Key Api V1 Keys  Key Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Key",
+        "tags": [
+          "keys"
+        ]
+      },
+      "patch": {
+        "description": "修改密钥库条目；未出现的字段保持不变，`api_key` 留空也表示不改。",
+        "operationId": "update_key_api_v1_keys__key_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Key Api V1 Keys  Key Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Key",
+        "tags": [
+          "keys"
+        ]
+      }
+    },
     "/api/v1/memory": {
       "get": {
         "description": "三层统一读取口：Environment → User →（可选）Project，按优先级排序并附来源。",
@@ -2759,6 +4474,170 @@
           }
         ],
         "summary": "Delete Memory Entry",
+        "tags": [
+          "memory"
+        ]
+      },
+      "put": {
+        "description": "手动修改一条 User Memory（手机端编辑）；云端会同步更新。",
+        "operationId": "update_memory_entry_api_v1_memory_entries__entry_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserMemoryWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Memory Entry Api V1 Memory Entries  Entry Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Memory Entry",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/v1/memory/settings": {
+      "get": {
+        "description": "手机端设置页用：自动记录开关 + 云端同步是否就绪（不返回任何凭据）。",
+        "operationId": "read_memory_settings_api_v1_memory_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Memory Settings Api V1 Memory Settings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Memory Settings",
+        "tags": [
+          "memory"
+        ]
+      },
+      "put": {
+        "description": "切换「每轮结束自动提炼用户记忆」；手动添加与云同步不受影响。",
+        "operationId": "update_memory_settings_api_v1_memory_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserMemorySettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Memory Settings Api V1 Memory Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Memory Settings",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/v1/memory/sync": {
+      "post": {
+        "description": "立即和账号云对一次账（手机端下拉刷新用）；未配置设备凭据时返回原因。",
+        "operationId": "sync_memory_with_cloud_api_v1_memory_sync_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Memory With Cloud Api V1 Memory Sync Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Sync Memory With Cloud",
         "tags": [
           "memory"
         ]
@@ -3964,6 +5843,54 @@
       }
     },
     "/api/v1/tasks/{task_id}": {
+      "delete": {
+        "description": "彻底删除一段对话（任务）：消息与运行记录一并清除，不做软删除。\n\n正在执行（running / waiting_for_user_decision）的对话必须先停止：\n删掉一个 Agent 仍在改文件的任务是矛盾的。",
+        "operationId": "delete_task_api_v1_tasks__task_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Task Api V1 Tasks  Task Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Task",
+        "tags": [
+          "tasks"
+        ]
+      },
       "get": {
         "operationId": "get_task_api_v1_tasks__task_id__get",
         "parameters": [
@@ -4007,6 +5934,66 @@
           }
         ],
         "summary": "Get Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/agent": {
+      "post": {
+        "description": "切换执行该任务的 Agent（移动端对话页的 Agent 下拉）。\n\n同一任务/对话保留历史消息，后续消息改由新 Agent 承接。\n- 执行中切换：只排队（`pending_agent_id`），本轮 Run 收尾后自动生效，\n  当前这一轮仍由原 Agent 跑完；响应 `queued=true`、`effective_from=next_run`。\n- 空闲/终态切换：立即生效，生成一张交接卡（`kind=handoff`）供新 Agent 接手。\n- 预检失败（Agent 不存在 / runtime 未接入）：保留原 Agent，按真实原因报错。",
+        "operationId": "switch_task_agent_api_v1_tasks__task_id__agent_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Switch Task Agent Api V1 Tasks  Task Id  Agent Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Switch Task Agent",
         "tags": [
           "tasks"
         ]
@@ -4116,6 +6103,116 @@
           }
         ],
         "summary": "Update Confirmation",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/context": {
+      "get": {
+        "description": "对话上下文占用（「上下文快满」提醒的唯一口径）。\n\n度量的不是模型标称窗口，而是执行 Agent 下一轮实际会收到的内容：\n与 `TaskRunService.start()` 同源装配的执行指令（约束 / 任务 / 工作记忆 /\n压缩后的对话轨迹 / 计划）。历史已压缩在指令里，这里不再把原始消息重复计入，\n否则对话一长就永远停在 100%。条数只作为解释信息返回。",
+        "operationId": "get_task_context_api_v1_tasks__task_id__context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Task Context Api V1 Tasks  Task Id  Context Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Task Context",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/continue": {
+      "post": {
+        "description": "同一对话续跑：终态对话收到新消息时，重开任务并起一轮新 Run。\n\n与 `/messages` 的区别：那个只让助手回话；续跑把新消息当作本轮 Agent 指令，\n让同一个对话接着执行（历史消息、项目关联与标题都保留）。",
+        "operationId": "continue_task_api_v1_tasks__task_id__continue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskMessageCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Continue Task Api V1 Tasks  Task Id  Continue Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Continue Task",
         "tags": [
           "tasks"
         ]
@@ -4301,6 +6398,116 @@
         ]
       }
     },
+    "/api/v1/tasks/{task_id}/events": {
+      "get": {
+        "description": "对话增量的轮询版（账号云中转只做请求-响应，不能承载 SSE 长连接）。\n\n与 `/stream` 共用同一份缓冲：返回 `after_seq` 之后的事件，客户端按回调逐条消费即可。",
+        "operationId": "poll_task_events_api_v1_tasks__task_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Poll Task Events Api V1 Tasks  Task Id  Events Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Poll Task Events",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/handoff": {
+      "post": {
+        "description": "把一段对话压成前情摘要，供客户端带进新对话。\n\n只生成摘要、不建任务：新对话由客户端在用户发出第一条消息时创建\n（`POST /tasks` 的 summary / summary_from 字段），避免留下一段\n没有用户意图的孤儿对话。",
+        "operationId": "create_task_handoff_api_v1_tasks__task_id__handoff_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Task Handoff Api V1 Tasks  Task Id  Handoff Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Task Handoff",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
     "/api/v1/tasks/{task_id}/messages": {
       "get": {
         "description": "按 seq 升序返回一段任务消息；before 为向上加载更早消息的游标。",
@@ -4435,6 +6642,245 @@
         ]
       }
     },
+    "/api/v1/tasks/{task_id}/model": {
+      "post": {
+        "description": "切换任务的执行模型（移动端对话页 Agent 名称旁的下拉）。\n\n只接受该 Agent runtime 的模型目录里的 id；正在执行时不允许切换。\n切换 Agent 时会清掉本覆盖，回到新 Agent 的默认模型。\n终态对话同样允许切换，理由与切换 Agent 一致：只影响下一次续聊的模型。",
+        "operationId": "switch_task_model_api_v1_tasks__task_id__model_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Switch Task Model Api V1 Tasks  Task Id  Model Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Switch Task Model",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/permission-mode": {
+      "post": {
+        "description": "切换对话级权限模式（Plan / Normal / Full）。\n\n任何状态都允许切换；正在执行的 Run 按启动时的模式跑完，新模式从下一轮生效\n（响应里的 `effective_from` 明确告诉客户端这一点）。切换本身不执行任何命令、\n也不改动历史消息与已完成的审批记录。",
+        "operationId": "set_permission_mode_api_v1_tasks__task_id__permission_mode_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Permission Mode Api V1 Tasks  Task Id  Permission Mode Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Permission Mode",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/runs": {
+      "get": {
+        "description": "任务名下的 Run 摘要（按时间升序）：耗时与「改动/命令/读取」计数。",
+        "operationId": "list_task_runs_api_v1_tasks__task_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Task Runs Api V1 Tasks  Task Id  Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Task Runs",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/runs/{run_id}/trace": {
+      "get": {
+        "description": "一轮 Run 的完整执行轨迹：概览 + 思考过程 + 命令（含输出）。",
+        "operationId": "get_run_trace_api_v1_tasks__task_id__runs__run_id__trace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Run Trace Api V1 Tasks  Task Id  Runs  Run Id  Trace Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Run Trace",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
     "/api/v1/tasks/{task_id}/start": {
       "post": {
         "description": "开始执行（P0-05）：把确认过的需求交给该 Agent 的 runtime 起一次 Run，任务进入 running。\n\n确认卡可以随请求一起传（前端\"改完直接执行\"），也可以留空用任务上已保存的那份。\n编排收敛在 `TaskRunService`（P2-1 §6.2）：按 `agent.config[\"runtime\"]` 分发 DSH / CLI，\n对外响应与消息落库行为保持不变。runtime 不可用（DSH 未启用 / CLI 未接入）时不返回\n\"假装开始执行\"的 200。",
@@ -4490,6 +6936,78 @@
           }
         ],
         "summary": "Start Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/stream": {
+      "get": {
+        "description": "对话增量流（SSE）：助手逐字回复 + Agent 运行事件。\n\n连接建立后先补 `after_seq` 之后的缓冲事件，再持续推送，15 秒静默发一次心跳。\n最终消息仍以 GET /tasks/{id}/messages 为准：断线期间漏掉的增量由客户端重拉补齐。",
+        "operationId": "stream_task_api_v1_tasks__task_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Stream Task",
         "tags": [
           "tasks"
         ]
@@ -5060,6 +7578,73 @@
         "summary": "Stream Events",
         "tags": [
           "terminal"
+        ]
+      }
+    },
+    "/api/v1/uploads": {
+      "post": {
+        "description": "收一个附件：返回 upload_id 与给 Agent 读的绝对路径。",
+        "operationId": "create_upload_api_v1_uploads_post",
+        "parameters": [
+          {
+            "description": "原始文件名",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "原始文件名",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "客户端给的 MIME，可留空",
+            "in": "query",
+            "name": "mime",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "客户端给的 MIME，可留空",
+              "maxLength": 200,
+              "title": "Mime",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Upload Api V1 Uploads Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Upload",
+        "tags": [
+          "uploads"
         ]
       }
     },

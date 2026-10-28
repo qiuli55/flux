@@ -96,9 +96,7 @@ async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
         kind = APPROVAL_KIND_HIGH_RISK
         title = "高风险命令 · 需要你确认"
     else:
-        logger.info(
-            "terminal.risk_allow mode=%s rule=%s level=%s", mode, report.rule, report.level
-        )
+        logger.info("terminal.risk_allow mode=%s rule=%s level=%s", mode, report.rule, report.level)
         return
 
     task_id = await _task_uuid(ctx)
@@ -136,13 +134,9 @@ async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
         )
         return
     if outcome == "denied":
-        raise ApprovalDeniedError(
-            f"用户拒绝了这条命令（{report.rule}），未执行：{display_command}"
-        )
+        raise ApprovalDeniedError(f"用户拒绝了这条命令（{report.rule}），未执行：{display_command}")
     if outcome == "timeout":
-        raise ApprovalTimeoutError(
-            "审批超时（10 分钟）：命令未执行。需要时请向用户重新申请。"
-        )
+        raise ApprovalTimeoutError("审批超时（10 分钟）：命令未执行。需要时请向用户重新申请。")
     raise ApprovalCancelledError("任务已取消或结束，命令未执行")
 
 

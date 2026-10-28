@@ -36,9 +36,7 @@ def test_load_device_credentials(tmp_path: Path) -> None:
 
 
 def test_apply_cloud_snapshot_merge_update_and_remove(container: Container) -> None:
-    first = asyncio.run(
-        container.memory.write_user(content="偏好中文，结论先行", source="auto")
-    )
+    first = asyncio.run(container.memory.write_user(content="偏好中文，结论先行", source="auto"))
     keep = asyncio.run(
         container.memory.write_user(
             content="不要自动提交 git", source="user", meta={"cloud_id": "7"}
@@ -72,9 +70,7 @@ def test_update_user_memory_or_marks_stale(container: Container) -> None:
     updated = asyncio.run(container.memory.update_user(entry.id, content="新的偏好"))
     assert updated.content == "新的偏好"
 
-    asyncio.run(
-        container.memory.update_entry_meta(updated.id, {"cloud_id": "88"})
-    )
+    asyncio.run(container.memory.update_entry_meta(updated.id, {"cloud_id": "88"}))
     # 测试环境已关闭账号云：同步失败 → 记下旧行，等下一次同步重推后清掉
     same = asyncio.run(container.memory.update_user(updated.id, content="再改一次"))
     assert same.content == "再改一次"
@@ -157,9 +153,7 @@ def test_cloud_sync_push_and_pull(container: Container, tmp_path: Path) -> None:
     sync = FakeSync(settings, container.memory)  # type: ignore[arg-type]
     calls: list[tuple[str, str]] = []
 
-    async def fake_request(
-        method: str, path: str, creds: Any, *, body: dict | None = None
-    ) -> Any:
+    async def fake_request(method: str, path: str, creds: Any, *, body: dict | None = None) -> Any:
         calls.append((method, path))
         if method == "POST":
             return {"items": [{"id": 41}], "count": 1, "created": 1}
@@ -196,10 +190,9 @@ def test_memory_settings_api(container: Container) -> None:
     assert got.json()["data"]["auto_capture"] is True
     assert got.json()["data"]["cloud_ready"] is False  # 测试环境显式关闭账号云
 
-    put = client.put(
-        "/api/v1/memory/settings", json={"auto_capture": False}, headers=headers
-    )
+    put = client.put("/api/v1/memory/settings", json={"auto_capture": False}, headers=headers)
     assert put.status_code == 200
-    assert client.get("/api/v1/memory/settings", headers=headers).json()["data"][
-        "auto_capture"
-    ] is False
+    assert (
+        client.get("/api/v1/memory/settings", headers=headers).json()["data"]["auto_capture"]
+        is False
+    )

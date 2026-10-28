@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request, Response
 
 from flux.api.deps import get_settings_dep
 from flux.api.response import ok
@@ -26,6 +27,12 @@ router = APIRouter(prefix="/designs", tags=["designs"])
 
 #: 与 Luma Studio 同一条规则：设计稿 id 只允许小写字母、数字与连字符。
 _DESIGN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+#: 导入文件上限，与 Luma Studio 的 16MB 保持一致（转成 Luma 节点后还会再涨）。
+MAX_DESIGN_IMPORT_BYTES = 16 * 1024 * 1024
+
+#: 能直接解析的设计稿格式；.xd / .psd 没有公开结构，提示用户先导出 SVG。
+_IMPORT_SUFFIXES = {".svg", ".fig", ".sketch"}
 
 
 class DesignStudioUnavailable(AIOSError):
@@ -42,9 +49,7 @@ async def design_client(
     timeout = httpx.Timeout(settings.design_studio_timeout_seconds, connect=3.0)
     base_url = settings.design_studio_url.rstrip("/")
     # Luma Studio 永远是本机/内网地址：不走系统代理，否则开着 HTTP_PROXY 的机器会 503。
-    async with httpx.AsyncClient(
-        base_url=base_url, timeout=timeout, trust_env=False
-    ) as client:
+    async with httpx.AsyncClient(base_url=base_url, timeout=timeout, trust_env=False) as client:
         yield client
 
 
@@ -147,6 +152,51 @@ async def get_design(
     return ok(await load_design(client, design_id))
 
 
+@router.post("/import")
+async def import_design(
+    request: Request,
+    filename: str = Query(..., min_length=1, max_length=200, description="原始文件名"),
+    project: str | None = Query(default=None, max_length=120, description="归入哪个 Flux 项目"),
+    client: httpx.AsyncClient = Depends(design_client),
+) -> dict[str, object]:
+    """导入 Figma(.fig) / Sketch(.sketch) / SVG，落成一份新的 Luma 设计稿。
+
+    与附件上传一致走裸请求体 + 查询参数，手机端不必把文件读进内存再 base64。
+    """
+    name = Path(filename).name
+    if Path(name).suffix.lower() not in _IMPORT_SUFFIXES:
+        raise BadRequestError("只支持 .svg / .fig / .sketch；.xd / .psd 请先导出为 SVG")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_DESIGN_IMPORT_BYTES:
+            raise BadRequestError("文件超过 16 MB 上限")
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    if not body:
+        raise BadRequestError("文件内容为空")
+    params: dict[str, str] = {"filename": name}
+    if project:
+        params["project"] = project
+    try:
+        response = await client.post("/api/import", params=params, content=body)
+    except httpx.HTTPError as exc:
+        raise DesignStudioUnavailable("设计服务连接失败") from exc
+    payload = await _read(response)
+    design = payload.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    warnings = payload.get("warnings")
+    return ok(
+        design,
+        metadata={
+            "summary": payload.get("summary"),
+            "warnings": warnings[:20] if isinstance(warnings, list) else [],
+        },
+    )
+
+
 @router.get("/{design_id}/preview")
 async def preview_design(
     design_id: str,
@@ -171,6 +221,33 @@ async def preview_design(
     return ok(preview, metadata={"screen_count": preview["screen_count"]})
 
 
+@router.get("/{design_id}/export.svg")
+async def export_design_svg(
+    design_id: str,
+    screen: str = Query(default="all", max_length=80, description="all / 序号 / 画板 id"),
+    client: httpx.AsyncClient = Depends(design_client),
+) -> Response:
+    """导出 SVG 交给客户端另存；Figma / Sketch / Illustrator 都能直接打开。"""
+    design_id = _require_design_id(design_id)
+    try:
+        response = await client.get(
+            f"/api/designs/{design_id}/export.svg", params={"screen": screen}
+        )
+    except httpx.HTTPError as exc:
+        raise DesignStudioUnavailable("设计服务连接失败") from exc
+    if response.status_code >= 400:
+        raise _upstream_error(response)
+    suffix = "all" if screen == "all" else f"screen-{screen}"
+    return Response(
+        content=response.content,
+        media_type="image/svg+xml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{design_id}-{suffix}.svg"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.put("/{design_id}")
 async def save_design(
     design_id: str,
@@ -180,6 +257,50 @@ async def save_design(
     """保存整份设计稿；带 base_version 时做乐观锁，冲突返回 409 + 当前版本。"""
     saved = await _request(client, "PUT", f"/api/designs/{_require_design_id(design_id)}", payload)
     return ok(saved.get("design"), metadata={"version": (saved.get("design") or {}).get("version")})
+
+
+@router.get("/{design_id}/revisions")
+async def list_revisions(
+    design_id: str,
+    client: httpx.AsyncClient = Depends(design_client),
+) -> dict[str, object]:
+    """历史版本列表：只给版本号与概要，不带整份节点树，列表响应保持轻量。"""
+    design_id = _require_design_id(design_id)
+    payload = await _request(client, "GET", f"/api/designs/{design_id}/revisions")
+    revisions = payload.get("revisions") or []
+    if not isinstance(revisions, list):
+        raise DesignStudioUnavailable("设计服务返回了异常历史列表")
+    return ok(revisions, metadata={"count": len(revisions)})
+
+
+@router.get("/{design_id}/revisions/{version}")
+async def get_revision(
+    design_id: str,
+    version: int,
+    client: httpx.AsyncClient = Depends(design_client),
+) -> dict[str, object]:
+    """取某一历史版本的完整设计稿，用于回滚前预览差异。"""
+    design_id = _require_design_id(design_id)
+    payload = await _request(client, "GET", f"/api/designs/{design_id}/revisions/{version}")
+    design = payload.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常历史版本")
+    return ok(design, metadata={"version": version})
+
+
+@router.post("/{design_id}/revert")
+async def revert_design(
+    design_id: str,
+    payload: dict[str, Any] = Body(...),
+    client: httpx.AsyncClient = Depends(design_client),
+) -> dict[str, object]:
+    """恢复历史版本：上游会以新版本号落盘，当前版本先留档，可再次回滚。"""
+    design_id = _require_design_id(design_id)
+    restored = await _request(client, "POST", f"/api/designs/{design_id}/revert", payload)
+    design = restored.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    return ok(design, metadata={"version": design.get("version")})
 
 
 @router.delete("/{design_id}")
@@ -199,10 +320,25 @@ async def ask_design_ai(
     payload: dict[str, Any] = Body(...),
     client: httpx.AsyncClient = Depends(design_client),
 ) -> dict[str, object]:
-    """对单个组件提修改要求；上游把模型输出收敛成只作用于该节点的属性补丁。"""
-    _require_design_id(design_id)
+    """对选中组件或整块画板提修改要求；上游把模型输出收敛成 set/add/remove/reorder 补丁。"""
+    design_id = _require_design_id(design_id)
+    # 补画板底色（多轮历史键）与底色基调：客户端 payload 里没有就查一遍设计稿元信息
+    if not payload.get("design"):
+        payload["design"] = design_id
+    if not (payload.get("screen") or {}).get("bg"):
+        meta = await _request(client, "GET", f"/api/designs/{design_id}")
+        design = meta.get("design")
+        if isinstance(design, dict) and isinstance(design.get("bg"), str):
+            screen = payload.setdefault("screen", {})
+            screen.setdefault("bg", design["bg"])
     result = await _request(client, "POST", "/api/ask", payload)
+    ops = result.get("ops") or []
     return ok(
-        {"reply": result.get("reply"), "ops": result.get("ops"), "model": result.get("model")},
-        metadata={"design_id": design_id, "ops": len(result.get("ops") or [])},
+        {
+            "reply": result.get("reply"),
+            "ops": ops,
+            "model": result.get("model"),
+            "mode": result.get("mode"),
+        },
+        metadata={"design_id": design_id, "ops": len(ops)},
     )

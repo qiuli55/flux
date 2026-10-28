@@ -1,0 +1,101 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.BrowserView"
+             x:DataType="vm:BrowserViewModel">
+
+    <Grid RowDefinitions="Auto,Auto,*">
+
+        <!-- 工具栏 -->
+        <Border Grid.Row="0" Padding="16,10,16,0"
+                BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+            <Grid RowDefinitions="Auto,Auto">
+                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto"
+                      ColumnSpacing="8" Margin="0,0,0,10">
+
+                    <Button Grid.Column="0" Classes="iconbtn" Command="{Binding BackCommand}"
+                            IsEnabled="{Binding CanGoBack}" ToolTip.Tip="后退">
+                        <Viewbox Classes="icon-lg"><Path Data="{Binding BackIcon}" /></Viewbox>
+                    </Button>
+                    <Button Grid.Column="1" Classes="iconbtn" Command="{Binding ForwardCommand}"
+                            IsEnabled="{Binding CanGoForward}" ToolTip.Tip="前进">
+                        <Viewbox Classes="icon-lg"><Path Data="{Binding ForwardIcon}" /></Viewbox>
+                    </Button>
+                    <Button Grid.Column="2" Classes="iconbtn" Command="{Binding RefreshCommand}"
+                            ToolTip.Tip="刷新">
+                        <Viewbox Classes="icon-lg"><Path Data="{Binding RefreshIcon}" /></Viewbox>
+                    </Button>
+                    <Button Grid.Column="3" Classes="iconbtn" Command="{Binding HomeCommand}"
+                            ToolTip.Tip="回到首页">
+                        <Viewbox Classes="icon-lg"><Path Data="{Binding HomeIcon}" /></Viewbox>
+                    </Button>
+
+                    <TextBox Grid.Column="4" x:Name="AddressBox" Classes="input"
+                             Text="{Binding Address, Mode=TwoWay}"
+                             KeyDown="OnAddressKeyDown"
+                             VerticalAlignment="Center" />
+
+                    <Border Grid.Column="5" Classes="pill" VerticalAlignment="Center"
+                            ToolTip.Tip="代理只作用于内置浏览器，不影响 Flux 与后端通信">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Viewbox Classes="icon"><Path Data="{Binding GlobeIcon}" /></Viewbox>
+                            <TextBlock Text="{Binding ProxySummary}" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Button Grid.Column="6" Classes="btn primary" Content="打开"
+                            Command="{Binding SubmitCommand}" VerticalAlignment="Center" />
+                </Grid>
+
+                <ProgressBar Grid.Row="1" Height="2" IsIndeterminate="True"
+                             IsVisible="{Binding IsLoading}"
+                             Foreground="{DynamicResource TnAccent}"
+                             Background="Transparent" />
+            </Grid>
+        </Border>
+
+        <!-- 提示条 / 状态条 -->
+        <StackPanel Grid.Row="1">
+            <Border IsVisible="{Binding HasNotice}" Padding="16,8"
+                    Background="{DynamicResource TnPanel2}"
+                    BorderBrush="{DynamicResource TnWarn}" BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Text="{Binding Notice}" FontSize="12"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TnWarn}" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Classes="iconbtn" Command="{Binding DismissNoticeCommand}"
+                            ToolTip.Tip="关闭">
+                        <Viewbox Classes="icon"><Path Data="{Binding CloseIcon}" /></Viewbox>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <Border IsVisible="{Binding HasStatus}" Padding="16,8"
+                    Background="{DynamicResource TnPanel2}"
+                    BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                <TextBlock Text="{Binding StatusText}" FontSize="12"
+                           Foreground="{DynamicResource TnText3}" />
+            </Border>
+        </StackPanel>
+
+        <!-- 引擎缺失提示（不创建 WebView，避免原生控件初始化失败） -->
+        <Border Grid.Row="2" Padding="32" IsVisible="{Binding IsEngineMissing}"
+                Background="{DynamicResource TnBg}">
+            <StackPanel MaxWidth="640" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Spacing="10">
+                <TextBlock Classes="section-title" Text="内置浏览器不可用"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding EngineMessage}" FontSize="12"
+                           Foreground="{DynamicResource TnText3}"
+                           TextWrapping="Wrap" TextAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <!-- WebView 运行时加入此容器 -->
+        <Panel Grid.Row="2" x:Name="WebHost" Background="{DynamicResource TnBg}" />
+    </Grid>
+</UserControl>

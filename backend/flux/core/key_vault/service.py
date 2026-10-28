@@ -106,9 +106,7 @@ class KeyVaultService:
             return wanted, None
         row = await self.get(key_id)
         if not row.enabled:
-            raise BadRequestError(
-                f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)}
-            )
+            raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
         if not supports_provider(runtime, row.provider):
             provider_title = PROVIDER_TITLES.get(row.provider, row.provider)
             raise BadRequestError(
@@ -245,9 +243,7 @@ class KeyVaultService:
                 raise NotFoundError(f"密钥 {key_id} 不存在", details={"key_id": str(key_id)})
             # fail-safe：引用该 key 的任务回到 Agent 默认模型，避免下一次 Run 用不存在的凭据
             await session.execute(
-                update(Task)
-                .where(Task.api_key_id == key_uuid)
-                .values(model=None, api_key_id=None)
+                update(Task).where(Task.api_key_id == key_uuid).values(model=None, api_key_id=None)
             )
             await session.delete(row)
             await session.commit()
@@ -280,16 +276,13 @@ class KeyVaultService:
         """按 key + 模型解析通道（/dsh/runs 的显式选择用）。"""
         row = await self.get(key_id)
         if not row.enabled:
-            raise BadRequestError(
-                f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)}
-            )
+            raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
         return await self._channel(row, model)
 
     async def _channel(self, row: ApiKey, model: str) -> ModelChannel:
-        base_url = (
-            _normalize_base_url(row.provider, row.base_url, require=False)
-            or default_base_url(self._settings, row.provider)
-        )
+        base_url = _normalize_base_url(
+            row.provider, row.base_url, require=False
+        ) or default_base_url(self._settings, row.provider)
         if not base_url:
             raise ConfigurationError(
                 f"密钥 {row.name!r} 没有可用的 Base URL",
@@ -408,9 +401,7 @@ def _require_api_key(raw: str) -> str:
 def _normalize_base_url(provider: str, raw: str, *, require: bool = True) -> str:
     url = (raw or "").strip().rstrip("/")
     if not url and require and provider == "openai_compatible":
-        raise BadRequestError(
-            "OpenAI 兼容端点必须填写 Base URL", details={"field": "base_url"}
-        )
+        raise BadRequestError("OpenAI 兼容端点必须填写 Base URL", details={"field": "base_url"})
     if url and not url.startswith(("http://", "https://")):
         raise BadRequestError("Base URL 必须是 http(s) 地址", details={"field": "base_url"})
     return url

@@ -40,9 +40,7 @@ class MemoryPrefsStore:
         if not isinstance(current, dict):
             current = {}
         current["auto_capture"] = bool(enabled)
-        self._path.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self._path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
         return bool(enabled)
 
 

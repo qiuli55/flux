@@ -484,10 +484,14 @@ data class DesignDocument(
 private fun countLayers(nodes: List<DesignNode>): Int =
     nodes.size + nodes.sumOf { countLayers(it.children) }
 
-/** AI 对单个组件的修改：每条 op 的 set 是一组属性补丁。 */
+/** AI 对画布的一次修改：set 改属性，add/remove/reorder 调整结构。 */
 @Serializable
 data class DesignAiOp(
+    val op: String = "set",
+    val target: String? = null,
     val set: JsonObject = JsonObject(emptyMap()),
+    val node: JsonObject? = null,
+    val index: Int? = null,
 )
 
 @Serializable
@@ -495,6 +499,18 @@ data class DesignAiResult(
     val reply: String = "",
     val ops: List<DesignAiOp> = emptyList(),
     val model: String = "",
+    val mode: String = "node",
+)
+
+/** 设计稿的一个历史版本（只带概要，正文按需单独取）。 */
+@Serializable
+data class DesignRevision(
+    val version: Int = 0,
+    @SerialName("updated_at") val updatedAt: String = "",
+    val name: String = "",
+    @SerialName("screen_count") val screenCount: Int = 0,
+    @SerialName("layer_count") val layerCount: Int = 0,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
 )
 
 /** 设计稿渲染成的单文件 HTML；可以在 WebView 里离线加载并真实交互。 */

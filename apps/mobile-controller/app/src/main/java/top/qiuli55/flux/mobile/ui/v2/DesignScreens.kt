@@ -1,12 +1,22 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -36,17 +46,25 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -58,6 +76,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +93,7 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
@@ -91,7 +111,9 @@ import androidx.compose.ui.unit.toSize
 import top.qiuli55.flux.mobile.data.DesignDocument
 import top.qiuli55.flux.mobile.data.DesignNode
 import top.qiuli55.flux.mobile.data.DesignPreview
+import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
+import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -108,12 +130,48 @@ fun DesignStudioListScreen(
     onCreate: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
+    onImport: (String, Long, () -> java.io.InputStream) -> Unit,
+    onExport: (String, (ByteArray) -> Unit) -> Unit,
     onDismissMessages: () -> Unit,
 ) {
     var newOpen by remember { mutableStateOf(false) }
     var actionTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
     var renameTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
     var deleteTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
+
+    val context = LocalContext.current
+    // 导出是异步的：字节回来先存这里，紧接着拉起「另存为」选择器写盘
+    var exportPayload by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
+
+    val importPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val (name, size) = designFileMeta(context, uri)
+            onImport(name, size) {
+                context.contentResolver.openInputStream(uri)
+                    ?: java.io.ByteArrayInputStream(ByteArray(0))
+            }
+        }
+    }
+
+    val savePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/svg+xml"),
+    ) { uri ->
+        val payload = exportPayload
+        exportPayload = null
+        if (uri != null && payload != null) {
+            val saved = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(payload.second) }
+                    ?: error("无法写入所选位置")
+            }.isSuccess
+            Toast.makeText(
+                context,
+                if (saved) "SVG 已保存" else "保存失败，换个位置再试",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
 
     // 根容器必须是 Box：弹层与内容平级叠放，放进父级 Column 会被内容挤成 0 高度
     Box(Modifier.fillMaxSize()) {
@@ -126,6 +184,24 @@ fun DesignStudioListScreen(
                 onBack = onBack,
                 actions = {
                     RoundIconButton(Icons.Outlined.Refresh, onReload, size = 34.dp, iconSize = 15.dp)
+                    Spacer(Modifier.width(8.dp))
+                    if (state.importing) {
+                        Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                Modifier.size(15.dp),
+                                strokeWidth = 1.6.dp,
+                                color = V2Colors.cyan700,
+                            )
+                        }
+                    } else {
+                        RoundIconButton(
+                            Icons.Outlined.FileUpload,
+                            onClick = { importPicker.launch(arrayOf("*/*")) },
+                            size = 34.dp,
+                            iconSize = 16.dp,
+                            contentDescription = "导入设计稿",
+                        )
+                    }
                     Spacer(Modifier.width(8.dp))
                     RoundIconButton(
                         Icons.Outlined.Add,
@@ -176,9 +252,17 @@ fun DesignStudioListScreen(
         actionTarget?.let { target ->
             DesignActionsSheet(
                 summary = target,
+                exporting = state.exportingId == target.id,
                 onRename = {
                     actionTarget = null
                     renameTarget = target
+                },
+                onExport = {
+                    onExport(target.id) { bytes ->
+                        val fileName = defaultSvgName(target.name)
+                        exportPayload = fileName to bytes
+                        savePicker.launch(fileName)
+                    }
                 },
                 onDelete = {
                     actionTarget = null
@@ -217,15 +301,17 @@ fun DesignStudioListScreen(
     }
 }
 
-/** 长按设计卡打开的操作面板：重命名 / 删除。 */
+/** 长按设计卡打开的操作面板：重命名 / 导出 SVG / 删除。 */
 @Composable
 private fun DesignActionsSheet(
     summary: top.qiuli55.flux.mobile.data.DesignSummary,
+    exporting: Boolean,
     onRename: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .42f) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .52f) {
         SheetHeader(summary.name, "长按设计卡可再次打开这个面板", onClose = onDismiss)
         Column(Modifier.padding(horizontal = 20.dp)) {
             DesignMenuRow(
@@ -233,6 +319,13 @@ private fun DesignActionsSheet(
                 title = "重命名",
                 subtitle = "只改名称，画板内容不变",
                 onClick = onRename,
+            )
+            Spacer(Modifier.height(8.dp))
+            DesignMenuRow(
+                icon = Icons.Outlined.FileDownload,
+                title = if (exporting) "正在导出 SVG…" else "导出 SVG",
+                subtitle = "全部画板合成一张，可直接拖进 Figma / Sketch",
+                onClick = { if (!exporting) onExport() },
             )
             Spacer(Modifier.height(8.dp))
             DesignMenuRow(
@@ -247,6 +340,31 @@ private fun DesignActionsSheet(
             Spacer(Modifier.height(20.dp))
         }
     }
+}
+
+/** 从 SAF Uri 读文件名与大小；取不到就给兜底值，服务端仍按扩展名判类型。 */
+private fun designFileMeta(context: Context, uri: Uri): Pair<String, Long> {
+    var name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "import"
+    var size = -1L
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) {
+                    cursor.getString(nameIndex)?.takeIf { it.isNotBlank() }?.let { name = it }
+                }
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+            }
+        }
+    }
+    return name to size
+}
+
+/** 「另存为」的默认文件名：去掉路径分隔符等非法字符，空名回落到 design.svg。 */
+private fun defaultSvgName(raw: String): String {
+    val clean = raw.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "-").trim('-').take(60)
+    return (clean.ifBlank { "design" }) + ".svg"
 }
 
 @Composable
@@ -625,6 +743,17 @@ fun DesignCanvasScreen(
     onBack: () -> Unit,
     onSelectNode: (String?) -> Unit,
     onSelectScreen: (Int) -> Unit,
+    onToggleMultiSelect: () -> Unit,
+    onSetAiScope: (String) -> Unit,
+    onUndo: () -> Unit,
+    onBeginDrag: (Set<String>) -> Unit,
+    onDrag: (Set<String>, Float, Float) -> Unit,
+    onMoveLayer: (String, Boolean) -> Unit,
+    onDeleteLayer: (String) -> Unit,
+    onDuplicateLayer: (String) -> Unit,
+    onRenameLayer: (String, String) -> Unit,
+    onLoadHistory: () -> Unit,
+    onRevert: (Int) -> Unit,
     onSave: () -> Unit,
     onWebPreview: () -> Unit,
     onSetText: (String) -> Unit,
@@ -646,6 +775,7 @@ fun DesignCanvasScreen(
     var editOpen by remember { mutableStateOf(false) }
     var aiOpen by remember { mutableStateOf(false) }
     var layersOpen by remember { mutableStateOf(false) }
+    var historyOpen by remember { mutableStateOf(false) }
     // 演示预览：干净全屏、可点按钮切屏 / 拖滑杆 / 点开关，不含编辑网格与选中框
     var demoOpen by remember(document?.id) { mutableStateOf(false) }
     var demoIndex by remember(document?.id, state.screenIndex) { mutableIntStateOf(state.screenIndex) }
@@ -663,6 +793,19 @@ fun DesignCanvasScreen(
                 onBack = onBack,
                 actions = {
                     if (document != null) {
+                        RoundIconButton(
+                            Icons.Outlined.History,
+                            onClick = {
+                                onLoadHistory()
+                                historyOpen = true
+                            },
+                            size = 34.dp,
+                            iconSize = 15.dp,
+                            background = V2Colors.surface(.55f),
+                            tint = V2Colors.ink(.55f),
+                            contentDescription = "历史版本",
+                        )
+                        Spacer(Modifier.width(8.dp))
                         if (state.previewLoading) {
                             Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(
@@ -761,36 +904,110 @@ fun DesignCanvasScreen(
                 DesignFlash(state.error ?: state.notice, state.error != null, onDismissMessages)
 
                 Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // 手势回调与数据都用 rememberUpdatedState 取最新值：画布自绘不重组节点，
+                    // 拖动过程中 document 每帧都在变，闭包里必须读到新节点。
+                    val latestScreen = rememberUpdatedState(screen)
+                    val latestSelection = rememberUpdatedState(state.selectedNodeIds)
+                    val latestMulti = rememberUpdatedState(state.multiSelect)
+                    val latestSelect = rememberUpdatedState(onSelectNode)
+                    val latestBeginDrag = rememberUpdatedState(onBeginDrag)
+                    val latestDrag = rememberUpdatedState(onDrag)
+                    val haptics = LocalV2Haptics.current
+
                     Canvas(
                         Modifier
                             .fillMaxSize()
                             .onSizeChanged { viewSize = it.toSize() }
                             .pointerInput(document.id, state.screenIndex) {
-                                detectTapGestures { position ->
-                                    val scale = min(
-                                        viewSize.width / screen.w,
-                                        viewSize.height / screen.h,
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    val drawScreen = latestScreen.value
+                                    val view = viewSize
+                                    val slop = viewConfiguration.touchSlop
+
+                                    fun currentScale(): Float = min(
+                                        view.width / drawScreen.w,
+                                        view.height / drawScreen.h,
                                     ) * .92f * zoom
-                                    val origin = Offset(
-                                        (viewSize.width - screen.w * scale) / 2f + pan.x,
-                                        (viewSize.height - screen.h * scale) / 2f + pan.y,
+
+                                    fun currentOrigin(scale: Float): Offset = Offset(
+                                        (view.width - drawScreen.w * scale) / 2f + pan.x,
+                                        (view.height - drawScreen.h * scale) / 2f + pan.y,
                                     )
-                                    val point = Offset(
-                                        (position.x - origin.x) / scale,
-                                        (position.y - origin.y) / scale,
+
+                                    val scaleAtDown = currentScale()
+                                    val originAtDown = currentOrigin(scaleAtDown)
+                                    val hit = hitTestNode(
+                                        drawScreen.nodes,
+                                        Offset(
+                                            (down.position.x - originAtDown.x) / scaleAtDown,
+                                            (down.position.y - originAtDown.y) / scaleAtDown,
+                                        ),
+                                        Offset.Zero,
+                                        Float.MAX_VALUE,
                                     )
-                                    val hit = hitTestNode(screen.nodes, point, Offset.Zero, Float.MAX_VALUE)
-                                    onSelectNode(hit?.id)
-                                }
-                            }
-                            .pointerInput(document.id, state.screenIndex) {
-                                detectTransformGestures { centroid, panChange, zoomChange, _ ->
-                                    val next = (zoom * zoomChange).coerceIn(.6f, 4f)
-                                    val ratio = next / zoom
-                                    pan = (pan + centroid - Offset(viewSize.width / 2f, viewSize.height / 2f)) * ratio -
-                                        (centroid - Offset(viewSize.width / 2f, viewSize.height / 2f)) +
-                                        panChange
-                                    zoom = next
+
+                                    var mode = 0 // 0 未定；1 拖图层；2 平移画布；3 双指缩放
+                                    var dragIds: Set<String> = emptySet()
+                                    var lastX = down.position.x
+                                    var lastY = down.position.y
+                                    var multiTouch = false
+
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        if (pressed.isEmpty()) break
+
+                                        if (pressed.size > 1) {
+                                            // 双指：缩放 + 平移，按双指中点做锚点
+                                            multiTouch = true
+                                            mode = 3
+                                            val next = (zoom * event.calculateZoom()).coerceIn(.6f, 4f)
+                                            val ratio = next / zoom
+                                            val centroid = event.calculateCentroid(useCurrent = true)
+                                            val center = Offset(view.width / 2f, view.height / 2f)
+                                            pan = (pan + centroid - center) * ratio - (centroid - center) +
+                                                event.calculatePan()
+                                            zoom = next
+                                            pressed.forEach { it.consume() }
+                                            continue
+                                        }
+
+                                        val change = pressed.first()
+                                        val dx = change.position.x - lastX
+                                        val dy = change.position.y - lastY
+                                        lastX = change.position.x
+                                        lastY = change.position.y
+
+                                        if (mode == 0) {
+                                            val distance = hypot(
+                                                change.position.x - down.position.x,
+                                                change.position.y - down.position.y,
+                                            )
+                                            if (distance <= slop) continue
+                                            // 只有按住「已选中」的图层才移动图层，其余一律平移画布：
+                                            // 组件常铺满画板，若按下就拖容易误移动，想平移画布却动了组件。
+                                            val selected = latestSelection.value
+                                            val dragHit = hit != null && hit.id in selected
+                                            mode = if (dragHit) 1 else 2
+                                            if (mode == 1) {
+                                                dragIds = if (latestMulti.value) selected else setOfNotNull(hit?.id)
+                                                latestBeginDrag.value(dragIds)
+                                                haptics?.play(V2HapticLevel.TICK)
+                                            }
+                                        }
+
+                                        if (mode == 1) {
+                                            val scale = currentScale()
+                                            if (scale > 0f) latestDrag.value(dragIds, dx / scale, dy / scale)
+                                        } else if (!multiTouch) {
+                                            pan += Offset(dx, dy)
+                                        }
+                                        change.consume()
+                                    }
+
+                                    // 没拖动 = 点按：命中就选中，空白处取消选择
+                                    if (mode == 0) latestSelect.value(hit?.id)
                                 }
                             },
                     ) {
@@ -813,14 +1030,15 @@ fun DesignCanvasScreen(
                                     measurer = textMeasurer,
                                     density = density.density,
                                 )
-                                state.selectedNode?.let { node ->
-                                    drawNodeSelection(screen.nodes, node.id)
+                                state.selectedNodes.forEach { selected ->
+                                    drawNodeSelection(screen.nodes, selected.id)
                                 }
                             }
                         }
                     }
 
-                    state.selectedNode?.let { selected ->
+                    val selectedNodes = state.selectedNodes
+                    if (selectedNodes.isNotEmpty()) {
                         Row(
                             Modifier
                                 .align(Alignment.BottomCenter)
@@ -832,7 +1050,11 @@ fun DesignCanvasScreen(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Label(
-                                    selected.name.ifBlank { selected.type },
+                                    if (selectedNodes.size > 1) {
+                                        "已选 ${selectedNodes.size} 个图层"
+                                    } else {
+                                        selectedNodes.first().name.ifBlank { selectedNodes.first().type }
+                                    },
                                     12f,
                                     V2Colors.ink(.88f),
                                     FontWeight.Medium,
@@ -840,17 +1062,45 @@ fun DesignCanvasScreen(
                                 )
                                 Spacer(Modifier.height(2.dp))
                                 Label(
-                                    "${selected.type} · 点画布空白处取消选择",
+                                    when {
+                                        state.multiSelect -> "多选模式 · 点画布可叠加或取消"
+                                        selectedNodes.size > 1 -> "多选 · 拖动已选图层可整体移动"
+                                        else -> "${selectedNodes.first().type} · 拖动已选图层移动，拖空白平移"
+                                    },
                                     9.5f,
                                     V2Colors.ink(.36f),
                                     maxLines = 1,
                                 )
                             }
+                            DockButton(
+                                if (state.multiSelect) "多选中" else "多选",
+                                Icons.Outlined.Checklist,
+                            ) { onToggleMultiSelect() }
+                            Spacer(Modifier.width(8.dp))
                             DockButton("图层", Icons.Outlined.Layers) { layersOpen = true }
+                            if (selectedNodes.size == 1) {
+                                Spacer(Modifier.width(8.dp))
+                                DockButton("编辑", Icons.Outlined.Tune) { editOpen = true }
+                            }
                             Spacer(Modifier.width(8.dp))
-                            DockButton("编辑", Icons.Outlined.Tune) { editOpen = true }
-                            Spacer(Modifier.width(8.dp))
-                            DockButton("AI 改", Icons.Outlined.AutoAwesome, accent = true) { aiOpen = true }
+                            DockButton("AI 改", Icons.Outlined.AutoAwesome, accent = true) {
+                                onSetAiScope("selection")
+                                aiOpen = true
+                            }
+                        }
+                    } else {
+                        // 什么都没选时也能直接对整屏下指令（加卡片、调整体层次等）
+                        Row(
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 16.dp, vertical = 14.dp)
+                                .shadowedDock()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            DockButton("整屏 AI", Icons.Outlined.AutoAwesome, accent = true) {
+                                onSetAiScope("screen")
+                                aiOpen = true
+                            }
                         }
                     }
 
@@ -858,6 +1108,19 @@ fun DesignCanvasScreen(
                         Modifier.align(Alignment.TopEnd).padding(14.dp),
                         horizontalAlignment = Alignment.End,
                     ) {
+                        // 撤销放在画布右上角：手指正好在画布附近，改错了能立刻退回
+                        if (state.canUndo) {
+                            RoundIconButton(
+                                Icons.Outlined.Undo,
+                                onClick = onUndo,
+                                size = 30.dp,
+                                iconSize = 13.dp,
+                                background = V2Colors.accent.copy(alpha = .10f),
+                                tint = V2Colors.cyan800,
+                                contentDescription = "撤销上一步",
+                            )
+                            Spacer(Modifier.height(6.dp))
+                        }
                         Label("${(zoom * 100).roundToInt()}%", 9.5f, V2Colors.ink(.30f), mono = true)
                         Spacer(Modifier.height(6.dp))
                         RoundIconButton(
@@ -890,23 +1153,41 @@ fun DesignCanvasScreen(
                 onSetOpacity = onSetOpacity,
             )
         }
-        if (aiOpen && node != null) {
+        if (aiOpen && screen != null) {
             DesignAiSheet(
-                node = node,
+                scope = state.aiScope,
+                selectedCount = state.selectedNodes.size,
+                selectedName = state.selectedNode?.let { it.name.ifBlank { it.type } },
+                screenName = screen.name,
+                layerCount = screen.nodes.size,
                 asking = state.asking,
                 reply = state.aiReply,
+                canUndo = state.canUndo,
+                onScope = onSetAiScope,
+                onUndo = onUndo,
                 onDismiss = { aiOpen = false },
                 onAsk = onAskAi,
+            )
+        }
+        if (historyOpen && document != null) {
+            DesignHistorySheet(
+                revisions = state.revisions,
+                currentVersion = document.version,
+                loading = state.revisionsLoading,
+                restoringVersion = state.restoringVersion,
+                onRevert = onRevert,
+                onDismiss = { historyOpen = false },
             )
         }
         if (layersOpen && screen != null) {
             LayerSheet(
                 nodes = screen.nodes,
                 selectedId = state.selectedNodeId,
-                onSelect = {
-                    onSelectNode(it)
-                    layersOpen = false
-                },
+                onSelect = { onSelectNode(it) },
+                onMove = onMoveLayer,
+                onDelete = onDeleteLayer,
+                onDuplicate = onDuplicateLayer,
+                onRename = onRenameLayer,
                 onDismiss = { layersOpen = false },
             )
         }
@@ -1468,19 +1749,37 @@ private fun DesignFieldTitle(text: String) {
 
 @Composable
 private fun DesignAiSheet(
-    node: DesignNode,
+    scope: String,
+    selectedCount: Int,
+    selectedName: String?,
+    screenName: String,
+    layerCount: Int,
     asking: Boolean,
     reply: String?,
+    canUndo: Boolean,
+    onScope: (String) -> Unit,
+    onUndo: () -> Unit,
     onDismiss: () -> Unit,
     onAsk: (String) -> Unit,
 ) {
-    var prompt by remember(node.id) { mutableStateOf("") }
-    val suggestions = listOf("圆角再大一点", "主色改亮一点", "文字再大一号", "整体更通透")
+    var prompt by remember { mutableStateOf("") }
+    val screenScope = scope == "screen"
+    val suggestions = if (screenScope) {
+        listOf("整体更有层次", "加一张价格卡", "主按钮更醒目", "间距再松一点")
+    } else {
+        listOf("圆角再大一点", "主色改亮一点", "文字再大一号", "整体更通透")
+    }
+    val subtitle = when {
+        screenScope -> "作用于「$screenName」整屏（$layerCount 个顶层图层），可新增、删除、调层序"
+        selectedCount > 1 -> "作用于已选的 $selectedCount 个图层"
+        selectedCount == 1 -> "只作用于「${selectedName ?: "当前组件"}」，不会动其他图层"
+        else -> "先选组件，或切到整屏"
+    }
 
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .72f) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .78f) {
         SheetHeader(
-            title = "AI 改这个组件",
-            subtitle = "只作用于「${node.name.ifBlank { node.type }}」，不会动其他图层",
+            title = "让 AI 改画布",
+            subtitle = subtitle,
             onClose = onDismiss,
         )
         Column(
@@ -1489,6 +1788,21 @@ private fun DesignAiSheet(
                 .padding(horizontal = 20.dp)
                 .imePadding(),
         ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignScopeChip(
+                    text = if (selectedCount > 0) "选中 $selectedCount" else "选中组件",
+                    active = !screenScope,
+                    enabled = selectedCount > 0,
+                    onClick = { onScope("selection") },
+                )
+                DesignScopeChip(
+                    text = "整屏",
+                    active = screenScope,
+                    enabled = true,
+                    onClick = { onScope("screen") },
+                )
+            }
+            Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 suggestions.take(2).forEach { item ->
                     DesignSuggestion(item) { prompt = item }
@@ -1503,7 +1817,11 @@ private fun DesignAiSheet(
             Spacer(Modifier.height(14.dp))
             DesignInput(
                 value = prompt,
-                placeholder = "描述要怎么改，例如「按钮再高一点」",
+                placeholder = if (screenScope) {
+                    "例如：在内容卡下面加一张价格卡"
+                } else {
+                    "描述要怎么改，例如「按钮再高一点」"
+                },
                 onValueChange = { prompt = it },
             )
             Spacer(Modifier.height(12.dp))
@@ -1511,12 +1829,17 @@ private fun DesignAiSheet(
                 DesignAction(
                     if (asking) "正在思考…" else "让 AI 修改",
                     filled = true,
-                    enabled = !asking && prompt.isNotBlank(),
+                    enabled = !asking && prompt.isNotBlank() && (screenScope || selectedCount > 0),
                     onClick = { onAsk(prompt) },
                 )
                 Spacer(Modifier.width(12.dp))
                 if (asking) {
-                    Label("只返回该组件的属性补丁", 9.5f, V2Colors.ink(.35f), maxLines = 1)
+                    Label(
+                        if (screenScope) "正在按整屏理解…" else "只返回选中图层的修改",
+                        9.5f,
+                        V2Colors.ink(.35f),
+                        maxLines = 1,
+                    )
                 }
             }
             if (reply != null) {
@@ -1534,9 +1857,140 @@ private fun DesignAiSheet(
                     Label(reply, 11f, V2Colors.ink(.72f), modifier = Modifier.weight(1f))
                 }
             }
+            if (canUndo) {
+                Spacer(Modifier.height(12.dp))
+                DesignAction(
+                    "撤销上一步修改",
+                    filled = false,
+                    enabled = !asking,
+                    onClick = onUndo,
+                )
+            }
             Spacer(Modifier.height(18.dp))
         }
     }
+}
+
+@Composable
+private fun DesignScopeChip(
+    text: String,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (active) V2Colors.accent.copy(alpha = .14f) else V2Colors.surface(.72f))
+            .border(
+                1.dp,
+                if (active) V2Colors.accent.copy(alpha = .38f) else V2Colors.lineSoft,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        Label(
+            text,
+            10.5f,
+            when {
+                !enabled -> V2Colors.ink(.26f)
+                active -> V2Colors.cyan800
+                else -> V2Colors.ink(.58f)
+            },
+            if (active) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+        )
+    }
+}
+
+// ------------------------------------------------------------------ 历史版本
+
+@Composable
+private fun DesignHistorySheet(
+    revisions: List<DesignRevision>,
+    currentVersion: Int,
+    loading: Boolean,
+    restoringVersion: Int?,
+    onRevert: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .72f) {
+        SheetHeader(
+            title = "历史版本",
+            subtitle = "当前 v$currentVersion · 每次保存前自动留档，保留最近 20 版",
+            onClose = onDismiss,
+        )
+        when {
+            loading && revisions.isEmpty() -> Box(
+                Modifier.fillMaxWidth().height(120.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 1.8.dp,
+                    color = V2Colors.cyan700,
+                )
+            }
+            revisions.isEmpty() -> Box(
+                Modifier.fillMaxWidth().padding(vertical = 34.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Label("还没有历史版本，保存一次后就会留档", 10.5f, V2Colors.ink(.42f))
+            }
+            else -> LazyColumn(Modifier.fillMaxWidth()) {
+                items(revisions, key = { it.version }) { item ->
+                    val restoring = restoringVersion == item.version
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Label(
+                                "v${item.version} · ${item.layerCount} 图层",
+                                12f,
+                                V2Colors.ink(.82f),
+                                FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Label(
+                                "${item.screenCount} 画板 · ${formatRevisionTime(item.updatedAt)}",
+                                9.5f,
+                                V2Colors.ink(.36f),
+                                maxLines = 1,
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        DesignAction(
+                            if (restoring) "恢复中…" else "恢复",
+                            filled = false,
+                            enabled = restoringVersion == null && !loading,
+                            onClick = { onRevert(item.version) },
+                        )
+                    }
+                }
+            }
+        }
+        if (loading && revisions.isNotEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(15.dp),
+                    strokeWidth = 1.6.dp,
+                    color = V2Colors.cyan700,
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+/** 把 ISO 时间压成「10-27 18:20」；格式不符就原样截断，不抛异常。 */
+private fun formatRevisionTime(raw: String): String {
+    if (raw.length < 16) return raw.ifBlank { "时间未知" }
+    return "${raw.substring(5, 10)} ${raw.substring(11, 16)}"
 }
 
 @Composable
@@ -1560,11 +2014,106 @@ private fun LayerSheet(
     nodes: List<DesignNode>,
     selectedId: String?,
     onSelect: (String) -> Unit,
+    onMove: (String, Boolean) -> Unit,
+    onDelete: (String) -> Unit,
+    onDuplicate: (String) -> Unit,
+    onRename: (String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val rows = remember(nodes) { flattenLayers(nodes) }
+    val selectedRow = rows.firstOrNull { it.node.id == selectedId }
+    var renamingId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    val targetId = renamingId
+
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .72f) {
-        SheetHeader("图层", "${rows.size} 个可选图层", onClose = onDismiss)
+        SheetHeader("图层", "${rows.size} 个图层 · 越靠上越顶层", onClose = onDismiss)
+
+        when {
+            targetId != null -> Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                DesignFieldTitle("重命名图层")
+                DesignInput(
+                    value = renameText,
+                    placeholder = "图层名称",
+                    onValueChange = { renameText = it },
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignAction("取消", filled = false) { renamingId = null }
+                    DesignAction(
+                        "确定",
+                        filled = true,
+                        enabled = renameText.isNotBlank(),
+                    ) {
+                        onRename(targetId, renameText)
+                        renamingId = null
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+
+            selectedRow != null -> {
+                val node = selectedRow.node
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Label(
+                        node.name.ifBlank { node.type },
+                        11f,
+                        V2Colors.ink(.55f),
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                    RoundIconButton(
+                        Icons.Outlined.KeyboardArrowUp,
+                        { onMove(node.id, true) },
+                        size = 30.dp,
+                        iconSize = 15.dp,
+                        contentDescription = "上移一层",
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    RoundIconButton(
+                        Icons.Outlined.KeyboardArrowDown,
+                        { onMove(node.id, false) },
+                        size = 30.dp,
+                        iconSize = 15.dp,
+                        contentDescription = "下移一层",
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    RoundIconButton(
+                        Icons.Outlined.ContentCopy,
+                        { onDuplicate(node.id) },
+                        size = 30.dp,
+                        iconSize = 14.dp,
+                        contentDescription = "复制图层",
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    RoundIconButton(
+                        Icons.Outlined.Edit,
+                        {
+                            renameText = node.name
+                            renamingId = node.id
+                        },
+                        size = 30.dp,
+                        iconSize = 14.dp,
+                        contentDescription = "重命名",
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    RoundIconButton(
+                        Icons.Outlined.Delete,
+                        { onDelete(node.id) },
+                        size = 30.dp,
+                        iconSize = 14.dp,
+                        background = V2Colors.rose.copy(alpha = .10f),
+                        tint = V2Colors.rose700,
+                        contentDescription = "删除图层",
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+
         LazyColumn(Modifier.fillMaxWidth()) {
             items(rows, key = { it.node.id }) { row ->
                 val active = row.node.id == selectedId
@@ -1616,8 +2165,9 @@ private fun LayerSheet(
 
 private data class LayerRow(val node: DesignNode, val depth: Int)
 
+/** 顶层优先展示：nodes 列表后写的在上层，所以反向展开。 */
 private fun flattenLayers(nodes: List<DesignNode>, depth: Int = 0): List<LayerRow> =
-    nodes.flatMap { node ->
+    nodes.asReversed().flatMap { node ->
         listOf(LayerRow(node, depth)) + flattenLayers(node.children, depth + 1)
     }
 

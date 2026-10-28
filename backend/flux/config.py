@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     dsh_workspace: str = "/opt/flux/dsh-ws"
     # 手机端聊天附件（用户上传的文件）：按上传 id 一目录存放，Agent 按绝对路径直接读
     uploads_dir: str = "/opt/flux/uploads"
+    # AI 下发给用户的文件：按 delivery id 一目录存放，手机端按卡片里的 id/序号取文件
+    deliveries_dir: str = "/opt/flux/deliveries"
     # DSH provider 路由
     dsh_provider: str = "deepseek-official"
     # DSH 模型 id

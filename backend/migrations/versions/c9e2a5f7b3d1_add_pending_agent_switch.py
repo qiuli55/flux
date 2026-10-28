@@ -30,9 +30,7 @@ def upgrade() -> None:
     # SQLite 不支持直接改约束，batch 模式会重建表；索引与已有数据由反射保留
     with op.batch_alter_table("task_runtime_sessions", recreate="always") as batch:
         batch.add_column(sa.Column("agent_id", sa.Uuid(), nullable=True))
-        batch.drop_constraint(
-            "uq_task_runtime_sessions_task_runtime", type_="unique"
-        )
+        batch.drop_constraint("uq_task_runtime_sessions_task_runtime", type_="unique")
         batch.create_unique_constraint(
             "uq_task_runtime_sessions_task_agent_runtime",
             ["task_id", "agent_id", "runtime_id"],
@@ -42,9 +40,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     with op.batch_alter_table("task_runtime_sessions", recreate="always") as batch:
-        batch.drop_constraint(
-            "uq_task_runtime_sessions_task_agent_runtime", type_="unique"
-        )
+        batch.drop_constraint("uq_task_runtime_sessions_task_agent_runtime", type_="unique")
         batch.create_unique_constraint(
             "uq_task_runtime_sessions_task_runtime", ["task_id", "runtime_id"]
         )

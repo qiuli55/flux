@@ -173,9 +173,7 @@ class TaskAssistant:
         except Exception:  # noqa: BLE001 - 已经开始推增量时不能悄悄换成另一条回复
             if raw:
                 raise
-            logger.warning(
-                "助手流式调用失败，回退非流式 provider=%s", provider_name, exc_info=True
-            )
+            logger.warning("助手流式调用失败，回退非流式 provider=%s", provider_name, exc_info=True)
             result = await self._router.chat(messages)
             raw = result.content
             provider_name, model_name = str(result.provider), result.model
@@ -232,7 +230,16 @@ def visible_reply_prefix(raw: str) -> str:
 
     decoded: list[str] = []
     index = quote + 1
-    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
+    escapes = {
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+    }
     while index < len(raw):
         char = raw[index]
         if char == '"':

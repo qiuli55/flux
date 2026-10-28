@@ -1,11 +1,11 @@
-﻿using Avalonia;
+using Avalonia;
 using System;
 
 namespace Flux.Desktop;
 
 sealed class Program
 {
-    // Initialization code. Don't use any Avalonia, third-party APIs or any
+    // Initialization code. Don't use any Avalonia, third-party APIs or
     // SynchronizationContext-reliant code before AppMain is called: things aren't initialized
     // yet and stuff might break.
     [STAThread]

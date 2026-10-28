@@ -482,9 +482,7 @@ def test_continue_reopens_a_finished_conversation(settings: Settings, tmp_path: 
         assert _task(client, task["id"])["run_id"] == data["task"]["run_id"]
 
 
-def test_continue_rejects_a_conversation_still_running(
-    settings: Settings, tmp_path: Path
-) -> None:
+def test_continue_rejects_a_conversation_still_running(settings: Settings, tmp_path: Path) -> None:
     """还在执行的对话不需要续跑：直接追加消息即可，续跑接口明确 409。"""
     with _solo(settings, tmp_path) as (client, factory):
         task = _create(client)

@@ -137,9 +137,7 @@ class LlmStreamTap:
                 pump = asyncio.create_task(_pump_lines())
                 while True:
                     try:
-                        line = await asyncio.wait_for(
-                            lines.get(), timeout=FLUSH_INTERVAL_SECONDS
-                        )
+                        line = await asyncio.wait_for(lines.get(), timeout=FLUSH_INTERVAL_SECONDS)
                     except asyncio.TimeoutError:
                         # 模型停顿：先把手上的字符推出去，观感上不出现「卡住半个字」
                         await buffer.flush()
@@ -294,8 +292,10 @@ def is_agent_request(payload: dict[str, Any]) -> bool:
         if not isinstance(message, dict) or message.get("role") != "system":
             continue
         content = message.get("content")
-        text = content if isinstance(content, str) else json.dumps(
-            content, ensure_ascii=False, default=str
+        text = (
+            content
+            if isinstance(content, str)
+            else json.dumps(content, ensure_ascii=False, default=str)
         )
         if "DeepSeek Harness" in text:
             return True
@@ -304,17 +304,13 @@ def is_agent_request(payload: dict[str, Any]) -> bool:
 
 def filter_request_headers(headers: Any) -> dict[str, str]:
     return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in _DROP_REQUEST_HEADERS
+        key: value for key, value in headers.items() if key.lower() not in _DROP_REQUEST_HEADERS
     }
 
 
 def filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
     return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in _DROP_RESPONSE_HEADERS
+        key: value for key, value in headers.items() if key.lower() not in _DROP_RESPONSE_HEADERS
     }
 
 

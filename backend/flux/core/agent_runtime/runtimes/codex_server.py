@@ -303,9 +303,7 @@ class CodexAppServerSession:
             return False
 
     # --- 写 stdin ---
-    async def _request(
-        self, method: str, params: dict[str, Any], *, timeout: float
-    ) -> Any:
+    async def _request(self, method: str, params: dict[str, Any], *, timeout: float) -> Any:
         self._next_id += 1
         request_id = self._next_id
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
@@ -363,9 +361,7 @@ class CodexAppServerSession:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"codex app-server 本轮 {self._idle_timeout:g} 秒无任何输出"
-                )
+                raise TimeoutError(f"codex app-server 本轮 {self._idle_timeout:g} 秒无任何输出")
             wait = min(FLUSH_INTERVAL_SECONDS, remaining)
             if retry_started is not None and not texts and not self._pump.has_thinking:
                 # 重试窗口也要能被等超时唤醒检查，否则无通知时永远等不到失败
@@ -474,9 +470,7 @@ class CodexAppServerSession:
             elif method == "error":
                 error = params.get("error")
                 message_text = (
-                    str(error.get("message") or "")
-                    if isinstance(error, dict)
-                    else str(error or "")
+                    str(error.get("message") or "") if isinstance(error, dict) else str(error or "")
                 )
                 if params.get("willRetry"):
                     retry_count += 1

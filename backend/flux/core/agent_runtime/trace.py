@@ -325,9 +325,7 @@ class RunTraceRecorder:
         return len(self._items.get(run_id, ()))
 
 
-def _merge_tool(
-    item: dict[str, Any], *, name: str, detail: str, output: str, status: str
-) -> None:
+def _merge_tool(item: dict[str, Any], *, name: str, detail: str, output: str, status: str) -> None:
     """把一次工具调用的最新字段合并进轨迹项（后到的完成事件补齐输出与状态）。"""
     if name:
         item["name"] = name

@@ -26,7 +26,5 @@ async def create_upload(
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     """收一个附件：返回 upload_id 与给 Agent 读的绝对路径。"""
-    uploaded = await save_upload(
-        container.settings, name=name, mime=mime, chunks=request.stream()
-    )
+    uploaded = await save_upload(container.settings, name=name, mime=mime, chunks=request.stream())
     return ok(uploaded.to_dict())

@@ -36,9 +36,7 @@ def _seed(
     role: str = "user",
     kind: str = "text",
 ) -> None:
-    drafts = [
-        MessageDraft(role=role, kind=kind, content="上" * chars) for _ in range(count)
-    ]
+    drafts = [MessageDraft(role=role, kind=kind, content="上" * chars) for _ in range(count)]
     asyncio.run(container.task_repo.add_messages(uuid.UUID(task_id), drafts))
 
 
@@ -108,9 +106,7 @@ def test_handoff_returns_summary_for_existing_conversation(client, container):
 def test_handoff_rejects_running_conversation(client, container):
     task = _create_task(client)
     _seed(container, task["id"], 2)
-    asyncio.run(
-        container.task_repo.set_status(uuid.UUID(task["id"]), TaskStatus.RUNNING)
-    )
+    asyncio.run(container.task_repo.set_status(uuid.UUID(task["id"]), TaskStatus.RUNNING))
 
     response = client.post(f"{PREFIX}/tasks/{task['id']}/handoff")
     assert response.status_code == 409, response.text
@@ -163,9 +159,7 @@ def test_latest_summary_returns_most_recent(container, client):
     _seed(container, task["id"], 1, role="assistant", kind="summary", chars=3)
     _seed(container, task["id"], 1, role="assistant", kind="summary", chars=5)
 
-    message = asyncio.run(
-        container.task_repo.latest_message(uuid.UUID(task["id"]), kind="summary")
-    )
+    message = asyncio.run(container.task_repo.latest_message(uuid.UUID(task["id"]), kind="summary"))
     assert message is not None
     assert len(message.content) == 5
 

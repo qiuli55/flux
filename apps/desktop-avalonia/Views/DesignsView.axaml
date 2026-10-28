@@ -1,0 +1,200 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:views="using:Flux.Desktop.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1320" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.DesignsView"
+             x:DataType="vm:DesignsViewModel">
+
+    <UserControl.Resources>
+        <!-- 左侧设计稿卡片 -->
+        <DataTemplate x:Key="DesignCardTemplate" x:DataType="vm:DesignCard">
+            <Button Classes="kb-card design-card" Padding="10" Margin="0,0,0,8"
+                    Classes.active="{Binding IsSelected}"
+                    Command="{Binding OpenCommand}"
+                    CommandParameter="{Binding}">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                    <Border Grid.Column="0" Width="52" Height="72" CornerRadius="6"
+                            Background="#FF07090A" ClipToBounds="True">
+                        <views:DesignCanvas Width="52" Height="72" IsThumbnail="True"
+                                            Preview="{Binding Preview}" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding MetaText}" FontSize="10.5"
+                                   Foreground="{DynamicResource TnText4}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding UpdatedText}" Classes="mono" FontSize="10"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                </Grid>
+            </Button>
+        </DataTemplate>
+
+        <!-- 画板页签 -->
+        <DataTemplate x:Key="ScreenTabTemplate" x:DataType="vm:DesignScreenTab">
+            <Button Classes="seg" Classes.active="{Binding IsActive}" Margin="0,0,2,0"
+                    Content="{Binding Label}"
+                    Command="{Binding SelectCommand}"
+                    CommandParameter="{Binding}" />
+        </DataTemplate>
+
+        <!-- 历史版本行 -->
+        <DataTemplate x:Key="RevisionTemplate" x:DataType="vm:DesignRevisionView">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8" Margin="0,5,0,0">
+                <TextBlock Grid.Column="0" Text="{Binding Label}" Classes="mono" FontSize="11"
+                           VerticalAlignment="Center" Foreground="{DynamicResource TnText2}" />
+                <StackPanel Grid.Column="1" Spacing="1">
+                    <TextBlock Text="{Binding MetaText}" FontSize="10.5"
+                               Foreground="{DynamicResource TnText4}" />
+                    <TextBlock Text="{Binding TimeText}" FontSize="10"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+                <Button Grid.Column="2" Classes="mini" Content="恢复" VerticalAlignment="Center"
+                        Command="{Binding RestoreCommand}" CommandParameter="{Binding}" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="Button.design-card.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="BorderBrush" Value="{DynamicResource TnAccentLine}" />
+            <Setter Property="Background" Value="{DynamicResource TnAccentSoft}" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid Margin="24,24,28,24" RowDefinitions="Auto,*">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,14">
+            <StackPanel Grid.Column="0">
+                <TextBlock Classes="page-title" Text="设计" Margin="0,0,0,5" />
+                <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                           Text="打开 Luma 设计稿看整屏效果，用一句话让 AI 改结构，改坏了随时回到历史版本。" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
+                        VerticalAlignment="Bottom">
+                <TextBlock Text="{Binding Hint}" FontSize="11"
+                           Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                <Button Classes="btn subtle" Content="导入"
+                        Click="OnImportClick" IsEnabled="{Binding !IsBusy}" />
+                <Button Classes="btn subtle" Content="导出 SVG"
+                        Click="OnExportClick" IsEnabled="{Binding HasDesign}" />
+                <Button Classes="btn subtle" Content="网页预览"
+                        Command="{Binding PreviewCommand}" IsEnabled="{Binding HasDesign}" />
+                <Button Classes="btn subtle" Content="刷新"
+                        Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" ColumnDefinitions="248,*,300" ColumnSpacing="14">
+
+            <!-- 设计稿列表 -->
+            <Border Grid.Column="0" Classes="card" Padding="10">
+                <Grid RowDefinitions="Auto,*">
+                    <TextBlock Classes="section-title" Text="设计稿" Margin="4,2,0,8" />
+                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding Designs}"
+                                      ItemTemplate="{StaticResource DesignCardTemplate}" />
+                    </ScrollViewer>
+                    <TextBlock Grid.Row="1" Text="还没有设计稿" FontSize="11" Margin="4,8,0,0"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding !HasDesigns}" />
+                </Grid>
+            </Border>
+
+            <!-- 画布 -->
+            <Border Grid.Column="1" Classes="card" Padding="14">
+                <Grid RowDefinitions="Auto,Auto,*">
+                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="3">
+                            <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Meta}" Classes="mono" FontSize="10.5"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="{Binding MetaDetail}" FontSize="10.5"
+                                   Foreground="{DynamicResource TnText4}"
+                                   VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis"
+                                   MaxWidth="260" />
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="1" Margin="0,10,0,10"
+                                  HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding Screens}"
+                                      ItemTemplate="{StaticResource ScreenTabTemplate}"
+                                      IsVisible="{Binding HasScreens}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <Border Grid.Row="2" Background="#FF07090A" CornerRadius="10"
+                            ClipToBounds="True">
+                        <Grid>
+                            <views:DesignCanvas Document="{Binding Document}"
+                                                ScreenIndex="{Binding ActiveScreenIndex}"
+                                                IsVisible="{Binding HasDesign}" />
+                            <StackPanel Spacing="6" HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" IsVisible="{Binding !HasDesign}">
+                                <TextBlock Text="从左侧选一份设计稿" FontSize="12"
+                                           Foreground="{DynamicResource TnText3}"
+                                           HorizontalAlignment="Center" />
+                                <TextBlock Text="也可以点右上角刷新重新拉取列表" FontSize="10.5"
+                                           Foreground="{DynamicResource TnText4}"
+                                           HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- 右栏：AI 与历史 -->
+            <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="14">
+                    <Border Classes="card" Padding="14">
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="section-title" Text="AI 修改" />
+                            <TextBlock FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}"
+                                       Text="针对当前画板整屏改结构：文案、字号、位置、增删节点都可以。" />
+                            <TextBox Classes="compose" MinHeight="68" MaxHeight="140"
+                                     Text="{Binding AiPrompt}"
+                                     Watermark="例如：把标题放大，副标题颜色变浅"
+                                     IsEnabled="{Binding !IsAiBusy}" />
+                            <Button Classes="btn primary" Content="让 AI 改"
+                                    HorizontalAlignment="Stretch"
+                                    Command="{Binding AskCommand}"
+                                    IsEnabled="{Binding !IsAiBusy}" />
+                            <TextBlock Text="{Binding AiState}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnAccent}"
+                                       IsVisible="{Binding AiState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                            <TextBlock Text="{Binding AiReply}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText3}"
+                                       IsVisible="{Binding AiReply, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="card" Padding="14">
+                        <StackPanel Spacing="6">
+                            <TextBlock Classes="section-title" Text="历史版本" />
+                            <TextBlock FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}"
+                                       Text="每次保存都会留一份快照，恢复会生成新版本，不会删掉记录。" />
+                            <ItemsControl ItemsSource="{Binding Revisions}"
+                                          ItemTemplate="{StaticResource RevisionTemplate}" />
+                            <TextBlock Text="还没有历史版本" FontSize="11" Margin="0,6,0,0"
+                                       Foreground="{DynamicResource TnText4}"
+                                       IsVisible="{Binding !HasRevisions}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</UserControl>

@@ -38,6 +38,13 @@
                                     IsVisible="{Binding IsWorkspace}" />
                         </Grid>
                         <Grid>
+                            <Button Classes="set-nav" Classes.active="{Binding IsNetwork}"
+                                    Content="网络" Command="{Binding SelectTabCommand}" CommandParameter="network" />
+                            <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="{DynamicResource TnAccent}"
+                                    IsVisible="{Binding IsNetwork}" />
+                        </Grid>
+                        <Grid>
                             <Button Classes="set-nav" Classes.active="{Binding IsKeys}"
                                     Content="密钥库" Command="{Binding SelectTabCommand}" CommandParameter="keys" />
                             <Border Width="2" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -117,6 +124,53 @@
                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="单一共享 Token（本地单用户）"
                                            Classes="mono" FontSize="12" />
                             </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 网络（内置浏览器代理） -->
+                    <Border Grid.Column="1" Classes="card pad" IsVisible="{Binding IsNetwork}">
+                        <StackPanel Spacing="14">
+                            <StackPanel>
+                                <TextBlock Classes="section-title" Text="内置浏览器代理" />
+                                <TextBlock Text="只影响 Flux 内置浏览器的网络请求；Agent、后端与本机 CLI 走的仍是 Flux 自己的通道。修改后重新进入「浏览器」页生效。"
+                                           FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </StackPanel>
+
+                            <Border HorizontalAlignment="Left" Padding="2" CornerRadius="8"
+                                    Background="{DynamicResource TnBg2}"
+                                    BorderBrush="{DynamicResource TnLine}" BorderThickness="1">
+                                <StackPanel Orientation="Horizontal" Spacing="2">
+                                    <Button Classes="seg" Classes.active="{Binding IsProxySystem}"
+                                            Content="跟随系统" Command="{Binding SetProxyModeCommand}"
+                                            CommandParameter="system" />
+                                    <Button Classes="seg" Classes.active="{Binding IsProxyDirect}"
+                                            Content="直连" Command="{Binding SetProxyModeCommand}"
+                                            CommandParameter="direct" />
+                                    <Button Classes="seg" Classes.active="{Binding IsProxyCustom}"
+                                            Content="自定义" Command="{Binding SetProxyModeCommand}"
+                                            CommandParameter="custom" />
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}"
+                                       Text="跟随系统：使用操作系统当前的代理设置（本机开着 Clash 等工具时通常选这个）。直连：完全不走代理。自定义：手动指定 http 或 socks5 代理。" />
+
+                            <StackPanel Spacing="6" IsVisible="{Binding IsProxyCustom}">
+                                <TextBlock Text="代理地址" FontSize="12" FontWeight="SemiBold" />
+                                <TextBox Classes="input" Text="{Binding ProxyUrl, Mode=TwoWay}"
+                                         Watermark="127.0.0.1:7890 或 socks5://127.0.0.1:7891" />
+                                <TextBlock Text="只支持 http:// 与 socks5://，端口必填。"
+                                           FontSize="11" Foreground="{DynamicResource TnText4}" />
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <Button Classes="btn primary" Content="保存" Command="{Binding SaveProxyCommand}" />
+                                <TextBlock Text="{Binding ProxyStatus}" FontSize="11"
+                                           VerticalAlignment="Center" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TnText4}" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
 
