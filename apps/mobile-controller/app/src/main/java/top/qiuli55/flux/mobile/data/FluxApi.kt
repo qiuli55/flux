@@ -285,6 +285,10 @@ class FluxApi(
     suspend fun setKeyEnabled(keyId: String, enabled: Boolean): ApiKeyEntry =
         patch("api/v1/keys/$keyId", buildJsonObject { put("enabled", enabled) })
 
+    /** 保存后用它真实请求一次该 key 的模型端点，确认 Base URL / Key / 模型 id 可用。 */
+    suspend fun probeKey(keyId: String): KeyProbeResult =
+        post("api/v1/keys/$keyId/probe", buildJsonObject { })
+
     // ---------------------------------------------------------- 账号级用户记忆
 
     suspend fun listUserMemories(): List<UserMemoryEntry> =

@@ -27,11 +27,13 @@ import top.qiuli55.flux.mobile.data.DeviceInfo
 import top.qiuli55.flux.mobile.data.FluxApi
 import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
+import top.qiuli55.flux.mobile.data.KeyProbeResult
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
 import top.qiuli55.flux.mobile.ui.FluxViewModel
 import top.qiuli55.flux.mobile.ui.tasks.readPickedAttachment
+import java.io.ByteArrayInputStream
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.LocalDateTime
@@ -86,9 +88,12 @@ data class V2AppState(
         get() = tasks
             .filterNot { hideFinished && it.isFinished }
             .map { it.toV2Task() }
+            // 稳定分区：执行中永远在最前，其次等待，其余保持后端原序。
+            // sortedBy 是稳定排序，同级顺序不会每 3 秒轮询乱跳。
+            .sortedBy { it.status.queueRank }
     val decisions: List<V2Decision> get() = tasks.mapNotNull { it.toV2Decision() }
     val pendingCount: Int get() = tasks.count { it.pendingDecision != null }
-    val runningCount: Int get() = tasks.count { it.status == "running" }
+    val runningCount: Int get() = tasks.count { it.status.toV2TaskStatus() == V2TaskStatus.RUNNING }
     val finishedCount: Int get() = tasks.count { it.isFinished }
     val groups: List<V2Group> get() = tasks.toV2Groups(deviceLabel)
 }
@@ -328,9 +333,7 @@ class V2AppViewModel : FluxViewModel() {
                 if (!foreground) continue
                 val current = _state.value
                 if (current.boot != V2Boot.READY) continue
-                val live = current.tasks.any {
-                    it.status == "running" || it.status == "waiting_for_user_decision"
-                }
+                val live = current.tasks.any { it.status.toV2TaskStatus().isActive }
                 if (live) refresh(quiet = true)
             }
         }
@@ -456,6 +459,35 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    /**
+     * 设计稿当附件：先按设计稿 id 导出 SVG，再走同一条上传通道，不落地临时文件。
+     * 上传结果通过回调交回页面，与 [uploadDraftAttachments] 的状态管理保持一致。
+     */
+    fun uploadDraftDesign(
+        designId: String,
+        name: String,
+        onUploaded: (UploadedAttachment) -> Unit,
+        onError: (String) -> Unit,
+        onFinished: () -> Unit,
+    ) {
+        viewModelScope.launch {
+            try {
+                val api = api()
+                val svg = api.exportDesignSvg(designId)
+                val uploaded = api.uploadAttachment(
+                    name = "${name.ifBlank { "design" }}.svg",
+                    mime = "image/svg+xml",
+                    size = svg.size.toLong(),
+                ) { ByteArrayInputStream(svg) }
+                onUploaded(uploaded)
+            } catch (e: Exception) {
+                onError(readable(e))
+            } finally {
+                onFinished()
+            }
+        }
+    }
+
     // ------------------------------------------------------------ 密钥库
 
     fun loadKeys() {
@@ -471,7 +503,7 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    /** 新建/修改密钥；onResult 为空串表示成功，否则是错误文案。 */
+    /** 新建/修改密钥；onResult 的 error 为空串表示成功，notice 是成功后的提示（含连通性校验结果）。 */
     fun saveKey(
         keyId: String?,
         name: String,
@@ -481,12 +513,12 @@ class V2AppViewModel : FluxViewModel() {
         models: List<String>,
         wireApi: String,
         enabled: Boolean,
-        onResult: (String) -> Unit,
+        onResult: (error: String, notice: String) -> Unit,
     ) {
         viewModelScope.launch {
             try {
                 val api = api()
-                if (keyId.isNullOrBlank()) {
+                val saved = if (keyId.isNullOrBlank()) {
                     api.createKey(name, provider, baseUrl, apiKey.orEmpty(), models, wireApi, enabled)
                 } else {
                     api.updateKey(keyId, name, provider, baseUrl, apiKey, models, wireApi, enabled)
@@ -494,11 +526,20 @@ class V2AppViewModel : FluxViewModel() {
                 refresh(quiet = true)
                 val keys = api.listKeys()
                 _state.value = _state.value.copy(keys = keys, error = null)
-                onResult("")
+                val probe = runCatching { api.probeKey(saved.id) }.getOrNull()
+                onResult("", probeNotice(probe))
             } catch (e: Exception) {
-                onResult(readable(e))
+                onResult(readable(e), "")
             }
         }
+    }
+
+    /** 保存后的连通性校验结果 → 一句提示；探测本身失败只降级为"未校验"，不影响保存结果。 */
+    private fun probeNotice(result: KeyProbeResult?): String = when {
+        result == null -> "已保存（未能校验连通性）"
+        result.skipped -> "已保存 · ${result.error}"
+        result.ok -> "已保存 · 连通性正常（${result.latencyMs} ms）"
+        else -> "已保存，但连通性校验失败：${result.error}"
     }
 
     fun deleteKey(keyId: String, onResult: (String) -> Unit) {
@@ -833,7 +874,7 @@ class V2AppViewModel : FluxViewModel() {
 // ---------------------------------------------------------------- 映射
 
 internal val Task.isFinished: Boolean
-    get() = status in setOf("done", "completed", "succeeded", "failed", "error", "canceled", "cancelled")
+    get() = status.toV2TaskStatus().isFinished
 
 internal fun Task.firstLine(max: Int = 60): String =
     description.lineSequence()
@@ -877,7 +918,9 @@ private val agentTints = listOf(
 internal fun List<Agent>.toV2Agents(tasks: List<Task>): List<V2Agent> =
     mapIndexed { index, agent ->
         val name = agent.spec?.name?.takeIf { it.isNotBlank() } ?: agent.id.take(12)
-        val running = tasks.count { it.agentId == agent.id && it.status == "running" }
+        val running = tasks.count {
+            it.agentId == agent.id && it.status.toV2TaskStatus() == V2TaskStatus.RUNNING
+        }
         V2Agent(
             id = agent.id,
             name = name,
@@ -902,31 +945,27 @@ internal fun Task.toV2Conversation(device: String): V2Conversation = V2Conversat
     messages = emptyList(),
 )
 
-internal fun Task.toV2Task(): V2Task = V2Task(
-    id = id,
-    title = firstLine(),
-    agentId = agentId.orEmpty(),
-    priority = when {
-        priority <= 50 -> "P1"
-        priority <= 100 -> "P2"
-        else -> "P3"
-    },
-    status = when (status) {
-        "running" -> V2TaskStatus.RUNNING
-        "waiting_for_user_decision" -> V2TaskStatus.WAITING
-        "done", "completed", "succeeded" -> V2TaskStatus.DONE
-        "failed", "error" -> V2TaskStatus.FAILED
-        "canceled", "cancelled" -> V2TaskStatus.CANCELED
-        else -> V2TaskStatus.WAITING
-    },
-    // 服务端没有进度字段：运行中用 -1 表示「进度未知」。
-    progress = when {
-        status == "running" -> -1
-        status in setOf("done", "completed", "succeeded") -> 100
-        else -> 0
-    },
-    note = resultSummary(),
-)
+internal fun Task.toV2Task(): V2Task {
+    val mapped = status.toV2TaskStatus()
+    return V2Task(
+        id = id,
+        title = firstLine(),
+        agentId = agentId.orEmpty(),
+        priority = when {
+            priority <= 50 -> "P1"
+            priority <= 100 -> "P2"
+            else -> "P3"
+        },
+        status = mapped,
+        // 服务端没有进度字段：运行中用 -1 表示「进度未知」。
+        progress = when (mapped) {
+            V2TaskStatus.RUNNING -> -1
+            V2TaskStatus.DONE -> 100
+            else -> 0
+        },
+        note = resultSummary(),
+    )
+}
 
 private fun Task.resultSummary(): String? {
     val element = result ?: return null
@@ -1008,7 +1047,7 @@ internal fun Task.toV2Decision(): V2Decision? {
 internal fun List<Task>.toV2Groups(device: String): List<V2Group> {
     if (isEmpty()) return emptyList()
     val waiting = count { it.pendingDecision != null }
-    val running = count { it.status == "running" }
+    val running = count { it.status.toV2TaskStatus() == V2TaskStatus.RUNNING }
     val finished = count { it.isFinished }
     val status = when {
         waiting > 0 -> V2GroupStatus.BLOCKED
@@ -1060,7 +1099,7 @@ internal fun List<Task>.toV2Groups(device: String): List<V2Group> {
 private fun Task.toV2Event(): V2Event {
     val tail = when {
         pendingDecision != null -> "等待确认：${pendingDecision?.question ?: "需要人工决策"}"
-        status == "running" -> "执行中"
+        status.toV2TaskStatus() == V2TaskStatus.RUNNING -> "执行中"
         else -> "已结束"
     }
     return V2Event(

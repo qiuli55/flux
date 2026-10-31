@@ -31,7 +31,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -78,6 +77,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import top.qiuli55.flux.mobile.data.Change
 import top.qiuli55.flux.mobile.data.DesignPreview
+import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.ConfirmationItem
 import top.qiuli55.flux.mobile.data.Decision
 import top.qiuli55.flux.mobile.data.HandoffSummary
@@ -319,7 +319,7 @@ fun V2TaskDetailScreen(
         DetailHeader(
             title = "任务详情",
             // 头部只给可读状态，不在标题行里裸露 UUID
-            subtitle = task?.let { taskStatusLabel(it.status).first }.orEmpty(),
+            subtitle = task?.status?.toV2TaskStatus()?.label.orEmpty(),
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
@@ -420,13 +420,12 @@ fun V2TaskDetailScreen(
 
 @Composable
 private fun TaskSummaryCard(task: Task, expanded: Boolean, onToggle: () -> Unit) {
-    val (label, color) = taskStatusLabel(task.status)
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            StatusChipFor(label, color)
+            V2TaskStatusBadge(task.status.toV2TaskStatus())
             Spacer(Modifier.width(6.dp))
             StatusChipFor(
                 if (task.decisionMode == "auto") "自动决策" else "手动确认",
@@ -469,8 +468,8 @@ private fun TaskActions(
 ) {
     val canStart = task.runId == null &&
         !task.isFinished &&
-        task.status != "waiting_for_user_decision"
-    val canStop = task.runId != null && task.status == "running"
+        task.status.toV2TaskStatus() != V2TaskStatus.WAITING
+    val canStop = task.runId != null && task.status.toV2TaskStatus() == V2TaskStatus.RUNNING
     val canCancel = !task.isFinished
     if (!canStart && !canStop && !canCancel) return
 
@@ -523,6 +522,11 @@ fun V2TaskChatScreen(
     onOpenDesign: (String) -> Unit = {},
     /** 对话里的链接：外层切到内嵌浏览器。 */
     onOpenUrl: (String) -> Unit = {},
+    /** 「+」菜单里的设计稿来源：null 表示不提供该入口。 */
+    designOptions: List<DesignSummary>? = null,
+    designsLoading: Boolean = false,
+    /** 打开设计稿选择面板前刷新一次列表。 */
+    onRequestDesigns: () -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -634,6 +638,10 @@ fun V2TaskChatScreen(
                 }
             },
             onRemoveAttachment = { vm.removeAttachment(it) },
+            designOptions = designOptions,
+            designsLoading = designsLoading,
+            onRequestDesigns = onRequestDesigns,
+            onPickDesign = { design -> vm.attachDesign(design.id, design.name) },
             sending = state.sending,
             liveText = state.liveText,
             liveLabel = state.liveLabel,
@@ -670,8 +678,9 @@ fun V2TaskChatScreen(
             onPermissionModeChange = { vm.setPermissionMode(it) },
             onAllowApproval = { decisionId -> vm.chooseDecision(decisionId, "允许", reject = false) },
             onDenyApproval = { decisionId -> vm.chooseDecision(decisionId, null, reject = true) },
-            // 执行中常驻停止条：随时能停，不用滚到消息尾部
-            taskRunning = task?.status == "running" || state.liveActive,
+            // 执行中常驻运行状态条；停止动作已并入输入区主按钮
+            taskRunning = task?.status?.toV2TaskStatus() == V2TaskStatus.RUNNING || state.liveActive,
+            runningTaskTitle = task?.firstLine()?.takeIf { it.isNotBlank() },
             stopping = state.busyAction == "cancel",
             onStopTask = { vm.cancel() },
             // 审批卡固定在输入框上方，提交期间禁用按钮
@@ -1773,22 +1782,15 @@ fun V2TerminalSessionScreen(
                         )
                     }
                     Spacer(Modifier.width(8.dp))
-                    val enabled = active && !state.running && state.command.isNotBlank()
-                    Box(
-                        Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(if (enabled) V2Colors.cyan400 else V2Colors.ink(.08f))
-                            .clickable(enabled = enabled) { vm.runCommand() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Outlined.ArrowUpward,
-                            contentDescription = "执行",
-                            tint = if (enabled) V2Colors.actionInk else V2Colors.ink(.25f),
-                            modifier = Modifier.size(15.dp),
-                        )
-                    }
+                    // 与对话输入区共用同一个主操作按钮；停止仍走下方 Stop / Force Stop
+                    V2ComposerActionButton(
+                        running = false,
+                        onSend = { vm.runCommand() },
+                        onStop = {},
+                        sendEnabled = active && !state.running && state.command.isNotBlank(),
+                        size = 34.dp,
+                        corner = 11.dp,
+                    )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1837,16 +1839,6 @@ fun V2TerminalSessionScreen(
 }
 
 // ================================================================== 状态映射
-
-private fun taskStatusLabel(status: String?): Pair<String, Color> = when (status) {
-    "running" -> "执行中" to V2Colors.cyan500
-    "waiting_for_user_decision" -> "等待确认" to V2Colors.amber500
-    "done", "completed", "succeeded" -> "已完成" to V2Colors.emerald
-    "failed", "error" -> "失败" to V2Colors.rose500
-    "canceled", "cancelled" -> "已取消" to V2Colors.ink(.30f)
-    "pending", "queued" -> "排队中" to V2Colors.ink(.35f)
-    else -> (status?.takeIf { it.isNotBlank() } ?: "未知") to V2Colors.ink(.35f)
-}
 
 private fun changeStatusLabel(status: String): Pair<String, Color> = when (status) {
     "pending" -> "待审核" to V2Colors.amber700

@@ -61,7 +61,7 @@ fun KeyVaultSheet(
     keys: List<ApiKeyEntry>,
     loading: Boolean,
     onRefresh: () -> Unit,
-    onSave: (V2KeyDraft, (String) -> Unit) -> Unit,
+    onSave: (V2KeyDraft, (error: String, notice: String) -> Unit) -> Unit,
     onToggle: (ApiKeyEntry, Boolean, (String) -> Unit) -> Unit,
     onDelete: (ApiKeyEntry, (String) -> Unit) -> Unit,
     onDismiss: () -> Unit,
@@ -98,7 +98,7 @@ fun KeyVaultSheet(
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         SheetHeader(
             title = "密钥库",
-            subtitle = "加密保存，只显示末 4 位；模型下拉会列出可用 key 的模型",
+            subtitle = "加密保存，只显示末 4 位；保存时用该 key 的模型请求一次端点校验可用性",
             onClose = onDismiss,
         )
         Column(
@@ -306,12 +306,12 @@ fun KeyVaultSheet(
                                                 wireApi = if (provider == "openai_compatible") wireApi else "",
                                                 enabled = enabled,
                                             ),
-                                        ) { err ->
+                                        ) { err, okNotice ->
                                             saving = false
                                             if (err.isBlank()) {
                                                 formOpen = false
                                                 editing = null
-                                                notice = "已保存"
+                                                notice = okNotice.ifBlank { "已保存" }
                                             } else {
                                                 error = err
                                             }

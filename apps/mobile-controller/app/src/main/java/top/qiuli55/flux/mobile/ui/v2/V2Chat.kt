@@ -6,11 +6,11 @@ import android.content.Context
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -46,20 +46,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.DesignServices
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.FormatQuote
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.SmartToy
@@ -85,7 +89,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
@@ -102,11 +105,13 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.launch
+import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.TaskContextUsage
 import top.qiuli55.flux.mobile.data.TaskRunSummary
 import top.qiuli55.flux.mobile.data.UploadedAttachment
+import java.io.File
 import java.util.Locale
 
 /** 对话页运行态：会话、Agent、模型都由当前设备配置推导。 */
@@ -145,6 +150,12 @@ fun V2ChatScreen(
     uploading: Boolean = false,
     onAddAttachments: (List<Uri>) -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {},
+    /** 「+」菜单里的设计稿来源：null 表示不提供该入口。 */
+    designOptions: List<DesignSummary>? = null,
+    designsLoading: Boolean = false,
+    /** 打开设计稿选择面板前刷新一次列表。 */
+    onRequestDesigns: () -> Unit = {},
+    onPickDesign: (DesignSummary) -> Unit = {},
     /** 首条消息发出后等待 Agent 回复。 */
     sending: Boolean = false,
     /** 流式回复：已经收到的增量正文与状态提示。 */
@@ -200,8 +211,10 @@ fun V2ChatScreen(
     onDenyApproval: (String) -> Unit = {},
     /** 下拉刷新：真实任务对话 = 重新拉取任务与消息；null 时不启用该手势。 */
     onRefresh: (suspend () -> Unit)? = null,
-    /** 任务正在执行：输入框上方常驻停止条，随时能停，不用滚到消息尾部。 */
+    /** 任务正在执行：输入区上方常驻运行状态条。 */
     taskRunning: Boolean = false,
+    /** 正在执行的任务标题：运行状态条上显示，便于确认停的是哪个任务。 */
+    runningTaskTitle: String? = null,
     /** 停止请求已发出、等服务端确认。 */
     stopping: Boolean = false,
     onStopTask: () -> Unit = {},
@@ -218,6 +231,7 @@ fun V2ChatScreen(
     var agentMenuOpen by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
     var modeSheetOpen by remember { mutableStateOf(false) }
+    var designSheetOpen by remember { mutableStateOf(false) }
     // 执行轨迹的展开状态按对话记忆：用户收起后，流式新增的思考/命令不再把它顶开
     var timelineExpanded by remember(chat.conversationId) { mutableStateOf(true) }
     // 待审批卡固定在输入框上方：AI 输出再长也不用往回滚
@@ -234,21 +248,8 @@ fun V2ChatScreen(
     val focusManager = LocalFocusManager.current
     val inputFocus = remember { FocusRequester() }
     var inputFocused by remember { mutableStateOf(false) }
-    var sendFlying by remember { mutableStateOf(false) }
     var bubbleMenu by remember { mutableStateOf<BubbleMenuTarget?>(null) }
 
-    // 发送纸飞机：向右上飞出 18px 后淡出，160ms 后复位
-    LaunchedEffect(sendFlying) {
-        if (sendFlying) {
-            delay(170)
-            sendFlying = false
-        }
-    }
-    val fly by animateFloatAsState(
-        targetValue = if (sendFlying) 1f else 0f,
-        animationSpec = tween(160),
-        label = "chat-send-fly",
-    )
     val composerMinHeight by animateDpAsState(
         targetValue = if (inputFocused || input.isNotBlank()) 56.dp else 44.dp,
         animationSpec = tween(160),
@@ -647,9 +648,9 @@ fun V2ChatScreen(
             Spacer(Modifier.height(4.dp))
         }
 
-        // 执行中：停止条固定在输入区上方，消息滚到哪里都能停
+        // 执行中：运行状态条固定在输入区上方；停止动作只保留在输入区主按钮上
         if (taskRunning) {
-            RunningStopBar(stopping = stopping, onStop = onStopTask)
+            RunningStatusBar(title = runningTaskTitle, stopping = stopping)
             Spacer(Modifier.height(2.dp))
         }
 
@@ -730,7 +731,18 @@ fun V2ChatScreen(
                 .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AttachmentPickerButton(enabled = canPickFiles, onPicked = onAddAttachments)
+            AttachmentPickerButton(
+                enabled = canPickFiles,
+                onPicked = onAddAttachments,
+                onPickDesign = if (designOptions != null) {
+                    {
+                        onRequestDesigns()
+                        designSheetOpen = true
+                    }
+                } else {
+                    null
+                },
+            )
             Spacer(Modifier.width(8.dp))
             Box(Modifier.weight(1f)) {
                 if (input.isEmpty()) {
@@ -759,36 +771,19 @@ fun V2ChatScreen(
             }
             Spacer(Modifier.width(8.dp))
             val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
-            Box(
-                Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (enabled || inputFocused) V2Colors.cyan400 else V2Colors.ink(.08f))
-                    .v2Pressable(
-                        enabled = enabled,
-                        pressScale = .94f,
-                        haptic = V2HapticLevel.SUCCESS,
-                    ) {
-                        val text = input.trim()
-                        input = ""
-                        sendFlying = true
-                        onSend(text)
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.ArrowUpward,
-                    contentDescription = "发送",
-                    tint = if (enabled || inputFocused) V2Colors.actionInk else V2Colors.ink(.25f),
-                    modifier = Modifier
-                        .size(16.dp)
-                        .graphicsLayer {
-                            translationX = 18.dp.toPx() * fly
-                            translationY = -18.dp.toPx() * fly
-                            alpha = 1f - fly
-                        },
-                )
-            }
+            // 发送 / 停止共用同一个按钮：任务执行时就地变成停止，不用再找别处
+            V2ComposerActionButton(
+                running = taskRunning,
+                sendEnabled = enabled,
+                focused = inputFocused,
+                stopping = stopping,
+                onSend = {
+                    val text = input.trim()
+                    input = ""
+                    onSend(text)
+                },
+                onStop = onStopTask,
+            )
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -801,6 +796,18 @@ fun V2ChatScreen(
                 onPermissionModeChange(mode)
             },
             onDismiss = { modeSheetOpen = false },
+        )
+    }
+    val pendingDesigns = designOptions
+    if (designSheetOpen && pendingDesigns != null) {
+        DesignPickSheet(
+            designs = pendingDesigns,
+            loading = designsLoading,
+            onPick = { design ->
+                designSheetOpen = false
+                onPickDesign(design)
+            },
+            onDismiss = { designSheetOpen = false },
         )
     }
     // 气泡长按菜单：透明遮罩关闭，菜单按气泡位置浮层显示
@@ -1066,9 +1073,9 @@ private fun PromptAction(
     }
 }
 
-/** 执行中的停止条：常驻在输入区上方，消息滚到哪里都能一键停下。 */
+/** 执行中的运行状态条：只报状态，停止统一由输入区主按钮承担。 */
 @Composable
-private fun RunningStopBar(stopping: Boolean, onStop: () -> Unit) {
+private fun RunningStatusBar(title: String?, stopping: Boolean) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -1076,26 +1083,21 @@ private fun RunningStopBar(stopping: Boolean, onStop: () -> Unit) {
             .clip(RoundedCornerShape(999.dp))
             .background(V2Colors.emerald.copy(alpha = .06f))
             .border(1.dp, V2Colors.emerald.copy(alpha = .20f), RoundedCornerShape(999.dp))
-            .padding(start = 10.dp, end = 4.dp, top = 3.dp, bottom = 3.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
+        LiveDot(V2Colors.emerald)
         Spacer(Modifier.width(6.dp))
         Label("Agent 正在执行", 9.5f, V2Colors.emerald700, weight = FontWeight.Medium)
+        if (!title.isNullOrBlank()) {
+            Spacer(Modifier.width(6.dp))
+            Label("·", 9.5f, V2Colors.emerald700.copy(alpha = .5f))
+            Spacer(Modifier.width(6.dp))
+            Label(title, 9.5f, V2Colors.emerald700.copy(alpha = .8f), maxLines = 1)
+        }
         Spacer(Modifier.weight(1f))
-        Box(
-            Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(if (stopping) V2Colors.rose.copy(alpha = .45f) else V2Colors.rose)
-                .v2Pressable(enabled = !stopping, pressScale = .94f, haptic = V2HapticLevel.DENY) { onStop() }
-                .padding(horizontal = 12.dp, vertical = 5.dp),
-        ) {
-            Label(
-                if (stopping) "停止中…" else "停止",
-                9.5f,
-                Color.White,
-                weight = FontWeight.Medium,
-            )
+        if (stopping) {
+            Label("停止中…", 9f, V2Colors.rose, weight = FontWeight.Medium)
         }
     }
 }
@@ -1456,30 +1458,185 @@ internal fun formatRunDuration(durationMs: Long?): String {
 
 // ------------------------------------------------------------------ 附件
 
-/** 共用的「+」按钮：打开系统文件选择器（任意类型，可多选）。 */
+/** 共用的「+」按钮：点开选择附件来源（相机 / 图片 / 文件 / 设计稿）。 */
 @Composable
 internal fun AttachmentPickerButton(
     enabled: Boolean,
     onPicked: (List<Uri>) -> Unit,
+    /** 非空时菜单里出现「设计稿」，由页面弹出设计稿面板。 */
+    onPickDesign: (() -> Unit)? = null,
 ) {
-    val launcher = rememberLauncherForActivityResult(
+    val context = LocalContext.current
+    var menuOpen by remember { mutableStateOf(false) }
+    var cameraTarget by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { saved ->
+        val target = cameraTarget
+        cameraTarget = null
+        if (saved && target != null) onPicked(listOf(target))
+    }
+    val imageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) onPicked(listOf(uri)) }
+    val fileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
-    Box(
-        Modifier
-            .size(32.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(V2Colors.surface(.55f))
-            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp))
-            .clickable(enabled = enabled) { launcher.launch(arrayOf("*/*")) },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            Icons.Outlined.Add,
-            contentDescription = "添加附件",
-            tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
-            modifier = Modifier.size(17.dp),
+
+    // 拍照落盘到私有目录，经 FileProvider 交给相机应用写入
+    fun launchCamera() {
+        val dir = File(context.filesDir, "camera").apply { mkdirs() }
+        val file = File(dir, "camera-${System.currentTimeMillis()}.jpg")
+        val uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }.getOrNull()
+        if (uri == null) {
+            Toast.makeText(context, "无法准备拍照文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        cameraTarget = uri
+        runCatching { cameraLauncher.launch(uri) }.onFailure {
+            cameraTarget = null
+            Toast.makeText(context, "没有可用的相机应用", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    Box {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(V2Colors.surface(.55f))
+                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp))
+                .clickable(enabled = enabled) { menuOpen = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Add,
+                contentDescription = "添加附件",
+                tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
+                modifier = Modifier.size(17.dp),
+            )
+        }
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false },
+            modifier = Modifier.background(V2Colors.surface),
+        ) {
+            PlusMenuItem(Icons.Outlined.PhotoCamera, "相机") {
+                menuOpen = false
+                launchCamera()
+            }
+            PlusMenuItem(Icons.Outlined.Image, "图片") {
+                menuOpen = false
+                imageLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            }
+            PlusMenuItem(Icons.Outlined.FolderOpen, "文件") {
+                menuOpen = false
+                fileLauncher.launch(arrayOf("*/*"))
+            }
+            val pickDesign = onPickDesign
+            if (pickDesign != null) {
+                PlusMenuItem(Icons.Outlined.DesignServices, "设计稿") {
+                    menuOpen = false
+                    pickDesign()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlusMenuItem(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Label(label, 11.5f, V2Colors.ink(.82f)) },
+        leadingIcon = {
+            Icon(icon, null, tint = V2Colors.cyan700, modifier = Modifier.size(16.dp))
+        },
+        onClick = onClick,
+    )
+}
+
+/** 从 Flux 设计工作室挑一份设计稿作为附件：选中后由页面导出 SVG 走上传通道。 */
+@Composable
+private fun DesignPickSheet(
+    designs: List<DesignSummary>,
+    loading: Boolean,
+    onPick: (DesignSummary) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .72f) {
+        SheetHeader(
+            title = "设计稿",
+            subtitle = "选一份稿子，会导出 SVG 随下一条消息发出",
+            onClose = onDismiss,
         )
+        Column(
+            Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when {
+                loading && designs.isEmpty() -> Label(
+                    "正在读取设计稿…",
+                    10.5f,
+                    V2Colors.ink(.40f),
+                    modifier = Modifier.padding(vertical = 18.dp),
+                )
+
+                designs.isEmpty() -> Label(
+                    "还没有设计稿，先去设计工作室建一份",
+                    10.5f,
+                    V2Colors.ink(.40f),
+                    modifier = Modifier.padding(vertical = 18.dp),
+                )
+
+                else -> designs.forEach { design ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(V2Colors.surface(.72f))
+                            .border(1.dp, V2Colors.line, RoundedCornerShape(14.dp))
+                            .clickable { onPick(design) }
+                            .padding(horizontal = 13.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.DesignServices,
+                            null,
+                            tint = V2Colors.cyan700,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(9.dp))
+                        Column(Modifier.weight(1f)) {
+                            Label(
+                                design.name.ifBlank { "未命名设计稿" },
+                                11.5f,
+                                V2Colors.ink(.80f),
+                                maxLines = 1,
+                            )
+                            Label(
+                                "${design.screenCount} 屏 · ${design.layerCount} 图层",
+                                8.5f,
+                                V2Colors.ink(.34f),
+                                mono = true,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+        }
     }
 }
 

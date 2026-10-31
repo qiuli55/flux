@@ -123,6 +123,8 @@ fun FluxV2Root() {
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
+    // 队列筛选上提到根：角标 / 统计行可以直接带着筛选进入队列页。
+    var queueFilter by remember { mutableStateOf(QueueFilter.ALL) }
     var taskOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var chatOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var device by remember { mutableStateOf(ALL_DEVICES) }
@@ -466,7 +468,10 @@ fun FluxV2Root() {
                             billingHeadline = app.billing?.headline ?: "暂无额度数据",
                             extraTop = extraTop,
                             onOpenDecisions = { route = V2Route.Decisions },
-                            onOpenQueue = { route = V2Route.Queue },
+                            onOpenQueue = {
+                                queueFilter = QueueFilter.ALL
+                                route = V2Route.Queue
+                            },
                             onOpenBilling = {
                                 billingOpen = true
                                 vm.loadBilling()
@@ -505,6 +510,8 @@ fun FluxV2Root() {
                         V2Route.Queue -> V2QueueScreen(
                             tasks = app.queueTasks,
                             showBack = showBack,
+                            filter = queueFilter,
+                            onFilterChange = { queueFilter = it },
                             onBack = { route = V2Route.Home },
                             onOpenLogs = { logsOpen = true },
                             onClearDone = { vm.dismissFinished() },
@@ -667,6 +674,20 @@ fun FluxV2Root() {
                                     onRemoveAttachment = { id ->
                                         draftAttachments.removeAll { it.id == id }
                                     },
+                                    designOptions = designState.designs,
+                                    designsLoading = designState.loading,
+                                    onRequestDesigns = { designVm.loadDesigns(quiet = true) },
+                                    onPickDesign = { design ->
+                                        draftAttachmentError = null
+                                        draftUploading = true
+                                        vm.uploadDraftDesign(
+                                            designId = design.id,
+                                            name = design.name,
+                                            onUploaded = { draftAttachments.add(it) },
+                                            onError = { draftAttachmentError = it },
+                                            onFinished = { draftUploading = false },
+                                        )
+                                    },
                                     sending = app.busyAction == "create" || draftUploading,
                                     notice = draftAttachmentError ?: app.error,
                                     onDismissNotice = {
@@ -716,6 +737,9 @@ fun FluxV2Root() {
                             },
                             onOpenDesign = { openDesignFromChat(it) },
                             onOpenUrl = { openInternalBrowser(it) },
+                            designOptions = designState.designs,
+                            designsLoading = designState.loading,
+                            onRequestDesigns = { designVm.loadDesigns(quiet = true) },
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
@@ -782,11 +806,17 @@ fun FluxV2Root() {
                                 pendingCount = app.pendingCount,
                                 runningCount = app.runningCount,
                                 onSelect = { item ->
+                                    if (item == V2RailItem.QUEUE) queueFilter = QueueFilter.ALL
                                     route = when (item) {
                                         V2RailItem.CHATS -> V2Route.Home
                                         V2RailItem.DECISIONS -> V2Route.Decisions
                                         V2RailItem.QUEUE -> V2Route.Queue
                                     }
+                                },
+                                // 点任务角标：直接进队列并选中「执行中」。
+                                onOpenRunning = {
+                                    queueFilter = QueueFilter.RUNNING
+                                    route = V2Route.Queue
                                 },
                                 onOpenLogs = { logsOpen = true },
                                 onOpenSettings = { settingsOpen = true },
@@ -979,6 +1009,7 @@ fun FluxV2Root() {
                             group = group,
                             onOpenQueue = {
                                 groupDetail = null
+                                queueFilter = QueueFilter.ALL
                                 route = V2Route.Queue
                             },
                             onDismiss = { groupDetail = null },
@@ -1019,8 +1050,7 @@ fun FluxV2Root() {
                         ConversationDeleteSheet(
                             title = target?.description?.lineSequence()?.firstOrNull()?.take(40)
                                 ?.takeIf { it.isNotBlank() } ?: "这段对话",
-                            running = target?.status == "running" ||
-                                target?.status == "waiting_for_user_decision",
+                            running = target?.status?.toV2TaskStatus()?.isActive == true,
                             deleting = app.busyAction == "delete:$deleteId",
                             stopping = app.busyAction == "cancel:$deleteId",
                             error = deleteConversationError,
@@ -1103,6 +1133,7 @@ private fun V2NavRail(
     pendingCount: Int,
     runningCount: Int,
     onSelect: (V2RailItem) -> Unit,
+    onOpenRunning: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -1148,6 +1179,7 @@ private fun V2NavRail(
             selected = selected == V2RailItem.QUEUE,
             badge = runningCount,
             badgeColor = V2Colors.cyan500,
+            onBadgeClick = onOpenRunning,
         ) { onSelect(V2RailItem.QUEUE) }
 
         Spacer(Modifier.weight(1f))
@@ -1180,6 +1212,7 @@ private fun RailButton(
     selected: Boolean,
     badge: Int? = null,
     badgeColor: Color = V2Colors.cyan500,
+    onBadgeClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     Box {
@@ -1208,18 +1241,33 @@ private fun RailButton(
             )
         }
         if (badge != null && badge > 0) {
+            // 角标本身是快捷入口：外面套一层 28dp 的热区，避免 16dp 圆点难点中。
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-6).dp, y = 3.dp)
-                    .height(16.dp)
-                    .widthIn(min = 16.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(badgeColor)
-                    .padding(horizontal = 4.dp),
-                contentAlignment = Alignment.Center,
+                    .offset(x = (-2).dp, y = (-2).dp)
+                    .height(28.dp)
+                    .widthIn(min = 28.dp)
+                    .then(
+                        if (onBadgeClick != null) {
+                            Modifier.v2Pressable(pressScale = .92f, onClick = onBadgeClick)
+                        } else {
+                            Modifier
+                        },
+                    ),
+                contentAlignment = Alignment.TopEnd,
             ) {
-                Label("$badge", 9f, Color.White, FontWeight.Medium, maxLines = 1)
+                Box(
+                    Modifier
+                        .height(16.dp)
+                        .widthIn(min = 16.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(badgeColor)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Label("$badge", 9f, Color.White, FontWeight.Medium, maxLines = 1)
+                }
             }
         }
     }

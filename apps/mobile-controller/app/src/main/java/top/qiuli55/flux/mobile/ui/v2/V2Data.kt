@@ -190,7 +190,39 @@ data class V2Decision(
     val taskId: String = "",
 )
 
-enum class V2TaskStatus { RUNNING, WAITING, DONE, FAILED, CANCELED }
+enum class V2TaskStatus { RUNNING, WAITING, QUEUED, DONE, FAILED, CANCELED }
+
+/** 服务端任务状态字符串 → 界面枚举；未知状态按「等待」处理（保留继续轮询的行为）。 */
+internal fun String.toV2TaskStatus(): V2TaskStatus = when (this) {
+    "running" -> V2TaskStatus.RUNNING
+    "waiting_for_user_decision" -> V2TaskStatus.WAITING
+    "pending", "queued" -> V2TaskStatus.QUEUED
+    "done", "completed", "succeeded" -> V2TaskStatus.DONE
+    "failed", "error" -> V2TaskStatus.FAILED
+    "canceled", "cancelled" -> V2TaskStatus.CANCELED
+    else -> V2TaskStatus.WAITING
+}
+
+/** 队列分区顺序：执行中永远在最前，其次等待确认 / 排队中，其余保持后端原序。 */
+internal val V2TaskStatus.queueRank: Int
+    get() = when (this) {
+        V2TaskStatus.RUNNING -> 0
+        V2TaskStatus.WAITING -> 1
+        V2TaskStatus.QUEUED -> 2
+        else -> 3
+    }
+
+/** 是否已结束（完成 / 失败 / 取消）。 */
+internal val V2TaskStatus.isFinished: Boolean
+    get() = this == V2TaskStatus.DONE || this == V2TaskStatus.FAILED || this == V2TaskStatus.CANCELED
+
+/** 是否还能被用户中止（执行中或等待确认）。 */
+internal val V2TaskStatus.isActive: Boolean
+    get() = this == V2TaskStatus.RUNNING || this == V2TaskStatus.WAITING
+
+/** 「等待」分类：等待确认 + 排队中。 */
+internal val V2TaskStatus.isWaiting: Boolean
+    get() = this == V2TaskStatus.WAITING || this == V2TaskStatus.QUEUED
 
 data class V2Task(
     val id: String,

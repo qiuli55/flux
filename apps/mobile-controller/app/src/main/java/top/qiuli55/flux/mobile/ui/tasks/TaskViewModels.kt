@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.viewModelScope
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -306,6 +307,35 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 uploading = false,
                 error = problems.take(2).joinToString("；").takeIf { it.isNotBlank() },
             )
+        }
+    }
+
+    /**
+     * 设计稿当附件：先按设计稿 id 导出 SVG，再走同一条上传通道，不落地临时文件。
+     */
+    fun attachDesign(designId: String, name: String) {
+        if (_state.value.uploading) return
+        if (_state.value.pendingAttachments.size >= UploadedAttachment.MAX_FILES) {
+            _state.value = _state.value.copy(error = "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(uploading = true, error = null)
+            try {
+                val svg = api().exportDesignSvg(designId)
+                val uploaded = api().uploadAttachment(
+                    name = "${name.ifBlank { "design" }}.svg",
+                    mime = "image/svg+xml",
+                    size = svg.size.toLong(),
+                ) { ByteArrayInputStream(svg) }
+                _state.value = _state.value.copy(
+                    pendingAttachments = _state.value.pendingAttachments + uploaded,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = readable(e))
+            } finally {
+                _state.value = _state.value.copy(uploading = false)
+            }
         }
     }
 

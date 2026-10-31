@@ -36,12 +36,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Laptop
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
@@ -226,6 +228,148 @@ fun LiveDot(color: Color, modifier: Modifier = Modifier) {
             )
         }
         Box(Modifier.size(6.dp).background(color, CircleShape))
+    }
+}
+
+// ------------------------------------------------------------------ 任务状态徽标
+
+/** 状态色：队列卡片、详情页、对话运行条共用一套。 */
+internal val V2TaskStatus.tint: Color
+    get() = when (this) {
+        V2TaskStatus.RUNNING -> V2Colors.cyan500
+        V2TaskStatus.WAITING -> V2Colors.amber500
+        V2TaskStatus.QUEUED -> Color(0xFF64748B)
+        V2TaskStatus.FAILED -> V2Colors.rose500
+        V2TaskStatus.DONE -> V2Colors.emerald
+        V2TaskStatus.CANCELED -> V2Colors.ink(.30f)
+    }
+
+internal val V2TaskStatus.label: String
+    get() = when (this) {
+        V2TaskStatus.RUNNING -> "执行中"
+        V2TaskStatus.WAITING -> "等待确认"
+        V2TaskStatus.QUEUED -> "排队中"
+        V2TaskStatus.DONE -> "已完成"
+        V2TaskStatus.FAILED -> "失败"
+        V2TaskStatus.CANCELED -> "已取消"
+    }
+
+/** 统一状态徽标：执行中带脉冲点，其余状态带实心点。 */
+@Composable
+fun V2TaskStatusBadge(
+    status: V2TaskStatus,
+    modifier: Modifier = Modifier,
+    dot: Boolean = true,
+) {
+    val tint = status.tint
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(tint.copy(alpha = .10f))
+            .border(1.dp, tint.copy(alpha = .24f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (dot) {
+            if (status == V2TaskStatus.RUNNING) {
+                LiveDot(tint)
+            } else {
+                Box(Modifier.size(5.dp).background(tint, CircleShape))
+            }
+            Spacer(Modifier.width(5.dp))
+        }
+        Label(status.label, 10f, tint, FontWeight.Medium)
+    }
+}
+
+// ------------------------------------------------------------------ 输入区主操作
+
+/**
+ * 输入区主操作按钮：空闲时是「发送」，任务运行时原地变成「停止」。
+ * 对话输入区与终端命令输入区共用，避免两套尺寸/动效各写一遍。
+ */
+@Composable
+fun V2ComposerActionButton(
+    running: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 36.dp,
+    corner: Dp = 12.dp,
+    sendEnabled: Boolean = true,
+    stopEnabled: Boolean = true,
+    stopping: Boolean = false,
+    focused: Boolean = false,
+) {
+    val scope = rememberCoroutineScope()
+    val fly = remember { Animatable(0f) }
+    val shape = RoundedCornerShape(corner)
+    val flyPx = with(LocalDensity.current) { (size * .5f).toPx() }
+    val iconSize = size * .45f
+
+    val background by animateColorAsState(
+        targetValue = when {
+            running -> if (stopping) V2Colors.rose.copy(alpha = .45f) else V2Colors.rose
+            sendEnabled || focused -> V2Colors.cyan400
+            else -> V2Colors.ink(.08f)
+        },
+        animationSpec = tween(180),
+        label = "composer-action-bg",
+    )
+
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(shape)
+            .background(background)
+            .v2Pressable(
+                enabled = if (running) stopEnabled && !stopping else sendEnabled,
+                pressScale = .94f,
+                haptic = if (running) V2HapticLevel.DENY else V2HapticLevel.SUCCESS,
+            ) {
+                if (running) {
+                    onStop()
+                } else {
+                    // 发送：图标沿右上角飞出，给一次明确的提交反馈。
+                    scope.launch {
+                        fly.snapTo(0f)
+                        fly.animateTo(1f, tween(160))
+                        fly.snapTo(0f)
+                    }
+                    onSend()
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (running) {
+            if (stopping) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(size * .4f),
+                    color = Color.White,
+                    strokeWidth = 1.5.dp,
+                )
+            } else {
+                Box(
+                    Modifier
+                        .size(size * .34f)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White),
+                )
+            }
+        } else {
+            Icon(
+                imageVector = Icons.Outlined.ArrowUpward,
+                contentDescription = "发送",
+                tint = if (sendEnabled || focused) V2Colors.actionInk else V2Colors.ink(.25f),
+                modifier = Modifier
+                    .size(iconSize)
+                    .graphicsLayer {
+                        translationX = flyPx * fly.value
+                        translationY = -flyPx * fly.value
+                        alpha = 1f - fly.value
+                    },
+            )
+        }
     }
 }
 

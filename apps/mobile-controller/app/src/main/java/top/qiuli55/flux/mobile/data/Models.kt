@@ -177,6 +177,21 @@ data class ApiKeyEntry(
         }
 }
 
+/** 保存后校验 key 的模型端点是否可用（POST /keys/{id}/probe）。 */
+@Serializable
+data class KeyProbeResult(
+    val ok: Boolean = false,
+    val skipped: Boolean = false,
+    val provider: String = "",
+    val model: String = "",
+    @SerialName("base_url") val baseUrl: String = "",
+    @SerialName("latency_ms") val latencyMs: Int = 0,
+    val reply: String = "",
+    val error: String = "",
+    @SerialName("error_code") val errorCode: String = "",
+    val detail: String = "",
+)
+
 /** 账号级用户长期记忆：云端权威，本机只做缓存与编辑。 */
 @Serializable
 data class UserMemoryEntry(

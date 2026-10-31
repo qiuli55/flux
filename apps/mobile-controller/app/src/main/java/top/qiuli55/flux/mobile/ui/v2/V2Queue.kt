@@ -53,7 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
-private enum class QueueFilter(val label: String) {
+/** 队列筛选：上提到 V2Root，角标与统计行才能带着筛选直接进入队列页。 */
+enum class QueueFilter(val label: String) {
     ALL("全部"),
     WAITING("等待"),
     RUNNING("执行中"),
@@ -64,6 +65,8 @@ private enum class QueueFilter(val label: String) {
 fun V2QueueScreen(
     tasks: List<V2Task>,
     showBack: Boolean = true,
+    filter: QueueFilter = QueueFilter.ALL,
+    onFilterChange: (QueueFilter) -> Unit = {},
     onBack: () -> Unit,
     onOpenLogs: () -> Unit,
     onClearDone: () -> Unit,
@@ -72,7 +75,6 @@ fun V2QueueScreen(
     onOpenTask: ((V2Task) -> Unit)? = null,
     onRequestDelete: (V2Task) -> Unit = {},
 ) {
-    var filter by remember { mutableStateOf(QueueFilter.ALL) }
     var openTaskId by remember { mutableStateOf<String?>(null) }
     var openTaskDir by remember { mutableIntStateOf(-1) }
     val context = LocalContext.current
@@ -80,12 +82,8 @@ fun V2QueueScreen(
     val previousStatuses = remember { mutableStateMapOf<String, V2TaskStatus>() }
     var flashId by remember { mutableStateOf<String?>(null) }
     val running = tasks.count { it.status == V2TaskStatus.RUNNING }
-    val waiting = tasks.count { it.status == V2TaskStatus.WAITING }
-    val finished = tasks.count {
-        it.status == V2TaskStatus.DONE ||
-            it.status == V2TaskStatus.FAILED ||
-            it.status == V2TaskStatus.CANCELED
-    }
+    val waiting = tasks.count { it.status.isWaiting }
+    val finished = tasks.count { it.status.isFinished }
 
     // 任务从非完成态翻到完成态时闪一下淡青色，并给一次成功触感和提示
     LaunchedEffect(tasks) {
@@ -105,13 +103,9 @@ fun V2QueueScreen(
 
     val visible = when (filter) {
         QueueFilter.ALL -> tasks
-        QueueFilter.WAITING -> tasks.filter { it.status == V2TaskStatus.WAITING }
+        QueueFilter.WAITING -> tasks.filter { it.status.isWaiting }
         QueueFilter.RUNNING -> tasks.filter { it.status == V2TaskStatus.RUNNING }
-        QueueFilter.FINISHED -> tasks.filter {
-            it.status == V2TaskStatus.DONE ||
-                it.status == V2TaskStatus.FAILED ||
-                it.status == V2TaskStatus.CANCELED
-        }
+        QueueFilter.FINISHED -> tasks.filter { it.status.isFinished }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 10.dp)) {
@@ -128,12 +122,20 @@ fun V2QueueScreen(
             }
             Column(Modifier.weight(1f)) {
                 Label("任务队列", 23f, V2Colors.ink(.95f), FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
+                // 统计行本身就是入口：点「执行中」直接切到该筛选。
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    V2RollingNumber(running, 11f, V2Colors.ink(.38f), FontWeight.Normal)
-                    Label(" 个执行中 · ", 11f, V2Colors.ink(.38f))
-                    V2RollingNumber(waiting, 11f, V2Colors.ink(.38f), FontWeight.Normal)
-                    Label(" 个等待", 11f, V2Colors.ink(.38f))
+                    QueueStat(
+                        count = running,
+                        suffix = " 个执行中",
+                        active = filter == QueueFilter.RUNNING,
+                    ) { onFilterChange(QueueFilter.RUNNING) }
+                    Label(" · ", 11f, V2Colors.ink(.38f))
+                    QueueStat(
+                        count = waiting,
+                        suffix = " 个等待",
+                        active = filter == QueueFilter.WAITING,
+                    ) { onFilterChange(QueueFilter.WAITING) }
                 }
             }
             Box(
@@ -160,16 +162,33 @@ fun V2QueueScreen(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChipItem("全部", tasks.size, filter == QueueFilter.ALL) { filter = QueueFilter.ALL }
-            FilterChipItem("等待", waiting, filter == QueueFilter.WAITING) { filter = QueueFilter.WAITING }
-            FilterChipItem("执行中", running, filter == QueueFilter.RUNNING) { filter = QueueFilter.RUNNING }
-            FilterChipItem("已结束", finished, filter == QueueFilter.FINISHED) { filter = QueueFilter.FINISHED }
+            FilterChipItem("全部", tasks.size, filter == QueueFilter.ALL) {
+                onFilterChange(QueueFilter.ALL)
+            }
+            FilterChipItem("等待", waiting, filter == QueueFilter.WAITING) {
+                onFilterChange(QueueFilter.WAITING)
+            }
+            FilterChipItem("执行中", running, filter == QueueFilter.RUNNING) {
+                onFilterChange(QueueFilter.RUNNING)
+            }
+            FilterChipItem("已结束", finished, filter == QueueFilter.FINISHED) {
+                onFilterChange(QueueFilter.FINISHED)
+            }
         }
 
         Spacer(Modifier.height(12.dp))
         if (visible.isEmpty()) {
             Spacer(Modifier.height(24.dp))
-            Label("这个筛选下没有任务", 11f, V2Colors.ink(.35f))
+            Label(
+                when (filter) {
+                    QueueFilter.RUNNING -> "当前没有执行中的任务"
+                    QueueFilter.WAITING -> "当前没有等待确认或排队的任务"
+                    QueueFilter.FINISHED -> "还没有已结束的任务"
+                    QueueFilter.ALL -> "队列里还没有任务"
+                },
+                11f,
+                V2Colors.ink(.35f),
+            )
         } else {
             V2PullRefresh(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -207,7 +226,10 @@ fun V2QueueScreen(
                                 },
                                 rightAction = {
                                     when (task.status) {
-                                        V2TaskStatus.RUNNING, V2TaskStatus.WAITING -> SwipeQueueAction(
+                                        V2TaskStatus.RUNNING,
+                                        V2TaskStatus.WAITING,
+                                        V2TaskStatus.QUEUED,
+                                        -> SwipeQueueAction(
                                             label = "停止",
                                             icon = Icons.Outlined.Close,
                                             color = V2Colors.rose700,
@@ -254,6 +276,27 @@ fun V2QueueScreen(
                 }
             }
         }
+    }
+}
+
+/** 头部统计片段：可点击切换筛选，选中时高亮。 */
+@Composable
+private fun QueueStat(
+    count: Int,
+    suffix: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val color = if (active) V2Colors.cyan700 else V2Colors.ink(.38f)
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .v2Pressable(pressScale = .96f, onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        V2RollingNumber(count, 11f, color, FontWeight.Normal)
+        Label(suffix, 11f, color)
     }
 }
 
@@ -322,22 +365,8 @@ private fun TaskCard(
         animationSpec = tween(if (flash) 120 else 480),
         label = "task-flash",
     )
-    val dotColor = when (task.status) {
-        V2TaskStatus.RUNNING -> V2Colors.cyan500
-        V2TaskStatus.WAITING -> V2Colors.amber500
-        V2TaskStatus.FAILED -> V2Colors.rose500
-        V2TaskStatus.DONE -> V2Colors.emerald
-        V2TaskStatus.CANCELED -> V2Colors.ink(.30f)
-    }
-    val statusText = when (task.status) {
-        // 服务端没有进度字段：-1 表示执行中但进度未知
-        V2TaskStatus.RUNNING -> if (task.progress < 0) "执行中" else "${task.progress}%"
-        V2TaskStatus.WAITING -> "排队中"
-        V2TaskStatus.FAILED -> "可重试"
-        V2TaskStatus.DONE -> "已完成"
-        V2TaskStatus.CANCELED -> "已取消"
-    }
-    val canCancel = task.status == V2TaskStatus.RUNNING || task.status == V2TaskStatus.WAITING
+    val dotColor = task.status.tint
+    val canCancel = task.status.isActive
 
     Box(
         Modifier
@@ -364,13 +393,17 @@ private fun TaskCard(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Label(task.title, 12.5f, V2Colors.ink(.88f), maxLines = 1)
-                    Spacer(Modifier.height(2.dp))
-                    Label(
-                        "${demoAgent(task.agentId).name} · ${task.priority} · $statusText",
-                        9.5f,
-                        V2Colors.ink(.32f),
-                        maxLines = 1,
-                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        V2TaskStatusBadge(task.status, dot = false)
+                        Spacer(Modifier.width(7.dp))
+                        Label(
+                            "${demoAgent(task.agentId).name} · ${task.priority}",
+                            9.5f,
+                            V2Colors.ink(.32f),
+                            maxLines = 1,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(8.dp))
                 if (canCancel) {
