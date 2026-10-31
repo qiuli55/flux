@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
+from flux.core.agent_runtime.runtimes.base import ModelChannel
+from flux.core.key_vault.probe import probe_channel
 
 PREFIX = "/api/v1"
 
@@ -145,6 +150,95 @@ def test_key_models_are_exposed_per_runtime(client: TestClient) -> None:
     assert (openai["id"], "gpt-5.5") not in builtin_models
     assert (deepseek["id"], "deepseek-v4-pro") in codex_models
     assert (openai["id"], "gpt-5.5") in codex_models
+
+
+# --- 连通性探测（保存后校验端点/模型是否可用）---
+
+
+def _probe_channel_stub(provider: str = "deepseek") -> ModelChannel:
+    return ModelChannel(
+        provider=provider,
+        base_url="https://api.deepseek.com",
+        api_key="sk-test-12345678",
+        key_id="stub-key",
+    )
+
+
+async def _run_probe(
+    handler: Callable[[httpx.Request], httpx.Response], provider: str = "deepseek"
+) -> dict[str, object]:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        return await probe_channel(_probe_channel_stub(provider), "deepseek-v4-pro", client=client)
+
+
+async def test_probe_channel_ok_hits_chat_completions() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "可用"}}]})
+
+    result = await _run_probe(handler)
+
+    assert result["ok"] is True
+    assert result["error_code"] == ""
+    assert result["reply"] == "可用"
+    assert result["latency_ms"] >= 0
+    assert seen["url"] == "https://api.deepseek.com/chat/completions"
+    assert seen["auth"] == "Bearer sk-test-12345678"
+
+
+async def test_probe_channel_maps_auth_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "invalid api key"}})
+
+    result = await _run_probe(handler)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "provider_auth_error"
+    assert "鉴权失败" in str(result["error"])
+
+
+async def test_probe_channel_maps_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timeout", request=request)
+
+    result = await _run_probe(handler)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "provider_timeout"
+
+
+def test_probe_endpoint_uses_vault_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _create_key(client)
+    calls: dict[str, object] = {}
+
+    async def fake_probe(vault: object, key_id: str) -> dict[str, object]:
+        calls["key_id"] = key_id
+        return {"ok": True, "skipped": False, "latency_ms": 12, "error": ""}
+
+    monkeypatch.setattr("flux.api.v1.keys.probe_vault_key", fake_probe)
+
+    response = client.post(f"{PREFIX}/keys/{created['id']}/probe")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["ok"] is True
+    assert data["latency_ms"] == 12
+    assert calls["key_id"] == created["id"]
+
+
+def test_probe_disabled_key_is_skipped(client: TestClient) -> None:
+    created = _create_key(client, enabled=False)
+
+    response = client.post(f"{PREFIX}/keys/{created['id']}/probe")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["ok"] is False
+    assert data["skipped"] is True
+    assert data["error_code"] == "key_disabled"
 
 
 def test_switch_model_with_key_and_agent_switch_clears_it(client: TestClient) -> None:

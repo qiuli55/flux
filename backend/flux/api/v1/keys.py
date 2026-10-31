@@ -1,6 +1,6 @@
 """密钥库 API（API Key Vault）。
 
-只做管理面：列表 / 创建 / 修改 / 删除。明文 API Key 只进请求体，落库即加密；
+管理面：列表 / 创建 / 修改 / 删除 / 连通性探测。明文 API Key 只进请求体，落库即加密；
 所有响应都只回元数据与末 4 位掩码，绝不出密文/明文。
 """
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.key_vault.probe import probe_vault_key
 from flux.schemas.api import ApiKeyCreateRequest, ApiKeyUpdateRequest
 
 router = APIRouter(prefix="/keys", tags=["keys"])
@@ -54,6 +55,18 @@ async def update_key(
         data.pop("enabled", None)
     row = await container.key_vault.update(key_id, **data)
     return ok(row.to_dict())
+
+
+@router.post("/{key_id}/probe")
+async def probe_key(
+    key_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """用该 key 登记的模型与端点真实发起一次最小请求，校验是否可用。
+
+    保存动作本身不触网；由调用方在保存后显式触发，结果只回状态与耗时，不回密钥。
+    """
+    result = await probe_vault_key(container.key_vault, key_id)
+    return ok(result)
 
 
 @router.delete("/{key_id}")

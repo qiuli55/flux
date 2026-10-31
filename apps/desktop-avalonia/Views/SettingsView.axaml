@@ -179,7 +179,7 @@
                         <StackPanel Spacing="14">
                             <StackPanel>
                                 <TextBlock Classes="section-title" Text="密钥库" />
-                                <TextBlock Text="密钥加密保存，接口只回末 4 位掩码；Agent 的模型通道可直接选用这里的模型。"
+                                <TextBlock Text="密钥加密保存，接口只回末 4 位掩码；保存时会用该 key 的模型真实请求一次端点，确认可用。"
                                            FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"
                                            Foreground="{DynamicResource TnText3}" />
                             </StackPanel>
@@ -326,7 +326,7 @@
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="默认视图" FontSize="12"
                                            Foreground="{DynamicResource TnText3}" />
                                 <TextBlock Grid.Row="2" Grid.Column="1"
-                                           Text="概览 / Solo 执行 / IDE 工作台 / 任务 / Skills / 系统诊断"
+                                           Text="概览 / Solo 执行 / 任务 / Skills / 系统诊断"
                                            Classes="mono" FontSize="12" TextWrapping="Wrap" />
                             </Grid>
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -23,6 +24,24 @@ public sealed partial class SettingsViewModel : ViewModelBase
     {
         _api = api;
         _shell = shell;
+        _shell.PropertyChanged += OnShellPropertyChanged;
+    }
+
+    /// <summary>外壳上的外观偏好变化（顶栏按钮、导航等）要同步到设置页开关。</summary>
+    private void OnShellPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        switch (e.PropertyName)
+        {
+            case nameof(MainWindowViewModel.IsRailWide):
+                OnPropertyChanged(nameof(RailWide));
+                break;
+            case nameof(MainWindowViewModel.IsStatusBarVisible):
+                OnPropertyChanged(nameof(StatusBar));
+                break;
+            case nameof(MainWindowViewModel.IsReduceMotion):
+                OnPropertyChanged(nameof(ReduceMotion));
+                break;
+        }
     }
 
     [ObservableProperty]
@@ -372,9 +391,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
             }
             if (res?.Success == true)
             {
+                var keyId = res.Data?.Id;
                 StartCreateKey();
                 await LoadKeysAsync().ConfigureAwait(true);
-                KeyStatus = "已保存";
+                KeyStatus = "已保存，正在校验端点…";
+                KeyStatus = await DescribeProbeAsync(api, keyId).ConfigureAwait(true);
             }
             else
             {
@@ -385,6 +406,18 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             IsKeysBusy = false;
         }
+    }
+
+    /// <summary>保存后真实请求一次该 key 的模型端点，把结果折成一句状态文案。</summary>
+    private static async Task<string> DescribeProbeAsync(FluxApiClient api, string? keyId)
+    {
+        if (string.IsNullOrEmpty(keyId)) return "已保存（未能校验连通性）";
+        var probe = await api.ProbeApiKeyAsync(keyId).ConfigureAwait(true);
+        var result = probe?.Data;
+        if (result is null) return $"已保存，但连通性校验失败：{probe?.Message ?? "后端无响应"}";
+        if (result.Skipped) return $"已保存 · {result.Error}";
+        if (result.Ok) return $"已保存 · 连通性正常（{result.LatencyMs} ms）";
+        return $"已保存，但连通性校验失败：{result.Error}";
     }
 
     [RelayCommand]
