@@ -135,7 +135,11 @@ async def probe_channel(
         )
     except AIOSError as exc:
         result["error_code"] = exc.code
-        result["error"] = _FRIENDLY_ERRORS.get(exc.code, exc.message)
+        status = exc.details.get("status") if isinstance(exc.details, dict) else None
+        if status == 402:
+            result["error"] = "账户余额不足（上游返回 HTTP 402），请充值后再试"
+        else:
+            result["error"] = _FRIENDLY_ERRORS.get(exc.code, exc.message)
         result["detail"] = exc.message
     except Exception as exc:  # noqa: BLE001 - 探测是管理面辅助动作，任何异常都只能折叠成结果
         result["error_code"] = "probe_failed"
