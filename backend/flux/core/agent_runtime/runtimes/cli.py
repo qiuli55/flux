@@ -18,13 +18,19 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:  # Python 3.11+ 标准库自带
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - 3.10 用 tomli（见 pyproject 条件依赖）
+    import tomli as tomllib
 
 from flux.config import Settings
 from flux.core.agent_runtime.codex_account import (
@@ -583,6 +589,7 @@ class CliRuntime:
         if self.runtime_id == RUNTIME_CODEX:
             home = run_dir / "codex-home"
             home.mkdir(parents=True, exist_ok=True)
+            user_home = _user_codex_home()
             config = home / "config.toml"
             config.write_text(
                 _codex_config(
@@ -592,10 +599,12 @@ class CliRuntime:
                     run_id=run_id,
                     model=model,
                     channel=channel,
+                    user_mcp_servers=_read_user_mcp_servers(user_home / "config.toml"),
                 ),
                 encoding="utf-8",
             )
             self._secure(config)
+            _link_user_assets(user_home, home)
             env = {"CODEX_HOME": str(home)}
             if channel is None:
                 # 隔离 CODEX_HOME 默认没有 auth.json；把 Flux 账号目录的登录态复制一份进去，
@@ -1441,6 +1450,122 @@ def _text_of(data: dict[str, Any]) -> str:
     return ""
 
 
+def _link_user_assets(user_home: Path, home: Path) -> None:
+    """把用户全局 CODEX_HOME 的 skills 目录软链进隔离 home，并复制 AGENTS.md。
+
+    只读复用：skills 不复制内容（用户改一处，所有 Run 立即生效），也不改写用户目录。
+    软链/复制失败只记 warning——用户资产缺失不该让本次 Run 起不来。
+    """
+    skills = user_home / "skills"
+    link = home / "skills"
+    if skills.is_dir() and not link.exists() and not link.is_symlink():
+        try:
+            link.symlink_to(skills, target_is_directory=True)
+        except OSError as exc:
+            logger.warning("codex skills 目录未能软链 src=%s err=%s", skills, exc)
+    agents = user_home / "AGENTS.md"
+    target = home / "AGENTS.md"
+    if agents.is_file() and not target.exists():
+        try:
+            shutil.copyfile(agents, target)
+        except OSError as exc:
+            logger.warning("codex AGENTS.md 未能复制 src=%s err=%s", agents, exc)
+
+
+def _user_codex_home() -> Path:
+    """用户全局 CODEX_HOME（默认 ~/.codex）。
+
+    Flux 的 Run 用隔离 home，但用户在里面声明的自建 MCP / skills 属于「用户资产」，
+    应该在隔离 home 里照样可用。测试用 `FLUX_CODEX_USER_HOME` 注入。
+    """
+    override = os.environ.get("FLUX_CODEX_USER_HOME", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".codex"
+
+
+def _read_user_mcp_servers(config_path: Path) -> dict[str, Any]:
+    """只取用户 config.toml 里的 `[mcp_servers.*]`，其余键（model / profile 等）不带。
+
+    文件缺失、读取失败、TOML 非法一律当作「没有用户 MCP」——用户配置坏了不该让 Run 起不来。
+    """
+    try:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("用户 codex 配置读取失败，忽略其 MCP 配置 path=%s err=%s", config_path, exc)
+        return {}
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return {}
+    return {str(name): spec for name, spec in servers.items() if isinstance(spec, dict)}
+
+
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(name: str) -> str:
+    """合法 bare key 原样写，其余（含 `.` 的名字）加引号，避免被拆成多层表。"""
+    return name if _BARE_TOML_KEY.match(name) else json.dumps(name, ensure_ascii=False)
+
+
+def _toml_value(value: Any) -> str | None:
+    """渲染 TOML 行内值；不支持的类型返回 None，由调用方跳过该 server。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        items = [_toml_value(item) for item in value]
+        if any(item is None for item in items):
+            return None
+        return "[" + ", ".join(items) + "]"
+    return None
+
+
+def _toml_table_lines(prefix: str, spec: Mapping[str, Any]) -> list[str] | None:
+    """渲染一张表（不含表头）：标量/数组直接写键值，嵌套 dict 递归成子表。"""
+    lines: list[str] = []
+    children: list[tuple[str, Mapping[str, Any]]] = []
+    for key, value in spec.items():
+        if isinstance(value, dict):
+            children.append((str(key), value))
+            continue
+        rendered = _toml_value(value)
+        if rendered is None:
+            return None
+        lines.append(f"{_toml_key(str(key))} = {rendered}")
+    for key, child in children:
+        if not child:
+            continue
+        sub = _toml_table_lines(f"{prefix}.{_toml_key(key)}", child)
+        if sub is None:
+            return None
+        lines += ["", f"[{prefix}.{_toml_key(key)}]", *sub]
+    return lines
+
+
+def _user_mcp_lines(servers: Mapping[str, Any]) -> list[str]:
+    """把用户自建 MCP 渲染成 `[mcp_servers.<name>]` 块。
+
+    `flux` 这个 key 永远由 Flux 自己生成（本次 Run 的一次性令牌），用户的同名条目忽略。
+    """
+    lines: list[str] = []
+    for name, spec in servers.items():
+        if name == "flux" or not isinstance(spec, dict):
+            continue
+        table = f"mcp_servers.{_toml_key(str(name))}"
+        body = _toml_table_lines(table, spec)
+        if body is None:
+            logger.warning("用户 codex MCP 配置含不支持的字段类型，跳过 server=%s", name)
+            continue
+        lines += ["", f"[{table}]", *body]
+    if lines:
+        lines.append("")
+    return lines
+
+
 def _codex_config(
     url: str,
     token: str | None,
@@ -1449,6 +1574,7 @@ def _codex_config(
     run_id: str = "",
     model: str = "",
     channel: Any = None,
+    user_mcp_servers: Mapping[str, Any] | None = None,
 ) -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
 
@@ -1460,6 +1586,9 @@ def _codex_config(
     """
     lines = ["# Flux 自动生成：为本次 Run 注入 Flux MCP（含一次性令牌，权限 0600）。"]
     lines += _codex_provider_lines(settings, model=model, channel=channel)
+    if user_mcp_servers:
+        # 隔离 CODEX_HOME 会丢掉用户在 ~/.codex/config.toml 里自建的 MCP，这里原样带回来
+        lines += _user_mcp_lines(user_mcp_servers)
     if token is not None:
         lines += [
             "[mcp_servers.flux]",

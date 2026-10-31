@@ -34,11 +34,13 @@ from flux.core.agent_runtime.runtimes.base import (
     RuntimeProcess,
 )
 from flux.core.agent_runtime.runtimes.cli import (
+    CliRuntime,
     _accumulate_usage,
     _codex_config,
     _normalize_codex_event,
     _normalize_opencode_event,
     _opencode_config,
+    _read_user_mcp_servers,
     _RunUsage,
     _upstream_failure,
 )
@@ -543,6 +545,93 @@ def test_cli_mcp_config_binds_the_run_id_header(settings: Settings) -> None:
 
     codex = _codex_config("http://127.0.0.1:8802/mcp", "tok", settings=settings, run_id=run_id)
     assert f'X-Flux-Run-Id = "{run_id}"' in codex
+
+
+def test_codex_config_merges_user_mcp_servers(settings: Settings) -> None:
+    """隔离 CODEX_HOME 也要带上用户自建 MCP；`flux` 这个 key 始终由 Flux 独占。"""
+    text = _codex_config(
+        "http://127.0.0.1:8801/mcp",
+        "tok",
+        settings=settings,
+        user_mcp_servers={
+            "playwright": {
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp"],
+                "env": {"PW": "1"},
+            },
+            "flux": {"command": "should-be-ignored"},
+        },
+    )
+    assert "[mcp_servers.playwright]" in text
+    assert 'command = "npx"' in text
+    assert 'args = ["-y", "@playwright/mcp"]' in text
+    assert "[mcp_servers.playwright.env]" in text
+    assert 'PW = "1"' in text
+    # 用户的同名条目不能覆盖本次 Run 的 Flux 端点（含一次性令牌）
+    assert "should-be-ignored" not in text
+    assert "[mcp_servers.flux]" in text
+
+
+def test_read_user_mcp_servers_ignores_missing_or_broken_config(tmp_path: Path) -> None:
+    """用户配置缺失/写坏都只当「没有用户 MCP」，不阻断 Run。"""
+    assert _read_user_mcp_servers(tmp_path / "missing.toml") == {}
+    broken = tmp_path / "broken.toml"
+    broken.write_text("not = [valid", encoding="utf-8")
+    assert _read_user_mcp_servers(broken) == {}
+
+
+def test_read_user_mcp_servers_keeps_only_mcp_table(tmp_path: Path) -> None:
+    """只取 mcp_servers：model / profile 等键留在用户目录，不进本次 Run 的配置。"""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-5"',
+                "",
+                "[mcp_servers.docs]",
+                'command = "uvx"',
+                'args = ["docs-mcp"]',
+                "",
+                "[mcp_servers.docs.env]",
+                'API_KEY = "k"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    servers = _read_user_mcp_servers(path)
+    assert set(servers) == {"docs"}
+    assert servers["docs"]["command"] == "uvx"
+    assert servers["docs"]["env"] == {"API_KEY": "k"}
+
+
+def test_write_runtime_config_links_user_assets(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FLUX_CODEX_USER_HOME 指向用户 CODEX_HOME：MCP 合并、skills 软链、AGENTS.md 复制。"""
+    user_home = tmp_path / "user-codex"
+    (user_home / "skills" / "demo").mkdir(parents=True)
+    (user_home / "config.toml").write_text(
+        '[mcp_servers.docs]\ncommand = "uvx"\n', encoding="utf-8"
+    )
+    (user_home / "AGENTS.md").write_text("# 用户规则\n", encoding="utf-8")
+    monkeypatch.setenv("FLUX_CODEX_USER_HOME", str(user_home))
+
+    runtime = SimpleNamespace(_settings=settings, runtime_id=RUNTIME_CODEX)
+    runtime._secure = lambda path: None
+    runtime._inject_account_auth = lambda home: None
+
+    run_dir = tmp_path / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    env = CliRuntime._write_runtime_config(runtime, run_dir, "tok", "run-1")
+
+    home = run_dir / "codex-home"
+    assert env["CODEX_HOME"] == str(home)
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert "[mcp_servers.docs]" in text
+    assert "[mcp_servers.flux]" in text
+    assert (home / "skills").is_symlink()
+    assert (home / "AGENTS.md").read_text(encoding="utf-8") == "# 用户规则\n"
 
 
 def test_opencode_config_applies_the_task_model_only_for_this_run() -> None:
