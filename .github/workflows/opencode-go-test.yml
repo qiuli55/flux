@@ -1,0 +1,79 @@
+name: opencode-go-test
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Exchange GitHub OIDC for OpenCode token
+        id: auth
+        env:
+          CLIENT_ID: ${{ vars.OPENCODE_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLIENT_ID" || { echo "OPENCODE_CLIENT_ID is empty"; exit 1; }
+          AUDIENCE="https://opencode.ai/console"
+          oidc=$(curl -sSf --oauth2-bearer "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -er .value)
+          token=$(curl -sSf https://opencode.ai/console/auth/oauth/token \
+            -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+            -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+            -d client_id="$CLIENT_ID" \
+            -d subject_token="$oidc" | jq -er .access_token)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+          echo "auth OK, token length: ${#token}"
+
+      - name: Discover Go base URL and DeepSeek model
+        id: discover
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          curl -sSf https://opencode.ai/api/v2/config \
+            -H "Authorization: Bearer $TOKEN" -o /tmp/config.json
+          jq -r '.providers | to_entries[] | "\(.key)  \(.value.settings.baseURL // "-")"' /tmp/config.json
+          base=$(jq -r '[.providers[].settings.baseURL // empty | select(test("/go"))] | first // empty' /tmp/config.json)
+          if [ -z "$base" ]; then
+            echo "no Go base URL in workspace config; fallback to public Go endpoint"
+            base="https://opencode.ai/inference/go/openai/v1"
+          fi
+          model=$(jq -r '[.providers[] | .models // {} | keys[] | select(test("deepseek"; "i") and test("flash"; "i"))] | first // empty' /tmp/config.json)
+          if [ -z "$model" ]; then
+            model="deepseek-v4.1-flash"
+            echo "model not found in config; fallback to $model"
+          fi
+          echo "base=$base"
+          echo "model=$model"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "== models in config"
+          jq -r '.providers[] | .models // {} | keys[]' /tmp/config.json | sort -u | head -40
+
+      - name: Call DeepSeek V4.1 Flash via Go
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+          BASE: ${{ steps.discover.outputs.base }}
+          MODEL: ${{ steps.discover.outputs.model }}
+        run: |
+          set -euo pipefail
+          jq -n --arg m "$MODEL" \
+            '{model:$m, messages:[{role:"user",content:"Reply with exactly: OK"}], max_tokens:16, stream:false}' \
+            > /tmp/body.json
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+            -X POST "$BASE/chat/completions" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "x-opencode-session: ci-$GITHUB_RUN_ID" \
+            -H "User-Agent: flux-ci/1.0" \
+            -d @/tmp/body.json)
+          echo "HTTP $code"
+          head -c 600 /tmp/resp.json; echo
+          test "$code" = "200"
+          jq -r '.choices[0].message.content // .error.message // "no content"' /tmp/resp.json
