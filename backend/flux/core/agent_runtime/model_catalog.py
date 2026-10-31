@@ -221,16 +221,6 @@ def default_base_url(settings: Settings, provider: str) -> str:
     return ""
 
 
-def wire_api_for(provider: str, configured: str = "") -> str:
-    """codex 供应商块的 wire_api：显式配置优先，否则按供应商推导。"""
-    value = (configured or "").strip().lower()
-    if value in ("chat", "responses"):
-        return value
-    if provider == PROVIDER_OPENAI_COMPATIBLE:
-        return "chat"
-    return "responses"
-
-
 def vault_models_for_runtime(
     entries: Iterable[KeyEntry],
     runtime: str | None,
@@ -271,5 +261,4 @@ __all__ = [
     "models_for_runtime",
     "supports_provider",
     "vault_models_for_runtime",
-    "wire_api_for",
 ]

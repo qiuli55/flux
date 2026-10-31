@@ -38,7 +38,7 @@ from flux.core.agent_runtime.codex_account import (
     codex_proxy_env,
     sync_account_auth,
 )
-from flux.core.agent_runtime.model_catalog import PROVIDER_TITLES, wire_api_for
+from flux.core.agent_runtime.model_catalog import PROVIDER_TITLES
 from flux.core.agent_runtime.platforms import kill_group, secure_file, signal_group_graceful
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.runtimes.base import (
@@ -1687,7 +1687,6 @@ def _codex_channel_lines(channel: Any, *, model: str) -> list[str]:
     provider_id = _key_provider_id(channel)
     label = str(getattr(channel, "label", "") or "") or PROVIDER_TITLES.get(provider, provider)
     base_url = str(getattr(channel, "base_url", "") or "").strip()
-    wire_api = wire_api_for(provider, str(getattr(channel, "wire_api", "") or ""))
     lines = [f'model = "{configured_model}"', f'model_provider = "{provider_id}"']
     if provider == "deepseek":
         # DeepSeek 没有 codex 内置的联网搜索工具，留着会把请求打回 400
@@ -1697,7 +1696,8 @@ def _codex_channel_lines(channel: Any, *, model: str) -> list[str]:
         f"[model_providers.{provider_id}]",
         f"name = {json.dumps(label, ensure_ascii=False)}",
         f"base_url = {json.dumps(base_url, ensure_ascii=False)}",
-        f'wire_api = "{wire_api}"',
+        # codex-cli 0.157.1 起只接受 Responses API，写 chat 会让整份配置被判无效
+        'wire_api = "responses"',
         # 只写变量名；真实密钥由 Flux 注入子进程环境，不落盘
         'env_key = "FLUX_MODEL_API_KEY"',
         "",
