@@ -1,0 +1,8 @@
+src/**
+test/**
+release/**
+.gitkeep
+*.vsix
+tsconfig.json
+node_modules/**
+*.map

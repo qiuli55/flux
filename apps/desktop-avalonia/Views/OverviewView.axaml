@@ -67,7 +67,7 @@
                                Text="用自然语言描述需求，Flux 会先澄清需求、产出执行计划，再在虚拟工作区生成 diff。所有改动都需你审核通过后才写入磁盘，并可随时回滚。" />
                     <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
                         <Button Classes="btn" Content="新建 Solo 任务" Command="{Binding GoCommand}" CommandParameter="solo" />
-                        <Button Classes="btn" Content="打开 IDE 工作台" Command="{Binding GoCommand}" CommandParameter="ide" />
+                        <Button Classes="btn" Content="打开 IDE 窗口" Command="{Binding GoCommand}" CommandParameter="ide" />
                         <Button Classes="btn" Content="查看任务看板" Command="{Binding GoCommand}" CommandParameter="tasks" />
                         <Button Classes="btn" Content="管理 Skills" Command="{Binding GoCommand}" CommandParameter="skills" />
                     </StackPanel>

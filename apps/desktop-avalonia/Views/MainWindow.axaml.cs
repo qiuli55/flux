@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Flux.Desktop.ViewModels;
 
@@ -17,6 +18,20 @@ public partial class MainWindow : Window
 
         PaletteInput.KeyDown += OnPaletteInputKeyDown;
         DataContextChanged += OnDataContextChanged;
+
+        // Esc 只在命令面板打开时由窗口消费；否则放行给 IDE（补全弹窗等）自行处理。
+        AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
+    }
+
+    private void OnWindowKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || _viewModel?.IsPaletteOpen != true)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _viewModel.ClosePaletteCommand.Execute(null);
     }
 
     private void OnDataContextChanged(object? sender, EventArgs e)
@@ -55,5 +70,14 @@ public partial class MainWindow : Window
 
         e.Handled = true;
         _viewModel?.RunPaletteSelectionCommand.Execute(null);
+    }
+
+    /// <summary>点击命令面板条目：激活对应页面并收起面板。</summary>
+    private void OnPaletteItemClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: NavItem item })
+        {
+            _viewModel?.RunPaletteItemCommand.Execute(item);
+        }
     }
 }

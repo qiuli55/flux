@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI
 from flux.api.auth import require_rest_auth
 from flux.api.errors import register_exception_handlers
 from flux.api.internal_tap import router as llm_tap_router
-from flux.api.v1 import api_v1_router, terminal
+from flux.api.v1 import api_v1_router, ide, terminal
 from flux.api.v1 import cloud as cloud_api
 from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
@@ -97,6 +97,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # same-origin + token/cookie 鉴权，并单独挂到应用，避免依赖注入在 WS 上失效。
     app.include_router(
         terminal.websocket_router,
+        prefix=app_settings.api_v1_prefix,
+    )
+    # IDE 代码智能（LSP 网关）：同样是 WS，鉴权与 terminal 复用同一套
+    # same-origin + token/cookie 检查，故与 REST 路由分开挂载。
+    app.include_router(
+        ide.websocket_router,
         prefix=app_settings.api_v1_prefix,
     )
     # MCP 能力面（目标架构 §3.1）：与 REST 同进程同生命周期，但不挂在 /api/v1 下——

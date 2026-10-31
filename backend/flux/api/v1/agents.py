@@ -18,7 +18,9 @@ from flux.core.agent_runtime.model_catalog import (
     models_for_runtime,
     vault_models_for_runtime,
 )
-from flux.schemas.api import AgentCreateRequest, AgentTokenIssueRequest
+from flux.core.ide_completion import ActiveAgentSelection
+from flux.errors import BadRequestError
+from flux.schemas.api import ActiveAgentRequest, AgentCreateRequest, AgentTokenIssueRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -64,6 +66,48 @@ async def list_agents(container: Container = Depends(get_container)) -> dict[str
     key_entries = tuple(await container.key_vault.catalog_entries())
     items = [_agent_payload(h, container, key_entries) for h in handles]
     return ok(items, metadata={"count": len(items)})
+
+
+# --- 当前 Agent 选择（AI_COMPLETION_SPEC §5.3）---
+# 注意：这两条必须声明在 `GET /{agent_id}` 之前，否则 "active" 会被当成 agent_id。
+# 右栏选了什么，行内补全的 `follow-agent` 就用什么（agent + model + key）。
+
+
+@router.get("/active")
+async def get_active_agent(
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """当前生效的 Agent 选择，以及它会解析到的实际模型通道。"""
+
+    return ok(await container.completion_resolver.describe_active())
+
+
+@router.put("/active")
+async def put_active_agent(
+    payload: ActiveAgentRequest, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """保存右栏的 Agent / 模型选择（`agent_id` 留空表示清空选择）。"""
+
+    selection = ActiveAgentSelection(
+        agent_id=payload.agent_id, model=payload.model, key_id=payload.key_id
+    )
+    if selection.agent_id:
+        # 档案不存在时 get() 抛 NotFoundError，先于落盘拦截
+        container.agents.get(selection.agent_id)
+    if selection.key_id:
+        row = await container.key_vault.get(selection.key_id)
+        if not row.enabled:
+            raise BadRequestError(
+                f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)}
+            )
+        models = [str(item).strip() for item in (row.models or []) if str(item).strip()]
+        if selection.model and models and selection.model not in models:
+            raise BadRequestError(
+                f"密钥 {row.name!r} 没有登记模型 {selection.model}",
+                details={"key_id": str(row.id), "model": selection.model, "allowed": models},
+            )
+    container.completion_prefs.set_active_agent(selection)
+    return ok(await container.completion_resolver.describe_active(), metadata={"saved": True})
 
 
 @router.get("/{agent_id}")

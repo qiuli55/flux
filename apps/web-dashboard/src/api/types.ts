@@ -808,3 +808,59 @@ export interface BillingRefreshResult {
     error: string | null;
   }>;
 }
+
+/** 一个语言服务器的静态描述（GET /api/v1/ide/languages） */
+export interface IdeServer {
+  id: string;
+  name: string;
+  languages: string[];
+  command: string[];
+  install: string[] | null;
+  install_hint: string;
+  description: string;
+  homepage: string;
+  available: boolean;
+  executable: string | null;
+}
+
+/** 一种语言 → 推荐服务器（GET /api/v1/ide/languages） */
+export interface IdeLanguage {
+  id: string;
+  label: string;
+  /** 推荐服务器 id；该语言没有服务器时为 null */
+  server: string | null;
+  server_name: string | null;
+  available: boolean;
+  /** 所有候选服务器 id，按优先级排序 */
+  servers: string[];
+}
+
+/** GET /api/v1/ide/languages 的 data */
+export interface IdeCatalog {
+  servers: IdeServer[];
+  languages: IdeLanguage[];
+  /** 扩展名 → languageId，例如 ".py" → "python" */
+  extensions: Record<string, string>;
+  /** 小写文件名 → languageId，例如 "dockerfile" → "dockerfile" */
+  filenames: Record<string, string>;
+}
+
+/** GET /api/v1/ide/sessions 里的一项：常驻语言服务器进程 */
+export interface IdeSession {
+  server: string;
+  workspace_root: string;
+  /** 当前挂在这个进程上的 WebSocket 连接数 */
+  clients: number;
+  /** 距离上次活动的秒数（30 分钟空闲会被回收） */
+  idle_seconds: number;
+}
+
+/** POST /api/v1/ide/languages/{id}/install 的 data */
+export interface IdeInstallResult {
+  server: string;
+  command: string[];
+  exit_code: number | null;
+  ok: boolean;
+  output: string;
+  available: boolean;
+}

@@ -18,7 +18,6 @@
 
     <Window.KeyBindings>
         <KeyBinding Gesture="Ctrl+K" Command="{Binding OpenPaletteCommand}" />
-        <KeyBinding Gesture="Escape" Command="{Binding ClosePaletteCommand}" />
     </Window.KeyBindings>
 
     <Window.Resources>
@@ -49,7 +48,7 @@
 
         <!-- 命令面板条目模板 -->
         <DataTemplate x:Key="PaletteItemTemplate" DataType="vm:NavItem">
-            <Button Classes="nav" Height="30" Command="{Binding ActivateCommand}" CommandParameter="{Binding}">
+            <Button Classes="nav" Height="30" Click="OnPaletteItemClick">
                 <Grid ColumnDefinitions="Auto,*,Auto">
                     <Viewbox Grid.Column="0" Classes="icon">
                         <Path Data="{Binding IconGeometry}" />
@@ -139,74 +138,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- 模式切换（web 端 fx-mode） -->
-                    <Border DockPanel.Dock="Top" Padding="8,12"
-                            BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
-                        <StackPanel>
-                            <TextBlock Classes="caps" Text="模式" Margin="4,0,0,4"
-                                       IsVisible="{Binding IsRailWide}" />
-
-                            <!-- 展开态：分段控件（SOLO | IDE） -->
-                            <Border IsVisible="{Binding IsRailWide}"
-                                    BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
-                                    CornerRadius="6" ClipToBounds="True">
-                                <Grid ColumnDefinitions="*,Auto,*">
-                                    <Button Grid.Column="0" Classes="mode"
-                                            Classes.active="{Binding ModeItems[0].IsActive}"
-                                            Command="{Binding SwitchModeCommand}" CommandParameter="Solo">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <Viewbox Classes="icon">
-                                                <Path Data="{Binding ModeItems[0].IconGeometry}" />
-                                            </Viewbox>
-                                            <TextBlock Text="{Binding ModeItems[0].Label}" VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Rectangle Grid.Column="1" Width="1" Fill="{DynamicResource TnLine}" />
-                                    <Button Grid.Column="2" Classes="mode"
-                                            Classes.active="{Binding ModeItems[1].IsActive}"
-                                            Command="{Binding SwitchModeCommand}" CommandParameter="IDE">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <Viewbox Classes="icon">
-                                                <Path Data="{Binding ModeItems[1].IconGeometry}" />
-                                            </Viewbox>
-                                            <TextBlock Text="{Binding ModeItems[1].Label}" VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </Button>
-                                </Grid>
-                            </Border>
-
-                            <!-- 收起态：与左栏其它图标项同一套尺寸与选中样式 -->
-                            <StackPanel Spacing="2" IsVisible="{Binding IsRailCompact}">
-                                <Grid>
-                                    <Button Classes="mode compact"
-                                            Classes.active="{Binding ModeItems[0].IsActive}"
-                                            Command="{Binding SwitchModeCommand}" CommandParameter="Solo"
-                                            ToolTip.Tip="Solo">
-                                        <Viewbox Classes="icon">
-                                            <Path Data="{Binding ModeItems[0].IconGeometry}" />
-                                        </Viewbox>
-                                    </Button>
-                                    <Border Width="2" Height="16" HorizontalAlignment="Left"
-                                            VerticalAlignment="Center" Background="{DynamicResource TnAccent}"
-                                            IsVisible="{Binding ModeItems[0].IsActive}" />
-                                </Grid>
-                                <Grid>
-                                    <Button Classes="mode compact"
-                                            Classes.active="{Binding ModeItems[1].IsActive}"
-                                            Command="{Binding SwitchModeCommand}" CommandParameter="IDE"
-                                            ToolTip.Tip="IDE">
-                                        <Viewbox Classes="icon">
-                                            <Path Data="{Binding ModeItems[1].IconGeometry}" />
-                                        </Viewbox>
-                                    </Button>
-                                    <Border Width="2" Height="16" HorizontalAlignment="Left"
-                                            VerticalAlignment="Center" Background="{DynamicResource TnAccent}"
-                                            IsVisible="{Binding ModeItems[1].IsActive}" />
-                                </Grid>
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-
                     <!-- 导航（web 端 fx-rail-scroll） -->
                     <ScrollViewer Padding="8,12">
                         <StackPanel>
@@ -270,6 +201,19 @@
                                 <TextBlock FontSize="11" Foreground="{DynamicResource TnText3}"
                                            Text="{Binding EngineText}" />
                             </Border>
+                            <Button Classes="btn" Height="28" Padding="10,0"
+                                    Command="{Binding OpenIdeWindowCommand}"
+                                    IsEnabled="{Binding IsIdeAvailable}"
+                                    ToolTip.Tip="{Binding IdeButtonTip}">
+                                <StackPanel Orientation="Horizontal" Spacing="6"
+                                            VerticalAlignment="Center">
+                                    <Viewbox Classes="icon">
+                                        <Path Data="{Binding IdeIconGeometry}" />
+                                    </Viewbox>
+                                    <TextBlock Text="打开 IDE" FontSize="12"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
                             <Button Classes="iconbtn"
                                     Command="{Binding ToggleRailWideCommand}"
                                     ToolTip.Tip="{Binding RailToggleTip}">
@@ -287,7 +231,7 @@
                 <!-- 状态栏（web 端 fx-status；可在设置里关掉） -->
                 <Border Grid.Row="2" Background="{DynamicResource TnBg2}" Padding="24,0"
                         Height="30"
-                        IsVisible="{Binding IsStatusBarVisible}"
+                        IsVisible="{Binding ShowShellStatusBar}"
                         BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
                     <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
                         <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="5"

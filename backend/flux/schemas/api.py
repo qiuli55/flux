@@ -224,6 +224,14 @@ class WorkspaceFileCreateRequest(BaseModel):
     content: str = Field(default="", max_length=262144)
 
 
+class WorkspaceFileWriteRequest(BaseModel):
+    """编辑器保存：覆写一个已存在的文件。"""
+
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = Field(default="", max_length=262144)
+    workspace_root: str | None = Field(default=None, max_length=4096)
+
+
 class WorkspaceFilePathRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
@@ -270,6 +278,76 @@ class ChatRequest(BaseModel):
     provider: ModelProvider | None = None
     task_id: str | None = None
     project_id: str | None = None
+
+
+class FimRequest(BaseModel):
+    """行内补全（Fill-In-the-Middle）请求（AI_COMPLETION_SPEC §5.4）。
+
+    服务端一次性构建三层上下文：`prefix`/`suffix` 是文件级 L0，`context` 可携带
+    扩展已取到的 L1/L2 片段（可选，缺省时服务端自行从工作区补齐）。
+    """
+
+    prefix: str = ""
+    suffix: str = ""
+    # 扩展显式传入的上下文快照（见 /ide/completion/context 响应结构）；缺省时服务端构建
+    context: dict[str, Any] | None = None
+    path: str | None = Field(default=None, max_length=1024)
+    project_id: str | None = Field(default=None, max_length=64)
+    language_id: str | None = Field(default=None, max_length=64)
+    # 光标位置（UTF-16 偏移或行号均可，仅用于上下文切片，不参与语义）
+    caret: int | None = Field(default=None, ge=0)
+    text: str | None = None
+    # 模型解析：显式 model/key_id 优先；留空走 follow-agent → 偏好 → 默认
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+    agent_id: str | None = Field(default=None, max_length=64)
+    max_tokens: int | None = Field(default=None, ge=16, le=8192)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    stop: list[str] = Field(default_factory=list, max_length=8)
+    # 生成后最多保留多少行（多出的截断），由服务端统一处理，避免前端补丁式截断
+    max_lines: int = Field(default=8, ge=1, le=64)
+
+
+class CompletionContextRequest(BaseModel):
+    """补全上下文查询（AI_COMPLETION_SPEC §3.2）：只读，不写任何文件。"""
+
+    project_id: str | None = Field(default=None, max_length=64)
+    path: str = Field(min_length=1, max_length=1024)
+    caret: int | None = Field(default=None, ge=0)
+    text: str | None = None
+    language_id: str | None = Field(default=None, max_length=64)
+
+
+class CompletionPrefsRequest(BaseModel):
+    """补全偏好（AI_COMPLETION_SPEC §5.3）。"""
+
+    enabled: bool = True
+    model: str = Field(default="follow-agent", max_length=128)
+    debounce_ms: int = Field(default=400, ge=100, le=2000)
+    max_lines: int = Field(default=8, ge=1, le=64)
+
+
+class ActiveAgentRequest(BaseModel):
+    """当前生效的 Agent 选择（AI_COMPLETION_SPEC §7）。
+
+    `model`/`key_id` 留空表示沿用该 Agent 自身默认。
+    """
+
+    agent_id: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+
+
+class CompletionAcceptedRequest(BaseModel):
+    """补全接受埋点（AI_COMPLETION_SPEC §8）：只做计数，不记录代码内容。"""
+
+    accepted: bool = True
+    #: 展示这条补全时服务端实际用的通道（`fim` / `chat`），用于分模式看接受率
+    mode: str | None = Field(default=None, max_length=16)
+    model: str | None = Field(default=None, max_length=128)
+    language_id: str | None = Field(default=None, max_length=64)
+    #: 整行模式 / 插入模式的区分，便于对比两种交互的接受率
+    completion_mode: str | None = Field(default=None, max_length=16)
 
 
 class ConnectorExecuteRequest(BaseModel):

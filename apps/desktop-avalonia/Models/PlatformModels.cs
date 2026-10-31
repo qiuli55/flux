@@ -87,6 +87,19 @@ public sealed record ApiKeyEntry(
 /// <summary>DELETE /api/v1/keys/{id} 的 data。</summary>
 public sealed record ApiKeyDeleteResult(bool Deleted, string KeyId);
 
+/// <summary>POST /api/v1/keys/{id}/probe 的 data：保存后校验端点与模型是否可用。</summary>
+public sealed record KeyProbeResult(
+    bool Ok,
+    bool Skipped,
+    string Provider,
+    string Model,
+    string BaseUrl,
+    int LatencyMs,
+    string Reply,
+    string Error,
+    string ErrorCode,
+    string Detail);
+
 /// <summary>GET /api/v1/agents 的元素。</summary>
 public sealed record AgentHandle(string Id, string State, AgentSpec Spec);
 

@@ -227,6 +227,10 @@ class Settings(BaseSettings):
     memory_cloud_sync: bool = True
     # 自动记录开关的落盘位置；留空 = ~/.flux/memory-prefs.json
     memory_prefs_file: str | None = None
+    # IDE 行内补全偏好与当前 Agent 选择的落盘位置；留空 = ~/.flux/completion-prefs.json
+    completion_prefs_file: str | None = None
+    # IDE 行内补全埋点（接受率 / 首字延迟）的落盘位置；留空 = ~/.flux/completion-stats.json
+    completion_stats_file: str | None = None
 
     @property
     def is_sqlite(self) -> bool:
@@ -267,6 +271,24 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "memory-prefs.json"
+
+    @property
+    def completion_prefs_path(self) -> Path:
+        """IDE 行内补全偏好与当前 Agent 选择的落盘路径。"""
+        raw = (self.completion_prefs_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "completion-prefs.json"
+
+    @property
+    def completion_stats_path(self) -> Path:
+        """IDE 行内补全埋点的落盘路径。"""
+        raw = (self.completion_stats_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "completion-stats.json"
 
     @property
     def key_vault_key_path(self) -> Path:

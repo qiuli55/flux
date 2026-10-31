@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
+from flux.api.auth import is_trusted_local
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
@@ -26,6 +27,7 @@ from flux.schemas.api import (
     WorkspaceFilePathRequest,
     WorkspaceFileRenameRequest,
     WorkspaceFileReplaceRequest,
+    WorkspaceFileWriteRequest,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -112,6 +114,23 @@ def _require_desktop_file_operation(
 ) -> None:
     if container.settings.env != "local" or x_flux_desktop != "1":
         raise HTTPException(status_code=403, detail="本地文件操作只允许 Flux 桌面端")
+
+
+def _require_file_save(
+    container: Container,
+    request: Request,
+    x_flux_desktop: str | None,
+) -> None:
+    """保存文件：本地环境，且必须来自本机直连或 Flux 桌面端。
+
+    Web dashboard 与桌面端都跑在同一台机器上，`is_trusted_local` 已经覆盖了
+    「本机直连且无反向代理头」的情况；`X-Flux-Desktop` 额外覆盖桌面端经代理的路径。
+    """
+    if container.settings.env != "local":
+        raise HTTPException(status_code=403, detail="保存文件只允许在本地环境使用")
+    if x_flux_desktop == "1" or is_trusted_local(request):
+        return
+    raise HTTPException(status_code=403, detail="保存文件只允许本机访问或 Flux 桌面端")
 
 
 @router.post("/{project_id}/files/file")
@@ -270,3 +289,27 @@ async def read_project_file(
         container.files.read, path=path, workspace_root=workspace_root
     )
     return ok(content.to_dict(), metadata={"truncated": content.truncated})
+
+
+@router.put("/{project_id}/files/content")
+async def write_project_file(
+    project_id: uuid.UUID,
+    payload: WorkspaceFileWriteRequest,
+    request: Request,
+    container: Container = Depends(get_container),
+    x_flux_desktop: str | None = Header(default=None),
+) -> dict[str, object]:
+    """保存编辑器内容：覆写一个已存在的文件（不新建、不重命名、不删）。
+
+    越界路径、`.flux/` 与 `.git/` 内部、二进制/非普通文件、超过 256 KiB 一律拒绝。
+    写入是原地截断，保留 inode 与权限位——语言服务器与文件监视器不会把它当成新文件。
+    """
+    _require_file_save(container, request, x_flux_desktop)
+    await container.brain.get_project(project_id)
+    content = await asyncio.to_thread(
+        container.files.write,
+        path=payload.path,
+        content=payload.content,
+        workspace_root=payload.workspace_root,
+    )
+    return ok(content.to_dict(), metadata={"saved": True, "size": content.size})

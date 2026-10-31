@@ -4262,6 +4262,56 @@
         ]
       }
     },
+    "/api/v1/keys/{key_id}/probe": {
+      "post": {
+        "description": "用该 key 登记的模型与端点真实发起一次最小请求，校验是否可用。\n\n保存动作本身不触网；由调用方在保存后显式触发，结果只回状态与耗时，不回密钥。",
+        "operationId": "probe_key_api_v1_keys__key_id__probe_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Probe Key Api V1 Keys  Key Id  Probe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Probe Key",
+        "tags": [
+          "keys"
+        ]
+      }
+    },
     "/api/v1/memory": {
       "get": {
         "description": "三层统一读取口：Environment → User →（可选）Project，按优先级排序并附来源。",

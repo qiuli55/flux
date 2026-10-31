@@ -42,6 +42,7 @@ public sealed class FluxApiClient : IDisposable
         // HttpClient 默认会读取 HTTP_PROXY/HTTPS_PROXY 环境变量，
         // 而它不会自动绕过回环地址，机器上残留的失效代理会让本机请求全部失败。
         var handler = new HttpClientHandler { UseProxy = false };
+        BaseUrl = baseUrl.TrimEnd('/');
         _http = new HttpClient(handler)
         {
             BaseAddress = new Uri(baseUrl),
@@ -52,7 +53,14 @@ public sealed class FluxApiClient : IDisposable
             BaseAddress = new Uri(baseUrl),
             Timeout = TimeSpan.FromSeconds(120),
         };
+
+        // 后端对「新建/改名/删除/保存」只放行本机直连或桌面端；桌面端经代理时靠这个头。
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("X-Flux-Desktop", "1");
+        _aiHttp.DefaultRequestHeaders.TryAddWithoutValidation("X-Flux-Desktop", "1");
     }
+
+    /// <summary>后端根地址（LSP WebSocket 需要自己拼 ws:// 地址）。</summary>
+    public string BaseUrl { get; }
 
     public Task<ApiEnvelope<HealthInfo>?> HealthAsync(CancellationToken ct = default)
         => GetAsync<HealthInfo>("/api/v1/health", ct);
@@ -112,6 +120,12 @@ public sealed class FluxApiClient : IDisposable
 
     public Task<ApiEnvelope<List<Project>>?> ListProjectsAsync(CancellationToken ct = default)
         => GetAsync<List<Project>>("/api/v1/projects", ct);
+
+    public Task<ApiEnvelope<Project>?> CreateProjectAsync(
+        string name,
+        string? repository = null,
+        CancellationToken ct = default)
+        => PostAsync<Project>("/api/v1/projects", new { name, repository }, ct);
 
     public Task<ApiEnvelope<List<Change>>?> ListPendingChangesAsync(CancellationToken ct = default)
         => GetAsync<List<Change>>("/api/v1/workspace/changes?status=pending", ct);
@@ -363,6 +377,15 @@ public sealed class FluxApiClient : IDisposable
         object body,
         CancellationToken ct = default)
         => SendAsync<ApiKeyEntry>(HttpMethod.Patch, $"/api/v1/keys/{Uri.EscapeDataString(keyId)}", body, ct);
+
+    /// <summary>保存后用它真实请求一次该 key 的模型端点，确认 Base URL / Key / 模型 id 可用。</summary>
+    public Task<ApiEnvelope<KeyProbeResult>?> ProbeApiKeyAsync(
+        string keyId,
+        CancellationToken ct = default)
+        => PostAsync<KeyProbeResult>(
+            $"/api/v1/keys/{Uri.EscapeDataString(keyId)}/probe",
+            new { },
+            ct);
 
     public Task<ApiEnvelope<ApiKeyDeleteResult>?> DeleteApiKeyAsync(
         string keyId,

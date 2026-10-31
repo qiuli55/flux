@@ -288,6 +288,49 @@ class WorkspaceFileExplorer:
 
     # --- 用户发起的文件操作 ---
 
+    def write(
+        self,
+        *,
+        path: str,
+        workspace_root: str | Path | None = None,
+        content: str = "",
+    ) -> FileContent:
+        """覆写既有文件的全部内容（编辑器的「保存」）。
+
+        与 `create_file` 的区别是**不新建**：目标必须是已存在的普通文件。
+        原地截断写入，保留 inode 与权限位，避免 `os.replace` 让文件监视器、
+        语言服务器把它当成「新文件」。
+        """
+        root = resolve_workspace_root(self._pick_root(workspace_root))
+        relative = safe_relative_path(path)
+        self._guard_user_path(relative)
+        target = resolve_within_root(root, relative)
+        if not target.exists():
+            raise NotFoundError(
+                f"文件不存在：{relative.as_posix()}", details={"path": relative.as_posix()}
+            )
+        info = os.stat(target)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValidationError(
+                f"路径不是普通文件：{relative.as_posix()}",
+                details={"path": relative.as_posix()},
+            )
+        data = content.encode("utf-8")
+        if len(data) > MAX_CONTENT_BYTES:
+            raise ValidationError(
+                f"保存内容超过 {MAX_CONTENT_BYTES} 字节上限",
+                details={"path": relative.as_posix(), "max_bytes": MAX_CONTENT_BYTES},
+            )
+        with open(target, "r+b") as handle:
+            handle.truncate(0)
+            handle.write(data)
+        return FileContent(
+            path=relative.as_posix(),
+            content=content,
+            size=len(data),
+            truncated=False,
+        )
+
     def create_file(
         self, *, path: str, workspace_root: str | Path | None = None, content: str = ""
     ) -> str:

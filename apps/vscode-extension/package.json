@@ -1,0 +1,261 @@
+{
+  "name": "flux-vscode",
+  "displayName": "Flux",
+  "description": "在 VS Code / VSCodium 中接入 Flux 平台：项目、任务与 Agent 对话",
+  "version": "0.1.0",
+  "publisher": "flux",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:fluxTasks",
+    "onView:fluxProjects",
+    "onView:fluxChanges",
+    "onCommand:flux.newTask",
+    "onCommand:flux.refresh",
+    "onCommand:flux.setServer",
+    "onCommand:flux.healthCheck",
+    "onCommand:flux.openChangeDiff",
+    "onCommand:flux.acceptChanges",
+    "onCommand:flux.rejectChanges",
+    "onCommand:flux.applyChanges",
+    "onCommand:flux.rollbackChange",
+    "onCommand:flux.restartLanguageServer",
+    "onCommand:flux.showLanguageServers",
+    "onCommand:flux.completion.toggle",
+    "onCommand:flux.completion.selfCheck",
+    "onCommand:flux.spec.draft"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "flux",
+          "title": "Flux",
+          "icon": "media/flux.svg"
+        }
+      ]
+    },
+    "views": {
+      "flux": [
+        {
+          "id": "fluxProjects",
+          "name": "项目"
+        },
+        {
+          "id": "fluxTasks",
+          "name": "任务"
+        },
+        {
+          "id": "fluxChanges",
+          "name": "提案"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "flux.newTask",
+        "title": "Flux: 新建任务",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flux.refresh",
+        "title": "Flux: 刷新",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "flux.setServer",
+        "title": "Flux: 设置服务器地址"
+      },
+      {
+        "command": "flux.healthCheck",
+        "title": "Flux: 检查连接"
+      },
+      {
+        "command": "flux.openChangeDiff",
+        "title": "Flux: 查看提案差异"
+      },
+      {
+        "command": "flux.acceptChanges",
+        "title": "Flux: 接受提案",
+        "icon": "$(check)"
+      },
+      {
+        "command": "flux.rejectChanges",
+        "title": "Flux: 拒绝提案",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "flux.applyChanges",
+        "title": "Flux: 应用提案",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "flux.rollbackChange",
+        "title": "Flux: 回滚已应用变更",
+        "icon": "$(history)"
+      },
+      {
+        "command": "flux.restartLanguageServer",
+        "title": "Flux: 重启语言服务",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "flux.showLanguageServers",
+        "title": "Flux: 语言服务器…",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "flux.completion.toggle",
+        "title": "Flux: 开关 AI 补全",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "flux.completion.selfCheck",
+        "title": "Flux: 补全自检",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "flux.spec.draft",
+        "title": "Flux: 与 Agent 确认需求文档",
+        "icon": "$(book)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "flux.newTask",
+          "when": "view == fluxTasks",
+          "group": "navigation"
+        },
+        {
+          "command": "flux.refresh",
+          "when": "view == fluxTasks || view == fluxProjects || view == fluxChanges",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "flux.acceptChanges",
+          "when": "view == fluxChanges && viewItem == fluxChange.pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "flux.rejectChanges",
+          "when": "view == fluxChanges && viewItem == fluxChange.pending",
+          "group": "inline@2"
+        },
+        {
+          "command": "flux.applyChanges",
+          "when": "view == fluxChanges && viewItem == fluxChange.accepted",
+          "group": "inline@1"
+        },
+        {
+          "command": "flux.rollbackChange",
+          "when": "view == fluxChanges && viewItem == fluxChange.applied",
+          "group": "inline@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Flux",
+      "properties": {
+        "flux.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Flux 后端地址（不含 /api/v1）"
+        },
+        "flux.token": {
+          "type": "string",
+          "default": "",
+          "description": "Flux 访问令牌（Bearer），对应服务端 FLUX_AUTH_TOKEN"
+        },
+        "flux.projectId": {
+          "type": "string",
+          "default": "",
+          "description": "默认项目 ID；不填则按当前工作区匹配或使用第一个项目"
+        },
+        "flux.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用代码智能：补全、悬停、跳转定义、重命名、诊断、语义高亮等，由 Flux 后端统一管理语言服务器进程"
+        },
+        "flux.completion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用 AI 行内补全（ghost text）。关闭后不注册补全 provider，不产生任何模型调用"
+        },
+        "flux.completion.debounceMs": {
+          "type": "number",
+          "default": 400,
+          "minimum": 100,
+          "maximum": 2000,
+          "description": "输入停顿多久后触发补全（毫秒）"
+        },
+        "flux.completion.maxLines": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 64,
+          "description": "单次补全最多保留多少行，多出的部分由服务端截断"
+        },
+        "flux.completion.model": {
+          "type": "string",
+          "default": "follow-agent",
+          "description": "补全使用的模型：follow-agent 跟随右栏当前 Agent；也可填 <keyId>::<model> 或裸模型名"
+        },
+        "flux.completion.mode": {
+          "type": "string",
+          "enum": [
+            "insert",
+            "line"
+          ],
+          "enumDescriptions": [
+            "插入模式：从光标处续写，可跨多行",
+            "整行模式：补全当前整行，只取一行，适合表格/配置等逐行输入场景"
+          ],
+          "default": "insert",
+          "description": "补全形态：插入模式（默认）或整行模式"
+        },
+        "flux.completion.skipComments": {
+          "type": "boolean",
+          "default": true,
+          "description": "在注释或字符串内部不触发补全（避免在注释里生成代码）"
+        },
+        "flux.completion.blockedPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "额外禁止外发补全的文件通配（如 **/*.sql、config/**）。内置规则（.env、*.pem、密钥、.git、lock 文件等）始终生效"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --external:bufferutil --external:utf-8-validate --format=cjs --outfile=dist/extension.js",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/tests/",
+    "package": "vsce package --no-dependencies --out flux-vscode-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.12",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "ws": "^8.18.0"
+  }
+}

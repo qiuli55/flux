@@ -2,7 +2,7 @@
  * IDE · 工作台（设计稿 v2 视图②）。
  *
  * 类名、结构与设计稿逐条一致；所有内容都是真实数据，没有内置示例文件：
- * - 文件树 / 编辑器：GET /projects/{id}/files(|/content)（只读读取；编辑器支持本地草稿与补全，不落盘）
+ * - 文件树 / 编辑器：GET /projects/{id}/files(|/content)（Monaco + LSP；桌面端可直接保存落盘）
  * - 变更 Tab：GET /workspace/changes + accept/apply/reject
  * - Git 面板与状态栏：GET /git/status、POST /git/commit
  * - Agent 面板：GET /agents + 当前任务（GET /tasks、GET /tasks/{id}/messages）
@@ -24,6 +24,7 @@ import type {
   GitCommit,
   GitFileStatus,
   GitStatus,
+  IdeCatalog,
   Project,
   RecoveryItem,
   SearchHit,
@@ -32,11 +33,12 @@ import type {
   TerminalEvent,
 } from "../api/types";
 import { openCommandPalette, setIdeIntentHandler, type IdeIntent } from "../app/commands";
-import { mergeDiffIntoOriginal, parseUnifiedDiff } from "../app/diff";
+import { parseUnifiedDiff } from "../app/diff";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
-import { CodeArea } from "../components/ide/CodeArea";
+import { MonacoCodeArea } from "../components/ide/MonacoCodeArea";
+import type { LspStatus } from "../components/ide/lspClient";
 import { clockOf } from "../components/solo/SoloChat";
 import { ROLE_LABELS, STATE_LABELS } from "../data/team";
 import { buildCompletionMessages, type AiCompletionInput } from "../utils/completion";
@@ -202,6 +204,16 @@ function FileIcon({ kind }: { kind: FileKind }) {
   );
 }
 
+/** 状态栏的语言服务器状态文案 */
+const LSP_LABEL: Record<LspStatus, string> = {
+  idle: "无 LSP",
+  connecting: "LSP 连接中",
+  initializing: "LSP 初始化",
+  ready: "LSP 就绪",
+  error: "LSP 异常",
+  closed: "LSP 已断开",
+};
+
 /** 状态栏右下角的语言标签 */
 function langLabel(path: string): string {
   const name = path.split("/").pop() ?? path;
@@ -223,60 +235,6 @@ function langLabel(path: string): string {
     if (pattern.test(name)) return label;
   }
   return "纯文本";
-}
-
-/** 按扩展名决定高亮口径：Markdown 的 # 是标题，Python 的 # 是注释 */
-function lexerKind(path: string): "md" | "py" | "code" {
-  const name = path.split("/").pop() ?? path;
-  if (name.endsWith(".md")) return "md";
-  if (name.endsWith(".py")) return "py";
-  return "code";
-}
-
-/* ---------- 轻量语法高亮（与设计稿同口径：够用即可） ---------- */
-
-const TOKEN_RE =
-  /(\/\/[^\n]*|#[^\n]*)|('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`)|\b(import|from|export|function|const|let|var|async|await|return|try|catch|finally|if|else|new|default|void|type|interface|class|extends|for|while|def|self|None|True|False|raise|with|yield|lambda|pass|elif|except|assert|global|in|not|and|or)\b|\b(\d+(?:\.\d+)?)\b|(<\/?)([A-Z][A-Za-z0-9_.]*)/g;
-
-interface Token {
-  text: string;
-  cls?: string;
-}
-
-function highlight(line: string, kind: "md" | "py" | "code"): Token[] {
-  if (kind === "md" && /^#{1,6}\s/.test(line.trimStart())) return [{ text: line, cls: "t" }];
-  const tokens: Token[] = [];
-  let last = 0;
-  TOKEN_RE.lastIndex = 0;
-  let match = TOKEN_RE.exec(line);
-  while (match !== null) {
-    if (match.index > last) tokens.push({ text: line.slice(last, match.index) });
-    if (match[1]) tokens.push({ text: match[1], cls: "c" });
-    else if (match[2]) tokens.push({ text: match[2], cls: "s" });
-    else if (match[3]) tokens.push({ text: match[3], cls: "k" });
-    else if (match[4]) tokens.push({ text: match[4], cls: "n" });
-    else if (match[6]) {
-      tokens.push({ text: match[5] ?? "" });
-      tokens.push({ text: match[6], cls: "comp" });
-    }
-    last = match.index + match[0].length;
-    match = TOKEN_RE.exec(line);
-  }
-  if (last < line.length) tokens.push({ text: line.slice(last) });
-  return tokens.length > 0 ? tokens : [{ text: line }];
-}
-
-/** 把高亮结果渲染成 span 序列（普通代码行与整文件 diff 行共用） */
-function renderTokens(text: string, kind: "md" | "py" | "code"): ReactNode {
-  return highlight(text, kind).map((token, index) =>
-    token.cls ? (
-      <span key={index} className={token.cls}>
-        {token.text}
-      </span>
-    ) : (
-      <span key={index}>{token.text}</span>
-    ),
-  );
 }
 
 /* ---------- 文件树 ---------- */
@@ -507,6 +465,9 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [revealLine, setRevealLine] = useState<{ path: string; line: number } | null>(null);
+  /** 语言目录：路径 → languageId → 语言服务器（编辑器与状态栏都用它） */
+  const [catalog, setCatalog] = useState<IdeCatalog | null>(null);
+  const [lspState, setLspState] = useState<{ status: LspStatus; message?: string }>({ status: "idle" });
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [recentFiles, setRecentFiles] = useState<string[]>(() => {
@@ -521,7 +482,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   /** 编辑器视图：split = 整文件（AI 新增绿 / 删除红）；unified = 只看改动片段的旧新对比 */
   const [codeView, setCodeView] = useState<"split" | "unified">("split");
   const [files, setFiles] = useState<Record<string, FileContent>>({});
-  /** 本地草稿：后端没有「覆写既有文件」接口，编辑只留在内存，刷新即丢 */
+  /** 未保存改动：编辑留在这里，⌘S 或「保存」按钮写回工作区（桌面端） */
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -592,6 +553,22 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
     } finally {
       setTreeLoading(false);
     }
+  }, []);
+
+  /* 语言目录只加载一次：失败就当作「没有 LSP」，编辑器仍可高亮与编辑 */
+  useEffect(() => {
+    let alive = true;
+    api
+      .ideLanguages()
+      .then((value) => {
+        if (alive) setCatalog(value);
+      })
+      .catch(() => {
+        if (alive) setCatalog(null);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const loadChanges = useCallback(async () => {
@@ -1520,30 +1497,18 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
 
   const activeFile = activeTab && activeTab !== CHANGES_TAB ? files[activeTab] : undefined;
 
+  /* 跳转行只需消费一次：留给 Monaco 一帧时间滚动，之后清掉，避免切回来又跳一次 */
   useEffect(() => {
-    if (!revealLine || activeTab !== revealLine.path || !activeFile) return;
-    const frame = window.requestAnimationFrame(() => {
-      const row =
-        document.querySelector<HTMLElement>(
-          `.view-ide .ca-stage .ca-line:nth-child(${revealLine.line})`,
-        ) ??
-        document.querySelector<HTMLElement>(
-          `.view-ide .code-lines .cl:nth-child(${revealLine.line})`,
-        );
-      row?.scrollIntoView({ block: "center", behavior: "smooth" });
-      setRevealLine(null);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeFile, activeTab, revealLine]);
+    if (!revealLine) return;
+    const timer = window.setTimeout(() => setRevealLine(null), 1200);
+    return () => window.clearTimeout(timer);
+  }, [revealLine]);
 
-
-  /** 本地草稿优先于后端内容；没有草稿时用只读读到的原文 */
+  /** 未保存改动优先于后端内容；没有改动时用读到的原文 */
   const activeDraft = activeTab && activeTab !== CHANGES_TAB ? edits[activeTab] : undefined;
   const activeText = activeDraft ?? activeFile?.content ?? "";
   const hasDraft = activeDraft !== undefined && activeDraft !== activeFile?.content;
 
-  const activeLines = useMemo(() => activeText.split("\n"), [activeText]);
-  const activeKind = activeTab && activeTab !== CHANGES_TAB ? lexerKind(activeTab) : "code";
   const changedLines = useMemo(() => {
     if (!activeTab || activeTab === CHANGES_TAB) return new Set<number>();
     const numbers = new Set<number>();
@@ -1560,17 +1525,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
   const activeChange = activeTab && activeTab !== CHANGES_TAB ? changeByPath.get(activeTab) : undefined;
   /** 统一视图：只渲染 diff 片段（旧新对比，不铺整文件） */
   const changeRows = useMemo(() => (activeChange ? parseUnifiedDiff(activeChange.diff) : []), [activeChange]);
-  /** 并排视图：把 diff 铺回原文件，得到整文件 + 增删标记 */
-  const fileRows = useMemo(
-    () => (activeChange ? mergeDiffIntoOriginal(activeChange.original_content, activeChange.diff) : []),
-    [activeChange],
-  );
 
-  /** 路径补全用：工作区里的全部文件路径 */
-  const completionFiles = useMemo(
-    () => entries.filter((entry) => entry.kind === "file").map((entry) => entry.path),
-    [entries],
-  );
   /** AI 补全：走统一 LLM 接口；没有配置供应商时静默降级（返回 null → 不显示 ghost） */
   const aiComplete = useCallback(
     (input: AiCompletionInput) =>
@@ -1580,6 +1535,33 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         .catch(() => null),
     [projectId],
   );
+
+  /** 保存当前文件：写回工作区后把后端返回的内容作为新基线，改动随之清空 */
+  const [saveBusy, setSaveBusy] = useState(false);
+  const saveActiveFile = useCallback(async () => {
+    if (!projectId || !activeTab || activeTab === CHANGES_TAB) return;
+    const draft = edits[activeTab];
+    if (draft === undefined || draft === files[activeTab]?.content) return;
+    if (!desktop?.isDesktop) {
+      toast("保存到磁盘需要使用 Flux 桌面版；Web 端改动只留在当前会话", "error");
+      return;
+    }
+    setSaveBusy(true);
+    try {
+      const saved = await api.saveFile(projectId, activeTab, draft);
+      setFiles((prev) => ({ ...prev, [activeTab]: saved }));
+      setEdits((prev) => {
+        const next = { ...prev };
+        delete next[activeTab];
+        return next;
+      });
+      toast(`已保存 ${activeTab.split("/").pop() ?? activeTab}`);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setSaveBusy(false);
+    }
+  }, [activeTab, desktop?.isDesktop, edits, files, projectId]);
 
   const runningTask = task?.status === "running";
   const branch = gitStatus?.branch ?? null;
@@ -1767,8 +1749,32 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                 </div>
               ) : hasDraft ? (
                 <div className="diff-banner">
-                  <b>本地草稿</b>
-                  <span>后端没有覆写既有文件的接口，编辑只留在当前会话，刷新即丢</span>
+                  <b>未保存改动</b>
+                  <span>{desktop?.isDesktop ? "⌘S 或点右侧按钮写回磁盘" : "Web 端改动只留在当前会话"}</span>
+                  <div className="diff-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => {
+                        setEdits((prev) => {
+                          const next = { ...prev };
+                          delete next[activeTab];
+                          return next;
+                        });
+                        toast("已还原为该文件已保存的内容");
+                      }}
+                    >
+                      还原
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-xs"
+                      disabled={saveBusy || !desktop?.isDesktop}
+                      onClick={() => void saveActiveFile()}
+                    >
+                      {saveBusy ? "保存中…" : "保存"}
+                    </button>
+                  </div>
                 </div>
               ) : null}
               {activeChange && codeView === "unified" ? (
@@ -1783,48 +1789,22 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   ))}
                 </div>
               ) : (
-                <div className="code">
-                  {activeChange && codeView === "split" ? (
-                    /* 并排视图：整文件铺开，AI 新增绿、删除红（只读，不接受编辑） */
-                    <div className="code-lines">
-                      {fileRows.map((row, index) => (
-                        <div
-                          className={`cl${row.kind === "add" ? " is-add" : row.kind === "del" ? " is-del" : ""}`}
-                          key={index}
-                        >
-                          <span className="ln">{row.newNo || row.oldNo}</span>
-                          <span className="lc">
-                            {row.kind === "del" ? row.text : renderTokens(row.text, activeKind)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <CodeArea
-                      path={activeTab}
-                      value={activeText}
-                      kind={activeKind}
-                      onChange={(next) => setEdits((prev) => ({ ...prev, [activeTab]: next }))}
-                      renderTokens={(text) => renderTokens(text, activeKind)}
-                      changedLines={changedLines}
-                      files={completionFiles}
-                      readOnly={activeFile.truncated}
-                      aiComplete={aiComplete}
-                    />
-                  )}
-                  <div className="minimap">
-                    {(activeChange && codeView === "split"
-                      ? fileRows.map((row) => ({ text: row.text, mark: row.kind === "add" ? " hl" : "" }))
-                      : activeLines.map((line, index) => ({
-                          text: line,
-                          mark: changedLines.has(index + 1) ? " hl" : "",
-                        }))
-                    ).map((row, index) => {
-                      const length = row.text.length;
-                      const width = length === 0 ? "w4" : length <= 10 ? "w4" : length <= 28 ? "w2" : length <= 52 ? "w1" : "w3";
-                      return <div className={`mm-line ${width}${row.mark}`} key={index} />;
-                    })}
-                  </div>
+                <div className="ed-file">
+                  <MonacoCodeArea
+                    projectId={projectId}
+                    workspaceRoot={treeRoot}
+                    path={activeTab}
+                    value={activeText}
+                    readOnly={activeFile.truncated}
+                    changedLines={changedLines}
+                    revealLine={revealLine && revealLine.path === activeTab ? revealLine.line : null}
+                    catalog={catalog}
+                    onChange={(next) => setEdits((prev) => ({ ...prev, [activeTab]: next }))}
+                    onSave={() => void saveActiveFile()}
+                    onOpenFile={(path, line) => openFileAtLine(path, line ?? 1)}
+                    onLspStatus={(status, message) => setLspState({ status, message })}
+                    aiComplete={aiComplete}
+                  />
                 </div>
               )}
             </>
@@ -2385,9 +2365,9 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   type="button"
                   className={`ed-viewseg-b${codeView === "split" ? " is-active" : ""}`}
                   onClick={() => setCodeView("split")}
-                  title="整文件视图：当前文件全文，AI 新增行绿色、删除行红色"
+                  title="编辑器视图：正常编辑当前文件，AI 新增行在行号槽标绿"
                 >
-                  并排
+                  编辑
                 </button>
                 <button
                   type="button"
@@ -2395,7 +2375,7 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
                   onClick={() => setCodeView("unified")}
                   title="只看 AI 改动的片段，与原文对比，不展示整文件"
                 >
-                  统一
+                  Diff
                 </button>
               </div>
             ) : null}
@@ -2731,6 +2711,15 @@ export function IdePage({ onBackToSolo }: { onBackToSolo: () => void }) {
         <div className="st-right">
           <span className="st-item">UTF-8</span>
           <span className="st-item">{activeFile?.content.includes("\r\n") ? "CRLF" : "LF"}</span>
+          {activeTab && activeTab !== CHANGES_TAB ? (
+            <span
+              className={`st-item st-lsp is-${lspState.status}`}
+              title={lspState.message ?? LSP_LABEL[lspState.status]}
+            >
+              <i className="dot" />
+              {LSP_LABEL[lspState.status]}
+            </span>
+          ) : null}
           <span className="st-item">{activeTab && activeTab !== CHANGES_TAB ? langLabel(activeTab) : "Changes Diff"}</span>
           {runningTask ? (
             <span className="st-item st-run">

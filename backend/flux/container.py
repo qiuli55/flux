@@ -29,6 +29,7 @@ from flux.core.billing.service import BillingService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
+from flux.core.code_intelligence.service import CodeIntelligenceService
 from flux.core.context.lifecycle import ContextLifecycle
 from flux.core.context.metrics import BackfillObserver
 from flux.core.context.redact import RedactionStore
@@ -38,6 +39,13 @@ from flux.core.context.trust import VerificationLedger
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
+from flux.core.ide_completion import (
+    CompletionContextBuilder,
+    CompletionModelResolver,
+    CompletionPrefsStore,
+    CompletionService,
+    CompletionStatsStore,
+)
 from flux.core.key_vault.service import KeyVaultService
 from flux.core.mcp.auth import AgentTokenService
 from flux.core.memory.prefs import MemoryPrefsStore
@@ -89,6 +97,8 @@ class Container:
     git: GitService = field(init=False)
     scanner: ProjectScanner = field(init=False)
     files: WorkspaceFileExplorer = field(init=False)
+    #: 代码智能（IDE 补全）：LSP 语言服务器进程池 + WebSocket 网关，按工作区根复用
+    code_intel: CodeIntelligenceService = field(init=False)
     brain_repo: ProjectBrainRepository = field(init=False)
     brain: ProjectBrain = field(init=False)
     brain_refresher: BrainRefresher = field(init=False)
@@ -118,6 +128,11 @@ class Container:
     #: 因为 CliRuntime 每个 Run 新建实例，实例内缓存跨 run 不共享。
     billing: BillingService = field(init=False)
     task_run_service: TaskRunService = field(init=False)
+    # IDE 行内补全（AI_COMPLETION_SPEC）：偏好/当前 Agent 落盘 + 模型解析 + 流式生成
+    completion_prefs: CompletionPrefsStore = field(init=False)
+    completion_resolver: CompletionModelResolver = field(init=False)
+    completion: CompletionService = field(init=False)
+    completion_stats: CompletionStatsStore = field(init=False)
     # 上下文机制（设计文档 §8）：只追加的 step 事件日志 + 内容寻址原文库
     context_steps: ContextStepRepository = field(init=False)
     content_store: ContentStore = field(init=False)
@@ -216,6 +231,9 @@ class Container:
         # 文件浏览（只读）：与 Apply / Scanner 共用同一个工作区根配置，
         # 请求里的 workspace_root 只是按次覆盖，不是新的默认来源。
         self.files = WorkspaceFileExplorer(workspace_root=self.settings.workspace_root)
+        # 代码智能（IDE 补全）：语言服务器进程按 (工作区根, server) 常驻，空闲 30 分钟回收。
+        # 装配本身不起进程，第一次建立 WS 连接时才拉活。
+        self.code_intel = CodeIntelligenceService()
         self.brain_repo = ProjectBrainRepository(self.session_factory)  # type: ignore[attr-defined]
         self.brain = ProjectBrain(
             self.brain_repo,
@@ -234,6 +252,28 @@ class Container:
         )
         self.memory_cloud = CloudMemorySync(self.settings, self.memory)
         self.memory.attach_cloud(self.memory_cloud)
+        # IDE 行内补全（AI_COMPLETION_SPEC）：偏好与「当前 Agent」落单文件；
+        # 三层上下文直接复用文件浏览 / 项目扫描 / Git 的只读能力，不新建索引。
+        self.completion_prefs = CompletionPrefsStore(self.settings.completion_prefs_path)
+        # 埋点独立落盘：接受率 / 首字延迟调优要用，写失败也不能影响补全
+        self.completion_stats = CompletionStatsStore(self.settings.completion_stats_path)
+        self.completion_resolver = CompletionModelResolver(
+            settings=self.settings,
+            key_vault=self.key_vault,
+            agents=self.agents,
+            prefs=self.completion_prefs,
+        )
+        self.completion = CompletionService(
+            settings=self.settings,
+            builder=CompletionContextBuilder(
+                settings=self.settings,
+                files=self.files,
+                scanner=self.scanner,
+                git_client=self.git_client,
+            ),
+            resolver=self.completion_resolver,
+            prefs=self.completion_prefs,
+        )
         # MCP 能力面的鉴权（目标架构 §3.2）：令牌是 agent 进入平台的唯一凭据，
         # 与权限策略同源——工具要求的 Capability 直接取自 flux.enums.Capability。
         # 先于 DSH 装配：DSH 起 Run 时要拿内置 Agent 的令牌注入 MCP patch（P0-01）。
@@ -378,5 +418,7 @@ class Container:
         # 退出时先停看护循环并清理仍在跑的 Agent 进程树，再释放连接（P2-15 §2.5）
         await self.human_pty.shutdown()
         await self.terminal.shutdown()
+        await self.code_intel.shutdown()
+        await self.completion.shutdown()
         await self.dsh.shutdown()
         await self.engine.dispose()

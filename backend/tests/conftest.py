@@ -55,6 +55,10 @@ def settings(tmp_path) -> Settings:
         # 测试一律不碰账号云：开发机 /etc 下可能有真实设备凭据，必须显式关掉
         memory_cloud_sync=False,
         memory_prefs_file=str(tmp_path / "memory-prefs.json"),
+        # 补全偏好同样落临时目录：不能读写开发机 ~/.flux/completion-prefs.json
+        completion_prefs_file=str(tmp_path / "completion-prefs.json"),
+        # 埋点统计也必须落临时目录：用例不能污染开发机的接受率 / 延迟数据
+        completion_stats_file=str(tmp_path / "completion-stats.json"),
         openai_api_key=None,
         anthropic_api_key=None,
         deepseek_api_key=None,

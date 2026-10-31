@@ -79,6 +79,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private string _breadcrumb = "概览";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowShellStatusBar))]
     private ViewModelBase? _currentPage;
 
     /// <summary>侧栏是否展开为 248px（web 端 prefs.wide，默认收起为 68px 图标态）。</summary>
@@ -89,12 +90,9 @@ public partial class MainWindowViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(RailToggleIconGeometry))]
     private bool _isRailWide;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsIdeMode))]
-    private bool _isSoloMode = true;
-
     /// <summary>显示底部状态栏（web 端 prefs.statusbar）。</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowShellStatusBar))]
     private bool _isStatusBarVisible = true;
 
     /// <summary>减少动效：关掉状态栏脉冲动画（web 端 prefs.reduceMotion）。</summary>
@@ -141,7 +139,6 @@ public partial class MainWindowViewModel : ViewModelBase
             ActivateCommand = ActivateCommand,
         };
 
-        BuildModes();
         BuildPlatform();
         BuildTools();
 
@@ -151,10 +148,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public AccountViewModel Account { get; }
 
-    /// <summary>模式切换：Solo / IDE（web 端 NAV_MODES）。</summary>
-    public ObservableCollection<NavItem> ModeItems { get; } = new();
-
-    /// <summary>当前模式专属的工具组（web 端 modeTools：Solo 入口 / IDE 面板）。</summary>
+    /// <summary>Solo 工作台入口与工具组（原生 IDE 已移除，改用独立 IDE 窗口）。</summary>
     public ObservableCollection<NavItem> ToolItems { get; } = new();
 
     /// <summary>平台层页面（web 端 NAV_GROUPS）。</summary>
@@ -171,7 +165,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public bool IsFailed => State == ShellState.Failed;
 
-    public bool IsIdeMode => !IsSoloMode;
+    public bool ShowShellStatusBar => IsStatusBarVisible;
 
     public bool IsRailCompact => !IsRailWide;
 
@@ -184,14 +178,23 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public Geometry SearchIconGeometry { get; } = IconPaths.GetGeometry("search");
 
+    public Geometry IdeIconGeometry { get; } = IconPaths.GetGeometry("code");
+
+    /// <summary>本机是否装了独立的 Flux IDE，顶栏按钮据此给出提示。</summary>
+    public bool IsIdeAvailable => IdeLauncher.IsAvailable;
+
+    public string IdeButtonTip => IsIdeAvailable
+        ? "打开独立的 Flux IDE 窗口"
+        : "未找到 Flux IDE：请解压到 ~/.flux/ide，或用 FLUX_IDE_PATH 指定可执行文件";
+
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
 
     public bool HasEngine => !string.IsNullOrWhiteSpace(EngineText);
 
     public bool HasWorkspace => !string.IsNullOrWhiteSpace(WorkspaceText);
 
-    /// <summary>当前模式下的工具组标题（web 端「Solo 入口」/「IDE 面板」）。</summary>
-    public string ToolGroupLabel => IsSoloMode ? "Solo 入口" : "IDE 面板";
+    /// <summary>侧栏工具组标题。</summary>
+    public string ToolGroupLabel => "Solo 入口";
 
     public async Task StartAsync()
     {
@@ -205,6 +208,13 @@ public partial class MainWindowViewModel : ViewModelBase
 
             _api = new FluxApiClient(_backend.BaseUrl);
             _auth = new CloudAuthService(_api, _listener);
+
+            // 后端就绪后再拉起独立 IDE 窗口：端口是随机的，需要把地址下发给 IDE 里的扩展。
+            // 没装 IDE 就跳过，不影响主流程。
+            if (IdeLauncher.IsAvailable)
+            {
+                IdeLauncher.Launch(out _, _backend.BaseUrl);
+            }
 
             SyncAccount();
             await RefreshSessionAsync().ConfigureAwait(true);
@@ -322,17 +332,6 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private async void OnHealthTick(object? sender, EventArgs e) => await PollHealthAsync();
 
-    private void BuildModes()
-    {
-        var solo = new SoloViewModel(() => _api, NavigateTo);
-        var ide = Placeholder(
-            "IDE 工作台",
-            "文件资源管理器、搜索、源代码管理、运行和调试、扩展。IDE 工作台将在 M4 实现。");
-
-        ModeItems.Add(new NavItem("solo", "SOLO", GroupCore, solo, "sparkles") { ActivateCommand = ActivateCommand });
-        ModeItems.Add(new NavItem("ide", "IDE", GroupCore, ide, "code") { ActivateCommand = ActivateCommand });
-    }
-
     private void BuildPlatform()
     {
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
@@ -347,33 +346,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void BuildTools()
     {
-        ToolItems.Clear();
-        if (IsSoloMode)
-        {
-            ToolItems.Add(new NavItem("projects", "项目列表", GroupCore, new ProjectsViewModel(() => _api, NavigateTo), "folder") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("open-ide", "工作区 · 打开 IDE", GroupCore, Placeholder("工作区", "工作区与 IDE 切换将在 M4 实现。"), "code") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("terminal", "Agent Terminal", GroupCore, new TerminalViewModel(() => _api), "terminal") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("agents", "Agent 面板", GroupCore, new AgentsViewModel(() => _api), "bot") { ActivateCommand = ActivateCommand });
-        }
-        else
-        {
-            ToolItems.Add(new NavItem("files", "文件资源管理器", GroupCore, Placeholder("文件资源管理器", "IDE 文件树将在 M4 实现。"), "files") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("search", "搜索", GroupCore, Placeholder("搜索", "全局搜索将在 M4 实现。"), "search") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("scm", "源代码管理", GroupCore, Placeholder("源代码管理", "Git 集成将在 M4 实现。"), "git") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("run", "运行和调试", GroupCore, Placeholder("运行和调试", "调试能力将在 M4 实现。"), "debug") { ActivateCommand = ActivateCommand });
-            ToolItems.Add(new NavItem("extensions", "扩展", GroupCore, Placeholder("扩展", "扩展市场将在 M4 实现。"), "grid") { ActivateCommand = ActivateCommand });
-        }
+        ToolItems.Add(new NavItem("solo", "SOLO", GroupCore, new SoloViewModel(() => _api, NavigateTo), "sparkles") { ActivateCommand = ActivateCommand });
+        ToolItems.Add(new NavItem("projects", "项目列表", GroupCore, new ProjectsViewModel(() => _api, NavigateTo), "folder") { ActivateCommand = ActivateCommand });
+        ToolItems.Add(new NavItem("terminal", "Agent Terminal", GroupCore, new TerminalViewModel(() => _api), "terminal") { ActivateCommand = ActivateCommand });
+        ToolItems.Add(new NavItem("agents", "Agent 面板", GroupCore, new AgentsViewModel(() => _api), "bot") { ActivateCommand = ActivateCommand });
 
-        OnPropertyChanged(nameof(ToolGroupLabel));
         ApplyRailCompact();
-    }
-
-    private static PlaceholderPageViewModel Placeholder(string title, string subtitle) => new(title, subtitle);
-
-    partial void OnIsSoloModeChanged(bool value)
-    {
-        BuildTools();
-        Activate(value ? ModeItems[0] : ModeItems[1]);
     }
 
     /// <summary>切换选中项：清掉所有条目的选中态，只留目标项，并同步内容区与面包屑。</summary>
@@ -383,11 +361,6 @@ public partial class MainWindowViewModel : ViewModelBase
         if (item is null)
         {
             return;
-        }
-
-        foreach (var candidate in ModeItems)
-        {
-            candidate.IsActive = ReferenceEquals(candidate, item);
         }
 
         foreach (var candidate in ToolItems)
@@ -449,18 +422,13 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    /// <summary>按 key 跳转（供页面内的快捷入口使用）：solo / ide 走模式，其余走导航条目。</summary>
+    /// <summary>按 key 跳转（供页面内的快捷入口使用）：ide 拉起独立 IDE 窗口，其余走导航条目。</summary>
     private void NavigateTo(string key)
     {
         switch (key)
         {
-            case "solo":
-                IsSoloMode = true;
-                Activate(ModeItems[0]);
-                return;
             case "ide":
-                IsSoloMode = false;
-                Activate(ModeItems[1]);
+                OpenIdeWindow();
                 return;
             case "account":
                 Activate(_accountNavItem);
@@ -476,9 +444,14 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
+    /// <summary>打开独立的 Flux IDE 窗口（VSCodium 打包产物）；已在运行则切到前台。</summary>
     [RelayCommand]
-    private void SwitchMode(string? mode) =>
-        IsSoloMode = !string.Equals(mode, "IDE", StringComparison.OrdinalIgnoreCase);
+    private void OpenIdeWindow()
+    {
+        AppLog.Info($"打开 IDE · available={IdeLauncher.IsAvailable} · state={State}");
+        IdeLauncher.Launch(out var message, _api is null ? null : _backend.BaseUrl);
+        StatusMessage = message;
+    }
 
     [RelayCommand]
     private void ToggleRailWide() => IsRailWide = !IsRailWide;
@@ -540,6 +513,19 @@ public partial class MainWindowViewModel : ViewModelBase
 
     partial void OnPaletteQueryChanged(string value) => RefreshPalette();
 
+    /// <summary>点击命令面板条目：切换页面并收起面板（键盘 Enter 走 RunPaletteSelection）。</summary>
+    [RelayCommand]
+    private void RunPaletteItem(NavItem? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        Activate(item);
+        IsPaletteOpen = false;
+    }
+
     private void RefreshPalette()
     {
         var query = PaletteQuery.Trim();
@@ -567,11 +553,6 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private IEnumerable<NavItem> CollectRailItems()
     {
-        foreach (var item in ModeItems)
-        {
-            yield return item;
-        }
-
         foreach (var item in ToolItems)
         {
             yield return item;

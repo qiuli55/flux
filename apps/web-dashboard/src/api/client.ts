@@ -17,6 +17,7 @@ import type {
   CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
+  IdeCatalog, IdeInstallResult, IdeSession,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
   TerminalEvent, TerminalSession,
@@ -27,6 +28,21 @@ export { API_BASE } from "./base";
 export function terminalStreamUrl(sessionId: string, afterSeq = 0): string {
   const suffix = afterSeq > 0 ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
   return `${API_BASE}/terminal/sessions/${encodeURIComponent(sessionId)}/stream${suffix}`;
+}
+
+/**
+ * 语言服务器 WebSocket 地址。
+ *
+ * 浏览器不能给 WebSocket 加 Authorization 头，鉴权靠同源 cookie（`flux_auth_token`）
+ * 或后端对 loopback 的放行，见 flux/api/ws_auth.py。
+ */
+export function ideLspUrl(projectId: string, server: string, workspaceRoot?: string): string {
+  const url = new URL(
+    `${API_BASE}/ide/lsp/${encodeURIComponent(projectId)}${query({ server, workspace_root: workspaceRoot })}`,
+    window.location.origin,
+  );
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
 
 export class ApiError extends Error {
@@ -121,6 +137,9 @@ export const api = {
   scanProject: (projectId: string) => getData<ScanOutcome>("POST", `/projects/${projectId}/scan`, { record: true }),
   listFiles: (projectId: string, options?: { path?: string; depth?: number }) => getData<FileTree>("GET", `/projects/${projectId}/files${query({ path: options?.path, depth: options?.depth?.toString() })}`),
   readFile: (projectId: string, path: string) => getData<FileContent>("GET", `/projects/${projectId}/files/content${query({ path })}`),
+  /** 覆写既有文件；后端要求 env=local 且桌面端头（send() 会自动带 X-Flux-Desktop） */
+  saveFile: (projectId: string, path: string, content: string) =>
+    getData<FileContent>("PUT", `/projects/${projectId}/files/content`, { path, content }),
   searchWorkspace: (projectId: string, search: string, options?: { path?: string; caseSensitive?: boolean; regex?: boolean; maxResults?: number }) =>
     getData<SearchHit[]>("GET", `/projects/${projectId}/search${query({
       q: search,
@@ -247,4 +266,14 @@ export const api = {
   billingRefresh: (plan?: string) => getData<BillingRefreshResult>("POST", `/billing/refresh${query({ plan })}`),
   /** 官方 API 价目表（每 100 万 token；CNY 条目已给换算率，由前端展示） */
   billingPrices: () => getData<BillingPrices>("GET", "/billing/prices"),
+  /** IDE：语言服务器清单 + 语言目录 + 扩展名/文件名映射 */
+  ideLanguages: () => getData<IdeCatalog>("GET", "/ide/languages"),
+  installLanguageServer: (serverId: string) =>
+    getData<IdeInstallResult>("POST", `/ide/languages/${encodeURIComponent(serverId)}/install`),
+  ideSessions: () => getData<IdeSession[]>("GET", "/ide/sessions"),
+  stopIdeSession: (server: string, workspaceRoot?: string) =>
+    getData<{ server: string; stopped: boolean }>(
+      "POST",
+      `/ide/sessions/stop${query({ server, workspace_root: workspaceRoot })}`,
+    ),
 };

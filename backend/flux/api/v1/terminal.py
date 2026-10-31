@@ -7,19 +7,17 @@ command/SSE based; Human Terminal is an interactive OS PTY bridged over WebSocke
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
-from flux.api.auth import FORWARDED_HEADERS, LOOPBACK_HOSTS
 from flux.api.deps import get_container
 from flux.api.response import ok
+from flux.api.ws_auth import authenticated_websocket, same_origin_websocket
 from flux.container import Container
 from flux.core.terminal.pty_service import HumanPtyService
 from flux.enums import TerminalSource
@@ -38,37 +36,6 @@ SSE_EVENT_NAME = "terminal.event"
 def _format_sse(payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False)
     return f"id: {payload['seq']}\nevent: {SSE_EVENT_NAME}\ndata: {data}\n\n"
-
-
-def _same_origin_websocket(websocket: WebSocket) -> bool:
-    """Reject browser WebSockets initiated by an unrelated Origin."""
-    origin = websocket.headers.get("origin")
-    if not origin:
-        # Non-browser clients normally omit Origin; allow them so desktop/CLI clients
-        # can use the PTY protocol without pretending to be a browser.
-        return True
-    parsed = urlparse(origin)
-    host = websocket.headers.get("host", "")
-    return parsed.netloc == host
-
-
-def _authenticated_websocket(websocket: WebSocket) -> bool:
-    """Apply the same single-user auth boundary as REST without relying on Request dependencies."""
-    settings = websocket.app.state.container.settings
-    expected = (settings.auth_token or "").strip()
-    if not expected:
-        return True
-
-    client = websocket.client
-    has_forwarded = any(websocket.headers.get(name) for name in FORWARDED_HEADERS)
-    if client is not None and client.host in LOOPBACK_HOSTS and not has_forwarded:
-        return True
-
-    authorization = websocket.headers.get("authorization", "")
-    provided = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
-    if not provided:
-        provided = websocket.cookies.get("flux_auth_token")
-    return bool(provided) and hmac.compare_digest(provided, expected)
 
 
 @router.post("/sessions")
@@ -201,10 +168,10 @@ async def stop_human_session(
 @websocket_router.websocket("/pty/sessions/{session_id}/ws")
 async def human_terminal_ws(websocket: WebSocket, session_id: str) -> None:
     """Bridge terminal input/output and resize messages to an OS PTY."""
-    if not _same_origin_websocket(websocket):
+    if not same_origin_websocket(websocket):
         await websocket.close(code=1008, reason="cross-origin websocket rejected")
         return
-    if not _authenticated_websocket(websocket):
+    if not authenticated_websocket(websocket):
         await websocket.close(code=1008, reason="authentication required")
         return
 
