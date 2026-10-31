@@ -36,6 +36,8 @@ node_modules/
 dist/
 build/
 out/
+# 扩展单测的 tsc 输出（node --test 之前编译产物，不入库）
+.test-dist/
 # TypeScript 增量构建缓存（tsc --incremental 产物，不入库）
 *.tsbuildinfo
 
@@ -52,3 +54,6 @@ apps/desktop-avalonia.tests/obj/
 # 桌面端构建产物（tar.gz 体积大，不入库）
 apps/desktop-avalonia/dist/
 apps/desktop-avalonia/release/
+# VS Code 扩展的 IDE 打包产物与安装包（体积大，不入库）
+apps/vscode-extension/release/
+apps/vscode-extension/*.vsix
