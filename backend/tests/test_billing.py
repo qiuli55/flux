@@ -147,6 +147,38 @@ def container_settings(tmp_path):
     )
 
 
+def test_opencode_go_key_falls_back_to_merged_provider(tmp_path) -> None:
+    """Go 的 provider 被合并进 `opencode` 后仍能取到 key；显式 `opencode-go` 优先。"""
+    from flux.core.billing.sources import opencode_go_key
+
+    config = tmp_path / "opencode.json"
+    settings = container_settings(tmp_path).model_copy(
+        update={"opencode_config_file": str(config)}
+    )
+
+    config.write_text(json.dumps({"provider": {}}), encoding="utf-8")
+    assert opencode_go_key(settings) is None
+
+    config.write_text(
+        json.dumps({"provider": {"opencode": {"options": {"apiKey": "oc_zen"}}}}),
+        encoding="utf-8",
+    )
+    assert opencode_go_key(settings) == "oc_zen"
+
+    config.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "opencode-go": {"options": {"apiKey": "oc_go"}},
+                    "opencode": {"options": {"apiKey": "oc_zen"}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert opencode_go_key(settings) == "oc_go"
+
+
 def test_custom_plan_shows_up_in_overview(client: TestClient, tmp_path) -> None:
     """自定义文件加一条 → 概览/前端立即多一张套餐卡（不必改代码）。"""
     container: Container = client.app.state.container

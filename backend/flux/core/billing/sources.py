@@ -150,6 +150,19 @@ def opencode_provider_key(settings: Settings, provider: str) -> str | None:
     return str(key).strip() if isinstance(key, str) and key.strip() else None
 
 
+#: Go 订阅 key 的 provider 候选名：opencode 0.11 起把 go 合并进 `opencode`
+_OPENCODE_GO_PROVIDERS: tuple[str, ...] = (PLAN_OPENCODE_GO, "opencode")
+
+
+def opencode_go_key(settings: Settings) -> str | None:
+    """取 Go 订阅的 apiKey：优先 `opencode-go`，旧配置合并后回退 `opencode`。"""
+    for provider in _OPENCODE_GO_PROVIDERS:
+        key = opencode_provider_key(settings, provider)
+        if key:
+            return key
+    return None
+
+
 def opencode_default_model(settings: Settings) -> str:
     """opencode 配置里的默认模型（顶层 `model`）。"""
     config = load_opencode_config(settings)
@@ -178,12 +191,12 @@ class OpenCodeGoUsageSource:
         self._settings = settings
 
     async def fetch(self) -> SourceResult:
-        api_key = opencode_provider_key(self._settings, PLAN_OPENCODE_GO)
+        api_key = opencode_go_key(self._settings)
         if not api_key:
             return SourceResult(
                 source=self.name,
                 error=(
-                    "opencode 配置里没有 opencode-go 的 apiKey："
+                    "opencode 配置里没有 opencode-go / opencode 的 apiKey："
                     f"{self._settings.opencode_config_file}"
                 ),
             )
@@ -724,6 +737,7 @@ __all__ = [
     "build_sources",
     "load_opencode_config",
     "opencode_default_model",
+    "opencode_go_key",
     "opencode_provider_key",
     "resolve_default_model",
 ]
