@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from typing import Any
@@ -338,84 +339,6 @@ def _find_node(nodes: list[Any], node_id: str) -> tuple[list[Any], int, dict[str
     return None
 
 
-def _apply_ops(screen: dict[str, Any], ops: list[Any]) -> tuple[int, list[str]]:
-    """把 Luma 返回的 set/add/remove/reorder 补丁应用到完整画板。
-
-    Luma 已做过字段白名单、越权与画板边界校验，这里只做防御性处理：
-    目标不存在或结构不对就跳过，并记下原因返回给 Agent。
-    """
-    nodes = screen.get("nodes")
-    if not isinstance(nodes, list):
-        nodes = []
-        screen["nodes"] = nodes
-    applied = 0
-    skipped: list[str] = []
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        kind = op.get("op")
-        target = op.get("target")
-        target = target if isinstance(target, str) else ""
-        if kind == "set":
-            hit = _find_node(nodes, target)
-            patch = op.get("set")
-            if hit is None or not isinstance(patch, dict):
-                skipped.append(f"set {target or '?'}: 目标不存在")
-                continue
-            hit[2].update(patch)
-            applied += 1
-        elif kind == "add":
-            node = op.get("node")
-            if not isinstance(node, dict) or not isinstance(node.get("id"), str):
-                skipped.append("add: 节点结构不合法")
-                continue
-            if _find_node(nodes, node["id"]) is not None:
-                skipped.append(f"add {node['id']}: id 已存在")
-                continue
-            if target and target != "@screen":
-                hit = _find_node(nodes, target)
-                if hit is None:
-                    skipped.append(f"add {node['id']}: 父级 {target} 不存在")
-                    continue
-                children = hit[2].get("children")
-                if not isinstance(children, list):
-                    children = []
-                    hit[2]["children"] = children
-                parent = children
-            else:
-                parent = nodes
-            index = op.get("index")
-            position = (
-                index if isinstance(index, int) and not isinstance(index, bool) else len(parent)
-            )
-            position = max(0, min(position, len(parent)))
-            parent.insert(position, node)
-            applied += 1
-        elif kind == "remove":
-            hit = _find_node(nodes, target)
-            if hit is None:
-                skipped.append(f"remove {target or '?'}: 目标不存在")
-                continue
-            hit[0].pop(hit[1])
-            applied += 1
-        elif kind == "reorder":
-            hit = _find_node(nodes, target)
-            if hit is None:
-                skipped.append(f"reorder {target or '?'}: 目标不存在")
-                continue
-            parent, at, node = hit
-            parent.pop(at)
-            index = op.get("index")
-            position = (
-                index if isinstance(index, int) and not isinstance(index, bool) else len(parent)
-            )
-            parent.insert(max(0, min(position, len(parent))), node)
-            applied += 1
-        else:
-            skipped.append(f"未知 op：{kind}")
-    return applied, skipped
-
-
 def _pick_screen(design: dict[str, Any], params: dict[str, Any]) -> tuple[dict[str, Any], int]:
     screens = design.get("screens")
     if not isinstance(screens, list) or not screens:
@@ -548,36 +471,32 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
         ops = asked.get("ops")
         if not isinstance(ops, list) or not ops:
             raise ValidationError("AI 没有给出可应用的修改，换个说法或缩小改动范围再试")
-        applied, skipped = _apply_ops(screen, ops)
-        if applied == 0:
-            raise ValidationError(
-                "AI 返回的修改无法应用到当前画板，请重试", details={"skipped": skipped[:5]}
-            )
-        merged = {
-            key: design.get(key)
-            for key in (
-                "name",
-                "project",
-                "project_id",
-                "description",
-                "status",
-                "bg",
-                "file",
-            )
-        }
-        merged["screens"] = design.get("screens")
-        saved = await _request(
+        # 提交意图而不是整稿：服务端在最新稿上重放 ops，人同时在改也不会被覆盖
+        committed = await _request(
             client,
-            "PUT",
-            f"/api/designs/{design_id}",
+            "POST",
+            f"/api/designs/{design_id}/commits",
             {
+                "author": "flux-agent",
+                "role": "agent",
+                "label": instruction[:120],
+                "screen": screen.get("id") or "",
                 "base_version": base_version if base_version is not None else design.get("version"),
-                "design": merged,
+                "ops": ops,
             },
         )
-    updated = saved.get("design")
+    updated = committed.get("design")
     if not isinstance(updated, dict):
         raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    applied = committed.get("applied")
+    applied = applied if isinstance(applied, int) and not isinstance(applied, bool) else 0
+    skipped = committed.get("skipped") if isinstance(committed.get("skipped"), list) else []
+    deferred = committed.get("deferred") if isinstance(committed.get("deferred"), list) else []
+    if applied == 0:
+        raise ValidationError(
+            "AI 返回的修改无法应用到当前画板，请重试",
+            details={"skipped": skipped[:5], "deferred": deferred[:5]},
+        )
     return {
         "changed": True,
         "design_id": design_id,
@@ -586,6 +505,8 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
         "version": updated.get("version"),
         "applied": applied,
         "skipped": skipped[:5],
+        "deferred": deferred[:5],
+        "rebased": bool(committed.get("rebased")),
         "ops": ops,
         "reply": asked.get("reply"),
         "mode": asked.get("mode") or mode,
@@ -630,6 +551,687 @@ async def design_revert(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
         "design": design,
         "summary": _summary(design),
         "version": design.get("version"),
+    }
+
+
+# ---------------------------------------------------------------- 组件 / 模板
+#
+# 组件库与模板库由 Luma Studio 维护：组件是参数化节点子树，模板是整屏画板。
+# 绑定（把蓝图 + 参数展开成节点树）只在服务端做一份，人和 Agent 共用同一结果，
+# 所以这里不复制任何占位符逻辑，只负责「取目录 → 绑定 → 生成 ops → 走 commits」。
+
+_ASSET_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+#: 实例根节点 id 即绑定前缀：服务端按它确定性生成整棵子树的 id。
+_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$")
+_TEMPLATE_MODES = {"new-screen", "replace-screen"}
+_COMPONENT_SCOPES = {"instance", "all"}
+
+
+def _require_asset_id(raw: Any) -> str:
+    asset_id = require_str({"asset_id": raw}, "asset_id")
+    if not _ASSET_ID_RE.match(asset_id):
+        raise ValidationError(f"组件 id 不合法：{asset_id}", details={"param": "asset_id"})
+    return asset_id
+
+
+def _instance_prefix(raw: Any) -> str:
+    """实例根 id：Agent 可指定（≤20 字符），否则按 inst-xxxxxx 生成。"""
+    if raw is None:
+        return "inst-" + uuid.uuid4().hex[:6]
+    if not isinstance(raw, str) or not _INSTANCE_ID_RE.match(raw.strip()):
+        raise ValidationError(
+            "node_id 只允许字母/数字/下划线/连字符，最长 20 字符",
+            details={"param": "node_id"},
+        )
+    return raw.strip()
+
+
+def _params_object(raw: Any) -> dict[str, Any]:
+    """组件参数覆盖项：键是组件声明的参数名，未知键由服务端忽略。"""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError("params 必须是对象（参数名 → 值）", details={"param": "params"})
+    return dict(raw)
+
+
+def _size(raw: Any, fallback: float = 0.0) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return fallback
+    return float(raw)
+
+
+def _round(raw: Any, fallback: float = 0.0) -> int:
+    return int(round(_size(raw, fallback)))
+
+
+def _index_param(raw: Any, upper: int) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValidationError("index 必须是整数", details={"param": "index"})
+    return max(0, min(raw, upper))
+
+
+def _stack_y(nodes: list[Any]) -> int:
+    """新组件的默认纵坐标：叠在现有顶层图层下方，至少留 96 的头部空间。"""
+    bottom = 96
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("hidden"):
+            continue
+        bottom = max(bottom, _round(_size(node.get("y")) + _size(node.get("h")) + 16))
+    return bottom
+
+
+def _profile(asset: dict[str, Any], kind: str) -> dict[str, Any]:
+    """目录里的一项 → Agent 可读摘要（不含蓝图节点树，控制上下文体积）。"""
+    params: list[dict[str, Any]] = []
+    for spec in asset.get("params") or []:
+        if isinstance(spec, dict) and isinstance(spec.get("key"), str):
+            params.append(
+                {
+                    "key": spec["key"],
+                    "label": spec.get("label") or spec["key"],
+                    "type": spec.get("type") or "text",
+                    "default": spec.get("default"),
+                }
+            )
+    profile: dict[str, Any] = {
+        "asset_id": asset.get("id"),
+        "name": asset.get("name"),
+        "group": asset.get("group"),
+        "description": asset.get("desc"),
+        "params": params,
+    }
+    if kind == "template":
+        screen = asset.get("screen") if isinstance(asset.get("screen"), dict) else {}
+        profile["w"] = screen.get("w")
+        profile["h"] = screen.get("h")
+        profile["layer_count"] = _layer_count(screen.get("nodes") or [])
+    else:
+        node = asset.get("node") if isinstance(asset.get("node"), dict) else {}
+        profile["layer_count"] = _layer_count([node]) if node else 0
+        variants = [
+            {"id": item["id"], "name": item.get("name") or item["id"]}
+            for item in asset.get("variants") or []
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        if variants:
+            profile["variants"] = variants
+            profile["default_variant"] = variants[0]["id"]
+    return profile
+
+
+async def _bind_asset(
+    client: httpx.AsyncClient,
+    asset_id: str,
+    kind: str,
+    params: dict[str, Any],
+    prefix: str,
+    variant: str | None = None,
+) -> dict[str, Any]:
+    """调用服务端 binder：返回绑定结果、生效参数与生效变体。"""
+    payload: dict[str, Any] = {
+        "asset_id": asset_id,
+        "kind": kind,
+        "params": params,
+        "prefix": prefix,
+    }
+    if variant:
+        payload["variant"] = variant
+    body = await _request(client, "POST", "/api/components/render", payload)
+    bound = body.get("node") if kind == "component" else body.get("screen")
+    if not isinstance(bound, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常组件实例")
+    merged = body.get("params") if isinstance(body.get("params"), dict) else params
+    return {"bound": bound, "params": merged, "variant": body.get("variant")}
+
+
+def _find_node_anywhere(
+    design: dict[str, Any], node_id: str
+) -> tuple[dict[str, Any], tuple[list[Any], int, dict[str, Any]]] | None:
+    screens = design.get("screens")
+    if not isinstance(screens, list):
+        return None
+    for screen in screens:
+        if not isinstance(screen, dict):
+            continue
+        hit = _find_node(screen.get("nodes") or [], node_id)
+        if hit is not None:
+            return screen, hit
+    return None
+
+
+def _custom_params(
+    origin: dict[str, Any], fallback: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """实例上用户真正改过的参数（与 origin.defaults 不同者）。
+
+    切变体时只携带这些值，其余交给新变体默认，避免旧变体默认覆盖新变体默认。
+    老实例没有 defaults 时用组件级默认（fallback）兜底，再不行则全部视为默认。
+    """
+    params = origin.get("params") if isinstance(origin.get("params"), dict) else {}
+    defaults = origin.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = fallback if isinstance(fallback, dict) else params
+    return {key: value for key, value in params.items() if value != defaults.get(key)}
+
+
+async def _asset_param_defaults(client: httpx.AsyncClient, asset_id: str) -> dict[str, Any]:
+    """组件级参数默认值（用于兼容没有 origin.defaults 的老实例）。"""
+    try:
+        body = await _request(client, "GET", "/api/components")
+    except Exception:
+        return {}
+    for item in body.get("components") or []:
+        if not isinstance(item, dict) or item.get("id") != asset_id:
+            continue
+        out: dict[str, Any] = {}
+        for spec in item.get("params") or []:
+            if isinstance(spec, dict) and isinstance(spec.get("key"), str):
+                out[spec["key"]] = spec.get("default")
+        return out
+    return {}
+
+
+def _instances_of(design: dict[str, Any], asset_id: str) -> list[str]:
+    """收集全稿同源实例的根 id（含嵌套图层）。"""
+    ids: list[str] = []
+
+    def walk(nodes: list[Any]) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            origin = node.get("origin")
+            if isinstance(origin, dict) and origin.get("assetId") == asset_id:
+                ids.append(str(node.get("id")))
+            children = node.get("children")
+            if isinstance(children, list):
+                walk(children)
+
+    for screen in design.get("screens") or []:
+        if isinstance(screen, dict):
+            nodes = screen.get("nodes")
+            walk(nodes if isinstance(nodes, list) else [])
+    return ids
+
+
+def _collect_nodes(node: Any, out: dict[str, dict[str, Any]], order: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    node_id = node.get("id")
+    if isinstance(node_id, str):
+        out[node_id] = node
+        order.append(node_id)
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            _collect_nodes(child, out, order)
+
+
+def _locate_child(node: dict[str, Any], node_id: str) -> tuple[str | None, int] | None:
+    children = node.get("children")
+    if not isinstance(children, list):
+        return None
+    for index, child in enumerate(children):
+        if not isinstance(child, dict):
+            continue
+        if child.get("id") == node_id:
+            return node.get("id"), index
+        hit = _locate_child(child, node_id)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _subtree_ops(
+    old_root: dict[str, Any], fresh_root: dict[str, Any], screen_id: str
+) -> list[dict[str, Any]]:
+    """重建前后对比：删多余节点 → 加新节点 → 对同 id 节点只 set 变化字段。
+
+    id 由 prefix 确定性生成，所以常规调参只会产生少量 set；只有蓝图结构变了才会
+    出现 add / remove。
+    """
+    old_nodes: dict[str, dict[str, Any]] = {}
+    old_order: list[str] = []
+    _collect_nodes(old_root, old_nodes, old_order)
+    new_nodes: dict[str, dict[str, Any]] = {}
+    new_order: list[str] = []
+    _collect_nodes(fresh_root, new_nodes, new_order)
+
+    ops: list[dict[str, Any]] = []
+    for node_id in reversed(old_order):
+        if node_id not in new_nodes:
+            ops.append({"op": "remove", "screen": screen_id, "target": node_id})
+    for node_id in new_order:
+        if node_id in old_nodes:
+            continue
+        parent_id, at = _locate_child(fresh_root, node_id) or (None, 0)
+        # 父节点本身是新增的：整棵子树随父节点的 add 一起进去，不重复添加
+        if parent_id is not None and parent_id not in old_nodes:
+            continue
+        ops.append(
+            {
+                "op": "add",
+                "screen": screen_id,
+                "target": parent_id or "@screen",
+                "index": at,
+                "node": new_nodes[node_id],
+            }
+        )
+    for node_id in new_order:
+        old = old_nodes.get(node_id)
+        if old is None:
+            continue
+        fresh = new_nodes[node_id]
+        patch: dict[str, Any] = {}
+        for key, value in fresh.items():
+            if key in ("id", "type", "children"):
+                continue
+            if old.get(key) != value:
+                patch[key] = value
+        if patch:
+            ops.append({"op": "set", "screen": screen_id, "target": node_id, "set": patch})
+    return ops
+
+
+async def _commit(
+    client: httpx.AsyncClient,
+    design_id: str,
+    ops: list[dict[str, Any]],
+    *,
+    label: str,
+    screen_hint: str,
+    base_version: Any,
+) -> dict[str, Any]:
+    """提交意图而不是整稿：服务端在最新稿上重放，人同时在改也不会被覆盖。"""
+    if not ops:
+        raise ValidationError("没有产生任何改动")
+    if len(ops) > 400:
+        raise ValidationError(
+            f"本次改动产生 {len(ops)} 条操作，超过单次上限 400；请拆成多次调用或缩小范围",
+            details={"ops": len(ops)},
+        )
+    body = await _request(
+        client,
+        "POST",
+        f"/api/designs/{design_id}/commits",
+        {
+            "author": "flux-agent",
+            "role": "agent",
+            "label": label[:120],
+            "screen": screen_hint,
+            "base_version": base_version,
+            "ops": ops,
+        },
+    )
+    design = body.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    applied = body.get("applied")
+    applied = applied if isinstance(applied, int) and not isinstance(applied, bool) else 0
+    skipped = body.get("skipped") if isinstance(body.get("skipped"), list) else []
+    deferred = body.get("deferred") if isinstance(body.get("deferred"), list) else []
+    if applied == 0:
+        if deferred:
+            raise ConflictError(
+                "设计稿正被人工编辑（相关图层被软锁），稍后重试",
+                code="design_locked",
+                details={"deferred": deferred[:10], "skipped": skipped[:10]},
+            )
+        raise ValidationError("改动没有应用到当前设计稿", details={"skipped": skipped[:10]})
+    return {
+        "design": design,
+        "version": design.get("version"),
+        "applied": applied,
+        "skipped": skipped[:10],
+        "deferred": deferred[:10],
+        "rebased": bool(body.get("rebased")),
+    }
+
+
+async def _load_design(client: httpx.AsyncClient, design_id: str) -> dict[str, Any]:
+    body = await _request(client, "GET", f"/api/designs/{design_id}")
+    design = body.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    return design
+
+
+def _base_version(params: dict[str, Any], design: dict[str, Any]) -> Any:
+    raw = params.get("base_version")
+    if raw is not None and (isinstance(raw, bool) or not isinstance(raw, int)):
+        raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+    return raw if raw is not None else design.get("version")
+
+
+async def design_component_list(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """列出组件与模板（只读）：只回摘要，蓝图节点树留在服务端。"""
+    reject_unknown(params, {"kind", "group"})
+    kind = optional_str(params, "kind")
+    if kind is not None and kind not in ("component", "template"):
+        raise ValidationError("kind 只能是 component 或 template", details={"param": "kind"})
+    group = optional_str(params, "group")
+    async with _client(ctx) as client:
+        body = await _request(client, "GET", "/api/components")
+    result: dict[str, Any] = {
+        "version": body.get("version"),
+        "updated_at": body.get("updated_at"),
+    }
+    count = 0
+    for key, item_kind in (("components", "component"), ("templates", "template")):
+        if kind is not None and kind != item_kind:
+            continue
+        items = [item for item in body.get(key) or [] if isinstance(item, dict)]
+        if group is not None:
+            items = [item for item in items if item.get("group") == group]
+        result[key] = [_profile(item, item_kind) for item in items]
+        count += len(items)
+    result["count"] = count
+    result["hint"] = (
+        "组件用 design.component_insert 插入画板并保留可调参数；"
+        "模板用 design.template_apply 新建画板或替换现有画板。"
+    )
+    return result
+
+
+async def design_component_insert(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown(
+        params,
+        {
+            "design_id",
+            "asset_id",
+            "screen_id",
+            "screen_index",
+            "params",
+            "node_id",
+            "x",
+            "y",
+            "index",
+            "variant",
+            "base_version",
+        },
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    asset_id = _require_asset_id(params.get("asset_id"))
+    overrides = _params_object(params.get("params"))
+    variant = optional_str(params, "variant")
+    prefix = _instance_prefix(params.get("node_id"))
+
+    async with _client(ctx) as client:
+        design = await _load_design(client, design_id)
+        screen, _ = _pick_screen(design, params)
+        screen_id = str(screen.get("id"))
+        nodes = screen.get("nodes") if isinstance(screen.get("nodes"), list) else []
+
+        bound = await _bind_asset(client, asset_id, "component", overrides, prefix, variant)
+        node = bound["bound"]
+
+        width = _size(screen.get("w"))
+        height = _size(screen.get("h"))
+        node_w = _size(node.get("w"))
+        node_h = _size(node.get("h"))
+        if params.get("x") is not None:
+            node["x"] = _round(params.get("x"))
+        else:
+            node["x"] = max(8, int(round((width - node_w) / 2)))
+        if params.get("y") is not None:
+            node["y"] = _round(params.get("y"))
+        else:
+            node["y"] = min(_stack_y(nodes), max(96, int(height - node_h - 24)))
+        at = (
+            len(nodes)
+            if params.get("index") is None
+            else _index_param(params.get("index"), len(nodes))
+        )
+
+        committed = await _commit(
+            client,
+            design_id,
+            [{"op": "add", "screen": screen_id, "target": "@screen", "index": at, "node": node}],
+            label=f"插入组件 {asset_id}",
+            screen_hint=screen_id,
+            base_version=_base_version(params, design),
+        )
+    updated = committed["design"]
+    return {
+        "inserted": True,
+        "design_id": design_id,
+        "screen_id": screen_id,
+        "node_id": node.get("id"),
+        "asset_id": asset_id,
+        "params": bound["params"],
+        "variant": bound["variant"],
+        "x": node.get("x"),
+        "y": node.get("y"),
+        "version": committed["version"],
+        "applied": committed["applied"],
+        "skipped": committed["skipped"],
+        "deferred": committed["deferred"],
+        "rebased": committed["rebased"],
+        "summary": _summary(updated),
+    }
+
+
+async def design_component_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown(
+        params,
+        {"design_id", "node_id", "params", "variant", "scope", "label", "base_version"},
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    node_id = require_str(params, "node_id")
+    overrides = _params_object(params.get("params"))
+    variant = optional_str(params, "variant")
+    if not overrides and variant is None:
+        raise ValidationError("params 与 variant 至少要给一个", details={"param": "params"})
+    scope = optional_str(params, "scope") or "instance"
+    if scope not in _COMPONENT_SCOPES:
+        raise ValidationError(
+            f"scope 只能是 {sorted(_COMPONENT_SCOPES)}", details={"param": "scope"}
+        )
+    label = optional_str(params, "label") or f"更新组件实例 {node_id}"
+
+    async with _client(ctx) as client:
+        design = await _load_design(client, design_id)
+        found = _find_node_anywhere(design, node_id)
+        if found is None:
+            raise NotFoundError(f"图层不存在：{node_id}", details={"param": "node_id"})
+        origin = found[1][2].get("origin")
+        if not isinstance(origin, dict) or not origin.get("assetId"):
+            raise ValidationError(
+                "该图层不是组件实例（没有 origin），无法按参数更新",
+                details={"param": "node_id"},
+            )
+        asset_id = str(origin["assetId"])
+        own = origin.get("params") if isinstance(origin.get("params"), dict) else {}
+        # 老实例没有 defaults：取组件级默认，避免旧变体默认被当成用户自定义
+        legacy_defaults = None
+        if not isinstance(origin.get("defaults"), dict):
+            legacy_defaults = await _asset_param_defaults(client, asset_id)
+        # 只把「用户自定义 + 本次覆盖」传给 binder，剩余默认值由目标变体决定
+        merged = {**_custom_params(origin, legacy_defaults), **overrides}
+        effective: dict[str, Any] = {**own, **overrides}
+        targets = [node_id] if scope == "instance" else _instances_of(design, asset_id)
+
+        ops: list[dict[str, Any]] = []
+        updated_ids: list[str] = []
+        applied_variant: Any = variant
+        for target_id in targets:
+            hit = _find_node_anywhere(design, target_id)
+            if hit is None:
+                continue
+            target_screen, (_, _, old_node) = hit
+            target_origin = old_node.get("origin")
+            if not isinstance(target_origin, dict) or not target_origin.get("assetId"):
+                continue
+            # scope=all：把源实例的自定义参数铺到所有同源实例，各自保留自己的变体
+            target_custom = _custom_params(target_origin, legacy_defaults)
+            wanted = (
+                {**target_custom, **merged} if scope == "all" else {**target_custom, **overrides}
+            )
+            target_variant = variant
+            if target_variant is None and isinstance(target_origin.get("variant"), str):
+                target_variant = target_origin["variant"]
+            bound = await _bind_asset(
+                client,
+                str(target_origin["assetId"]),
+                "component",
+                wanted,
+                target_id,
+                target_variant,
+            )
+            applied_variant = bound["variant"]
+            effective = bound["params"]
+            fresh = bound["bound"]
+            fresh["x"] = _size(old_node.get("x"))
+            fresh["y"] = _size(old_node.get("y"))
+            if isinstance(old_node.get("name"), str) and old_node["name"]:
+                fresh["name"] = old_node["name"]
+            for key in ("hidden", "locked", "rotation", "opacity"):
+                if key in old_node:
+                    fresh[key] = old_node[key]
+            ops.extend(_subtree_ops(old_node, fresh, str(target_screen.get("id") or "")))
+            updated_ids.append(target_id)
+
+        if not ops:
+            return {
+                "changed": False,
+                "design_id": design_id,
+                "node_id": node_id,
+                "asset_id": asset_id,
+                "params": effective,
+                "variant": applied_variant,
+                "updated": updated_ids,
+                "version": design.get("version"),
+                "note": "参数与当前实例一致，没有产生改动",
+            }
+        committed = await _commit(
+            client,
+            design_id,
+            ops,
+            label=label,
+            screen_hint=str(found[0].get("id") or ""),
+            base_version=_base_version(params, design),
+        )
+    return {
+        "changed": True,
+        "design_id": design_id,
+        "node_id": node_id,
+        "asset_id": asset_id,
+        "scope": scope,
+        "params": effective,
+        "variant": applied_variant,
+        "updated": updated_ids,
+        "version": committed["version"],
+        "applied": committed["applied"],
+        "skipped": committed["skipped"],
+        "deferred": committed["deferred"],
+        "rebased": committed["rebased"],
+        "summary": _summary(committed["design"]),
+    }
+
+
+async def design_template_apply(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown(
+        params,
+        {
+            "design_id",
+            "asset_id",
+            "mode",
+            "screen_id",
+            "screen_index",
+            "params",
+            "name",
+            "index",
+            "base_version",
+        },
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    asset_id = _require_asset_id(params.get("asset_id"))
+    mode = optional_str(params, "mode") or "new-screen"
+    if mode not in _TEMPLATE_MODES:
+        raise ValidationError(f"mode 只能是 {sorted(_TEMPLATE_MODES)}", details={"param": "mode"})
+    overrides = _params_object(params.get("params"))
+    name_override = optional_str(params, "name")
+
+    async with _client(ctx) as client:
+        design = await _load_design(client, design_id)
+        screens = design.get("screens") if isinstance(design.get("screens"), list) else []
+
+        if mode == "new-screen":
+            if len(screens) >= 20:
+                raise ValidationError(
+                    "设计稿已有 20 块画板，不能再新建；可改用 replace-screen 覆盖现有画板",
+                    details={"param": "mode"},
+                )
+            prefix = "tpl-" + uuid.uuid4().hex[:6]
+            bound = await _bind_asset(client, asset_id, "template", overrides, prefix)
+            fresh = bound["bound"]
+            if name_override:
+                fresh["name"] = name_override[:60]
+            last = screens[-1] if screens and isinstance(screens[-1], dict) else None
+            if last is not None:
+                fresh["x"] = _round(_size(last.get("x")) + _size(last.get("w")) + 120)
+                fresh["y"] = _round(_size(last.get("y")), 40)
+            at = (
+                len(screens)
+                if params.get("index") is None
+                else _index_param(params.get("index"), len(screens))
+            )
+            screen_id = str(fresh.get("id"))
+            ops = [{"op": "add-screen", "screen": screen_id, "index": at, "payload": fresh}]
+        else:
+            screen, _ = _pick_screen(design, params)
+            screen_id = str(screen.get("id"))
+            # 画板 id 通常超过 20 字符（实例前缀上限），按它派生一个稳定短前缀
+            prefix = "tpl-" + hashlib.sha1(screen_id.encode()).hexdigest()[:8]
+            bound = await _bind_asset(client, asset_id, "template", overrides, prefix)
+            fresh = bound["bound"]
+            fresh_name = (name_override or fresh.get("name") or screen.get("name") or "画板")[:60]
+            old_nodes = screen.get("nodes") if isinstance(screen.get("nodes"), list) else []
+            ops = []
+            patch: dict[str, Any] = {}
+            if fresh_name and fresh_name != screen.get("name"):
+                patch["name"] = fresh_name
+            if isinstance(fresh.get("bg"), str) and fresh["bg"] and fresh["bg"] != screen.get("bg"):
+                patch["bg"] = fresh["bg"]
+            if patch:
+                ops.append({"op": "set-screen", "target": screen_id, "set": patch})
+            # 先摘掉旧的顶层图层（子节点随父一起删），再按顺序铺新的顶层图层
+            for node in reversed([item for item in old_nodes if isinstance(item, dict)]):
+                if isinstance(node.get("id"), str):
+                    ops.append({"op": "remove", "screen": screen_id, "target": node["id"]})
+            for index, node in enumerate(fresh.get("nodes") or []):
+                ops.append(
+                    {
+                        "op": "add",
+                        "screen": screen_id,
+                        "target": "@screen",
+                        "index": index,
+                        "node": node,
+                    }
+                )
+
+        committed = await _commit(
+            client,
+            design_id,
+            ops,
+            label=f"{'新建' if mode == 'new-screen' else '替换'}画板：{asset_id}",
+            screen_hint=screen_id,
+            base_version=_base_version(params, design),
+        )
+    updated = committed["design"]
+    return {
+        "applied_template": True,
+        "mode": mode,
+        "design_id": design_id,
+        "screen_id": screen_id,
+        "asset_id": asset_id,
+        "params": bound["params"],
+        "version": committed["version"],
+        "applied": committed["applied"],
+        "skipped": committed["skipped"],
+        "deferred": committed["deferred"],
+        "rebased": committed["rebased"],
+        "summary": _summary(updated),
     }
 
 
@@ -797,6 +1399,167 @@ def design_tools() -> tuple[ToolSpec, ...]:
             },
             capability=Capability.FILE_WRITE,
             handler=design_update,
+        ),
+        ToolSpec(
+            name="design.component_list",
+            title="列出组件与模板",
+            description=(
+                "列出设计工作室的组件库与模板库（只读）：返回每个组件的参数定义与默认值、"
+                "模板的尺寸与图层数。搭版式前先看这里，优先用现成组件/模板，不要手搓重复模块。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["component", "template"],
+                        "description": "只看组件或只看模板；省略则两类都返回",
+                    },
+                    "group": {"type": "string", "description": "按分组过滤，例如「操作」「系统」"},
+                },
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_READ,
+            handler=design_component_list,
+        ),
+        ToolSpec(
+            name="design.component_insert",
+            title="插入组件实例",
+            description=(
+                "把组件库里的组件按其参数展开成一个实例节点，追加到指定画板顶层。实例带 origin，"
+                "后续可用 design.component_update 只改参数或切换变体。组件有 variants 时可用 "
+                "variant 指定蓝图（省略用默认变体）。不传 x/y 时自动水平居中并叠在现有图层"
+                "下方。返回的 node_id 是实例根图层 id，改参数、选中它都用这个 id。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "asset_id": {
+                        "type": "string",
+                        "description": "组件 id，例如 button-primary（见 component_list）",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": '组件参数覆盖，例如 {"text": "立即购买", "width": 300}',
+                    },
+                    "variant": {
+                        "type": "string",
+                        "description": "变体 id（见 component_list 的 variants）；省略用默认变体",
+                    },
+                    "screen_id": {"type": "string", "description": "目标画板 id（优先于下标）"},
+                    "screen_index": {
+                        "type": "integer",
+                        "description": "目标画板下标，默认 0",
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "description": "自定义实例根 id（≤20 字符）；省略自动生成 inst-xxxxxx",
+                    },
+                    "x": {"type": "number", "description": "覆盖横坐标（省略自动居中）"},
+                    "y": {"type": "number", "description": "覆盖纵坐标（省略自动堆叠）"},
+                    "index": {
+                        "type": "integer",
+                        "description": "在画板顶层图层中的插入位置，默认追加到末尾",
+                    },
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本提交（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id", "asset_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_component_insert,
+        ),
+        ToolSpec(
+            name="design.component_update",
+            title="调整组件实例参数/变体",
+            description=(
+                "按参数重建组件实例子树（实例位置、名称、显隐、锁定、旋转、透明度保持不变）。"
+                "scope=instance 只改这一个实例；scope=all 把新参数同步到全稿所有同源实例。"
+                "params 改参数，variant 切换变体，两者至少给一个；只切变体时可以不带 params。"
+                "只能用于带 origin 的组件实例；普通图层要改样式请用 design.ai 或 design.update。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "node_id": {"type": "string", "description": "组件实例的根图层 id"},
+                    "params": {
+                        "type": "object",
+                        "description": '要改的参数，例如 {"text": "已售罄", "fill": "#F87171"}',
+                    },
+                    "variant": {
+                        "type": "string",
+                        "description": "要切换到的变体 id，例如 ghost / danger（见列表工具）",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["instance", "all"],
+                        "description": "instance 只改当前实例（默认）；all 同步到所有同源实例",
+                    },
+                    "label": {"type": "string", "description": "提交说明（可空）"},
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本提交（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id", "node_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_component_update,
+        ),
+        ToolSpec(
+            name="design.template_apply",
+            title="应用模板到画板",
+            description=(
+                "把模板库里的整屏模板铺进设计稿。mode=new-screen 追加一块新画板（排在上一个"
+                "画板右侧）；mode=replace-screen 用模板内容整体替换指定画板的图层（保留画板 id"
+                "与位置）。模板参数同样可在 params 里覆盖，例如页面标题。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "asset_id": {
+                        "type": "string",
+                        "description": "模板 id，例如 tpl-settings（从 design.component_list 取）",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["new-screen", "replace-screen"],
+                        "description": "new-screen 新建画板（默认）；replace-screen 替换现有画板",
+                    },
+                    "screen_id": {
+                        "type": "string",
+                        "description": "mode=replace-screen 时要替换的画板 id",
+                    },
+                    "screen_index": {
+                        "type": "integer",
+                        "description": "mode=replace-screen 时可改用画板下标，默认 0",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": '模板参数覆盖，例如 {"title": "偏好设置"}',
+                    },
+                    "name": {"type": "string", "description": "画板名称覆盖（可空）"},
+                    "index": {
+                        "type": "integer",
+                        "description": "mode=new-screen 时新画板的插入位置，默认追加到末尾",
+                    },
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本提交（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id", "asset_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_template_apply,
         ),
         ToolSpec(
             name="design.ai",

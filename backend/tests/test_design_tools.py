@@ -285,21 +285,37 @@ def test_design_ai_is_read_only_in_plan_mode() -> None:
     assert "design.revisions" in PLAN_ALLOWED_TOOLS
 
 
-async def test_design_ai_applies_ops_and_puts_with_base_version(upstream) -> None:
+async def test_design_ai_commits_ops_instead_of_overwriting_design(upstream) -> None:
     holder, seen = upstream
-    asked_ops = {"ops": [{"op": "set", "target": "t1", "set": {"text": "新标题"}}]}
+    asked_ops = [{"op": "set", "target": "t1", "set": {"text": "新标题"}}]
+    committed = _design(version=5)
+    committed["screens"][0]["nodes"][0]["text"] = "新标题"
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(200, json={"ok": True, "design": _design(version=4)})
-        if request.method == "POST":
+        if request.url.path == "/api/ask":
             return httpx.Response(
-                200, json={"ok": True, **asked_ops, "reply": "改好了", "model": "m"}
+                200, json={"ok": True, "ops": asked_ops, "reply": "改好了", "model": "m"}
             )
-        assert request.method == "PUT"
-        saved = _design(version=5)
-        saved["screens"][0]["nodes"][0]["text"] = "新标题"
-        return httpx.Response(200, json={"ok": True, "design": saved})
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/designs/{DESIGN_ID}/commits",
+        )
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "commit_id": "c1",
+                "version": 5,
+                "applied": 1,
+                "skipped": [],
+                "deferred": [],
+                "touched": ["t1"],
+                "rebased": False,
+                "design": committed,
+            },
+        )
 
     holder["handler"] = handler
     ctx, _ = _ctx(run_id=None)
@@ -311,18 +327,60 @@ async def test_design_ai_applies_ops_and_puts_with_base_version(upstream) -> Non
     assert result["version"] == 5
     assert result["applied"] == 1
     assert result["skipped"] == []
+    assert result["deferred"] == []
+    assert result["rebased"] is False
     assert result["mode"] == "screen"
     assert [(r.method, r.url.path) for r in seen] == [
         ("GET", f"/api/designs/{DESIGN_ID}"),
         ("POST", "/api/ask"),
-        ("PUT", f"/api/designs/{DESIGN_ID}"),
+        ("POST", f"/api/designs/{DESIGN_ID}/commits"),
     ]
     sent = json.loads(seen[1].content)
     assert sent["mode"] == "screen"
     assert sent["screen"]["w"] == 390
     assert sent["screen"]["nodes"][0]["id"] == "t1"
-    put = json.loads(seen[2].content)
-    assert put["base_version"] == 4
+    commit = json.loads(seen[2].content)
+    assert commit["author"] == "flux-agent"
+    assert commit["role"] == "agent"
+    assert commit["label"] == "把标题改成新标题"
+    assert commit["screen"] == "screen-1"
+    assert commit["base_version"] == 4
+    assert commit["ops"] == asked_ops
+    # 关键：不再整稿 PUT，避免覆盖人同时在改的内容
+    assert "design" not in commit
+
+
+async def test_design_ai_defers_when_human_locked(upstream) -> None:
+    holder, _ = upstream
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design()})
+        if request.url.path == "/api/ask":
+            return httpx.Response(
+                200,
+                json={"ok": True, "ops": [{"op": "set", "target": "t1", "set": {"text": "x"}}]},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "commit_id": "c2",
+                "version": 2,
+                "applied": 0,
+                "skipped": [],
+                "deferred": [{"index": 0, "target": "t1"}],
+                "touched": [],
+                "rebased": False,
+                "design": _design(),
+            },
+        )
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError) as excinfo:
+        await module.design_ai(ctx, {"design_id": DESIGN_ID, "instruction": "改标题"})
+    assert excinfo.value.details["deferred"] == [{"index": 0, "target": "t1"}]
 
 
 async def test_design_ai_validates_selected_ids(upstream) -> None:
