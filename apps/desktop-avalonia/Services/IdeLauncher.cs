@@ -37,10 +37,24 @@ public static class IdeLauncher
 
         if (IsProcessAlive())
         {
-            var activated = TryActivate();
-            message = activated ? "已切换到 Flux IDE 窗口" : "Flux IDE 窗口已打开";
-            AppLog.Info($"Flux IDE 已在运行 · pid={_process!.Id} · 切换={(activated ? "成功" : "失败")}");
-            return true;
+            if (TryActivate())
+            {
+                message = "已切换到 Flux IDE 窗口";
+                AppLog.Info($"Flux IDE 已在运行 · pid={_process!.Id} · 切换成功");
+                return true;
+            }
+
+            if (HasWindow())
+            {
+                message = "Flux IDE 窗口已打开";
+                AppLog.Info($"Flux IDE 已在运行 · pid={_process!.Id} · 窗口存在但无法激活");
+                return true;
+            }
+
+            // 进程还在但界面已经不在了（IDE 崩溃/窗口被关）：丢掉旧引用，重新拉起
+            AppLog.Warn($"Flux IDE 进程 {_process!.Id} 存活但找不到窗口，重新启动");
+            _process.Dispose();
+            _process = null;
         }
 
         try
@@ -112,6 +126,54 @@ public static class IdeLauncher
         _process.Dispose();
         _process = null;
         return false;
+    }
+
+    /// <summary>IDE 是否还有可见窗口；判定不了时按「有」处理，避免重复拉起。</summary>
+    private static bool HasWindow()
+    {
+        if (_process is null)
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                _process.Refresh();
+                return _process.MainWindowHandle != IntPtr.Zero;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo("xdotool")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add("search");
+            psi.ArgumentList.Add("--name");
+            psi.ArgumentList.Add("Flux IDE");
+
+            using var proc = Process.Start(psi);
+            if (proc is null)
+            {
+                return true;
+            }
+
+            proc.WaitForExit(1000);
+            return !proc.HasExited || proc.ExitCode == 0;
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     /// <summary>把已在运行的 IDE 窗口切到前台；做不到就返回 false（不影响调用方）。</summary>

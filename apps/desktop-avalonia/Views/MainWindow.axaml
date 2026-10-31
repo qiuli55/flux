@@ -309,6 +309,18 @@
             </Border>
         </Border>
 
+        <!-- ================= 轻提示（Ready 态操作回执） ================= -->
+        <Border IsVisible="{Binding IsToastVisible}"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,44" Padding="14,10"
+                IsHitTestVisible="False"
+                Background="{DynamicResource TnPanel}"
+                BorderBrush="{DynamicResource TnAccentLine}" BorderThickness="1"
+                CornerRadius="8">
+            <TextBlock Text="{Binding Toast}" FontSize="12" MaxWidth="420"
+                       TextWrapping="Wrap" />
+        </Border>
+
         <!-- ================= 命令面板（web 端 fx-cmdk） ================= -->
         <Border IsVisible="{Binding IsPaletteOpen}">
             <Panel>

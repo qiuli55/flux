@@ -56,6 +56,28 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isBusy;
 
+    /// <summary>轻提示文案：Ready 态下状态栏不可见，用它给操作回执（如打开 IDE）。</summary>
+    [ObservableProperty]
+    private string _toast = "";
+
+    [ObservableProperty]
+    private bool _isToastVisible;
+
+    private int _toastGeneration;
+
+    /// <summary>弹 2.6 秒轻提示；连续调用只保留最后一次。</summary>
+    private async void ShowToast(string message)
+    {
+        Toast = message;
+        IsToastVisible = true;
+        var generation = ++_toastGeneration;
+        await Task.Delay(2600);
+        if (generation == _toastGeneration)
+        {
+            IsToastVisible = false;
+        }
+    }
+
     /// <summary>状态栏后端项文案（对齐 web 的「后端正常 · env」）。</summary>
     [ObservableProperty]
     private string _backendText = "后端未连接";
@@ -449,8 +471,13 @@ public partial class MainWindowViewModel : ViewModelBase
     private void OpenIdeWindow()
     {
         AppLog.Info($"打开 IDE · available={IdeLauncher.IsAvailable} · state={State}");
-        IdeLauncher.Launch(out var message, _api is null ? null : _backend.BaseUrl);
+        var ok = IdeLauncher.Launch(out var message, _api is null ? null : _backend.BaseUrl);
         StatusMessage = message;
+        ShowToast(message);
+        if (!ok)
+        {
+            AppLog.Warn($"打开 IDE 未成功 · {message}");
+        }
     }
 
     [RelayCommand]
