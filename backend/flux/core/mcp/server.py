@@ -53,10 +53,11 @@ SERVER_NAME = "flux"
 
 #: initialize 时下发的使用说明（不占工具的 description，讲的是"先做什么"）
 SERVER_INSTRUCTIONS = (
-    "Flux 是工程平台，不替你执行也不替你落盘。开工先调 flux_context 确认自己在哪里、"
-    "能做哪些事；再调 context.get 拿项目事实与约束，用 workspace.read 核对文件当前内容；"
-    "跨会话的长期记忆（Environment 平台规则 / User 偏好 / Project 沉淀）用 memory.recall "
-    "读取（只读）；用户在本轮表达了稳定的偏好、习惯或禁忌时，用 memory.remember 记一条"
+    "Flux 是工程平台，不替你执行也不替你落盘。开工先调 context.boot（带上 task_id）："
+    "一次拿齐运行时身份与能力、项目事实与约束、跨会话长期记忆（Environment 平台规则 / "
+    "User 偏好 / Project 沉淀），省掉三次往返；需要刷新某一份时再单独调 flux_context / "
+    "context.get / memory.recall（均只读），并用 workspace.read 核对文件当前内容；"
+    "用户在本轮表达了稳定的偏好、习惯或禁忌时，用 memory.remember 记一条"
     "（每轮最多 3 条，不记项目细节、路径与密钥，已记过的不要重复写）；"
     "改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 "
     "Apply Engine 执行。页面 / UI / 视觉设计任务必须用 design.* 工具在设计工作室产出"
@@ -325,24 +326,64 @@ def _bearer_token(header: str | None) -> str | None:
 async def _attach_run_id(
     request: Request, container: Container, identity: AgentIdentity
 ) -> AgentIdentity:
-    """把 `X-Flux-Run-Id`（若确属本 Agent 的 Run）附加到身份上，供终端会话绑定 Run。
+    """把 `X-Flux-Run-Id`（或 `X-Flux-Task-Id` 解析出的活动 Run）附加到身份上。
 
-    该头由 Flux 起 Run 时注入到 DSH 的 MCP patch；用于把 Agent 经 `terminal.execute`
+    该头由 Flux 起 Run 时注入到 Agent 的 MCP 配置；用于把 Agent 经 `terminal.execute`
     派生的终端会话绑到具体 Run，Run 终态时据此回收（避免命令进程泄漏）。它**不是权威身份**：
     查不到该 Run、或归属与令牌身份不匹配，一律静默忽略（不 401）——Run 维度的小错误不该
     升级成鉴权失败。校验依据是"该 Run 的 agent_id 与令牌 agent_id 相等"，杜绝跨 Agent 冒充。
+
+    `X-Flux-Run-Id` 缺失时（runtime 声明了进程复用：常驻进程跨 Run 存活，配置里写死某一轮
+    的 run_id 会在下一轮变成过期 id），退化为按 `X-Flux-Task-Id` 解析"该任务当前活动的 Run"。
+    这条回退由通用层提供，任何 runtime 只要按这两条头之一注入即可。
+
+    模式按 Run 快照判定：切换模式只影响下一轮，正在跑的这一轮始终用启动时的模式。
     """
     run_id = (request.headers.get("x-flux-run-id") or "").strip()
-    if not run_id:
+    if run_id:
+        row = await container.run_repo.get(run_id)
+        if row is None or not row.agent_id or row.agent_id != identity.agent_id:
+            logger.warning(
+                "mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id
+            )
+            return identity
+        return replace(
+            identity,
+            run_id=run_id,
+            permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
+        )
+    task_id = (request.headers.get("x-flux-task-id") or "").strip()
+    if not task_id:
         return identity
-    row = await container.run_repo.get(run_id)
-    if row is None or not row.agent_id or row.agent_id != identity.agent_id:
-        logger.warning("mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id)
+    try:
+        rows = await container.run_repo.list_non_terminal()
+    except Exception:  # noqa: BLE001 - 解析失败只退回无 run 身份，不影响本轮调用
+        logger.warning("mcp 解析 X-Flux-Task-Id 失败 task=%s", task_id, exc_info=True)
         return identity
-    # 模式按 Run 快照判定：切换模式只影响下一轮，正在跑的这一轮始终用启动时的模式。
+    matched = [
+        row
+        for row in rows
+        if str(row.task_id or "") == task_id and row.agent_id == identity.agent_id
+    ]
+    if not matched:
+        logger.warning(
+            "mcp 未找到活动 Run task=%s agent=%s（X-Flux-Task-Id 回退失效）",
+            task_id,
+            identity.agent_id,
+        )
+        return identity
+    # 同任务并发两轮时取最新创建的那一轮（与「后来者独占进程」一致）
+    row = max(
+        matched,
+        key=lambda item: (
+            item.created_at is not None,
+            item.created_at,
+            str(item.id),
+        ),
+    )
     return replace(
         identity,
-        run_id=run_id,
+        run_id=str(row.id),
         permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
     )
 

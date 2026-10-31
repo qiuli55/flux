@@ -96,7 +96,7 @@ _AUTO_RETRY_DELAY_SECONDS = 30.0
 #: CLI runtime 每次重试都是新会话，所以必须提示先读上下文与已产出物，而不是凭记忆续跑。
 AUTO_RETRY_FOLLOWUP = (
     "继续（上一次执行被上游限流/超时中断，这是自动续跑的新会话）。"
-    "先用 context.get 与 design.list 查看已有进度，再从未完成的地方接着做；"
+    "先用 context.boot 与 design.list 查看已有进度，再从未完成的地方接着做；"
     "不要重复已完成的步骤，也不要把已交付的内容重做一遍。"
 )
 

@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flux.config import Settings
 from flux.core.agent_runtime.platforms import (
@@ -50,6 +50,9 @@ from flux.core.event.bus import EventBus, Events
 from flux.enums import DshRunStatus
 from flux.logging import get_logger
 from flux.models.agent_run import AgentRun
+
+if TYPE_CHECKING:  # 仅类型标注：直接导入 runtimes 包会触发 dsh_runtime ↔ supervisor 循环
+    from flux.core.agent_runtime.runtimes.base import RuntimeLimits
 
 logger = get_logger(__name__)
 
@@ -127,6 +130,12 @@ class _Monitor:
     last_output_persist_mono: float = 0.0
     #: 运行时的优雅中断回调（DSH 的 session/cancel）；未登记前为 None
     interrupt: Callable[[], None] | None = None
+    #: 本 Run 的执行时限（runtime 能力表 + Settings 覆盖）；None = 用全局 dsh_* 配置
+    limits: RuntimeLimits | None = None
+    #: 已生成正文的提供者（runtime 侧实时增量）：超时/取消时据此保留产出
+    partial_output: Callable[[], str] | None = None
+    #: 本 Run 的进程是否由 runtime 自己复用（池化）：终止时不得整组杀掉
+    reusable_process: bool = False
     registered: asyncio.Event = field(default_factory=asyncio.Event)
     settled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -174,8 +183,13 @@ class RunSupervisor:
         agent_id: str | None = None,
         task_id: object | None = None,
         permission_mode: str = "normal",
+        limits: RuntimeLimits | None = None,
     ) -> None:
-        """登记一次 Run：建库行（PENDING）+ 建内存监视器，并发布 started 事件。"""
+        """登记一次 Run：建库行（PENDING）+ 建内存监视器，并发布 started 事件。
+
+        `limits` 是 runtime 声明的执行时限（见 runtimes/base.py）；None = 沿用全局
+        `dsh_*` 配置，行为与改造前完全一致（DSH 及未来未登记时限的 runtime 不受影响）。
+        """
         now_mono = self._clock()
         self._monitors[run_id] = _Monitor(
             run_id=run_id,
@@ -185,6 +199,8 @@ class RunSupervisor:
             last_output_mono=now_mono,
             last_mcp_mono=now_mono,
             agent_id=agent_id,
+            limits=limits,
+            reusable_process=bool(limits and limits.reusable_process),
         )
         await self._repo.create(
             run_id=run_id,
@@ -244,6 +260,16 @@ class RunSupervisor:
         monitor.registered.set()
         if monitor.cancel_requested and not monitor.terminal:
             self._safe_call(callback, run_id)
+
+    def register_partial_output(self, run_id: str, provider: Callable[[], str]) -> None:
+        """登记"已生成正文"的读取器：超时/取消时把产出带进终态，而不是整轮作废。
+
+        任何 runtime 都能用（DSH 走事件累积、CLI 走增量缓冲）；不登记则维持原行为
+        （超时/取消不保留正文）。读取器必须无副作用、同步、可重复调用。
+        """
+        monitor = self._monitors.get(run_id)
+        if monitor is not None:
+            monitor.partial_output = provider
 
     def is_settled(self, run_id: str) -> bool:
         """该 Run 是否已被看护器落定终态（_execute 据此放弃后续动作）。"""
@@ -336,7 +362,14 @@ class RunSupervisor:
             row = await self._repo.get(run_id)
             if not await self._ensure_process_gone(monitor, row):
                 return await self._finish_cancel_failure(run_id, monitor)
-            await self._record_terminal(run_id, DshRunStatus.CANCELLED)
+            # 取消也保留已生成正文：会话绑定与部分产出对下一轮仍然有价值
+            partial = (final_response or self._collect_partial(monitor)).strip()
+            await self._record_terminal(
+                run_id,
+                DshRunStatus.CANCELLED,
+                final_response=partial,
+                finish_reason=finish_reason or "cancelled",
+            )
             monitor.settled.set()
             return DshRunStatus.CANCELLED
         await self._record_terminal(
@@ -425,27 +458,50 @@ class RunSupervisor:
             await self._repo.touch_heartbeat(monitor.run_id)
 
     async def _apply_timeout(self, monitor: _Monitor, kind: str) -> None:
-        """超时：先落终态（防止 _execute 的迟到收尾改写结果），再清理进程树。"""
+        """超时：先落终态（防止 _execute 的迟到收尾改写结果），再清理进程树。
+
+        只要 runtime 已经产出过正文，就按「截断完成」收尾（COMPLETED +
+        finish_reason=truncated + timeout_kind）：已有产出与会话绑定留给下一轮，
+        不再把整轮作废；完全没产出才记 TIMEOUT。
+        """
         if monitor.terminal:
             return
-        reason = _timeout_reason(kind, monitor, self._settings, self._clock)
-        monitor.status = DshRunStatus.TIMEOUT
+        reason = _timeout_reason(kind, monitor, self._settings, self._clock, monitor.limits)
+        partial = self._collect_partial(monitor)
+        truncated = bool(partial)
+        monitor.status = DshRunStatus.COMPLETED if truncated else DshRunStatus.TIMEOUT
         monitor.terminal = True
         monitor.last_state_mono = self._clock()
-        logger.warning("dsh.run 超时 run=%s kind=%s", monitor.run_id, kind)
+        logger.warning(
+            "dsh.run 超时 run=%s kind=%s partial_chars=%d", monitor.run_id, kind, len(partial)
+        )
         if monitor.interrupt is not None:
             self._safe_call(monitor.interrupt, monitor.run_id)
         row = await self._repo.get(monitor.run_id)
         await self._ensure_process_gone(monitor, row)
         await self._record_terminal(
-            monitor.run_id, DshRunStatus.TIMEOUT, error=reason, timeout_kind=kind
+            monitor.run_id,
+            monitor.status,
+            final_response=partial,
+            finish_reason="truncated" if truncated else None,
+            error=None if truncated else reason,
+            timeout_kind=kind,
         )
         monitor.settled.set()
 
     def _timeout_kind(self, monitor: _Monitor, now: float) -> str | None:
-        hard = self._settings.dsh_hard_timeout_seconds
+        limits = monitor.limits
+        hard = (
+            limits.hard_timeout_seconds
+            if limits is not None
+            else self._settings.dsh_hard_timeout_seconds
+        )
         startup = self._settings.dsh_startup_timeout_seconds
-        idle = self._settings.dsh_idle_timeout_seconds
+        idle = (
+            limits.idle_timeout_seconds
+            if limits is not None
+            else self._settings.dsh_idle_timeout_seconds
+        )
         if hard > 0 and monitor.started_mono is not None and now - monitor.started_mono > hard:
             return "hard"
         if (
@@ -647,6 +703,16 @@ class RunSupervisor:
 
     async def _ensure_process_gone(self, monitor: _Monitor | None, row: AgentRun | None) -> bool:
         """确保整个进程树消失：SIGTERM → 等 grace → SIGKILL → 确认。没有进程则视为已清理。"""
+        if monitor is not None and monitor.reusable_process and self._reusable_alive(monitor, row):
+            # runtime 声明了进程复用：这个进程跨 Run 常驻，取消/超时只结束本轮，
+            # 由 runtime 自己（abort + 静默）收口，这里绝不能杀。
+            logger.info(
+                "保留可复用进程 run=%s pid=%s pgid=%s",
+                monitor.run_id,
+                monitor.pid,
+                monitor.pgid,
+            )
+            return True
         pgid = monitor.pgid if monitor is not None else None
         pid = monitor.pid if monitor is not None else None
         if pgid is None and row is not None:
@@ -666,6 +732,14 @@ class RunSupervisor:
 
     async def _ensure_row_process_gone(self, row: AgentRun) -> bool:
         return await self._ensure_process_gone(None, row)
+
+    def _reusable_alive(self, monitor: _Monitor, row: AgentRun | None) -> bool:
+        """可复用进程是否还在：pgid 优先（组内可能还有子进程），pid 兜底。"""
+        pgid = monitor.pgid if monitor.pgid is not None else (row.pgid if row is not None else None)
+        if pgid is not None and not is_self_group(pgid) and is_group_alive(pgid):
+            return True
+        pid = monitor.pid if monitor.pid is not None else (row.pid if row is not None else None)
+        return bool(pid is not None and is_alive(pid))
 
     async def _kill_pgid(self, pgid: int) -> bool:
         if not is_group_alive(pgid):
@@ -715,6 +789,17 @@ class RunSupervisor:
         except Exception:  # noqa: BLE001 - 通知失败不能改变终态判定
             logger.exception("优雅中断通知失败 run=%s", run_id)
 
+    def _collect_partial(self, monitor: _Monitor) -> str:
+        """读取 runtime 已产出的正文（未登记读取器时为空串）。"""
+        provider = monitor.partial_output
+        if provider is None:
+            return ""
+        try:
+            return (provider() or "").strip()
+        except Exception:  # noqa: BLE001 - 读取失败只影响"能否保留产出"，不影响终态
+            logger.exception("读取已生成正文失败 run=%s", monitor.run_id)
+            return ""
+
     async def _publish(self, event: str, body: dict[str, object]) -> None:
         if self._bus is not None:
             await self._bus.publish(event, body)
@@ -760,9 +845,16 @@ def _timeout_reason(
     monitor: _Monitor,
     settings: Settings,
     clock: Callable[[], float],
+    limits: RuntimeLimits | None = None,
 ) -> str:
+    hard_limit = (
+        limits.hard_timeout_seconds if limits is not None else settings.dsh_hard_timeout_seconds
+    )
+    idle_limit = (
+        limits.idle_timeout_seconds if limits is not None else settings.dsh_idle_timeout_seconds
+    )
     if kind == "hard":
-        return f"运行超时（hard）：超过绝对上限 {settings.dsh_hard_timeout_seconds:g} 秒"
+        return f"运行超时（hard）：超过绝对上限 {hard_limit:g} 秒"
     if kind == "startup":
         elapsed = clock() - monitor.created_mono
         return (
@@ -774,7 +866,7 @@ def _timeout_reason(
     )
     return (
         f"空闲超时（idle）：{idle_for:.0f} 秒内既无输出也无 MCP 活动"
-        f"（上限 {settings.dsh_idle_timeout_seconds:g} 秒）"
+        f"（上限 {idle_limit:g} 秒）"
     )
 
 

@@ -89,8 +89,13 @@ sys.exit(2)
 """
 
 _FAKE_OPENCODE_SERVER_TEMPLATE = '''#!/usr/bin/env python3
-"""仿 opencode serve：健康检查 / 建会话 / SSE 增量 / 发消息，覆盖 server 模式链路。"""
+"""仿 opencode serve：健康检查 / 建会话 / SSE 增量 / 异步回合，覆盖 server 模式链路。
+
+回合协议与 1.18.29 对齐：`POST /session/{id}/prompt_async` 立即 204，随后 SSE 推增量并
+以 `session.idle` 收口；`GET /session/status` 是兜底，`GET /session/{id}/message` 拉终态。
+"""
 import json
+import os
 import signal
 import sys
 import threading
@@ -98,7 +103,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODE = "__MODE__"
+# 进程复用用例靠这个文件数「真实起了几个 serve」——每轮冷启动一次就会多一行
+SPAWN_LOG = os.environ.get("FAKE_OPENCODE_SPAWN_LOG")
+if SPAWN_LOG:
+    with open(SPAWN_LOG, "a") as fh:
+        fh.write(str(os.getpid()) + "\\n")
 STARTED = threading.Event()
+FINISHED = threading.Event()
 FULL = "done"
 TOKENS = {"input": 1000, "output": 80, "reasoning": 0, "cache": {"read": 400, "write": 20}}
 
@@ -245,10 +256,37 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        if self.path == "/global/health":
+        route = self.path.split("?")[0]
+        if route == "/global/health":
             self._json(200, {"healthy": True})
             return
-        if self.path != "/event":
+        if route == "/session/status":
+            # 不在返回表里 = idle（opencode 语义）；cancel 模式永远 busy
+            if MODE == "cancel":
+                self._json(200, {"ses_fake": {"type": "busy"}})
+            elif FINISHED.is_set():
+                self._json(200, {})
+            else:
+                self._json(200, {"ses_fake": {"type": "busy"}})
+            return
+        if route.startswith("/session/") and route.endswith("/message"):
+            # 终态消息：本轮 assistant 的 parts 是权威答复
+            self._json(
+                200,
+                [
+                    {
+                        "info": {
+                            "id": "msg_a",
+                            "role": "assistant",
+                            "sessionID": "ses_fake",
+                            "time": {"created": int(time.time() * 1000)},
+                        },
+                        "parts": [{"type": "text", "text": FULL}],
+                    }
+                ],
+            )
+            return
+        if route != "/event":
             self._json(404, {"message": "not found"})
             return
         self.send_response(200)
@@ -267,6 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(sse_line(item).encode())
             self.wfile.flush()
             time.sleep(0.01)
+        FINISHED.set()
         time.sleep(1)
 
     def do_POST(self):
@@ -276,20 +315,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/session":
             self._json(200, {"id": "ses_fake", "title": "fake"})
             return
-        if self.path.startswith("/session/") and self.path.endswith("/message"):
+        if self.path.endswith("/prompt_async"):
+            # 异步提交：立即 204，实际回合由 SSE 推送并在 session.idle 收口
             STARTED.set()
-            if MODE == "cancel":
-                while True:
-                    time.sleep(1)
-            # 等 SSE 把增量推完，再返回终态 parts（与真实服务端一致）
-            time.sleep(0.3)
-            self._json(
-                200,
-                {
-                    "info": {"id": "msg_a", "role": "assistant", "sessionID": "ses_fake"},
-                    "parts": [{"type": "text", "text": FULL}],
-                },
-            )
+            self.send_response(204)
+            self.end_headers()
+            return
+        if self.path.endswith("/abort"):
+            self._json(200, True)
             return
         self._json(404, {"message": "not found"})
 
@@ -358,6 +391,37 @@ for line in sys.stdin:
               "params": {"turn": {"id": "u1", "status": "completed"}}})
         break
 sys.exit(0)
+"""
+
+
+#: 仿「可跨轮复用」的 codex app-server：常驻读 stdin，每轮 turn/start 回一段增量正文
+_POOLED_CODEX_SCRIPT = """#!/usr/bin/env python3
+import json, os, sys
+SPAWN_LOG = os.environ.get("FAKE_CODEX_SPAWN_LOG")
+if SPAWN_LOG:
+    with open(SPAWN_LOG, "a") as fh:
+        fh.write(str(os.getpid()) + "\\n")
+print("2026-10-06T00:00:00Z  INFO codex_otel: noisy log line", file=sys.stderr, flush=True)
+turns = {"n": 0}
+
+def send(payload):
+    print(json.dumps(payload), flush=True)
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    rid = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+    elif method in ("thread/start", "thread/resume"):
+        send({"jsonrpc": "2.0", "id": rid, "result": {"thread": {"id": "t-pool"}}})
+    elif method == "turn/start":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        turns["n"] += 1
+        send({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
+              "params": {"itemId": "a%d" % turns["n"], "delta": "第%d轮答复" % turns["n"]}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"turn": {"id": "u%d" % turns["n"], "status": "completed"}}})
 """
 
 
@@ -545,6 +609,14 @@ def test_cli_mcp_config_binds_the_run_id_header(settings: Settings) -> None:
 
     codex = _codex_config("http://127.0.0.1:8802/mcp", "tok", settings=settings, run_id=run_id)
     assert f'X-Flux-Run-Id = "{run_id}"' in codex
+    assert "X-Flux-Task-Id" not in codex
+
+
+def test_codex_config_pooled_process_binds_the_task_id_header(settings: Settings) -> None:
+    """常驻 codex 进程的配置只写一次、令牌是任务级：改绑任务 id，由 MCP 解析当前活动 Run。"""
+    codex = _codex_config("http://127.0.0.1:8802/mcp", "tok", settings=settings, task_id="task-7")
+    assert 'X-Flux-Task-Id = "task-7"' in codex
+    assert "X-Flux-Run-Id" not in codex
 
 
 def test_codex_config_merges_user_mcp_servers(settings: Settings) -> None:
@@ -985,8 +1057,8 @@ def test_cli_run_keeps_stderr_out_of_reply(
         ]
         assert "tool_call" in types and "message" in types and "final" in types
 
-        # 噪声留在 run 目录，不丢证据
-        stderr_log = Path(container.settings.dsh_home) / "runs" / run_id / "stderr.log"
+        # 噪声留在日志里，不丢证据：codex 走常驻进程，stderr 落在任务级配置目录
+        stderr_log = Path(container.settings.dsh_home) / "runs" / f"task-{task_id}" / "stderr.log"
         assert stderr_log.is_file()
         assert "noisy log line" in stderr_log.read_text(encoding="utf-8")
 
@@ -1237,3 +1309,136 @@ def test_opencode_title_model_error_does_not_fail_run(
 
         settled = _wait_status(client, task_id, "completed", timeout=8.0)
         assert settled["status"] == "completed"
+
+
+# --- 进程复用（P1-4：通用能力，opencode 是首个实现） ---
+
+
+def test_cli_process_pool_reuses_idle_entry_and_evicts_expired() -> None:
+    """池语义：空闲命中复用、租用中退回独占、超 TTL 摘出待回收。"""
+    from flux.core.agent_runtime.runtimes import cli as cli_mod
+
+    class _AliveProcess:
+        class _Popen:
+            def poll(self) -> None:
+                return None
+
+        popen = _Popen()
+
+    key = cli_mod._pool_key(
+        runtime_id=RUNTIME_OPENCODE,
+        task_id="t1",
+        agent_id="a1",
+        mode="read_only",
+        model="m1",
+        channel=None,
+    )
+    entry = cli_mod._PooledServe(
+        key=key,
+        runtime_id=RUNTIME_OPENCODE,
+        port=40123,
+        process=_AliveProcess(),
+        argv=("opencode",),
+        config_dir=Path("/tmp/flux-pool-test"),
+        task_id="t1",
+        agent_id="a1",
+        mode="read_only",
+        model="m1",
+    )
+    cli_mod._pool_register(entry)
+    try:
+        hit, stale, busy = cli_mod._pool_acquire(key, run_id="r1", ttl=60)
+        assert hit is entry and not stale and not busy
+        # 同一任务并发第二轮：不能抢，退回独占进程
+        again, _, busy = cli_mod._pool_acquire(key, run_id="r2", ttl=60)
+        assert again is None and busy
+        # 归还后超过 TTL：摘出交给调用方回收，不能重新租给下一轮
+        cli_mod._pool_detach(key, "r1")
+        entry.last_used -= 3600
+        miss, stale, busy = cli_mod._pool_acquire(key, run_id="r3", ttl=60)
+        assert miss is None and stale == [entry] and not busy
+    finally:
+        with cli_mod._SERVE_POOL_LOCK:
+            cli_mod._SERVE_POOL.clear()
+
+
+def test_opencode_config_binds_pooled_processes_by_task() -> None:
+    """常驻进程跨 Run 存活：配置里只能写任务级头，不能写死某一轮的 run_id。"""
+    pooled = json.loads(_opencode_config("http://127.0.0.1:8802/mcp", "tok", "", task_id="t1"))
+    headers = pooled["mcp"]["flux"]["headers"]
+    assert headers["Authorization"] == "Bearer tok"
+    assert headers["X-Flux-Task-Id"] == "t1"
+    assert "X-Flux-Run-Id" not in headers
+
+    per_run = json.loads(_opencode_config("http://127.0.0.1:8802/mcp", "tok", "r1", task_id="t1"))
+    headers = per_run["mcp"]["flux"]["headers"]
+    assert headers["X-Flux-Run-Id"] == "r1"
+    assert headers["X-Flux-Task-Id"] == "t1"
+
+
+def test_opencode_pool_reuses_the_server_process(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """同一任务续聊复用同一个 serve 进程：不再每轮重付一次冷启动。"""
+    spawn_log = tmp_path / "spawn.log"
+    binary = _write_script(tmp_path / "fake-opencode-pool", _fake_opencode_server("default"))
+    previous = os.environ.get("FAKE_OPENCODE_SPAWN_LOG")
+    os.environ["FAKE_OPENCODE_SPAWN_LOG"] = str(spawn_log)
+    try:
+        with _cli_app(settings, tmp_path, binary, env_name="FLUX_OPENCODE_CLI_BINARY") as client:
+            container = client.app.state.container
+            _mark_ready(container, RUNTIME_OPENCODE)
+            agent_id = _create_cli_agent(client, RUNTIME_OPENCODE)
+            started = _start_task(client, agent_id)
+            task_id = started["task"]["id"]
+            first_run = started["task"]["run_id"]
+            _wait_status(client, task_id, "completed")
+
+            continued = client.post(
+                f"{PREFIX}/tasks/{task_id}/continue", json={"content": "再补充一句"}
+            )
+            assert continued.status_code == 200, continued.text
+            second_run = continued.json()["data"]["task"]["run_id"]
+            assert second_run and second_run != first_run
+            _wait_status(client, task_id, "completed", timeout=10.0)
+
+            spawns = [line for line in spawn_log.read_text().splitlines() if line.strip()]
+            assert len(spawns) == 1, f"同一任务续聊起了 {len(spawns)} 个 serve 进程"
+    finally:
+        if previous is None:
+            os.environ.pop("FAKE_OPENCODE_SPAWN_LOG", None)
+        else:
+            os.environ["FAKE_OPENCODE_SPAWN_LOG"] = previous
+
+
+def test_codex_pool_reuses_the_app_server_process(
+    settings: Settings, tmp_path: Path, db_schema: None
+) -> None:
+    """同一任务续聊复用同一个 app-server：不再每轮冷启动 + 重新 initialize。"""
+    spawn_log = tmp_path / "codex-spawn.log"
+    binary = _write_script(tmp_path / "fake-codex-pool", _POOLED_CODEX_SCRIPT)
+    previous = os.environ.get("FAKE_CODEX_SPAWN_LOG")
+    os.environ["FAKE_CODEX_SPAWN_LOG"] = str(spawn_log)
+    try:
+        with _cli_app(settings, tmp_path, binary) as client:
+            container = client.app.state.container
+            _mark_ready(container, RUNTIME_CODEX)
+            agent_id = _create_cli_agent(client, RUNTIME_CODEX)
+            started = _start_task(client, agent_id)
+            task_id = started["task"]["id"]
+            _wait_status(client, task_id, "completed")
+
+            continued = client.post(
+                f"{PREFIX}/tasks/{task_id}/continue", json={"content": "再补充一句"}
+            )
+            assert continued.status_code == 200, continued.text
+            _wait_status(client, task_id, "completed", timeout=10.0)
+
+            spawns = [line for line in spawn_log.read_text().splitlines() if line.strip()]
+            assert len(spawns) == 1, f"同一任务续聊起了 {len(spawns)} 个 app-server 进程"
+    finally:
+        if previous is None:
+            os.environ.pop("FAKE_CODEX_SPAWN_LOG", None)
+        else:
+            os.environ["FAKE_CODEX_SPAWN_LOG"] = previous
+

@@ -133,6 +133,24 @@ class Settings(BaseSettings):
     # Cancel 优雅期：SIGTERM 进程组后等这么久，仍在则 SIGKILL
     dsh_cancel_grace_seconds: float = 5.0
 
+    # --- Agent 执行时限通用覆盖（所有 runtime 共用；0 = 用 runtime 默认表）---
+    # 各 runtime 的默认值登记在 runtimes/base.py 的 RUNTIME_LIMITS 里；这里只做运维级
+    # 统一收放，避免为每个 runtime 各写一套配置项，未来接入的 runtime 自动生效。
+    # 提交一轮的上限（HTTP 请求 / JSON-RPC 调用）；超时视为提交失败、可重试
+    agent_turn_submit_timeout_seconds: float = 0.0
+    # 无任何进展（无输出 / 无 MCP 活动 / 状态不变）的容忍时长
+    agent_turn_idle_timeout_seconds: float = 0.0
+    # 无论有无进展都不放行的绝对上限
+    agent_turn_hard_timeout_seconds: float = 0.0
+    # 兜底查询 / 轮询步长
+    agent_turn_poll_seconds: float = 0.0
+    # 是否允许跨 Run 复用常驻进程（仅对声明 reusable_process 的 runtime 生效）
+    agent_process_reuse: bool = True
+    # 常驻进程空闲多久后回收（秒）
+    agent_process_idle_ttl_seconds: float = 300.0
+    # 上下文预算：估算输入超过该 token 数时压缩/重开会话；0 = 不限制
+    agent_context_compact_tokens: int = 80000
+
     # --- DSH × MCP 注入（目标架构 §3；P0-01 真闭环）---
     # 内置 Agent 只能经 MCP 看项目、提提案；启动 DSH 时自动生成 patch 注入 MCP 客户端插件。
     # 关闭后 DSH 会退化成"没有平台的裸 agent"——仅用于本地排查，默认必须开着。
@@ -298,6 +316,34 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "key-vault.key"
+
+    def agent_limits(self, runtime_id: str):
+        """取某个 runtime 的生效执行时限（能力表默认值 + 本类覆盖项）。
+
+        惰性导入 runtimes.base，避免 config ↔ runtime 的循环依赖；未登记的 runtime
+        回落到 DEFAULT_RUNTIME_LIMITS，因此未来接入的 runtime 不改这里也能跑。
+        """
+        from dataclasses import replace
+
+        from flux.core.agent_runtime.runtimes.base import runtime_limits
+
+        limits = runtime_limits(runtime_id)
+        overrides: dict[str, float | bool] = {}
+        if self.agent_turn_submit_timeout_seconds > 0:
+            overrides["submit_timeout_seconds"] = self.agent_turn_submit_timeout_seconds
+        if self.agent_turn_idle_timeout_seconds > 0:
+            overrides["idle_timeout_seconds"] = self.agent_turn_idle_timeout_seconds
+        if self.agent_turn_hard_timeout_seconds > 0:
+            overrides["hard_timeout_seconds"] = self.agent_turn_hard_timeout_seconds
+        if self.agent_turn_poll_seconds > 0:
+            overrides["poll_interval_seconds"] = self.agent_turn_poll_seconds
+        if not self.agent_process_reuse:
+            overrides["reusable_process"] = False
+        # 上下文预算始终以本项为准（含 0 = 关闭）：它是运维唯一口径，不按 runtime 分叉。
+        limits = replace(
+            limits, context_compact_tokens=max(0, int(self.agent_context_compact_tokens))
+        )
+        return replace(limits, **overrides) if overrides else limits
 
 
 @lru_cache

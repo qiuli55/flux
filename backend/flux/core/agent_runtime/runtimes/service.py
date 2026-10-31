@@ -23,7 +23,13 @@ from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
 from flux.core.context.budget import history_message_limit
 from flux.core.permissions.modes import normalize_mode
 from flux.core.task_engine.assistant import validate_confirmation_items
-from flux.core.task_engine.conversation_trace import build_dialogue_trace
+from flux.core.task_engine.conversation_trace import (
+    TRACE_BUDGET_CHARS,
+    TRACE_MAX_MESSAGES,
+    TRACE_RESUMED_BUDGET_CHARS,
+    TRACE_RESUMED_MAX_MESSAGES,
+    build_dialogue_trace,
+)
 from flux.enums import AgentInstallStatus, MemoryLayer, TaskMessageRole, TaskStatus
 from flux.errors import AIOSError, ConflictError, NotFoundError
 from flux.logging import get_logger
@@ -89,7 +95,6 @@ class TaskRunService:
         attachments = await _latest_attachments(container, task_uuid)
         # 跨轮记忆：最近对话轨迹 + 上一轮工作记忆卡，两者都进本轮指令
         messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
-        trace = build_dialogue_trace(messages, exclude_text=followup or "")
         memory = await _latest_memory(container, task_uuid)
         user_memory = await _user_memory_instruction(container)
         instruction = _execution_instruction(
@@ -100,7 +105,7 @@ class TaskRunService:
             followup=followup,
             attachments=attachments,
             mode=normalize_mode(getattr(task, "permission_mode", None)),
-            trace=trace,
+            messages=messages,
             memory=memory,
             user_memory=user_memory,
             resumed=resumed,
@@ -156,7 +161,6 @@ class TaskRunService:
             summary = await _latest_summary(container, task.id)
             attachments = await _latest_attachments(container, task.id)
             messages, _ = await container.task_repo.list_messages(task.id, limit=_HISTORY_LIMIT)
-            trace = build_dialogue_trace(messages)
             memory = await _latest_memory(container, task.id)
             user_memory = await _user_memory_instruction(container)
             runtime_id = _runtime_of(self._agent(task))
@@ -169,7 +173,7 @@ class TaskRunService:
                 followup=None,
                 attachments=attachments,
                 mode=normalize_mode(getattr(task, "permission_mode", None)),
-                trace=trace,
+                messages=messages,
                 memory=memory,
                 user_memory=user_memory,
                 resumed=resumed,
@@ -379,6 +383,27 @@ def _mode_constraints(mode: str) -> list[str]:
     ]
 
 
+def _memory_quoted_followup(messages: list[Any], followup: str) -> str:
+    """工作记忆卡「本轮目标」引用的那条用户消息：上一轮的后续消息原文。
+
+    `followup` 非空说明最新一条用户消息就是本轮消息，往回再取一条才是记忆卡引用的那句。
+    """
+    if not followup:
+        return ""
+    skipped_current = False
+    for message in reversed(messages):
+        if str(getattr(message, "role", "") or "") != "user":
+            continue
+        text = str(getattr(message, "content", "") or "").strip()
+        if not text:
+            continue
+        if not skipped_current:
+            skipped_current = True
+            continue
+        return text
+    return ""
+
+
 def _execution_instruction(
     task: Task,
     confirmation: dict[str, Any] | None,
@@ -388,7 +413,7 @@ def _execution_instruction(
     followup: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
     mode: str = "normal",
-    trace: str = "",
+    messages: list[Any] | None = None,
     memory: str = "",
     user_memory: str = "",
     resumed: bool = False,
@@ -398,7 +423,40 @@ def _execution_instruction(
     稳定段（执行约束）放在最前、动态段（任务 / 确认 / 计划 / 身份）放在后面：
     CLI 会话会把整个 prompt 当作前缀缓存，越早出现的内容越容易在后续 Run 里复用，
     把随任务变化的 task_id 和描述放在前面等于每轮都从第一个 token 开始失效。
+
+    同一份信息只出现一次：前情摘要 / 附件 / 需求确认已单独成段时，对话轨迹里
+    就不再重复这些消息；续聊（`resumed`，Runtime 已复用会话）时轨迹也收缩到
+    最近几行——历史本来就在会话里，这里只为「复用失败退回新会话」留安全带。
     """
+    background = bool(followup) and not resumed
+    items = (confirmation or {}).get("items")
+    has_items = isinstance(items, list) and bool(items)
+
+    excluded_kinds: list[str] = []
+    if summary:
+        excluded_kinds.append("summary")
+    if attachments:
+        excluded_kinds.append("attachments")
+    if has_items:
+        excluded_kinds.append("confirmation")
+    if memory:
+        # 工作记忆卡已经复述了上一轮做了什么，轨迹里的结果落款不再重复
+        excluded_kinds.append("run_finished")
+    excluded_texts = [followup or ""]
+    if memory:
+        # 记忆卡的「本轮目标」就是上一轮的后续消息原文，轨迹里不再重复同一句
+        excluded_texts.append(_memory_quoted_followup(messages or [], followup or ""))
+    if background:
+        # 原任务背景下面已经完整给出，轨迹里不再重复同一段描述
+        excluded_texts.append(task.description)
+    trace = build_dialogue_trace(
+        messages or [],
+        budget_chars=TRACE_RESUMED_BUDGET_CHARS if resumed else TRACE_BUDGET_CHARS,
+        max_messages=TRACE_RESUMED_MAX_MESSAGES if resumed else TRACE_MAX_MESSAGES,
+        exclude_texts=tuple(text for text in excluded_texts if text),
+        exclude_kinds=tuple(excluded_kinds),
+    )
+
     constraints = ["## 执行约束", *_mode_constraints(mode), ""]
     if followup:
         # 续跑轮：这条新消息才是这一轮要执行的事。原任务只作背景并显式标注「不要重做」，
@@ -408,7 +466,7 @@ def _execution_instruction(
             "## 本轮任务（同一对话的后续消息，只执行这一条）",
             followup.strip(),
         ]
-        if not resumed:
+        if background:
             # 会话已复用（opencode/codex 续聊）时，最初的需求就在会话历史里，不再重复；
             # 没复用（DSH / 新建会话）时仍要给背景，并明确「不要重做」。
             lines += [
@@ -439,8 +497,7 @@ def _execution_instruction(
         # 用户从手机附上的文件：路径是服务端真实落盘位置，直接用原生读文件/终端看
         lines += ["", "## 附件（用户随本轮消息上传，可直接按路径读取）"]
         lines += [f"- {item.get('path')}（{item.get('name')}）" for item in attachments]
-    items = (confirmation or {}).get("items")
-    if isinstance(items, list) and items:
+    if has_items:
         lines += ["", "## 需求确认（用户已确认，以此为准）"]
         lines += [f"- {item['label']}：{item['value']}" for item in items]
     if steps:
@@ -451,8 +508,10 @@ def _execution_instruction(
         "## 平台身份（调用 Flux MCP 时带上）",
         f"- task_id：{task.id}",
         f"- project_id：{task.project_id or '未关联'}",
-        "- 开工先调 `context.get` 并带上 task_id：它会返回项目 Brain（项目结构、技术栈、"
-        "入口文件）与近期提案；不确定文件路径时以它为准，再用 workspace.read 核对内容。",
+        "- 开工先调 `context.boot` 并带上 task_id：一次拿回运行时身份/能力、项目 Brain"
+        "（项目结构、技术栈、入口文件）与近期提案、以及跨会话长期记忆；不确定文件路径时"
+        "以它为准，再用 workspace.read 核对内容。需要刷新某一份时再单独调 flux_context / "
+        "context.get / memory.recall。",
         "- 探索优先用 workspace.tree 看地图、workspace.search 定位、workspace.read_many "
         "一次读多个文件；确定行号后再用 workspace.read 精读，减少往返。",
     ]

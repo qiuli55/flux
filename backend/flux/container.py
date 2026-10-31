@@ -420,5 +420,10 @@ class Container:
         await self.terminal.shutdown()
         await self.code_intel.shutdown()
         await self.completion.shutdown()
+        # CLI runtime 的常驻进程（声明 reusable_process 的，如 opencode serve）不在
+        # 单轮结束时停：退出时必须显式清空池，否则进程与任务级令牌都会残留。
+        from flux.core.agent_runtime.runtimes.cli import shutdown_cli_process_pool
+
+        await shutdown_cli_process_pool()
         await self.dsh.shutdown()
         await self.engine.dispose()

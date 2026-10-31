@@ -37,6 +37,9 @@ IDLE_TIMEOUT_SECONDS = 600.0
 #: （实测 chatgpt.com 不可达时每 10~70 秒重试一次、永不结束），不在这里快速失败
 #: 就只能干等到 idle 超时（10 分钟），用户看到的是长时间无响应。
 RETRY_FAIL_SECONDS = 60.0
+#: 上下文压缩（thread/compact/start）本身也是一轮 LLM 调用；给它一个独立的绝对上限，
+#: 避免压缩卡住把整轮 Run 一起拖死。
+COMPACT_TIMEOUT_SECONDS = 180.0
 
 TextHandler = Callable[[str], Awaitable[None]]
 ThinkingHandler = Callable[[str], Awaitable[None]]
@@ -58,14 +61,50 @@ class CodexTurnResult:
     usage: dict[str, Any] = field(default_factory=dict)
     #: 本轮实际使用的 thread id（用于跨轮续聊）
     thread_id: str = ""
+    #: 本轮结束时该 thread 的上下文规模（token，0 = 未报送）；下一轮据此判断要不要压缩
+    context_tokens: int = 0
 
 
 class CodexAppServerSession:
-    """一条 app-server 进程上的一轮对话（initialize → thread/start → turn/start）。"""
+    """一条 app-server 进程上的多轮对话（initialize 只做一次，stdout 只读一条线程）。
 
-    def __init__(
+    进程跨 Run 复用时，同一时刻只有一个 Run 租用它：每轮先 `bind()` 换绑本轮回调、
+    时限与审批入口，再 `run()`。这样常驻进程既不会把上一轮的正文/思考串进新的一轮，
+    也不用每轮重新握手（`initialize` + 起读线程）。
+    """
+
+    def __init__(self, process: Any) -> None:
+        self._popen = process.popen
+        #: 本轮绑定的参数（bind 逐轮覆盖；未 bind 不允许 run）
+        self._cwd = ""
+        self._on_text: TextHandler | None = None
+        self._on_thinking: ThinkingHandler | None = None
+        self._on_tool: ToolHandler | None = None
+        self._approval_handler: ApprovalHandler | None = None
+        self._should_stop: Callable[[], bool] | None = None
+        self._permission_mode = "normal"
+        self._idle_timeout = IDLE_TIMEOUT_SECONDS
+        self._retry_fail_seconds = RETRY_FAIL_SECONDS
+        #: 上下文预算（0 = 不压缩）：续聊的 thread 上一轮超过该规模就先压缩再执行
+        self._compact_tokens = 0
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._notifications: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._pending: dict[int, asyncio.Future[Any]] = {}
+        self._next_id = 0
+        self._closed = False
+        #: 上一轮异常中断（超时/取消/握手失败）：进程里可能还挂着半轮 turn，不得再复用
+        self._broken = False
+        self._reader_started = False
+        self._initialized = False
+        #: 当前进程内已打开的 thread：同一 thread 再 resume 一次会被判重复打开
+        self._active_thread = ""
+        self._pump: _TextPump | None = None
+        #: item_id → 是否收到过增量（没收过增量的 agentMessage 用整段兜底）
+        self._delta_items: set[str] = set()
+
+    # --- 对外 ---
+    def bind(
         self,
-        process: Any,
         *,
         cwd: str,
         on_text: TextHandler,
@@ -75,28 +114,28 @@ class CodexAppServerSession:
         retry_fail_seconds: float = RETRY_FAIL_SECONDS,
         permission_mode: str = "normal",
         approval_handler: ApprovalHandler | None = None,
+        context_compact_tokens: int = 0,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
-        self._popen = process.popen
+        """把会话换绑到当前 Run：回调、时限、权限模式、审批入口与停止信号。"""
         self._cwd = cwd
         self._on_text = on_text
         self._on_thinking = on_thinking
         self._on_tool = on_tool
         self._permission_mode = permission_mode
         self._approval_handler = approval_handler
+        self._should_stop = should_stop
         self._idle_timeout = idle_timeout if idle_timeout > 0 else IDLE_TIMEOUT_SECONDS
         self._retry_fail_seconds = (
             retry_fail_seconds if retry_fail_seconds > 0 else RETRY_FAIL_SECONDS
         )
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._notifications: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        self._pending: dict[int, asyncio.Future[Any]] = {}
-        self._next_id = 0
-        self._closed = False
-        self._pump: _TextPump | None = None
-        #: item_id → 是否收到过增量（没收过增量的 agentMessage 用整段兜底）
-        self._delta_items: set[str] = set()
+        self._compact_tokens = max(0, int(context_compact_tokens or 0))
 
-    # --- 对外 ---
+    @property
+    def usable(self) -> bool:
+        """进程还活着、也没有半轮 turn 残留：只有这时才允许继续复用。"""
+        return not self._closed and not self._broken and self._popen.poll() is None
+
     def _thread_start_params(self) -> dict[str, Any]:
         """`thread/start` 参数：Plan 只读，Normal / Full 让 codex 把不确定的命令交上来。
 
@@ -119,31 +158,56 @@ class CodexAppServerSession:
         thread_id: str = "",
         model: str = "",
         model_provider: str = "",
+        context_tokens: int = 0,
     ) -> CodexTurnResult:
         """执行一轮；传入 `thread_id` 时优先续用该 thread（恢复失败则新建）。
 
         `model` / `model_provider` 是任务当前的模型选择：codex 的 thread 会记住创建时的
         模型，续聊时不显式覆盖就会一直用旧模型（实测 2026-10-27：任务切到 gpt-5.6-luna
         后仍按 thread 里的 gpt-6-sol 请求，原生 ChatGPT 通道直接 400 model_not_found）。
+
+        `context_tokens` 是该 thread 上一轮的上下文规模（平台持久化后传入）：续用且超过
+        `context_compact_tokens` 预算时，先让 codex 压缩上下文再跑本轮，避免长任务把
+        上下文撑到模型窗口上限后每轮都变慢 / 直接被拒。
+
+        同一进程可连续跑多轮：握手与 stdout 读线程只在第一轮建立，之后复用。
         """
-        self._loop = asyncio.get_running_loop()
+        if self._on_text is None or self._on_thinking is None or self._on_tool is None:
+            raise RuntimeError("codex app-server 会话未绑定本轮回调")
+        if not self.usable:
+            if self._broken:
+                raise RuntimeError("codex app-server 会话已作废（上一轮异常中断）")
+            raise RuntimeError(self._exit_reason())
+        loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeError("codex app-server 会话已绑定其他事件循环，不能跨循环复用")
+        self._loop = loop
         self._pump = _TextPump(self._on_text, self._on_thinking)
-        thread = threading.Thread(
-            target=self._read_stdout,
-            args=(self._loop,),
-            name="codex-app-server-stdout",
-            daemon=True,
-        )
-        thread.start()
-        await self._request(
-            "initialize",
-            {"clientInfo": {"name": "flux", "title": "Flux", "version": "1"}},
-            timeout=INITIALIZE_TIMEOUT_SECONDS,
-        )
+        self._delta_items.clear()
+        # 上一轮结束后可能还有迟到通知（用量/状态）：开新轮前清空，避免串进本轮正文
+        self._discard_notifications()
+        if not self._reader_started:
+            self._reader_started = True
+            threading.Thread(
+                target=self._read_stdout,
+                args=(loop,),
+                name="codex-app-server-stdout",
+                daemon=True,
+            ).start()
+        if not self._initialized:
+            await self._request(
+                "initialize",
+                {"clientInfo": {"name": "flux", "title": "Flux", "version": "1"}},
+                timeout=INITIALIZE_TIMEOUT_SECONDS,
+            )
+            self._initialized = True
         overrides = _model_overrides(model, model_provider)
         previous = thread_id.strip()
         thread_id = ""
-        if previous:
+        if previous and previous == self._active_thread:
+            # 同一进程里该 thread 已经打开：再次 resume 会被判成重复打开，直接续用
+            thread_id = previous
+        elif previous:
             try:
                 resumed = await self._request(
                     "thread/resume",
@@ -163,6 +227,13 @@ class CodexAppServerSession:
             thread_id = _thread_id(response)
             if not thread_id:
                 raise RuntimeError("codex app-server 没有返回 threadId")
+        elif self._compact_tokens > 0 and context_tokens >= self._compact_tokens:
+            # 只有在「真的续用了旧 thread」时才压缩：新建的 thread 上下文是空的
+            await self._compact(thread_id, context_tokens)
+            if self._broken:
+                # 压缩轮被取消/超时：进程里挂着半轮 turn，本轮直接失败，由调用方驱逐
+                raise RuntimeError("本轮已被取消")
+        self._active_thread = thread_id
         # `turn/start` 没有 modelProvider 字段；模型仍要显式带一次，覆盖 resumed thread 的旧值
         turn_params: dict[str, Any] = {
             "threadId": thread_id,
@@ -175,15 +246,104 @@ class CodexAppServerSession:
             turn_params,
             timeout=TURN_START_TIMEOUT_SECONDS,
         )
-        result = await self._consume_turn()
+        try:
+            result = await self._consume_turn()
+        except BaseException:
+            # 超时/取消/进程退出：进程里可能还挂着半轮 turn，标记作废，不再复用
+            self._broken = True
+            raise
         result.thread_id = thread_id
         return result
+
+    def _discard_notifications(self) -> None:
+        """丢掉上一轮迟到/遗留的通知（含进程关闭哨兵）。"""
+        while True:
+            try:
+                self._notifications.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+    # --- 上下文压缩 ---
+    async def _compact(self, thread_id: str, context_tokens: int) -> None:
+        """让 codex 压缩该 thread 的上下文；失败只记日志，本轮照常执行。
+
+        `thread/compact/start` 立即返回空对象，真正的压缩是**另一轮 turn**：随后会收到
+        `turn/started` → `item/started(contextCompaction)` → `thread/tokenUsage/updated`
+        → `turn/completed`（实测 2026-11-01，13k 上下文压缩耗时 12s，压缩后 5.3k）。
+        必须把这一轮完整消化掉，否则它的通知会串进正式回合的正文/时间线。
+        """
+        logger.info(
+            "codex 上下文超预算（%d ≥ %d），先压缩 thread=%s",
+            context_tokens,
+            self._compact_tokens,
+            thread_id,
+        )
+        try:
+            await self._request(
+                "thread/compact/start",
+                {"threadId": thread_id},
+                timeout=TURN_START_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 - 旧版 codex 没这个方法，降级为不压缩
+            logger.warning("codex 上下文压缩请求失败（%s），本轮继续", exc)
+            return
+        try:
+            after = await self._consume_compaction()
+        except Exception as exc:  # noqa: BLE001 - 压缩失败不影响主任务
+            logger.warning("codex 上下文压缩未正常结束（%s），本轮继续", exc)
+            return
+        logger.info(
+            "codex 上下文压缩完成 thread=%s %d → %s tokens",
+            thread_id,
+            context_tokens,
+            after if after is not None else "未知",
+        )
+
+    async def _consume_compaction(self) -> int | None:
+        """消化压缩轮的全部通知，返回压缩后的上下文规模；压缩失败抛异常。"""
+        deadline = time.monotonic() + COMPACT_TIMEOUT_SECONDS
+        context_tokens: int | None = None
+        while True:
+            if self._should_stop is not None and self._should_stop():
+                # 取消/超时：不杀常驻进程，但压缩轮还挂在它身上，标记作废后由调用方驱逐
+                await self._pump.flush()
+                self._broken = True
+                raise RuntimeError("本轮已被取消")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"codex 上下文压缩 {COMPACT_TIMEOUT_SECONDS:g} 秒未完成")
+            try:
+                message = await asyncio.wait_for(self._notifications.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                continue
+            if message is None:
+                if self._closed:
+                    raise RuntimeError("codex app-server 已退出（上下文压缩期间）")
+                continue
+            method = str(message.get("method") or "")
+            params = message.get("params") if isinstance(message.get("params"), dict) else {}
+            if method == "thread/tokenUsage/updated":
+                context_tokens = _context_tokens(params) or context_tokens
+            elif method == "turn/completed":
+                turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+                status = str(turn.get("status") or "completed")
+                if status != "completed":
+                    raise RuntimeError(_turn_error(turn) or f"codex 上下文压缩以 {status} 结束")
+                return context_tokens
+            elif method == "error":
+                error = params.get("error")
+                text = (
+                    str(error.get("message") or "") if isinstance(error, dict) else str(error or "")
+                )
+                if not params.get("willRetry"):
+                    raise RuntimeError(text or "codex 上下文压缩失败")
+            # 其余通知（item 增量 / 状态变化）都属于压缩轮本身，丢弃，不进时间线
 
     # --- 读 stdout（线程）---
     def _read_stdout(self, loop: asyncio.AbstractEventLoop) -> None:
         stream = self._popen.stdout
         if stream is None:
-            loop.call_soon_threadsafe(self._dispatch, {"method": "__closed__"})
+            self._post(loop, {"method": "__closed__"})
             return
         try:
             for line in stream:
@@ -197,7 +357,7 @@ class CodexAppServerSession:
                     continue
                 if not isinstance(message, dict):
                     continue
-                loop.call_soon_threadsafe(self._dispatch, message)
+                self._post(loop, message)
         except Exception:  # noqa: BLE001 - 进程被杀时读流中断属正常
             logger.debug("codex app-server stdout 读取中断", exc_info=True)
         finally:
@@ -205,7 +365,12 @@ class CodexAppServerSession:
             # 先等它落地再上报，否则拿不到退出码，失败原因里只剩一句"已退出"。
             with contextlib.suppress(Exception):
                 self._popen.wait(timeout=5)
-            loop.call_soon_threadsafe(self._dispatch, {"method": "__closed__"})
+            self._post(loop, {"method": "__closed__"})
+
+    def _post(self, loop: asyncio.AbstractEventLoop, message: dict[str, Any]) -> None:
+        """线程 → 事件循环投递；服务退出时循环可能已关闭，重投失败不影响进程回收。"""
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(self._dispatch, message)
 
     def _dispatch(self, message: dict[str, Any]) -> None:
         """在事件循环线程里分发一条 JSON-RPC 消息。"""
@@ -353,12 +518,25 @@ class CodexAppServerSession:
         texts: list[str] = []
         final_text: str | None = None
         usage: dict[str, Any] = {}
+        #: 本轮请求的上下文规模：下一轮据此判断要不要压缩（0 = 未报送）
+        context_tokens = 0
         deadline = time.monotonic() + self._idle_timeout
         #: 本轮第一次「将重试」错误的时间与次数：整轮零输出且持续重试 → 快速失败
         retry_started: float | None = None
         retry_count = 0
         last_retry_message = ""
         while True:
+            if self._should_stop is not None and self._should_stop():
+                # 取消/超时：不杀常驻进程，但本轮 turn 还挂在它身上，标记作废后由调用方驱逐
+                await self._pump.flush()
+                self._broken = True
+                return CodexTurnResult(
+                    text="".join(texts),
+                    status="failed",
+                    error="本轮已被取消",
+                    usage=usage,
+                    context_tokens=context_tokens,
+                )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"codex app-server 本轮 {self._idle_timeout:g} 秒无任何输出")
@@ -456,6 +634,7 @@ class CodexAppServerSession:
                             "output": last.get("outputTokens"),
                             "cached_input_tokens": last.get("cachedInputTokens"),
                         }
+                context_tokens = _context_tokens(params) or context_tokens
             elif method == "turn/completed":
                 turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
                 status = str(turn.get("status") or "completed")
@@ -466,6 +645,7 @@ class CodexAppServerSession:
                     status=status,
                     error=error,
                     usage=usage,
+                    context_tokens=context_tokens,
                 )
             elif method == "error":
                 error = params.get("error")
@@ -486,6 +666,7 @@ class CodexAppServerSession:
                         status="failed",
                         error=message_text or "codex 本轮失败",
                         usage=usage,
+                        context_tokens=context_tokens,
                     )
             elif method == "warning":
                 logger.warning("codex app-server warning: %s", params.get("message") or params)
@@ -494,7 +675,7 @@ class CodexAppServerSession:
 
     async def _emit_tool(self, item: dict[str, Any], state: str) -> None:
         fields = codex_item_fields(item)
-        if not fields:
+        if not fields or self._on_tool is None:
             return
         await self._on_tool(fields, state)
 
@@ -542,6 +723,28 @@ class _TextPump:
                 await self._on_thinking(text)
             else:
                 await self._on_text(text)
+
+
+def _context_tokens(params: Any) -> int:
+    """从 `thread/tokenUsage/updated` 取「本次请求的上下文规模」。
+
+    用 `last.totalTokens`（= 输入 + 本轮输出）而不是 `inputTokens`：压缩轮的
+    `last.inputTokens` 是 0，但 `last.totalTokens` 反映压缩后的真实上下文，两者只有它
+    在压缩前后都可比（实测 2026-11-01：压缩前 13237 → 压缩后 5285）。
+    """
+    if not isinstance(params, dict):
+        return 0
+    usage = params.get("tokenUsage")
+    if not isinstance(usage, dict):
+        return 0
+    last = usage.get("last")
+    if not isinstance(last, dict):
+        return 0
+    for key in ("totalTokens", "inputTokens"):
+        value = last.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return 0
 
 
 def _model_overrides(model: str, model_provider: str) -> dict[str, str]:

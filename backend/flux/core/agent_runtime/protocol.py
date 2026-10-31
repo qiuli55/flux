@@ -40,9 +40,11 @@ RUNTIME_RULES: tuple[str, ...] = (
 
 #: §4.1 契约 entry 真源：Bootstrap 文案与 `flux_context.entry` 共用，防止两处各写各的。
 RUNTIME_ENTRY: tuple[str, ...] = (
-    "Call flux_context first to confirm where you are and what capabilities you have.",
-    "Get project facts with context.get (read-only).",
-    "Recall remembered conventions with memory.recall (read-only; Environment / User / "
+    "Call context.boot first (pass task_id): one call returns runtime identity, project "
+    "context and remembered conventions, replacing separate flux_context / context.get / "
+    "memory.recall calls.",
+    "Refresh one layer only when you need it: flux_context (identity / capabilities / "
+    "handshake), context.get (project facts, read-only), memory.recall (Environment / User / "
     "Project layers).",
 )
 

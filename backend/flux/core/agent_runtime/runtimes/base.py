@@ -37,6 +37,56 @@ RUNTIME_NATIVE_STREAMING: dict[str, bool] = {
     RUNTIME_OPENCODE: True,
 }
 
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLimits:
+    """一个 runtime 的执行时限与能力开关（新 runtime 必须登记，契约测试会拦住漏登记）。
+
+    默认值面向「提交后一直阻塞到跑完」的通用 runtime；支持异步回合的 runtime
+    （提交立即返回 + 事件/轮询收口 + 主动拉终态）把 `async_turn` 置 True，
+    客户端据此避免长连接读写超时把整轮产出作废。进程复用同理：只在 `reusable_process`
+    为 True 时才进入进程池，编排层不出现任何 runtime 专属分支。
+    """
+
+    #: 提交一轮的上限（HTTP 请求 / JSON-RPC 调用）；超时视为提交失败，可重试
+    submit_timeout_seconds: float = 30.0
+    #: 无任何进展的容忍时长（无输出、无 MCP 活动、状态不变）
+    idle_timeout_seconds: float = 600.0
+    #: 无论有无进展都不放行的绝对上限
+    hard_timeout_seconds: float = 1800.0
+    #: 兜底查询 / 轮询的步长
+    poll_interval_seconds: float = 2.0
+    #: 是否支持「提交立即返回 + 事件收口」的异步回合
+    async_turn: bool = False
+    #: 进程能否跨 Run 复用（复用粒度见 ProcessPool 的 key）
+    reusable_process: bool = False
+    #: 上下文预算：续聊会话上一轮的输入 token 超过该值时，由 runtime 自行压缩 / 重开；
+    #: 0 = 不限制。这只是能力声明——没实现上下文治理的 runtime 直接忽略，不影响接入；
+    #: 声明支持的 runtime 负责在 runtimes 层消费它（编排层不出现 runtime 专属分支）。
+    context_compact_tokens: int = 0
+
+
+#: 未登记 runtime 的兜底时限（未来接入的 runtime 不登记也能跑，只是拿不到专属口径）
+DEFAULT_RUNTIME_LIMITS = RuntimeLimits()
+
+#: 各 runtime 的时限默认值；被 Settings 的 `agent_*` 覆盖项进一步收敛
+RUNTIME_LIMITS: dict[str, RuntimeLimits] = {
+    RUNTIME_DSH: RuntimeLimits(submit_timeout_seconds=120.0, async_turn=True),
+    RUNTIME_CODEX: RuntimeLimits(submit_timeout_seconds=60.0, reusable_process=True),
+    RUNTIME_OPENCODE: RuntimeLimits(
+        submit_timeout_seconds=30.0,
+        poll_interval_seconds=2.0,
+        async_turn=True,
+        reusable_process=True,
+    ),
+}
+
+
+def runtime_limits(runtime_id: str) -> RuntimeLimits:
+    """取 runtime 的时限；未登记的 runtime 用通用默认（不阻断未来接入）。"""
+    return RUNTIME_LIMITS.get(runtime_id, DEFAULT_RUNTIME_LIMITS)
+
+
 #: 统一事件词表
 EVENT_STATUS = "status"
 EVENT_MESSAGE = "message"
@@ -101,6 +151,8 @@ class RuntimeLaunch:
     channel: ModelChannel | None = None
     #: 本轮权限模式快照（plan / normal / full）：Run 启动时从任务取值，切换模式下一轮才生效
     permission_mode: str = "normal"
+    #: 本 Run 的执行时限（来自 runtime 能力表 + Settings 覆盖）；None = 看护器用全局默认
+    limits: RuntimeLimits | None = None
 
 
 @dataclass(slots=True)
@@ -161,6 +213,7 @@ class AgentRuntime(Protocol):
 __all__ = [
     "CLI_RUNTIMES",
     "DEFAULT_RUNTIME",
+    "DEFAULT_RUNTIME_LIMITS",
     "EVENT_ERROR",
     "EVENT_FINAL",
     "EVENT_MESSAGE",
@@ -172,10 +225,13 @@ __all__ = [
     "RUNTIME_CODEX",
     "RUNTIME_DSH",
     "RUNTIME_EVENT_TYPES",
+    "RUNTIME_LIMITS",
     "RUNTIME_NATIVE_STREAMING",
     "RUNTIME_OPENCODE",
     "AgentRuntime",
     "RuntimeEvent",
     "RuntimeLaunch",
+    "RuntimeLimits",
     "RuntimeProcess",
+    "runtime_limits",
 ]

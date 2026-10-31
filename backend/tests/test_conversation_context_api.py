@@ -202,3 +202,110 @@ def test_followup_is_primary_and_original_task_is_background():
     assert instruction.index("把主色改成蓝色") < instruction.index("帮我设计一个记账工具的页面")
     assert "## 原任务背景" in instruction
     assert "不要重新执行" in instruction
+
+
+def _trace_msg(role: str, kind: str, content: str):
+    return type("Msg", (), {"role": role, "kind": kind, "content": content})()
+
+
+def _task(description: str = "帮我设计一个记账工具的页面") -> Task:
+    return Task(id=uuid.uuid4(), description=description, project_id=None, agent_id=None)
+
+
+def test_instruction_gives_each_block_once():
+    """摘要 / 需求确认 / 附件已单独成段，轨迹里不再重复（同一份信息只付一次 token）。"""
+    task = _task()
+    messages = [
+        _trace_msg("user", "text", "把主色改成蓝色"),
+        _trace_msg("assistant", "summary", "目标：做记账工具"),
+        _trace_msg("assistant", "confirmation", "范围=只做支出"),
+        _trace_msg("user", "attachments", "[附件] a.csv"),
+    ]
+    instruction = _execution_instruction(
+        task,
+        {"items": [{"label": "范围", "value": "只做支出"}]},
+        [],
+        summary="目标：做记账工具",
+        followup="把主色改成蓝色",
+        attachments=[{"path": "/tmp/a.csv", "name": "a.csv"}],
+        messages=messages,
+    )
+
+    assert instruction.count("目标：做记账工具") == 1
+    assert instruction.count("把主色改成蓝色") == 1
+    assert "[附件] a.csv" not in instruction
+    assert "[需求确认] 范围=只做支出" not in instruction
+    assert "## 需求确认（用户已确认，以此为准）" in instruction
+
+
+def test_memory_card_replaces_last_run_status_line():
+    """工作记忆卡已复述上一轮做了什么，轨迹里的结果落款不再重复。"""
+    instruction = _execution_instruction(
+        _task(),
+        None,
+        [],
+        messages=[_trace_msg("assistant", "run_finished", "上一轮完成：改了登录页")],
+        memory="上一轮改了登录页并跑通测试",
+    )
+
+    assert "上一轮完成：改了登录页" not in instruction
+    assert "上一轮改了登录页并跑通测试" in instruction
+
+
+def test_memory_card_replaces_the_followup_it_quotes():
+    """记忆卡的「本轮目标」引用了上一轮的后续消息，轨迹里不再重复同一句。"""
+    task = _task()
+    previous = "上一轮的要求：把主色改成蓝色"
+    messages = [
+        _trace_msg("user", "text", task.description),
+        _trace_msg("user", "text", previous),
+        _trace_msg("user", "text", "这一轮：把标题改大"),
+    ]
+    instruction = _execution_instruction(
+        task,
+        None,
+        [],
+        followup="这一轮：把标题改大",
+        messages=messages,
+        memory=f"- 本轮目标：（同一对话的后续消息，只执行这一条） {previous}",
+        resumed=True,
+    )
+
+    assert instruction.count(previous) == 1
+    assert instruction.count("这一轮：把标题改大") == 1
+
+
+def test_followup_original_task_appears_only_as_background():
+    """原任务背景已单列时，轨迹里不再重复同一条用户消息。"""
+    task = _task()
+    messages = [
+        _trace_msg("user", "text", task.description),
+        _trace_msg("assistant", "text", "方案已经给过"),
+    ]
+    instruction = _execution_instruction(
+        task, None, [], followup="把主色改成蓝色", messages=messages
+    )
+
+    assert instruction.count(task.description) == 1
+    assert "方案已经给过" in instruction
+
+
+def test_resumed_followup_shrinks_trace_to_recent_decisions():
+    """续聊（会话已复用）时轨迹只留最近几行：历史本就在会话里，不必整段复述。"""
+    task = _task()
+    messages = [_trace_msg("user", "text", task.description)]
+    messages += [_trace_msg("assistant", "text", f"第{i}轮方案" + "甲" * 300) for i in range(1, 8)]
+
+    resumed = _execution_instruction(
+        task, None, [], followup="把主色改成蓝色", messages=messages, resumed=True
+    )
+    fresh = _execution_instruction(
+        task, None, [], followup="把主色改成蓝色", messages=messages, resumed=False
+    )
+
+    resumed_trace = resumed.split("## 对话轨迹", 1)[1]
+    resumed_lines = [line for line in resumed_trace.splitlines() if line.startswith("[")]
+    assert 0 < len(resumed_lines) <= 4
+    assert len(fresh.split("## 对话轨迹", 1)[1]) > len(resumed_trace)
+    assert "## 原任务背景" not in resumed
+    assert "## 原任务背景" in fresh

@@ -19,7 +19,12 @@ import pytest
 from flux.config import Settings
 from flux.core.agent_runtime.dsh_client import TERMINAL_STATUSES, FluxDshClient
 from flux.core.agent_runtime.runtimes.base import RUNTIME_CODEX, RUNTIME_OPENCODE, ModelChannel
-from flux.core.agent_runtime.runtimes.cli import CliRuntime, _codex_config, _opencode_config
+from flux.core.agent_runtime.runtimes.cli import (
+    CliRuntime,
+    _codex_config,
+    _opencode_config,
+    _opencode_model_id,
+)
 from flux.errors import ConfigurationError
 from tests.fakes import FakeDshHarnessFactory
 
@@ -111,6 +116,22 @@ def test_opencode_config_without_channel_keeps_native_model() -> None:
     )
     assert payload["model"] == "deepseek/deepseek-flash"
     assert "provider" not in payload
+
+
+def test_opencode_model_id_prefixes_the_key_provider() -> None:
+    """密钥库通道下任务只记裸模型名，opencode 侧必须补上 provider 前缀。
+
+    不补的话 `POST /session` 解析不出 provider，opencode 会静默退回会话默认模型，
+    表现为「选了密钥库模型却还在跑全局默认」。
+    """
+    channel = _channel(provider="openai_compatible", base_url="http://127.0.0.1:9355/v1")
+    assert _opencode_model_id("proxy-deepseek-v4.1-flash", channel) == (
+        "fluxkeyabcd1234/proxy-deepseek-v4.1-flash"
+    )
+    # 原生模型本身带前缀，不能被二次拼接
+    assert _opencode_model_id("deepseek/deepseek-flash", channel) == "deepseek/deepseek-flash"
+    assert _opencode_model_id("deepseek/deepseek-flash", None) == "deepseek/deepseek-flash"
+    assert _opencode_model_id("", channel) == ""
 
 
 async def _wait_terminal(client: FluxDshClient, run_id: str, timeout: float = 3.0) -> object:

@@ -53,14 +53,34 @@ class TaskRuntimeSessionRepository:
             row = await session.scalar(statement)
             return row.session_id if row is not None else ""
 
+    async def get_context_tokens(
+        self,
+        task_id: str | uuid.UUID,
+        runtime_id: str,
+        agent_id: str | uuid.UUID | None = None,
+    ) -> int:
+        """取上一轮该会话的上下文规模（token）；没有绑定或未报送时返回 0。"""
+        task_uuid = _as_uuid(task_id)
+        statement = select(TaskRuntimeSession).where(
+            *self._scope(task_uuid, runtime_id, _agent_uuid(agent_id))
+        )
+        async with self._session_factory() as session:
+            row = await session.scalar(statement)
+            return int(row.context_tokens or 0) if row is not None else 0
+
     async def set(
         self,
         task_id: str | uuid.UUID,
         runtime_id: str,
         session_id: str,
         agent_id: str | uuid.UUID | None = None,
+        context_tokens: int | None = None,
     ) -> None:
-        """记住会话 id（upsert）；空 id 视为无需记录。"""
+        """记住会话 id（upsert）；空 id 视为无需记录。
+
+        `context_tokens` 是上一轮该会话的上下文规模：None = 本次不报送（保留旧值，
+        新建行记 0），供下一轮判断要不要压缩 / 重开会话。
+        """
         if not session_id:
             return
         task_uuid = _as_uuid(task_id)
@@ -77,10 +97,13 @@ class TaskRuntimeSessionRepository:
                         agent_id=agent_uuid,
                         runtime_id=runtime_id,
                         session_id=session_id,
+                        context_tokens=max(0, int(context_tokens or 0)),
                     )
                 )
             else:
                 row.session_id = session_id
+                if context_tokens is not None:
+                    row.context_tokens = max(0, int(context_tokens))
             await session.commit()
 
     async def clear(

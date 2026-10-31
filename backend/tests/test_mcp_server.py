@@ -746,11 +746,58 @@ def test_flux_context_rejects_malformed_task_id(mcp_client: TestClient) -> None:
     assert result["isError"] is True
 
 
+def test_context_boot_returns_runtime_context_and_memory_in_one_call(
+    mcp_client: TestClient,
+) -> None:
+    """开工只调一次：runtime / context / memory 三份内容一次拿齐，且与单项工具同源。"""
+    project = mcp_client.post(
+        "/api/v1/projects", json={"name": "开工聚合项目", "repository": None}
+    ).json()["data"]
+    mcp_client.post(
+        f"/api/v1/projects/{project['id']}/memory",
+        json={"section": "coding_rules", "content": "提交信息用中文"},
+    )
+    task = mcp_client.post(
+        "/api/v1/tasks",
+        json={"description": "补一个开工入口", "project_id": project["id"]},
+    ).json()["data"]
+
+    token = issue_token(mcp_client, scopes=[Capability.FILE_READ])
+    data = payload(call(mcp_client, token, "context.boot", {"task_id": task["id"]}))
+
+    # runtime = flux_context：握手回执 + 任务视图
+    assert data["runtime"]["protocol"] == {"name": "flux-agent", "version": "1"}
+    assert data["runtime"]["task"]["id"] == task["id"]
+    assert data["runtime"]["entry"] == list(RUNTIME_ENTRY)
+    # context = context.get：按任务打包项目事实
+    assert data["context"]["task_id"] == task["id"]
+    assert data["context"]["project_id"] == project["id"]
+    # memory = memory.recall：Project 层随任务推导
+    assert data["memory"]["project_id"] == project["id"]
+    assert [layer["layer"] for layer in data["memory"]["layers"]][-1] == "project"
+
+    # 单份刷新仍走旧工具，内容口径一致
+    single = payload(call(mcp_client, token, "context.get", {"task_id": task["id"]}))
+    assert single["content"] == data["context"]["content"]
+
+
+def test_context_boot_rejects_bad_budget(mcp_client: TestClient) -> None:
+    token = issue_token(mcp_client)
+    result = call(mcp_client, token, "context.boot", {"budget": "many"})
+    assert result["isError"] is True
+    assert "budget" in result["content"][0]["text"]
+
+
 # --- 5. X-Flux-Run-Id：把 MCP 调用绑到发起它的 Run（FINDING-1） ---
 
 
 def _header_request(run_id: str | None) -> SimpleNamespace:
     headers = {"x-flux-run-id": run_id} if run_id is not None else {}
+    return SimpleNamespace(headers=headers)
+
+
+def _task_header_request(task_id: str | None) -> SimpleNamespace:
+    headers = {"x-flux-task-id": task_id} if task_id is not None else {}
     return SimpleNamespace(headers=headers)
 
 
@@ -791,6 +838,58 @@ async def test_attach_run_id_ignores_foreign_unknown_or_absent_run(apply_contain
     ).run_id is None
 
     assert (await _attach_run_id(_header_request(None), apply_container, same_agent)).run_id is None
+
+
+async def test_attach_run_id_resolves_active_run_from_the_task_header(apply_container) -> None:
+    """池化常驻进程的配置里没有本轮 run_id：按任务头解析当前活动 Run（通用回退）。
+
+    仍按令牌身份校验归属，且同任务多轮时取最新创建的那一轮；解析不到就静默忽略。
+    """
+    owner = str(uuid.uuid4())
+    task = await apply_container.task_repo.create(
+        task_id=uuid.uuid4(), description="续聊", priority=1, project_id=None, agent_id=None
+    )
+    other_task = await apply_container.task_repo.create(
+        task_id=uuid.uuid4(), description="另一件事", priority=1, project_id=None, agent_id=None
+    )
+
+    async def seed(run_id: str, *, agent_id: str, task_id, mode: str = "normal") -> None:
+        await apply_container.run_repo.create(
+            run_id=run_id,
+            session_id="sess",
+            instruction="do it",
+            status=DshRunStatus.PENDING,
+            agent_id=agent_id,
+            task_id=task_id,
+            permission_mode=mode,
+        )
+
+    # 真实 Run id 是 UUID；SQLite 的 CURRENT_TIMESTAMP 只有秒级精度，同一秒内创建的
+    # 两轮会按 str(id) 做 tie-break。这里刻意让 id 字典序与创建顺序一致，避免用例
+    # 依赖「两次 insert 跨秒」这种不稳定前提。
+    await seed("run-task-a1", agent_id=owner, task_id=task.id, mode="plan")
+    await seed("run-task-b2", agent_id=owner, task_id=task.id, mode="full")
+    await seed("run-task-stranger", agent_id=str(uuid.uuid4()), task_id=task.id)
+    await seed("run-other-task", agent_id=owner, task_id=other_task.id)
+
+    identity = AgentIdentity(agent_id=owner, token_id="t", scopes=frozenset())
+    resolved = await _attach_run_id(_task_header_request(str(task.id)), apply_container, identity)
+    assert resolved.run_id == "run-task-b2"
+    assert resolved.permission_mode == "full"
+
+    # 别的 Agent 的任务：归属不符，不能借任务头升级到他人的 Run
+    intruder = AgentIdentity(agent_id=str(uuid.uuid4()), token_id="t2", scopes=frozenset())
+    assert (
+        await _attach_run_id(_task_header_request(str(task.id)), apply_container, intruder)
+    ).run_id is None
+
+    # 解析不到（任务没有活动 Run / 没带任务头）：保持原身份
+    assert (
+        await _attach_run_id(_task_header_request(str(uuid.uuid4())), apply_container, identity)
+    ).run_id is None
+    assert (
+        await _attach_run_id(_task_header_request(None), apply_container, identity)
+    ).run_id is None
 
 
 async def test_proposal_create_inherits_task_and_project_from_the_run(apply_container) -> None:

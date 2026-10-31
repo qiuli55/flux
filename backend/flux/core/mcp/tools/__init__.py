@@ -44,6 +44,7 @@ TOOLS: dict[str, ToolSpec] = {tool.name: tool for tool in ALL_TOOLS}
 #: 但删掉核心工具仍会被发现（§5：required_tools ⊆ advertised_tools）。
 CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
+        "context.boot",
         "context.get",
         "flux_context",
         "memory.recall",

@@ -15,15 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -307,6 +309,208 @@ _SPECS: dict[str, _CliSpec] = {
 }
 
 
+@dataclass
+class _PooledServe:
+    """一个可跨 Run 复用的常驻 CLI 进程（opencode serve / codex app-server）。
+
+    复用粒度由 `key` 决定：同一 runtime + 任务 + Agent + 权限模式 + 模型 + 密钥通道
+    才能共用一个进程。`lease_run` 记录当前租用它的 Run——同一时刻只允许一个 Run 使用，
+    并发同任务时后来者退回独占进程，绝不排队等待（见 `_pool_acquire`）。
+    """
+
+    key: str
+    runtime_id: str
+    port: int
+    process: Any
+    argv: tuple[str, ...]
+    config_dir: Path
+    task_id: str
+    agent_id: str
+    mode: str
+    model: str
+    #: 停进程的方式（Adapter 的 stop）；池驱逐/退出清理时调用
+    stop: Callable[[Any], None] | None = None
+    #: 任务级令牌：进程活着期间一直有效，进程被驱逐/退出时才撤销
+    token_id: str | None = None
+    token_service: Any = None
+    stderr_log: Any = None
+    stderr_thread: threading.Thread | None = None
+    last_used: float = field(default_factory=time.monotonic)
+    #: 当前租用该进程的 run_id；None = 空闲可被复用
+    lease_run: str | None = None
+    #: 上游致命错误的回调（每轮换绑到当前 Run）；池化进程不因单轮出错被杀
+    report: Callable[[str], None] | None = None
+    #: 常驻进程上的客户端会话（codex app-server：握手/读线程都挂在进程上，必须跨轮保留）
+    client: Any = None
+
+    def alive(self) -> bool:
+        popen = getattr(self.process, "popen", None)
+        return popen is not None and popen.poll() is None
+
+    @property
+    def endpoint(self) -> str:
+        """日志里怎么称呼它：HTTP 服务看端口，codex app-server 是 stdio 进程。"""
+        return f"port={self.port}" if self.port else "stdio"
+
+
+#: 进程池：模块级（CliRuntime 每个 Run 都会新建实例，池状态必须跨实例共享）
+_SERVE_POOL: dict[str, _PooledServe] = {}
+_SERVE_POOL_LOCK = threading.Lock()
+
+
+def _pool_key(
+    *,
+    runtime_id: str,
+    task_id: str,
+    agent_id: str,
+    mode: str,
+    model: str,
+    channel: Any,
+) -> str:
+    """算复用键：任一维度变化都不能共用进程（模式决定原生工具白名单，模型决定套餐）。"""
+    channel_sig = ""
+    if channel is not None:
+        channel_sig = "|".join(
+            str(getattr(channel, name, "") or "") for name in ("key_id", "provider", "base_url")
+        )
+    return "|".join((runtime_id, task_id, agent_id, normalize_mode(mode), model or "", channel_sig))
+
+
+def _pool_dir_digest(key: str) -> str:
+    """把复用键压成短摘要，用作配置目录后缀（同任务多模型各占一份配置）。"""
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+
+
+def _pool_acquire(
+    key: str, *, run_id: str, ttl: float
+) -> tuple[_PooledServe | None, list[_PooledServe], bool]:
+    """申请复用。
+
+    返回 `(命中的条目, 需要回收的旧条目, 是否被别的 Run 占用)`：
+    命中则条目已被本 Run 租用；空闲但进程已死或超 TTL 的条目会被摘出并放进第二个返回值，
+    由调用方在锁外回收（停进程 + 撤销令牌）；被占用说明并发同任务，调用方退回独占进程。
+    """
+    now = time.monotonic()
+    stale: list[_PooledServe] = []
+    with _SERVE_POOL_LOCK:
+        for existing_key, entry in list(_SERVE_POOL.items()):
+            if entry.lease_run is not None:
+                continue
+            if not entry.alive() or (ttl > 0 and now - entry.last_used > ttl):
+                _SERVE_POOL.pop(existing_key, None)
+                stale.append(entry)
+        entry = _SERVE_POOL.get(key)
+        if entry is None:
+            return None, stale, False
+        if entry.lease_run is not None:
+            return None, stale, True
+        entry.lease_run = run_id
+        entry.last_used = now
+        return entry, stale, False
+
+
+def _pool_register(entry: _PooledServe) -> None:
+    with _SERVE_POOL_LOCK:
+        _SERVE_POOL[entry.key] = entry
+
+
+def _pool_detach(key: str, run_id: str) -> _PooledServe | None:
+    """把条目从本轮租约上摘下来（不清进程），交还池子空闲态。"""
+    if not key:
+        return None
+    with _SERVE_POOL_LOCK:
+        entry = _SERVE_POOL.get(key)
+        if entry is None or entry.lease_run != run_id:
+            return None
+        entry.lease_run = None
+        entry.report = None
+        entry.last_used = time.monotonic()
+        return entry
+
+
+def _pool_drop(entry: _PooledServe) -> None:
+    with _SERVE_POOL_LOCK:
+        if _SERVE_POOL.get(entry.key) is entry:
+            _SERVE_POOL.pop(entry.key, None)
+
+
+def _pool_owns(process: Any) -> bool:
+    """该进程是否归进程池管理（归池则单轮结束不得停它）。"""
+    with _SERVE_POOL_LOCK:
+        return any(entry.process is process for entry in _SERVE_POOL.values())
+
+
+def _close_pool_stderr(entry: _PooledServe) -> None:
+    thread = entry.stderr_thread
+    entry.stderr_thread = None
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=_STDERR_JOIN_SECONDS)
+    handle = entry.stderr_log
+    entry.stderr_log = None
+    if handle is not None:
+        with contextlib.suppress(OSError):
+            handle.close()
+
+
+def _pool_dispose(entry: _PooledServe) -> None:
+    """停掉常驻进程并关闭日志（在线程里跑，避免阻塞事件循环）。"""
+    with contextlib.suppress(Exception):
+        if entry.stop is not None:
+            entry.stop(entry.process)
+    popen = getattr(entry.process, "popen", None)
+    if popen is not None:
+        with contextlib.suppress(Exception):
+            popen.wait(timeout=_STDERR_JOIN_SECONDS)
+    _close_pool_stderr(entry)
+
+
+def _drain_pooled_stderr(entry: _PooledServe) -> None:
+    """常驻进程的 stderr：逐行落盘 + 识别上游致命错误，报给当前租用的 Run。"""
+    pipe = getattr(entry.process.popen, "stderr", None)
+    if pipe is None:
+        return
+    try:
+        for line in pipe:
+            log = entry.stderr_log
+            if log is not None:
+                with contextlib.suppress(ValueError, OSError):
+                    log.write(line.encode("utf-8", "replace"))
+                    log.flush()
+            reason = _upstream_failure(line, entry.runtime_id)
+            report = entry.report
+            if reason is not None and report is not None:
+                report(reason)
+    except Exception:  # noqa: BLE001 - 进程被杀时读流中断属正常
+        logger.debug("cli.pool stderr 读取中断 key=%s", entry.key, exc_info=True)
+    finally:
+        with contextlib.suppress(Exception):
+            pipe.close()
+
+
+async def _revoke_pool_token(entry: _PooledServe) -> None:
+    service = entry.token_service
+    if not entry.token_id or service is None:
+        return
+    try:
+        await service.revoke(entry.token_id)
+    except Exception:  # noqa: BLE001 - 撤销失败只留痕，不影响已结束的 Run
+        logger.exception("cli.pool 撤销任务级令牌失败 token_id=%s", entry.token_id)
+
+
+async def shutdown_cli_process_pool() -> None:
+    """进程退出时清空进程池：停掉所有常驻进程并撤销它们的任务级令牌。"""
+    with _SERVE_POOL_LOCK:
+        entries = list(_SERVE_POOL.values())
+        _SERVE_POOL.clear()
+    for entry in entries:
+        entry.lease_run = None
+        entry.report = None
+        await asyncio.to_thread(_pool_dispose, entry)
+        await _revoke_pool_token(entry)
+    if entries:
+        logger.info("cli.pool 已清空常驻进程 count=%d", len(entries))
+
+
 class CliRuntime:
     """外部 CLI Agent 的运行时（Codex / OpenCode 共用同一实现）。"""
 
@@ -350,6 +554,18 @@ class CliRuntime:
         self._usage: dict[str, _RunUsage] = {}
         #: run_id → opencode serve 监听端口（server 模式下不再走 run 子命令）
         self._server_ports: dict[str, int] = {}
+        #: run_id → 进程复用键（只有声明 reusable_process 的 runtime 才会登记）
+        self._pool_keys: dict[str, str] = {}
+        #: run_id → 本 Run 命中的池条目（start 时取出；复用命中=已有进程，未命中=待建）
+        self._pool_entries: dict[str, _PooledServe] = {}
+        #: run_id → 待创建池条目的参数（key/port/argv/config_dir/token_id）
+        self._pool_pending: dict[str, dict[str, Any]] = {}
+        #: run_id → 本轮是否干净收口（决定结束后留池还是驱逐）
+        self._pool_ok: dict[str, bool] = {}
+        #: run_id → 本轮租用的池条目（codex 要把常驻会话留在条目上供下一轮复用）
+        self._pooled_runs: dict[str, _PooledServe] = {}
+        #: run_id → 本轮停止标志（池化进程不杀进程，只置位让客户端 abort + 静默）
+        self._stop_flags: dict[str, threading.Event] = {}
 
     # --- AgentRuntime ---
 
@@ -378,12 +594,51 @@ class CliRuntime:
         effective_model = model_override or resolve_default_model(self._settings, self.runtime_id)
         workspace = self._settings.workspace_root or self._settings.dsh_workspace
         run_dir = Path(self._settings.dsh_home).expanduser() / "runs" / run_id
-        # codex 的 thread 存在 CODEX_HOME 里：按任务固定目录才能跨轮 thread/resume；
-        # 登录态与 config 每轮仍由 _write_runtime_config 重写，隔离性不降级。
-        config_dir = run_dir
         task_key = str(getattr(task, "id", "") or "")
+        #: 生效执行时限：runtime 能力表默认值 + Settings 通用覆盖（见 config.agent_limits）
+        limits = self._settings.agent_limits(self.runtime_id)
+        # 进程复用：仅当 runtime 声明 reusable_process 且有任务归属时才进池。复用键覆盖
+        # 任务 / Agent / 模式 / 模型 / 密钥通道——任一变化都不能共用同一个进程。
+        pool_key = ""
+        pooled: _PooledServe | None = None
+        if limits.reusable_process and task_key:
+            candidate_key = _pool_key(
+                runtime_id=self.runtime_id,
+                task_id=task_key,
+                agent_id=agent_id,
+                mode=mode,
+                model=model_override,
+                channel=channel,
+            )
+            entry, stale, busy = _pool_acquire(
+                candidate_key,
+                run_id=run_id,
+                ttl=self._settings.agent_process_idle_ttl_seconds,
+            )
+            for old in stale:
+                await self._retire_pool_entry(old)
+            if busy:
+                # 同一任务并发两轮：后来者退回独占进程，绝不覆盖或排队
+                logger.info("%s 复用键被占用，本轮使用独占进程 task=%s", self.runtime_id, task_key)
+            else:
+                pool_key = candidate_key
+                pooled = entry
+        # codex 的 thread 与登录态都存 CODEX_HOME：按任务固定目录，池化复用时同一进程
+        # 直接沿用已加载的配置，独占进程也能跨轮 thread/resume。登录态与 config 在进程
+        # 启动时写一次（常驻期间不重写），隔离性不降级。
+        config_dir = run_dir
         if self.runtime_id == RUNTIME_CODEX and task_key:
             config_dir = Path(self._settings.dsh_home).expanduser() / "runs" / f"task-{task_key}"
+        elif pool_key:
+            # 池化进程按「复用键」固定一个配置目录：进程活着期间配置不变，复用时无需重写。
+            # 键里含模式/模型/密钥通道，所以目录名必须带键哈希——同任务换模型要各自
+            # 一份 opencode.json，否则两轮写配置会互相覆盖。
+            config_dir = (
+                Path(self._settings.dsh_home).expanduser()
+                / "runs"
+                / f"task-{task_key}"
+                / f"{self.runtime_id}-{_pool_dir_digest(pool_key)}"
+            )
         token_id: str | None = None
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -393,18 +648,35 @@ class CliRuntime:
                 config_dir.mkdir(parents=True, exist_ok=True)
                 with contextlib.suppress(OSError):
                     os.chmod(config_dir, 0o700)
-            token_id, token_raw = await self._issue_token(agent_id, run_id, mode)
-            runtime_env = self._write_runtime_config(
-                config_dir, token_raw, run_id, model=model_override, channel=channel, mode=mode
-            )
+            if pooled is None:
+                # 池化时令牌随进程走（任务级、进程存活期间一直有效）；独占进程仍是每轮一次性
+                token_id, token_raw = await self._issue_token(
+                    agent_id, run_id, mode, task_id=task_key if pool_key else ""
+                )
+                runtime_env = self._write_runtime_config(
+                    config_dir,
+                    token_raw,
+                    "" if pool_key else run_id,
+                    model=model_override,
+                    channel=channel,
+                    mode=mode,
+                    task_id=task_key if pool_key else "",
+                )
+            else:
+                # 复用命中：令牌与配置都还挂在常驻进程上，本轮既不签发也不重写
+                runtime_env = {}
         except Exception:
+            if pooled is not None:
+                _pool_detach(pool_key, run_id)
             await self._revoke(token_id)
             raise
 
         env = {**os.environ}
         env.update(
             build_runtime_env(
-                run_id=run_id,
+                # 池化进程是任务级常驻：不写死某一轮的 run_id（否则下一轮就是过期 id）。
+                # MCP 侧靠 `X-Flux-Task-Id` 解析当前活动 Run（见 mcp/server.py）。
+                run_id="" if pool_key else run_id,
                 workspace=workspace,
                 task_id=str(getattr(task, "id", "")) or None,
                 agent_id=agent_id,
@@ -419,15 +691,40 @@ class CliRuntime:
         # （会话会落到错误 workspace，原生文件工具也会看错仓库），必须同步覆盖。
         env["PWD"] = str(workspace)
         if self.runtime_id == RUNTIME_OPENCODE:
-            # server 模式：起一个按 Run 隔离的 opencode serve，再经 HTTP/SSE 拿 token 增量
-            port = pick_port()
+            if pooled is not None:
+                # 复用命中：端口与 argv 都沿用常驻进程的
+                port, argv = pooled.port, pooled.argv
+            else:
+                # server 模式：起一个 opencode serve，再经 HTTP/SSE 拿 token 增量
+                port = pick_port()
+                argv = serve_argv(self._binary_path(), port)
             self._server_ports[run_id] = port
-            argv = serve_argv(self._binary_path(), port)
+            if pool_key and pooled is None:
+                self._pool_pending[run_id] = {
+                    "key": pool_key,
+                    "port": port,
+                    "argv": argv,
+                    "config_dir": config_dir,
+                    "token_id": token_id,
+                }
         elif self.runtime_id == RUNTIME_CODEX:
             # app-server 模式：JSON-RPC over stdio，订阅 item/*/delta 拿 token 增量
             argv = app_server_argv(self._binary_path())
+            if pool_key and pooled is None:
+                # codex 常驻是 stdio 进程（没有端口）：port=0 只占位，日志里展示为 stdio
+                self._pool_pending[run_id] = {
+                    "key": pool_key,
+                    "port": 0,
+                    "argv": argv,
+                    "config_dir": config_dir,
+                    "token_id": token_id,
+                }
         else:
             argv = self._build_argv(instruction, mode)
+        if pooled is not None:
+            self._pool_entries[run_id] = pooled
+        if pool_key:
+            self._pool_keys[run_id] = pool_key
         return RuntimeLaunch(
             runtime_id=self.runtime_id,
             run_id=run_id,
@@ -440,67 +737,211 @@ class CliRuntime:
             model=effective_model,
             run_dir=run_dir,
             argv=argv,
-            token_id=token_id,
+            # 池化时令牌归常驻进程所有，不进本轮 Run 的生命周期（否则本轮结束就被撤销）
+            token_id=None if pool_key else token_id,
             channel=channel,
             permission_mode=mode,
+            limits=limits,
         )
 
     async def start(self, launch: RuntimeLaunch) -> RuntimeProcess:
         loop = asyncio.get_running_loop()
-        stderr_target, stderr_log = self._open_stderr(launch)
-        if stderr_log is not None:
-            self._stderr_files[launch.run_id] = stderr_log
+        run_id = launch.run_id
+        # 复用命中（已在跑的常驻进程）/ 待建池条目 / 独占进程，三条路径启动方式不同
+        pooled = self._pool_entries.pop(run_id, None)
+        pending = self._pool_pending.pop(run_id, None) if pooled is None else None
+        was_pooled = run_id in self._pool_keys
+        # 池化进程不因本轮被取消/超时被杀：中断回调只置停止标志，由客户端 abort + 静默
+        stop_flag = threading.Event() if was_pooled else None
+        if stop_flag is not None:
+            self._stop_flags[run_id] = stop_flag
+        stderr_target: Any = subprocess.PIPE
+        stderr_log = None
+        if not was_pooled:
+            stderr_target, stderr_log = self._open_stderr(launch)
+            if stderr_log is not None:
+                self._stderr_files[run_id] = stderr_log
         try:
             await self._supervisor.create_run(
-                run_id=launch.run_id,
+                run_id=run_id,
                 session_id=launch.session_id,
                 instruction=launch.instruction,
                 agent_id=launch.agent_id,
                 task_id=launch.task_id,
                 permission_mode=launch.permission_mode,
+                limits=launch.limits,
             )
-            await self._supervisor.mark_starting(launch.run_id)
-            process = await asyncio.to_thread(
-                self._adapter.start,
-                launch.argv,
-                env=launch.env,
-                cwd=launch.cwd,
-                stderr=stderr_target,
-                # codex app-server 要一条 stdin 管道收发 JSON-RPC
-                stdin=subprocess.PIPE if self.runtime_id == RUNTIME_CODEX else None,
-            )
+            await self._supervisor.mark_starting(run_id)
+            if pooled is not None:
+                process = pooled.process
+            else:
+                process = await asyncio.to_thread(
+                    self._adapter.start,
+                    launch.argv,
+                    env=launch.env,
+                    cwd=launch.cwd,
+                    stderr=stderr_target,
+                    # codex app-server 要一条 stdin 管道收发 JSON-RPC
+                    stdin=subprocess.PIPE if self.runtime_id == RUNTIME_CODEX else None,
+                )
         except Exception:
-            self._close_stderr(launch.run_id)
-            await self._revoke(launch.token_id)
+            if pooled is not None:
+                # 复用失败的常驻进程：交还池子（它本身没坏）
+                _pool_detach(self._pool_keys.pop(run_id, ""), run_id)
+            elif pending is not None:
+                # 新池进程没起来：撤掉任务级令牌，不留半成品条目
+                self._pool_keys.pop(run_id, None)
+                self._stop_flags.pop(run_id, None)
+                await self._revoke(pending.get("token_id"))
+            else:
+                self._close_stderr(run_id)
+                await self._revoke(launch.token_id)
             raise
 
-        # 管道必须马上有人读：不读会让子进程写日志时堵死（stderr 缓冲区满）
-        self._start_stderr_watcher(launch, process, loop)
-        if self.runtime_id == RUNTIME_OPENCODE:
+        spawned = pooled is None
+        if spawned:
+            # 管道必须马上有人读：不读会让子进程写日志时堵死（stderr 缓冲区满）
+            if pending is not None:
+                entry = self._register_pool_entry(launch, pending, process, loop)
+            else:
+                entry = None
+                self._start_stderr_watcher(launch, process, loop)
+        else:
+            entry = pooled
+            # 复用命中：重新绑定本轮的错误回调（stderr 读取线程还是常驻的那一个）
+            self._bind_pool_run(entry, launch, loop)
+        if entry is not None and self.runtime_id == RUNTIME_CODEX:
+            # codex 的会话（握手 + stdout 读线程）挂在常驻进程上，跨轮复用必须拿回同一条
+            self._pooled_runs[run_id] = entry
+        if self.runtime_id == RUNTIME_OPENCODE and spawned:
             # server 模式的 stdout 不是事件流（事件走 SSE），但仍要排空，避免管道写满
             self._start_stdout_drain(launch, process)
 
-        if self._supervisor.is_settled(launch.run_id):
-            # 取消/超时抢先落定：不要再跑，直接清理
-            await asyncio.to_thread(self._adapter.stop, process)
-            await self._revoke(launch.token_id)
-            self._close_stderr(launch.run_id)
+        if self._supervisor.is_settled(run_id):
+            # 取消/超时抢先落定：本轮不跑了，但常驻进程本身是干净的（还没发过指令），
+            # 留在池里给下一轮复用，别白白扔掉一次冷启动
+            if was_pooled:
+                await self._release_pool(run_id, keep=True)
+                self._stop_flags.pop(run_id, None)
+            else:
+                await asyncio.to_thread(self._adapter.stop, process)
+                await self._revoke(launch.token_id)
+                self._close_stderr(run_id)
             return self._process(launch, process)
 
-        await self._supervisor.mark_running(launch.run_id, pid=process.pid, pgid=process.pgid)
-        self._supervisor.register_interrupt(
-            launch.run_id, lambda: signal_group_graceful(process.pgid)
-        )
+        await self._supervisor.mark_running(run_id, pid=process.pid, pgid=process.pgid)
+        if stop_flag is not None:
+            self._supervisor.register_interrupt(run_id, stop_flag.set)
+        else:
+            self._supervisor.register_interrupt(run_id, lambda: signal_group_graceful(process.pgid))
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        self._queues[launch.run_id] = queue
-        self._usage[launch.run_id] = _RunUsage()
+        self._queues[run_id] = queue
+        self._usage[run_id] = _RunUsage()
         if launch.token_id:
-            self._tokens[launch.run_id] = launch.token_id
+            self._tokens[run_id] = launch.token_id
         self._tasks[launch.run_id] = asyncio.create_task(
             self._supervisor_for(process, launch, queue),
             name=f"cli-run-{launch.run_id}",
         )
         return self._process(launch, process)
+
+    # --- 进程复用 ---
+
+    def _register_pool_entry(
+        self,
+        launch: RuntimeLaunch,
+        pending: dict[str, Any],
+        process: Any,
+        loop: asyncio.AbstractEventLoop,
+    ) -> _PooledServe:
+        """把刚起来的常驻进程登记进池子，并接管它的 stderr 读取。"""
+        config_dir = Path(pending["config_dir"])
+        handle = None
+        try:
+            handle = (config_dir / "stderr.log").open("ab")
+        except OSError:
+            logger.warning(
+                "cli.pool 打不开常驻进程日志，本次只做错误识别不落盘 endpoint=%s",
+                pending["port"] or "stdio",
+            )
+        entry = _PooledServe(
+            key=pending["key"],
+            runtime_id=self.runtime_id,
+            port=int(pending["port"]),
+            process=process,
+            argv=tuple(pending["argv"]),
+            config_dir=config_dir,
+            task_id=str(launch.task_id or ""),
+            agent_id=str(launch.agent_id or ""),
+            mode=normalize_mode(launch.permission_mode),
+            model=launch.model or "",
+            stop=self._adapter.stop,
+            token_id=pending.get("token_id"),
+            token_service=self._token_service,
+            stderr_log=handle,
+            lease_run=launch.run_id,
+        )
+        # 先绑回调再起读取线程：进程启动瞬间就可能打上游致命错误，错过就只剩干等
+        self._bind_pool_run(entry, launch, loop)
+        if handle is not None:
+            thread = threading.Thread(
+                target=_drain_pooled_stderr,
+                args=(entry,),
+                name=f"cli-pool-stderr-{self.runtime_id}",
+                daemon=True,
+            )
+            entry.stderr_thread = thread
+            thread.start()
+        _pool_register(entry)
+        logger.info(
+            "%s 常驻进程入池 run=%s endpoint=%s task=%s",
+            self.runtime_id,
+            launch.run_id,
+            entry.endpoint,
+            entry.task_id or "未关联",
+        )
+        return entry
+
+    def _bind_pool_run(
+        self, entry: _PooledServe, launch: RuntimeLaunch, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """把常驻进程的「上游致命错误」回调绑到本轮 Run。"""
+        run_id = launch.run_id
+
+        def report(reason: str) -> None:
+            if run_id in self._fail_reasons:
+                return
+            self._fail_reasons[run_id] = reason
+            asyncio.run_coroutine_threadsafe(
+                self._fail_fast(launch, reason, getattr(entry.process, "pgid", 0)), loop
+            )
+
+        entry.lease_run = run_id
+        entry.report = report
+
+    async def _retire_pool_entry(self, entry: _PooledServe) -> None:
+        """驱逐：摘出池子 → 停进程 → 撤销任务级令牌。"""
+        _pool_drop(entry)
+        await asyncio.to_thread(_pool_dispose, entry)
+        await _revoke_pool_token(entry)
+
+    async def _release_pool(self, run_id: str, *, keep: bool | None = None) -> None:
+        """本轮结束交还租约：干净收口且进程仍活着就留池，否则驱逐。"""
+        key = self._pool_keys.pop(run_id, None)
+        if not key:
+            return
+        entry = _pool_detach(key, run_id)
+        reusable = self._pool_ok.pop(run_id, False)
+        if keep is not None:
+            reusable = keep
+        if entry is None:
+            return
+        if reusable and entry.alive():
+            logger.info(
+                "%s 常驻进程留池复用 run=%s endpoint=%s", self.runtime_id, run_id, entry.endpoint
+            )
+            return
+        await self._retire_pool_entry(entry)
 
     def _supervisor_for(
         self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
@@ -551,7 +992,7 @@ class CliRuntime:
         return getattr(self._adapter, "_path", None) or self._spec.adapter_name
 
     async def _issue_token(
-        self, agent_id: str, run_id: str, mode: str = "normal"
+        self, agent_id: str, run_id: str, mode: str = "normal", *, task_id: str = ""
     ) -> tuple[str | None, str | None]:
         if not self._settings.dsh_mcp_enabled:
             logger.warning(
@@ -569,7 +1010,12 @@ class CliRuntime:
             # Plan 只签 file.read + plan.write：令牌层先兜一道，即使 MCP 白名单被绕过也
             # 没有 terminal.execute / file.write 能力位。
             scopes=scopes_for_mode(mode),
-            label=f"{self.runtime_id} run {run_id}（Flux 一次性令牌 / {mode}）",
+            # 池化进程的令牌是任务级（活多久有效多久），独占进程仍是每轮一次性
+            label=(
+                f"{self.runtime_id} task {task_id}（Flux 任务级令牌 / {mode}）"
+                if task_id
+                else f"{self.runtime_id} run {run_id}（Flux 一次性令牌 / {mode}）"
+            ),
         )
         return str(token.id), raw
 
@@ -582,6 +1028,7 @@ class CliRuntime:
         model: str = "",
         channel: Any = None,
         mode: str = "normal",
+        task_id: str = "",
     ) -> dict[str, str]:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
@@ -599,6 +1046,7 @@ class CliRuntime:
                     run_id=run_id,
                     model=model,
                     channel=channel,
+                    task_id=task_id,
                     user_mcp_servers=_read_user_mcp_servers(user_home / "config.toml"),
                 ),
                 encoding="utf-8",
@@ -624,6 +1072,7 @@ class CliRuntime:
                 model=model,
                 uploads_dir=str(self._settings.uploads_dir),
                 mode=mode,
+                task_id=task_id,
             ),
             encoding="utf-8",
         )
@@ -639,6 +1088,7 @@ class CliRuntime:
                 channel=channel,
                 uploads_dir=str(self._settings.uploads_dir),
                 mode=mode,
+                task_id=task_id,
             )
         return env
 
@@ -747,6 +1197,7 @@ class CliRuntime:
                 run_id=run_id, command=command, mode=launch.permission_mode
             )
 
+        stop_flag = self._stop_flags.get(run_id)
         client = OpenCodeServerClient(
             f"http://127.0.0.1:{port}",
             on_text=on_text,
@@ -756,19 +1207,26 @@ class CliRuntime:
             on_error=on_error,
             process_alive=lambda: process.popen.poll() is None,
             approval_handler=on_native_approval,
+            # 池化进程不杀：取消/超时只置停止标志，由客户端自己 abort 并静默
+            should_stop=stop_flag.is_set if stop_flag is not None else None,
         )
         # 跨轮复用：记住上一轮的会话 id，本轮优先续聊（会话失效时客户端会自动新建）。
         # 按 Agent 隔离：换了 Agent 就不复用上一个 Agent 的会话。
         previous = await self._stored_session(launch.task_id, launch.agent_id)
+        # 已生成正文的读取器：看护器超时/取消时据此保留产出，而不是整轮作废
+        self._supervisor.register_partial_output(run_id, lambda: client.streamed_text)
+        # 密钥库通道要补 provider 前缀，否则 opencode 解析不出模型、静默退回会话默认
+        turn_model = _opencode_model_id(launch.model, launch.channel)
         result = await client.run(
             compose_instruction(launch.instruction, launch.permission_mode),
             title=f"flux-task-{launch.task_id or run_id}",
             session_id=previous,
             # 任务级模型必须每轮显式下发：会话会记住创建时的模型，
             # 续聊不传就沿用旧模型（切到别的模型后表现为「没切成功」）。
-            model=launch.model,
+            model=turn_model,
+            limits=launch.limits,
         )
-        logger.info("opencode 本轮模型 run=%s model=%s", run_id, launch.model or "默认")
+        logger.info("opencode 本轮模型 run=%s model=%s", run_id, turn_model or "默认")
         if result.session_id:
             await self._remember_session(launch.task_id, result.session_id, launch.agent_id)
             logger.info(
@@ -778,18 +1236,39 @@ class CliRuntime:
                 "复用" if previous and previous == result.session_id else "新建",
                 result.session_id,
             )
-        await self._stop_process(process)
-        if result.error:
-            logger.warning("opencode server 本轮出错 run=%s %s", run_id, result.error)
-            self._fail_reasons.setdefault(run_id, result.error)
+        # 池化进程归池子所有：本轮只决定「留池还是驱逐」，绝不在这里停它
+        reason = self._fail_reasons.get(run_id, "")
+        if run_id in self._pool_keys:
+            self._pool_ok[run_id] = bool(result.reusable and not result.error and not reason)
+        else:
+            await self._stop_process(process)
+        error = result.error or reason
+        if error:
+            logger.warning("opencode server 本轮出错 run=%s %s", run_id, error)
+            self._fail_reasons.setdefault(run_id, error)
             await self._finalize(launch, DshRunStatus.FAILED, None, result.text, queue)
             return
-        await self._finalize(launch, DshRunStatus.COMPLETED, 0, result.text, queue)
+        if result.truncated:
+            # 超时/中止但已有正文：按「截断完成」收尾（产出与会话绑定都保留）
+            logger.warning(
+                "opencode 本轮截断完成 run=%s reason=%s chars=%d",
+                run_id,
+                result.truncated_reason or "unknown",
+                len(result.text),
+            )
+        await self._finalize(
+            launch,
+            DshRunStatus.COMPLETED,
+            0,
+            result.text,
+            queue,
+            truncated_reason=result.truncated_reason if result.truncated else "",
+        )
 
     async def _supervise_codex_server(
         self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
     ) -> None:
-        """codex app-server 模式：JSON-RPC 一轮，订阅 delta 拿 token 增量。"""
+        """codex app-server 模式的失败收口：异常不冒泡，统一按失败落终态。"""
         try:
             await self._run_codex_server(process, launch, queue)
         except asyncio.CancelledError:
@@ -804,6 +1283,11 @@ class CliRuntime:
     async def _run_codex_server(
         self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
     ) -> None:
+        """codex app-server 模式：JSON-RPC 一轮，订阅 delta 拿 token 增量。
+
+        常驻进程跨 Run 复用时，本轮的会话（握手 + stdout 读线程）就是上一轮那一条：
+        取回池条目上挂的 `client` 换绑本轮回调后直接跑，省掉 app-server 冷启动与 initialize。
+        """
         run_id = launch.run_id
         usage = self._usage.setdefault(run_id, _RunUsage())
         texts: list[str] = []
@@ -840,17 +1324,38 @@ class CliRuntime:
                 run_id=run_id, command=command, mode=launch.permission_mode
             )
 
-        session = CodexAppServerSession(
-            process,
+        entry = self._pooled_runs.pop(run_id, None)
+        session = entry.client if entry is not None else None
+        if session is None:
+            session = CodexAppServerSession(process)
+            if entry is not None:
+                # 会话挂在池条目上：下一轮复用同一条进程时接着用（握手只做一次）
+                entry.client = session
+        stop_flag = self._stop_flags.get(run_id)
+        session.bind(
             cwd=launch.cwd,
             on_text=on_text,
             on_thinking=on_thinking,
             on_tool=on_tool,
-            idle_timeout=self._settings.dsh_idle_timeout_seconds,
+            idle_timeout=(
+                launch.limits.idle_timeout_seconds
+                if launch.limits
+                else self._settings.dsh_idle_timeout_seconds
+            ),
             permission_mode=launch.permission_mode,
             approval_handler=on_native_approval,
+            # 上下文预算（0 = 不压缩）：由 runtime 能力表 + 运维配置统一给出
+            context_compact_tokens=launch.limits.context_compact_tokens if launch.limits else 0,
+            # 池化进程不杀：取消/超时只置停止标志，由会话自己收口并标记作废
+            should_stop=stop_flag.is_set if stop_flag is not None else None,
         )
+        # 已生成正文的读取器：看护器超时/取消时据此保留产出，而不是整轮作废
+        self._supervisor.register_partial_output(run_id, lambda: "".join(texts))
         previous = await self._stored_session(launch.task_id, launch.agent_id)
+        # 续聊的 thread 已经积累了多大：恢复接口不返回用量，只能靠上一轮记下来的规模
+        previous_tokens = (
+            await self._stored_context_tokens(launch.task_id, launch.agent_id) if previous else 0
+        )
         result = await session.run(
             compose_instruction(launch.instruction, launch.permission_mode),
             thread_id=previous,
@@ -858,17 +1363,31 @@ class CliRuntime:
             # 续聊不传就沿用旧模型（切到别的模型后表现为「没切成功」）。
             model=launch.model,
             model_provider=_codex_provider_override(self._settings, launch.channel),
+            context_tokens=previous_tokens,
         )
         if result.thread_id:
-            await self._remember_session(launch.task_id, result.thread_id, launch.agent_id)
+            await self._remember_session(
+                launch.task_id,
+                result.thread_id,
+                launch.agent_id,
+                context_tokens=result.context_tokens,
+            )
             logger.info(
-                "codex thread 绑定 run=%s task=%s %s thread=%s",
+                "codex thread 绑定 run=%s task=%s %s thread=%s 上下文=%s tokens",
                 run_id,
                 launch.task_id or "未关联",
                 "复用" if previous and previous == result.thread_id else "新建",
                 result.thread_id,
+                result.context_tokens or "未知",
             )
-        await self._stop_process(process)
+        pool_reason = self._fail_reasons.get(run_id, "")
+        if run_id in self._pool_keys:
+            # 常驻进程：只有干净收口才留池；异常中断的进程里可能挂着半轮 turn，必须驱逐
+            self._pool_ok[run_id] = bool(
+                not result.error and result.status == "completed" and not pool_reason
+            )
+        else:
+            await self._stop_process(process)
         if result.error or result.status != "completed":
             reason = result.error or f"codex 本轮以 {result.status} 结束"
             logger.warning("codex app-server 本轮异常 run=%s %s", run_id, reason)
@@ -907,17 +1426,55 @@ class CliRuntime:
             )
             return ""
 
+    async def _stored_context_tokens(self, task_id: str | None, agent_id: str | None) -> int:
+        """取该任务在当前 Agent + runtime 上记住的会话上下文规模；没有/读失败时返回 0。"""
+        if not task_id:
+            return 0
+        repo = getattr(self._container, "runtime_sessions", None)
+        if repo is None:
+            return 0
+        reader = getattr(repo, "get_context_tokens", None)
+        if reader is None:
+            # 未来接入的存储实现没提供该读取口：按「未知」处理，不阻断执行
+            return 0
+        try:
+            return int(await reader(task_id, self.runtime_id, agent_id) or 0)
+        except Exception:  # noqa: BLE001 - 读不到就不压缩，不影响本轮
+            logger.warning(
+                "读取会话上下文规模失败 task=%s agent=%s runtime=%s",
+                task_id,
+                agent_id,
+                self.runtime_id,
+                exc_info=True,
+            )
+            return 0
+
     async def _remember_session(
-        self, task_id: str | None, session_id: str, agent_id: str | None
+        self,
+        task_id: str | None,
+        session_id: str,
+        agent_id: str | None,
+        *,
+        context_tokens: int | None = None,
     ) -> None:
-        """记住本轮实际使用的会话 id，供同一 Agent 的下一轮续聊。"""
+        """记住本轮实际使用的会话 id（及可选上下文规模），供同一 Agent 的下一轮续聊。"""
         if not task_id or not session_id:
             return
         repo = getattr(self._container, "runtime_sessions", None)
         if repo is None:
             return
         try:
-            await repo.set(task_id, self.runtime_id, session_id, agent_id)
+            if context_tokens is None:
+                # 不报送规模的 runtime（如 opencode）保持原有写入口径
+                await repo.set(task_id, self.runtime_id, session_id, agent_id)
+            else:
+                await repo.set(
+                    task_id,
+                    self.runtime_id,
+                    session_id,
+                    agent_id,
+                    context_tokens=context_tokens,
+                )
         except Exception:  # noqa: BLE001 - 写失败只影响下一轮是否复用，不影响本轮
             logger.warning(
                 "保存外部会话绑定失败 task=%s agent=%s runtime=%s",
@@ -928,6 +1485,9 @@ class CliRuntime:
             )
 
     async def _stop_process(self, process: Any) -> None:
+        if _pool_owns(process):
+            # 常驻进程由池子管理：单轮结束/出错都不停它
+            return
         with contextlib.suppress(Exception):
             await asyncio.to_thread(self._adapter.stop, process)
 
@@ -1109,6 +1669,12 @@ class CliRuntime:
                 "message": reason,
             },
         )
+        if launch.run_id in self._pool_keys:
+            # 池化进程不杀：置停止标志，客户端会 abort 当前轮并静默
+            flag = self._stop_flags.get(launch.run_id)
+            if flag is not None:
+                flag.set()
+            return
         if pgid:
             await asyncio.to_thread(kill_group, pgid)
 
@@ -1132,6 +1698,8 @@ class CliRuntime:
         exit_code: int | None,
         response: str,
         queue: asyncio.Queue[Any],
+        *,
+        truncated_reason: str = "",
     ) -> None:
         # 先等 stderr 收完：失败原因可能就在最后几行日志里
         self._join_stderr(launch.run_id)
@@ -1141,6 +1709,9 @@ class CliRuntime:
         if status is DshRunStatus.FAILED:
             error = reason or f"{self.runtime_id} CLI 进程以退出码 {exit_code} 结束"
             finish_reason = "upstream_error" if reason else str(exit_code)
+        elif truncated_reason:
+            # 超时/被中止但已产出正文：按「截断完成」收尾，产出与会话绑定都保留
+            finish_reason = "truncated"
         metrics = self._usage.pop(launch.run_id, _RunUsage()).to_dict(
             runtime_id=self.runtime_id, model=launch.model
         )
@@ -1155,6 +1726,9 @@ class CliRuntime:
         finally:
             await self._revoke(self._tokens.pop(launch.run_id, launch.token_id))
             self._close_stderr(launch.run_id)
+            self._stop_flags.pop(launch.run_id, None)
+            # 本轮收口后才交还租约：干净收口留池复用，否则停进程 + 撤销任务级令牌
+            await self._release_pool(launch.run_id)
         if final is not status:
             # 看护器改写了终态（取消/超时先落定）：本线程算出的失败原因不串进结果
             error = None
@@ -1187,6 +1761,7 @@ class CliRuntime:
                     "status": str(final),
                     "exit_code": exit_code,
                     "final_response": response,
+                    "finish_reason": finish_reason,
                     "metrics": metrics,
                 },
             )
@@ -1574,6 +2149,7 @@ def _codex_config(
     run_id: str = "",
     model: str = "",
     channel: Any = None,
+    task_id: str = "",
     user_mcp_servers: Mapping[str, Any] | None = None,
 ) -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
@@ -1590,10 +2166,16 @@ def _codex_config(
         # 隔离 CODEX_HOME 会丢掉用户在 ~/.codex/config.toml 里自建的 MCP，这里原样带回来
         lines += _user_mcp_lines(user_mcp_servers)
     if token is not None:
+        headers = ["Authorization = " + f'"Bearer {token}"']
+        if run_id:
+            headers.append(f'X-Flux-Run-Id = "{run_id}"')
+        elif task_id:
+            # 常驻进程的配置只写一次、令牌是任务级：MCP 侧靠任务 id 解析当前活动 Run
+            headers.append(f'X-Flux-Task-Id = "{task_id}"')
         lines += [
             "[mcp_servers.flux]",
             f'url = "{url}"',
-            f'http_headers = {{ Authorization = "Bearer {token}", X-Flux-Run-Id = "{run_id}" }}',
+            "http_headers = { " + ", ".join(headers) + " }",
             # codex exec 的审批策略是 never，MCP 工具调用默认仍要审批——不显式放行，
             # Agent 会判定「MCP 不可用」退回自己读文件（2026-10-06 真实 Run 记录）。
             # 取值实测只有 auto / prompt / writes / approve（codex 0.157.1 解析报错原文）。
@@ -1711,6 +2293,20 @@ def _key_provider_id(channel: Any) -> str:
     return f"fluxkey{key_id[:8] or 'run'}"
 
 
+def _opencode_model_id(model: str, channel: Any = None) -> str:
+    """opencode 侧的模型标识：`provider/model`。
+
+    密钥库通道下，任务上只记「该密钥的模型名」（不带前缀），provider 块由
+    `_key_provider_id` 生成；不补齐前缀的话，`POST /session` 与 prompt 里的
+    模型字段解析不出 provider，opencode 会静默退回会话默认模型（表现为
+    「选了密钥库模型却还在用全局默认」）。原生模型本身已带前缀，原样返回。
+    """
+    value = str(model or "").strip()
+    if not value or "/" in value or channel is None:
+        return value
+    return f"{_key_provider_id(channel)}/{value}"
+
+
 def _opencode_config(
     url: str,
     token: str | None,
@@ -1719,6 +2315,7 @@ def _opencode_config(
     channel: Any = None,
     uploads_dir: str = "",
     mode: str = "normal",
+    task_id: str = "",
 ) -> str:
     """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
 
@@ -1757,7 +2354,7 @@ def _opencode_config(
                 "models": {configured_model: {"name": configured_model}},
             }
         }
-        payload["model"] = f"{provider_id}/{configured_model}"
+        payload["model"] = _opencode_model_id(configured_model, channel)
     elif model:
         payload["model"] = model
     permission: dict[str, Any] = {}
@@ -1776,11 +2373,18 @@ def _opencode_config(
     if permission:
         payload["permission"] = permission
     if token is not None:
+        # 头部按可用身份拼：独占进程有 run_id；池化进程是任务级常驻，没有固定 run_id，
+        # 靠 `X-Flux-Task-Id` 让 MCP 侧解析「该任务当前活动的 Run」。
+        headers = {"Authorization": f"Bearer {token}"}
+        if run_id:
+            headers["X-Flux-Run-Id"] = run_id
+        if task_id:
+            headers["X-Flux-Task-Id"] = task_id
         payload["mcp"] = {
             "flux": {
                 "type": "remote",
                 "url": url,
-                "headers": {"Authorization": f"Bearer {token}", "X-Flux-Run-Id": run_id},
+                "headers": headers,
                 "enabled": True,
             }
         }
@@ -1894,4 +2498,10 @@ def run_dir_for(settings: Settings, run_id: str) -> Path:
     return Path(settings.dsh_home).expanduser() / "runs" / run_id
 
 
-__all__ = ["CLI_TOKEN_SCOPES", "CliRuntime", "build_cli_runtime", "run_dir_for"]
+__all__ = [
+    "CLI_TOKEN_SCOPES",
+    "CliRuntime",
+    "build_cli_runtime",
+    "run_dir_for",
+    "shutdown_cli_process_pool",
+]

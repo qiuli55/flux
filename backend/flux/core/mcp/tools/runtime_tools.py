@@ -1,17 +1,24 @@
-"""运行时上下文工具 `flux_context`（最终方案 §6 / §7 / §8）。
+"""运行时上下文工具 `context.boot` / `flux_context`（最终方案 §6 / §7 / §8）。
 
-与 `context.get` 的分工（D3，职责分离、并存不合并）：
+`context.boot` 是**开工入口**：一次调用同时返回三份上下文，省掉每个 Run 开头
+`flux_context` → `context.get` → `memory.recall` 三次串行往返（各 7~10s）。
+它与三个旧工具是「聚合 + 原样透出」的关系，不新造语义：
 
-- `flux_context`  = 我在哪里、我能做什么（Runtime / Run / Task / Workspace / Policy / Capabilities）
-- `context.get`   = 这个项目是什么（项目事实 / 文档 / 代码上下文 / 项目约束）
+- `runtime`（= `flux_context`）  = 我在哪里、我能做什么（含握手回执与能力清单）
+- `context`（= `context.get`）   = 这个项目是什么（项目事实 / 文档 / 代码上下文 / 项目约束）
+- `memory`（= `memory.recall`）  = Flux 记住的结论（Environment / User / Project 三层）
 
-本工具同时承担 **Flux Agent Handshake v1** 的落点（§6）：MCP `initialize` 完成协议层握手后，
-Agent 调一次 `flux_context` 拿到 `protocol` 回执与能力清单，即视为握手完成。
-只读，不改任何状态。
+三个旧工具全部保留：需要刷新单份上下文、或只缺一份时，仍可单独调用；未来新 Runtime
+只要按同一入口调 `context.boot` 即可接入，平台侧无需为某个 Agent 定制开场顺序。
+
+`flux_context` 同时承担 **Flux Agent Handshake v1** 的落点（§6）：MCP `initialize` 完成
+协议层握手后，Agent 调一次 `context.boot`（或 `flux_context`）拿到 `protocol` 回执与
+能力清单，即视为握手完成。只读，不改任何状态。
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -23,7 +30,9 @@ from flux.core.agent_runtime.protocol import (
     RUNTIME_ENTRY,
     RUNTIME_RULES,
 )
+from flux.core.mcp.context_packager import DEFAULT_BUDGET_CHARS, package_context
 from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
+from flux.core.mcp.tools.memory_tools import memory_recall
 from flux.core.permissions.modes import boundary_for, normalize_mode
 from flux.core.task_engine.repository import TaskRepository
 from flux.enums import Capability, FluxCapability
@@ -97,6 +106,55 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         # Agent 无论从 prompt 还是从 flux_context 拿到的行为规则必须完全一致。
         "rules": list(MODE_RULES.get(mode, RUNTIME_RULES)),
         "entry": list(RUNTIME_ENTRY),
+    }
+
+
+CONTEXT_BOOT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "description": "任务 UUID；带上它才会打包 L1 任务上下文"},
+        "project_id": {"type": "string", "description": "项目 UUID；不传则从任务/当前 Run 推导"},
+        "budget": {
+            "type": "integer",
+            "minimum": 1,
+            "description": f"字符预算，默认 {DEFAULT_BUDGET_CHARS}",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+async def context_boot(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """开工一次拿齐：运行时身份 + 项目上下文 + 三层记忆（三份并行取回）。
+
+    三份数据互不依赖，并行取回后按固定字段名原样透出；任何一份失败都会让整次调用
+    失败（而不是静默返回半份），Agent 可据此退回对应的单项工具分别重试。
+    """
+    reject_unknown(params, {"task_id", "project_id", "budget"})
+    task_id = optional_str(params, "task_id")
+    project_id = optional_str(params, "project_id")
+    # budget 缺省交给打包器按 §6.1 推导，这里只拒绝"传了但不是整数"
+    budget = params.get("budget")
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int)):
+        raise ValidationError("参数 budget 必须是整数", details={"param": "budget"})
+
+    # 两个旧工具都用同一份「任务/项目」定位参数；为空的键不传，交给它们各自推导
+    derived = {
+        key: value for key, value in (("task_id", task_id), ("project_id", project_id)) if value
+    }
+    runtime, packaged, memory = await asyncio.gather(
+        flux_context(ctx, derived),
+        package_context(ctx.container, task_id=task_id, project_id=project_id, budget=budget),
+        memory_recall(ctx, derived),
+    )
+    return {
+        "runtime": runtime,
+        "context": packaged,
+        "memory": memory,
+        "note": (
+            "三份上下文已一次取回；需要刷新某一份时再单独调 flux_context / context.get / "
+            "memory.recall。context 是快照，动手前用 workspace.read 核对磁盘当前状态。"
+        ),
     }
 
 
@@ -179,6 +237,19 @@ async def _resolve_task(
 
 def runtime_tools() -> tuple[ToolSpec, ...]:
     return (
+        ToolSpec(
+            name="context.boot",
+            title="开工一次拿齐上下文",
+            description=(
+                "开工第一步调它：一次返回 runtime（运行时身份/能力/握手回执）、"
+                "context（项目事实与任务上下文）、memory（三层长期记忆）三份内容，"
+                "替代分别调用 flux_context + context.get + memory.recall 的三次往返。"
+                "带上 task_id 才会打包任务上下文；只需刷新其中一份时仍可单独调用对应工具。"
+            ),
+            input_schema=CONTEXT_BOOT_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=context_boot,
+        ),
         ToolSpec(
             name="flux_context",
             title="获取 Flux 运行时上下文",

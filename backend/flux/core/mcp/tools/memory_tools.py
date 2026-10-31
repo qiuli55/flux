@@ -1,6 +1,7 @@
 """记忆工具：`memory.recall`（只读）与 `memory.remember`（运行中写入用户偏好）。
 
-三层记忆的统一读取口（D3：与 `context.get` / `flux_context` 并存不合并）：
+三层记忆的统一读取口（与 `context.get` / `flux_context` 语义不同、并存不合并；
+开工时 `context.boot` 会把三者一次并行取回）：
 
 - `flux_context` = 我在哪里、我能做什么（运行时身份与能力）；
 - `context.get`  = 这个项目是什么（项目事实，只读现状）；

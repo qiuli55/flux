@@ -34,6 +34,10 @@ TRACE_MAX_MESSAGES = 12
 TRACE_MESSAGE_CHARS = 600
 #: 整段轨迹的字符预算
 TRACE_BUDGET_CHARS = 3000
+#: 续聊（Runtime 已复用会话）时的轨迹收缩口径：历史本来就在会话里，
+#: 这里只为「复用失败退回新会话」留一条安全带，不需要再整段复述。
+TRACE_RESUMED_MAX_MESSAGES = 4
+TRACE_RESUMED_BUDGET_CHARS = 800
 
 _ROLE_LABELS = {"user": "用户", "assistant": "助手"}
 _KIND_LABELS = {
@@ -65,25 +69,34 @@ def build_dialogue_trace(
     budget_chars: int = TRACE_BUDGET_CHARS,
     max_messages: int = TRACE_MAX_MESSAGES,
     exclude_text: str = "",
+    exclude_texts: tuple[str, ...] = (),
+    exclude_kinds: tuple[str, ...] = (),
 ) -> str:
     """按 seq 升序的消息 → 轨迹段；没有可用消息时返回空串。
 
-    `exclude_text` 用于排除本轮追加的用户消息（它已经在「本轮任务」里出现过），
-    避免同一句话在指令里出现两次。
+    `exclude_text` / `exclude_texts` 用于排除本轮指令里已经单独给出的用户消息
+    （本轮任务、原任务背景）：同一句话在指令里出现两次就是白付 token。
+
+    `exclude_kinds` 用于排除「指令里已有独立段落」的消息类型：前情摘要 / 附件 /
+    需求确认这些内容一旦单独成段，再进轨迹就是同一份信息付两遍 token。
     """
-    excluded = " ".join(exclude_text.split())
+    excluded_norms = {
+        " ".join(text.split()) for text in (exclude_text, *exclude_texts) if text.strip()
+    }
+    skipped_kinds = {kind for kind in exclude_kinds if kind}
     lines: list[str] = []
     for message in messages:
-        if str(getattr(message, "kind", "") or "") not in TRACE_MESSAGE_KINDS:
+        kind = str(getattr(message, "kind", "") or "")
+        if kind not in TRACE_MESSAGE_KINDS or kind in skipped_kinds:
             continue
         content = (getattr(message, "content", "") or "").strip()
         if not content:
             continue
         normalized = " ".join(content.split())
         if (
-            excluded
+            excluded_norms
             and str(getattr(message, "role", "") or "") == "user"
-            and normalized == excluded
+            and normalized in excluded_norms
         ):
             continue
         lines.append(f"[{_label(message)}] {_clip(content, TRACE_MESSAGE_CHARS)}")
@@ -114,5 +127,7 @@ __all__ = [
     "TRACE_MAX_MESSAGES",
     "TRACE_MESSAGE_CHARS",
     "TRACE_MESSAGE_KINDS",
+    "TRACE_RESUMED_BUDGET_CHARS",
+    "TRACE_RESUMED_MAX_MESSAGES",
     "build_dialogue_trace",
 ]

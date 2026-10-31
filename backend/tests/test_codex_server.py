@@ -21,6 +21,7 @@ def _session(
     retry_fail_seconds: float = 0.15,
     permission_mode: str = "normal",
     approval_handler: Any = None,
+    context_compact_tokens: int = 0,
 ) -> tuple[CodexAppServerSession, dict]:
     captured: dict[str, list[str]] = {"text": [], "thinking": []}
 
@@ -35,6 +36,8 @@ def _session(
 
     session = CodexAppServerSession(
         SimpleNamespace(popen=SimpleNamespace(poll=lambda: None)),
+    )
+    session.bind(
         cwd="/tmp",
         on_text=on_text,
         on_thinking=on_thinking,
@@ -42,6 +45,7 @@ def _session(
         retry_fail_seconds=retry_fail_seconds,
         permission_mode=permission_mode,
         approval_handler=approval_handler,
+        context_compact_tokens=context_compact_tokens,
     )
     session._pump = _TextPump(on_text, on_thinking)
     return session, captured
@@ -199,3 +203,174 @@ def _capture_write(sink: list[dict]):
         sink.append(payload)
 
     return write
+
+
+# --- 上下文预算（P1-6）：thread 超阈值先压缩再执行 ---
+
+
+def _usage(total: int) -> dict:
+    """`thread/tokenUsage/updated`：total 反映本次请求的上下文规模。"""
+    return {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+            "tokenUsage": {
+                "total": {"totalTokens": total, "inputTokens": total - 5, "outputTokens": 5},
+                "last": {"totalTokens": total, "inputTokens": total - 5, "outputTokens": 5},
+                "modelContextWindow": 258400,
+            }
+        },
+    }
+
+
+def _completed(turn_id: str = "u1") -> dict:
+    return {
+        "method": "turn/completed",
+        "params": {"turn": {"id": turn_id, "status": "completed"}},
+    }
+
+
+async def test_turn_reports_context_tokens() -> None:
+    """每轮都要回报上下文规模，下一轮才有依据判断压缩。"""
+    session, _ = _session()
+    _push(session, _usage(4321), _completed())
+    result = await asyncio.wait_for(session._consume_turn(), timeout=5)
+
+    assert result.status == "completed"
+    assert result.context_tokens == 4321
+
+
+async def test_compaction_turn_is_swallowed_and_reports_new_size() -> None:
+    """压缩是独立的一轮 turn：它的正文/状态不能漏进时间线，只取压缩后的规模。"""
+    session, captured = _session()
+    _push(
+        session,
+        {"method": "turn/started", "params": {"turn": {"id": "c1", "status": "inProgress"}}},
+        {"method": "item/started", "params": {"item": {"type": "contextCompaction", "id": "x"}}},
+        {"method": "item/agentMessage/delta", "params": {"itemId": "cmp", "delta": "压缩摘要"}},
+        _usage(5285),
+        {"method": "item/completed", "params": {"item": {"type": "contextCompaction", "id": "x"}}},
+        _completed("c1"),
+    )
+    after = await asyncio.wait_for(session._consume_compaction(), timeout=5)
+
+    assert after == 5285
+    assert captured["text"] == []
+
+
+async def test_compaction_failure_raises_so_caller_can_continue() -> None:
+    session, _ = _session()
+    _push(
+        session,
+        {"method": "turn/completed", "params": {"turn": {"id": "c1", "status": "failed"}}},
+    )
+    try:
+        await asyncio.wait_for(session._consume_compaction(), timeout=5)
+    except RuntimeError as exc:
+        assert "failed" in str(exc)
+    else:  # pragma: no cover - 必须抛错，调用方才好降级
+        raise AssertionError("压缩失败应当抛错")
+
+
+def _fake_run(
+    *,
+    previous: str,
+    previous_tokens: int,
+    budget: int,
+    compact_calls: list[dict] | None = None,
+    compact_fails: bool = False,
+):
+    """跑一轮 `run()`：只替换 JSON-RPC 收发，通知由 fake 直接塞进队列。"""
+
+    async def _run():
+        session, captured = _session(context_compact_tokens=budget)
+        calls: list[str] = []
+        # 不启真正的 stdout 泵：本用例只验证协议时序
+        session._read_stdout = lambda loop: None  # type: ignore[method-assign]
+
+        async def fake_request(method: str, params: dict, *, timeout: float):
+            calls.append(method)
+            if method == "thread/resume":
+                return {"thread": {"id": "thread-old"}}
+            if method == "thread/start":
+                return {"thread": {"id": "thread-new"}}
+            if method == "thread/compact/start":
+                if compact_calls is not None:
+                    compact_calls.append(params)
+                if compact_fails:
+                    raise RuntimeError("method not found")
+                _push(
+                    session,
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "cmp", "delta": "压缩摘要"},
+                    },
+                    _usage(5000),
+                    _completed("c1"),
+                )
+                return {}
+            if method == "turn/start":
+                _push(
+                    session,
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "m1", "delta": "好的"},
+                    },
+                    _usage(6000),
+                    _completed("u1"),
+                )
+                return {}
+            return {}
+
+        session._request = fake_request  # type: ignore[method-assign]
+        result = await asyncio.wait_for(
+            session.run("继续", thread_id=previous, context_tokens=previous_tokens),
+            timeout=5,
+        )
+        return captured, calls, result
+
+    return _run()
+
+
+async def test_over_budget_resumed_thread_is_compacted_before_the_turn() -> None:
+    compacted: list[dict] = []
+    captured, calls, result = await _fake_run(
+        previous="thread-old", previous_tokens=90000, budget=80000, compact_calls=compacted
+    )
+
+    assert calls == ["initialize", "thread/resume", "thread/compact/start", "turn/start"]
+    assert compacted == [{"threadId": "thread-old"}]
+    # 压缩轮的增量不进时间线，正式回合照常输出
+    assert captured["text"] == ["好的"]
+    assert result.text == "好的"
+    assert result.context_tokens == 6000
+
+
+async def test_within_budget_resumed_thread_is_not_compacted() -> None:
+    _, calls, result = await _fake_run(previous="thread-old", previous_tokens=1000, budget=80000)
+
+    assert calls == ["initialize", "thread/resume", "turn/start"]
+    assert result.context_tokens == 6000
+
+
+async def test_new_thread_ignores_stale_context_size() -> None:
+    """没有可复用的 thread 时上下文是空的：即使记住的旧规模很大也不压缩。"""
+    _, calls, _ = await _fake_run(previous="", previous_tokens=999999, budget=80000)
+
+    assert calls == ["initialize", "thread/start", "turn/start"]
+
+
+async def test_budget_zero_disables_compaction() -> None:
+    _, calls, _ = await _fake_run(previous="thread-old", previous_tokens=999999, budget=0)
+
+    assert calls == ["initialize", "thread/resume", "turn/start"]
+
+
+async def test_compaction_failure_does_not_block_the_turn() -> None:
+    """压缩失败（旧版 codex 没这个方法 / 压缩轮失败）只降级，不拖垮本轮。"""
+    captured, calls, result = await _fake_run(
+        previous="thread-old", previous_tokens=90000, budget=80000, compact_fails=True
+    )
+
+    assert calls == ["initialize", "thread/resume", "thread/compact/start", "turn/start"]
+    assert captured["text"] == ["好的"]
+    assert result.status == "completed"

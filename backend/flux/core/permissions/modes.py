@@ -17,6 +17,7 @@ from flux.enums import Capability, PermissionMode
 #: 与 proposal.* / terminal.execute 一律不在名单里（不靠"Agent 自觉"）。
 PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
     {
+        "context.boot",
         "flux_context",
         "context.get",
         "context.fetch",

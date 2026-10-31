@@ -70,3 +70,32 @@ def test_confirmation_and_attachment_are_included():
     assert "需求确认" in result
     assert "附件" in result
     assert "记账工具" in result
+
+
+def test_exclude_kinds_drops_sections_with_their_own_block():
+    """已单独成段的信息不再进轨迹：同一份内容只付一次 token。"""
+    messages = [
+        _msg("assistant", "summary", "目标：记账工具", seq=1),
+        _msg("assistant", "confirmation", "需求：记账工具", seq=2),
+        _msg("user", "attachments", "a.csv", seq=3),
+        _msg("user", "text", "把主色改成蓝色", seq=4),
+    ]
+    result = build_dialogue_trace(
+        messages, exclude_kinds=("summary", "confirmation", "attachments")
+    )
+    assert "把主色改成蓝色" in result
+    assert "前情摘要" not in result
+    assert "需求确认" not in result
+    assert "附件" not in result
+
+
+def test_exclude_texts_drops_every_injected_user_message():
+    messages = [
+        _msg("user", "text", "帮我设计记账工具", seq=1),
+        _msg("assistant", "text", "方案如下", seq=2),
+        _msg("user", "text", "把主色改成蓝色", seq=3),
+    ]
+    result = build_dialogue_trace(messages, exclude_texts=("帮我设计记账工具", "把主色改成蓝色"))
+    assert "方案如下" in result
+    assert "帮我设计记账工具" not in result
+    assert "把主色改成蓝色" not in result
