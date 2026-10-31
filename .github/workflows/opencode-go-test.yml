@@ -36,8 +36,11 @@ jobs:
           TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           set -euo pipefail
-          curl -sSf https://opencode.ai/api/v2/config \
-            -H "Authorization: Bearer $TOKEN" -o /tmp/config.json
+          code=$(curl -sS -o /tmp/config.json -w '%{http_code}' \
+            https://opencode.ai/console/api/v2/config \
+            -H "Authorization: Bearer $TOKEN")
+          echo "config HTTP $code"
+          if [ "$code" != "200" ]; then head -c 400 /tmp/config.json; echo; exit 1; fi
           jq -r '.providers | to_entries[] | "\(.key)  \(.value.settings.baseURL // "-")"' /tmp/config.json
           base=$(jq -r '[.providers[].settings.baseURL // empty | select(test("/go"))] | first // empty' /tmp/config.json)
           if [ -z "$base" ]; then
