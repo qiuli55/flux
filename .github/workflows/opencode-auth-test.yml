@@ -21,10 +21,18 @@ jobs:
           oidc=$(curl -sSf --oauth2-bearer "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -er .value)
           echo "OIDC token: ${#oidc} chars"
-          token=$(curl -sSf https://opencode.ai/console/auth/oauth/token \
+          resp=$(curl -sS -m 30 -w '\n%{http_code}' https://opencode.ai/console/auth/oauth/token \
             -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
             -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
             -d client_id="$CLIENT_ID" \
-            -d subject_token="$oidc" | jq -er .access_token)
+            -d subject_token="$oidc")
+          code=${resp##*$'\n'}
+          body=${resp%$'\n'*}
+          if [ "$code" != "200" ]; then
+            echo "exchange failed: HTTP $code"
+            echo "$body" | head -c 1200
+            exit 1
+          fi
+          token=$(echo "$body" | jq -er .access_token)
           echo "::add-mask::$token"
           echo "exchange OK, access token length: ${#token}"
