@@ -436,8 +436,11 @@ def _write_script(path: Path, body: str) -> str:
         script = path.with_suffix(".py")
         script.write_text(body, encoding="utf-8", newline="\n")
         wrapper = path.with_suffix(".cmd")
+        # Flux 侧按 UTF-8 写 JSON-RPC（含中文指令）；Windows 的 Python 子进程默认按
+        # locale（cp1252）读 stdin，会因 0x9d 之类未定义字节直接 UnicodeDecodeError。
+        # PYTHONUTF8=1 让假 CLI 与真实 codex（Rust 原生 UTF-8）行为一致。
         wrapper.write_text(
-            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
+            f'@echo off\r\nset PYTHONUTF8=1\r\n"{sys.executable}" "{script}" %*\r\n',
             encoding="utf-8",
             newline="",
         )
