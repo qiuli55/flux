@@ -1,9 +1,18 @@
 package top.qiuli55.flux.mobile.data
 
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class ConnectionConfig(
@@ -452,20 +461,213 @@ data class DesignNode(
     val fontSize: Float? = null,
     val fontWeight: Int? = null,
     val opacity: Float? = null,
-    val radius: Float? = null,
-    val stroke: String? = null,
+    /** 四角圆角：JSON 支持 number / [tl,tr,br,bl] / {tl,tr,br,bl|topLeft...}。 */
+    @Serializable(with = DesignRadiusSerializer::class)
+    val radius: DesignRadius? = null,
+    /** 描边：字符串等价于 1px inside 实线；对象可带 width / align / dash / sides。 */
+    @Serializable(with = DesignStrokeSerializer::class)
+    val stroke: DesignStroke? = null,
+    /** 外阴影（CSS box-shadow）。 */
+    @Serializable(with = DesignShadowSerializer::class)
+    val shadow: DesignShadow? = null,
+    /** 内阴影（CSS inset box-shadow）。 */
+    @Serializable(with = DesignShadowSerializer::class)
+    val insetShadow: DesignShadow? = null,
     val lineHeight: Float? = null,
     val letterSpacing: Float? = null,
+    /** 字族枚举：system / noto-sans-sc / noto-serif-sc / inter / mono（别名由 DesignSpec 归一）。 */
+    val fontFamily: String? = null,
+    /** 文字行数上限 1..64，缺省 3。 */
+    val maxLines: Int? = null,
+    /** 单行放不下时按 0.5 步长缩字号，最低 60%。 */
+    val autoFit: Boolean? = null,
+    val italic: Boolean? = null,
+    val underline: Boolean? = null,
+    val strikethrough: Boolean? = null,
+    /** 文字渐变，语法与 fill 相同（linear-gradient(...)）。 */
+    val textFill: String? = null,
+    val textStroke: DesignTextStroke? = null,
+    val textGlow: DesignTextEffect? = null,
+    val textShadow: DesignTextEffect? = null,
     val align: String? = null,
     val blur: Float? = null,
     val padLeft: Float? = null,
+    /** 绕自身中心旋转的角度（度，顺时针为正），缺省 0。 */
+    val rotation: Float? = null,
     val value: Float? = null,
     val track: String? = null,
     val on: Boolean? = null,
     val items: List<String> = emptyList(),
     val active: Int? = null,
+    /** 隐藏图层不参与渲染（与后端编译层的 `hidden` 剔除一致）。 */
+    val hidden: Boolean? = null,
     val children: List<DesignNode> = emptyList(),
 )
+
+/** 文字描边；align 为 outside 时视觉宽度是 inside 的两倍（webkit 居中描边）。 */
+@Serializable
+data class DesignTextStroke(
+    val width: Float? = null,
+    val color: String? = null,
+    val align: String? = null,
+)
+
+/** 文字发光/投影；glow 用 radius，shadow 用 dx/dy + blur。 */
+@Serializable
+data class DesignTextEffect(
+    val dx: Float? = null,
+    val dy: Float? = null,
+    val blur: Float? = null,
+    val radius: Float? = null,
+    val intensity: Float? = null,
+    val color: String? = null,
+)
+
+/**
+ * 四角圆角，单位与节点一致。
+ *
+ * JSON 有四种写法：`12`、`[12,0,12,0]`、`{"tl":12,...}`、`{"topLeft":12,...}`，
+ * 统一由 [DesignRadiusSerializer] 归一；未出现的角为 null，由 `DesignSpec.cornersOf`
+ * 回落到该类型的默认圆角（与后端 `radius_of` 一致）。
+ */
+@Serializable
+data class DesignRadius(
+    val tl: Float? = null,
+    val tr: Float? = null,
+    val br: Float? = null,
+    val bl: Float? = null,
+) {
+    val uniform: Boolean get() = tl != null && tl == tr && tr == br && br == bl
+
+    companion object {
+        fun all(value: Float): DesignRadius = DesignRadius(value, value, value, value)
+    }
+}
+
+object DesignRadiusSerializer : JsonTransformingSerializer<DesignRadius>(DesignRadius.serializer()) {
+    private val KEYS = listOf("tl", "tr", "br", "bl")
+
+    private fun number(element: JsonElement?): Float? =
+        (element as? JsonPrimitive)?.floatOrNull
+
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        if (element is JsonArray) {
+            return buildJsonObject {
+                KEYS.forEachIndexed { index, key ->
+                    number(element.getOrNull(index))?.let { put(key, JsonPrimitive(it)) }
+                }
+            }
+        }
+        if (element is JsonObject) {
+            fun corner(short: String, long: String): Float? =
+                number(element[short]) ?: number(element[long])
+            return buildJsonObject {
+                corner("tl", "topLeft")?.let { put("tl", JsonPrimitive(it)) }
+                corner("tr", "topRight")?.let { put("tr", JsonPrimitive(it)) }
+                corner("br", "bottomRight")?.let { put("br", JsonPrimitive(it)) }
+                corner("bl", "bottomLeft")?.let { put("bl", JsonPrimitive(it)) }
+            }
+        }
+        val value = number(element) ?: return buildJsonObject { }
+        return buildJsonObject { KEYS.forEach { put(it, JsonPrimitive(value)) } }
+    }
+
+    /** 四角一致时压成数字，保持历史 JSON 形状；否则输出短键对象（未设置的角省略）。 */
+    override fun transformSerialize(element: JsonElement): JsonElement {
+        val obj = element.jsonObject
+        val corners = KEYS.map { number(obj[it]) }
+        if (corners.all { it != null } && corners.distinct().size == 1) {
+            return JsonPrimitive(corners[0] ?: 0f)
+        }
+        return buildJsonObject {
+            KEYS.forEachIndexed { index, key ->
+                corners[index]?.let { put(key, JsonPrimitive(it)) }
+            }
+        }
+    }
+}
+
+/**
+ * 节点描边；字符串形式等价于 `1px inside` 实线（与后端 `compile_stroke` 一致）。
+ * [dash] 非空即虚线，[sides] 非空时只画这些边。
+ */
+@Serializable
+data class DesignStroke(
+    val color: String? = null,
+    val width: Float = 1f,
+    val align: String = "inside",
+    val dash: List<Float> = emptyList(),
+    val sides: List<String> = emptyList(),
+)
+
+object DesignStrokeSerializer : JsonTransformingSerializer<DesignStroke>(DesignStroke.serializer()) {
+    private fun text(element: JsonElement?): String? = (element as? JsonPrimitive)?.content
+
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        if (element !is JsonObject) {
+            val color = text(element) ?: return buildJsonObject { }
+            return buildJsonObject { put("color", JsonPrimitive(color)) }
+        }
+        return buildJsonObject {
+            text(element["color"])?.let { put("color", JsonPrimitive(it)) }
+            (element["width"] as? JsonPrimitive)?.floatOrNull?.let { put("width", JsonPrimitive(it)) }
+            text(element["align"])?.let { put("align", JsonPrimitive(it)) }
+            (element["dash"] as? JsonArray)?.let { array ->
+                put("dash", buildJsonArray {
+                    array.forEach { item ->
+                        (item as? JsonPrimitive)?.floatOrNull?.let { add(JsonPrimitive(it)) }
+                    }
+                })
+            }
+            (element["sides"] as? JsonArray)?.let { array ->
+                put("sides", buildJsonArray {
+                    array.forEach { item -> text(item)?.let { add(JsonPrimitive(it)) } }
+                })
+            }
+        }
+    }
+
+    /** 无额外参数时压回字符串，保持历史 JSON 形状。 */
+    override fun transformSerialize(element: JsonElement): JsonElement {
+        val obj = element.jsonObject
+        val color = text(obj["color"]) ?: return element
+        val width = (obj["width"] as? JsonPrimitive)?.floatOrNull ?: 1f
+        val align = text(obj["align"]) ?: "inside"
+        val plain = width == 1f && align == "inside" &&
+            (obj["dash"] as? JsonArray)?.isEmpty() != false &&
+            (obj["sides"] as? JsonArray)?.isEmpty() != false
+        return if (plain) JsonPrimitive(color) else element
+    }
+}
+
+/** 外阴影 / 内阴影；[color] 缺省时按 `#000000@0.25`，与后端 `compile_shadow` 一致。 */
+@Serializable
+data class DesignShadow(
+    val dx: Float = 0f,
+    val dy: Float = 0f,
+    val blur: Float = 0f,
+    val color: String? = null,
+    val inset: Boolean = false,
+)
+
+object DesignShadowSerializer : JsonTransformingSerializer<DesignShadow>(DesignShadow.serializer()) {
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        // 非对象一律按「透明阴影」处理：解析失败不能把整层节点丢掉。
+        if (element !is JsonObject) {
+            return buildJsonObject { put("color", JsonPrimitive("transparent")) }
+        }
+        return buildJsonObject {
+            listOf("dx", "dy", "blur").forEach { key ->
+                (element[key] as? JsonPrimitive)?.floatOrNull?.let { put(key, JsonPrimitive(it)) }
+            }
+            (element["color"] as? JsonPrimitive)?.let { put("color", JsonPrimitive(it.content)) }
+            (element["inset"] as? JsonPrimitive)?.let {
+                val on = it.content.trim().lowercase() in setOf("true", "1", "yes", "on")
+                put("inset", JsonPrimitive(on))
+            }
+        }
+    }
+}
 
 @Serializable
 data class DesignScreen(

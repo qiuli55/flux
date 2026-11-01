@@ -139,6 +139,7 @@
                         <Grid>
                             <views:DesignCanvas Document="{Binding Document}"
                                                 ScreenIndex="{Binding ActiveScreenIndex}"
+                                                ScreenRequested="OnCanvasScreenRequested"
                                                 IsVisible="{Binding HasDesign}" />
                             <StackPanel Spacing="6" HorizontalAlignment="Center"
                                         VerticalAlignment="Center" IsVisible="{Binding !HasDesign}">

@@ -29,6 +29,64 @@ const CLOSE_ACTION = CloseAction.DoNotRestart;
 type FluxNotify = (method: string, params: Record<string, unknown>) => void;
 
 /**
+ * 内置 TS/JS 扩展自己注册的一批 `_typescript.*` 命令。
+ * 语言服务器会在 executeCommandProvider 里再声明一次，重复注册会让整个客户端启动失败。
+ */
+const RESERVED_COMMAND_PREFIXES = ["_typescript."];
+
+/** 一条连接在握手期间需要共享的状态：initialize 的请求 id 与不能重复注册的命令。 */
+interface TransportContext {
+  initializeId?: string | number;
+  reservedCommands: Set<string>;
+}
+
+/**
+ * 从 initialize 响应里剔除「工作台已经注册过」的命令。
+ *
+ * vscode-languageclient 会在初始化时把服务端声明的命令逐个注册成 VS Code 命令，
+ * 一旦重名就抛 `command 'xxx' already exists`，整个语言客户端随之启动失败。
+ * 内置 TypeScript 扩展与 Flux 连的是不同进程，却共享同一条命令命名空间，
+ * 所以在传输层把冲突项摘掉，剩下的能力照常工作。
+ */
+function sanitizeMessage(message: unknown, context: TransportContext): unknown {
+  if (context.initializeId === undefined) {
+    return message;
+  }
+  const envelope = message as {
+    id?: unknown;
+    result?: { capabilities?: { executeCommandProvider?: { commands?: unknown } } };
+  };
+  if (!envelope || envelope.id !== context.initializeId) {
+    return message;
+  }
+  const capability = envelope.result?.capabilities;
+  const provider = capability?.executeCommandProvider;
+  if (!capability || !provider || !Array.isArray(provider.commands)) {
+    return message;
+  }
+  const declared = provider.commands;
+  const kept = declared.filter(
+    (command) =>
+      typeof command === "string" &&
+      !context.reservedCommands.has(command) &&
+      !RESERVED_COMMAND_PREFIXES.some((prefix) => command.startsWith(prefix))
+  );
+  if (kept.length === declared.length) {
+    return message;
+  }
+  return {
+    ...envelope,
+    result: {
+      ...envelope.result,
+      capabilities: {
+        ...capability,
+        executeCommandProvider: { ...provider, commands: kept },
+      },
+    },
+  };
+}
+
+/**
  * WebSocket 上的 LSP 消息读取器：一帧一条 JSON-RPC。
  * 顺带把网关自定义的 `flux/error`、`flux/serverExited` 通知转成状态回调。
  */
@@ -43,10 +101,15 @@ class WsMessageReader {
 
   constructor(
     private readonly socket: WebSocket,
-    private readonly notify: FluxNotify
+    private readonly notify: FluxNotify,
+    private readonly context: TransportContext
   ) {
-    socket.on("error", (err: Error) => this.onErrorEmitter.fire(err));
-    socket.on("close", () => this.onCloseEmitter.fire());
+    socket.on("error", (err: Error) => {
+      this.onErrorEmitter.fire(err);
+    });
+    socket.on("close", () => {
+      this.onCloseEmitter.fire();
+    });
   }
 
   listen(callback: (message: unknown) => void): void {
@@ -65,7 +128,7 @@ class WsMessageReader {
         this.notify(method, params);
         return;
       }
-      callback(message);
+      callback(sanitizeMessage(message, this.context));
     });
   }
 
@@ -84,9 +147,13 @@ class WsMessageWriter {
   readonly onError = this.onErrorEmitter.event;
   readonly onClose = this.onCloseEmitter.event;
 
-  constructor(private readonly socket: WebSocket) {}
+  constructor(private readonly socket: WebSocket, private readonly context: TransportContext) {}
 
   write(message: unknown): Promise<void> {
+    const request = message as { id?: string | number; method?: string };
+    if (request?.method === "initialize" && request.id !== undefined) {
+      this.context.initializeId = request.id;
+    }
     return new Promise<void>((resolve, reject) => {
       if (this.socket.readyState !== WebSocket.OPEN) {
         const err = new Error("Flux LSP 连接已关闭");
@@ -124,10 +191,12 @@ class WsMessageWriter {
 function openTransport(
   url: string,
   token: string,
-  notify: FluxNotify
+  notify: FluxNotify,
+  reservedCommands: Set<string>
 ): Promise<MessageTransports> {
   return new Promise<MessageTransports>((resolve, reject) => {
     const socket = new WebSocket(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+    const context: TransportContext = { reservedCommands };
     let settled = false;
 
     const fail = (err: Error): void => {
@@ -149,8 +218,8 @@ function openTransport(
       }
       settled = true;
       resolve({
-        reader: new WsMessageReader(socket, notify) as unknown as MessageTransports["reader"],
-        writer: new WsMessageWriter(socket) as unknown as MessageTransports["writer"],
+        reader: new WsMessageReader(socket, notify, context) as unknown as MessageTransports["reader"],
+        writer: new WsMessageWriter(socket, context) as unknown as MessageTransports["writer"],
       });
     });
     socket.once("error", (err: Error) => fail(err));
@@ -179,6 +248,15 @@ class FluxLanguageClient extends LanguageClient {
   protected override createMessageTransports(_encoding: string): Promise<MessageTransports> {
     return this.transportFactory();
   }
+
+  /**
+   * 官方客户端在连接失败时会强制弹「couldn't create connection to server.」，
+   * 文案通用、对用户没有信息量。这里只写进输出通道，真正原因由 LanguageService
+   * 汇总到状态栏与一次性提示里。
+   */
+  override error(message: string, data?: unknown, _showNotification?: boolean | "force"): void {
+    super.error(message, data, false);
+  }
 }
 
 interface Entry {
@@ -189,6 +267,14 @@ interface Entry {
   state: "starting" | "running" | "error";
   error?: string;
   startedAt: number;
+  /** 连续重连次数，用于指数退避；连接成功后清零。 */
+  attempts: number;
+  timer?: NodeJS.Timeout;
+}
+
+/** 重连等待时间：1s、2s、4s…封顶 30s。 */
+function reconnectDelay(attempts: number): number {
+  return Math.min(1000 * 2 ** Math.min(attempts - 1, 5), 30_000);
 }
 
 function lspUrl(baseUrl: string, projectId: string, serverId: string, root: string): string {
@@ -264,6 +350,9 @@ export class LanguageService implements vscode.Disposable {
   dispose(): void {
     this.disposed = true;
     for (const entry of this.entries.values()) {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
       void entry.client.stop();
     }
     this.entries.clear();
@@ -303,10 +392,19 @@ export class LanguageService implements vscode.Disposable {
 
   private readonly starting = new Set<string>();
 
-  private async start(key: string, serverId: string, folder: vscode.WorkspaceFolder): Promise<void> {
+  private async start(
+    key: string,
+    serverId: string,
+    folder: vscode.WorkspaceFolder,
+    attempts = 0
+  ): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     const flux = this.getFluxClient();
     const projectId = await this.projectId(folder.uri.fsPath);
     if (!projectId) {
+      this.entries.delete(key);
       this.warnOnce(
         "no-project",
         "Flux：当前工作区没有匹配的项目，代码智能未启用（可在设置里填 flux.projectId）"
@@ -322,17 +420,20 @@ export class LanguageService implements vscode.Disposable {
       client: undefined as unknown as FluxLanguageClient,
       state: "starting",
       startedAt: Date.now(),
+      attempts,
     };
 
     const notify: FluxNotify = (method, params) => {
       if (method === "flux/error") {
-        state.state = "error";
+        // 后面紧跟着就是 1011 关闭，重连交给 start() 的 catch 处理
         state.error = String(params.message ?? "语言服务器启动失败");
-        this.output.appendLine(`[${serverId}] ${state.error}`);
+        this.output.appendLine(`[${serverId}] 网关错误：${state.error}`);
         this.render();
-      } else {
-        this.output.appendLine(`[${serverId}] 语言服务器已退出`);
+        return;
       }
+      this.output.appendLine(`[${serverId}] 语言服务器进程已退出，准备重连`);
+      void state.client?.stop().catch(() => undefined);
+      this.reconnect(key, state, "语言服务器已退出，正在重连");
     };
 
     const catalog = await this.catalog();
@@ -340,11 +441,18 @@ export class LanguageService implements vscode.Disposable {
       catalog?.servers.find((item) => item.id === serverId)?.languages ??
       catalog?.languages.filter((item) => item.server === serverId).map((item) => item.id) ??
       [];
+    const reservedCommands = await this.reservedCommands();
 
     const client = new FluxLanguageClient(
       `flux-${serverId}`,
       `Flux ${serverId}`,
-      () => openTransport(lspUrl(flux.baseUrl, projectId, serverId, folder.uri.fsPath), flux.authToken, notify),
+      () =>
+        openTransport(
+          lspUrl(flux.baseUrl, projectId, serverId, folder.uri.fsPath),
+          flux.authToken,
+          notify,
+          reservedCommands
+        ),
       {
         documentSelector: languages.map((language) => ({ language, scheme: "file" })),
         workspaceFolder: folder,
@@ -357,9 +465,9 @@ export class LanguageService implements vscode.Disposable {
             return { action: ErrorAction.Continue, handled: true };
           },
           closed: () => {
-            state.state = "error";
-            state.error = "连接已关闭";
-            this.render();
+            if (!this.disposed && this.entries.get(key) === state) {
+              this.reconnect(key, state, "连接已断开，正在重连");
+            }
             return { action: CLOSE_ACTION, handled: true };
           },
         },
@@ -373,15 +481,57 @@ export class LanguageService implements vscode.Disposable {
     try {
       await client.start();
       state.state = client.state === State.Running ? "running" : "starting";
+      state.attempts = 0;
+      state.error = undefined;
       this.output.appendLine(`[${serverId}] 已连接（workspace=${folder.uri.fsPath}）`);
     } catch (err) {
-      state.state = "error";
-      state.error = (err as Error).message;
-      this.output.appendLine(`[${serverId}] 启动失败：${(err as Error).message}`);
-      this.entries.delete(key);
-      this.warnOnce(`start-${serverId}-${folder.uri.fsPath}`, `Flux 语言服务（${serverId}）启动失败：${(err as Error).message}`);
+      const message = (err as Error).message;
+      state.error = state.error ?? message;
+      this.output.appendLine(`[${serverId}] 启动失败：${message}`);
+      this.warnOnce(
+        `start-${serverId}-${folder.uri.fsPath}`,
+        `Flux 语言服务（${serverId}）启动失败：${state.error}`
+      );
+      this.reconnect(key, state, `启动失败：${message}`);
     }
     this.render();
+  }
+
+  /**
+   * 连接断开后的重连：指数退避，连续失败三次后状态栏转为「异常」，
+   * 但后台仍会继续尝试，恢复后自动回到「✓」。
+   */
+  private reconnect(key: string, entry: Entry, reason: string): void {
+    if (this.disposed || this.entries.get(key) !== entry) {
+      return;
+    }
+    entry.attempts += 1;
+    entry.error = reason;
+    entry.state = entry.attempts >= 3 ? "error" : "starting";
+    this.render();
+
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+    const delay = reconnectDelay(entry.attempts);
+    this.output.appendLine(
+      `[${entry.serverId}] ${reason}（第 ${entry.attempts} 次），${Math.round(delay / 1000)} 秒后重试`
+    );
+    const timer = setTimeout(async () => {
+      if (this.disposed || this.entries.get(key) !== entry) {
+        return;
+      }
+      entry.timer = undefined;
+      this.entries.delete(key);
+      this.starting.add(key);
+      try {
+        await this.start(key, entry.serverId, entry.folder, entry.attempts);
+      } finally {
+        this.starting.delete(key);
+      }
+    }, delay);
+    timer.unref?.();
+    entry.timer = timer;
   }
 
   /** 停掉所有客户端与后端会话，再按当前可见文件重新拉起。 */
@@ -391,6 +541,9 @@ export class LanguageService implements vscode.Disposable {
     this.entries.clear();
     this.starting.clear();
     for (const entry of snapshot) {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
       try {
         await entry.client.stop();
       } catch (err) {
@@ -497,6 +650,9 @@ export class LanguageService implements vscode.Disposable {
     }
     if (action === "重启") {
       for (const entry of running) {
+        if (entry.timer) {
+          clearTimeout(entry.timer);
+        }
         this.entries.delete(`${entry.serverId}\u0000${entry.root}`);
         await entry.client.stop().catch(() => undefined);
         await this.getFluxClient().stopIdeSession(entry.serverId, entry.root).catch(() => undefined);
@@ -534,11 +690,24 @@ export class LanguageService implements vscode.Disposable {
       this.statusItem.tooltip = values.map((entry) => `${entry.serverId} · ${entry.root}`).join("\n");
       this.statusItem.backgroundColor = undefined;
     } else {
-      this.statusItem.text = "$(sync~spin) Flux LSP: 连接中";
-      this.statusItem.tooltip = "正在拉起语言服务器…";
+      const retrying = values.some((entry) => entry.attempts > 0);
+      this.statusItem.text = retrying ? "$(sync~spin) Flux LSP: 重连中" : "$(sync~spin) Flux LSP: 连接中";
+      this.statusItem.tooltip = values
+        .filter((entry) => entry.state !== "running")
+        .map((entry) => `${entry.serverId}: ${entry.error ?? "正在拉起…"}`)
+        .join("\n");
       this.statusItem.backgroundColor = undefined;
     }
     this.statusItem.show();
+  }
+
+  /** 工作台已经注册的命令；语言服务器再声明同名命令会让客户端初始化直接失败。 */
+  private async reservedCommands(): Promise<Set<string>> {
+    try {
+      return new Set(await vscode.commands.getCommands(true));
+    } catch {
+      return new Set();
+    }
   }
 
   private async catalog(force = false): Promise<FluxLanguageCatalog | undefined> {

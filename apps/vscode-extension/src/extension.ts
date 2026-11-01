@@ -1,6 +1,16 @@
 import * as vscode from "vscode";
-import { FluxClient } from "./api";
-import { ProjectsProvider, TasksProvider } from "./views";
+import { FluxClient, FluxProject } from "./api";
+import {
+  ProjectNode,
+  ProjectsProvider,
+  TaskNode,
+  TasksProvider,
+  ViewState,
+  projectMatchesWorkspace,
+  projectPath,
+  relativeTime,
+  statusMeta,
+} from "./views";
 import { ChangeContentProvider, ChangeNode, ChangesProvider, openChangeDiff } from "./changes";
 import { TaskPanel } from "./panel";
 import { LanguageService } from "./lsp";
@@ -12,6 +22,10 @@ let projectsProvider: ProjectsProvider;
 let tasksProvider: TasksProvider;
 let changesProvider: ChangesProvider;
 let changesView: vscode.TreeView<ChangeNode>;
+let projectsView: vscode.TreeView<ProjectNode>;
+let tasksView: vscode.TreeView<TaskNode>;
+let healthTimer: NodeJS.Timeout | undefined;
+let connected = false;
 
 function selectedChanges(arg?: ChangeNode | ChangeNode[]): ChangeNode[] {
   if (Array.isArray(arg)) {
@@ -29,6 +43,31 @@ function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration("flux");
 }
 
+function projectId(): string {
+  return config().get<string>("projectId") || "";
+}
+
+/**
+ * 新任务归属哪个项目：显式配置 > 与工作区同路径的项目 > 只有一个项目时用它。
+ * 工作区已经对应某个项目时不再追问，少一次选择。
+ */
+function resolveProjectId(projects: FluxProject[]): string {
+  const configured = projectId();
+  if (configured) {
+    return configured;
+  }
+  const matched = projects.find(projectMatchesWorkspace);
+  if (matched) {
+    return matched.id;
+  }
+  return projects.length === 1 ? projects[0].id : "";
+}
+
+function shortProjectPath(project: FluxProject): string {
+  const value = projectPath(project).replace(/[\\/]+$/, "");
+  return value ? value.split(/[\\/]/).slice(-2).join("/") : "";
+}
+
 function serverUrl(): string {
   // 独立 IDE 由桌面端拉起时，后端端口是随机的，通过环境变量下发
   return process.env.FLUX_SERVER_URL || config().get<string>("serverUrl") || "http://127.0.0.1:8000";
@@ -42,29 +81,190 @@ function clientFromConfig(): FluxClient {
   return new FluxClient(serverUrl(), authToken());
 }
 
+function applyState(view: vscode.TreeView<unknown>, state: ViewState): void {
+  view.message = state.message;
+  view.description = state.description;
+  view.badge =
+    state.count && state.count > 0
+      ? { value: state.count, tooltip: `${state.count} 项` }
+      : undefined;
+}
+
 async function updateStatus(): Promise<void> {
   if (!statusItem) {
     return;
   }
   try {
     await client.health();
-    const url = serverUrl();
-    statusItem.text = `$(pulse) Flux: 已连接`;
-    statusItem.tooltip = url;
+    connected = true;
+    statusItem.text = "$(pulse) Flux";
+    statusItem.tooltip = new vscode.MarkdownString(
+      [
+        "**Flux 已连接**",
+        `\`${serverUrl()}\``,
+        authToken() ? "已携带访问令牌" : "未配置访问令牌",
+        "",
+        "点击打开快捷菜单 · `Ctrl+Alt+F`",
+      ].join("\n\n")
+    );
+    (statusItem.tooltip as vscode.MarkdownString).isTrusted = false;
     statusItem.backgroundColor = undefined;
+    statusItem.color = undefined;
   } catch (err) {
-    statusItem.text = `$(debug-disconnect) Flux: 未连接`;
-    statusItem.tooltip = (err as Error).message;
+    connected = false;
+    statusItem.text = "$(debug-disconnect) Flux 离线";
+    statusItem.tooltip = new vscode.MarkdownString(
+      [
+        "**Flux 未连接**",
+        `\`${serverUrl()}\``,
+        `\`\`\`\n${(err as Error).message}\n\`\`\``,
+        "点击打开快捷菜单，可设置服务器地址或重试",
+      ].join("\n\n")
+    );
+    (statusItem.tooltip as vscode.MarkdownString).isTrusted = false;
     statusItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    statusItem.color = undefined;
   }
+  await vscode.commands.executeCommand("setContext", "flux.connected", connected);
   statusItem.show();
 }
 
+async function pickProject(): Promise<ProjectNode | undefined> {
+  const projects = await projectsProvider.projects();
+  if (!projects.length) {
+    void vscode.window.showInformationMessage("Flux 没有返回任何项目，先检查连接或服务器地址。");
+    return undefined;
+  }
+  const active = projectId();
+  const picked = await vscode.window.showQuickPick(
+    projects.map((project) => {
+      const node = new ProjectNode(project, project.id === active);
+      return {
+        label: `${project.id === active ? "$(folder-active)" : "$(folder)"} ${project.name || project.id}`,
+        description: shortProjectPath(project),
+        detail: project.id === active ? "当前项目" : undefined,
+        node,
+      };
+    }),
+    { placeHolder: "选择要操作的 Flux 项目", matchOnDescription: true }
+  );
+  return picked?.node;
+}
+
+async function selectProject(arg?: ProjectNode | string): Promise<void> {
+  let target: ProjectNode | undefined;
+  if (arg instanceof ProjectNode) {
+    target = arg;
+  } else if (typeof arg === "string") {
+    target = new ProjectNode({ id: arg, name: arg }, arg === projectId());
+  } else {
+    target = await pickProject();
+  }
+  if (!target) {
+    return;
+  }
+  await config().update("projectId", target.project.id, vscode.ConfigurationTarget.Global);
+  projectsProvider.refresh();
+  tasksProvider.refresh();
+  changesProvider.refresh();
+  void vscode.window.setStatusBarMessage(`$(check) 已切换到 ${target.project.name || target.project.id}`, 3000);
+}
+
+async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
+  let taskId = typeof arg === "string" ? arg : arg instanceof TaskNode ? arg.task.id : "";
+  if (!taskId) {
+    const tasks = await tasksProvider.tasks();
+    if (!tasks.length) {
+      void vscode.window.showInformationMessage("当前项目还没有任务，先新建一个。");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      tasks.map((task) => {
+        const meta = statusMeta(task.status);
+        return {
+          label: `$(${meta.icon}) ${task.title || task.description?.slice(0, 60) || task.id}`,
+          description: [meta.label, relativeTime(task.updated_at ?? task.created_at)]
+            .filter(Boolean)
+            .join(" · "),
+          id: task.id,
+        };
+      }),
+      { placeHolder: "选择要打开的任务", matchOnDescription: true }
+    );
+    if (!picked) {
+      return;
+    }
+    taskId = picked.id;
+  }
+  TaskPanel.show(extensionContext, client, taskId);
+}
+
+async function quickMenu(): Promise<void> {
+  const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
+    {
+      label: "$(add) 新建任务",
+      description: "Ctrl+Alt+N",
+      run: () => vscode.commands.executeCommand("flux.newTask"),
+    },
+    {
+      label: "$(comment-discussion) 打开任务面板…",
+      description: "Ctrl+Alt+T",
+      run: () => vscode.commands.executeCommand("flux.openTaskPanel"),
+    },
+    {
+      label: "$(folder) 选择项目…",
+      run: () => vscode.commands.executeCommand("flux.pickProject"),
+    },
+    {
+      label: "$(refresh) 刷新项目 / 任务 / 提案",
+      run: () => vscode.commands.executeCommand("flux.refresh"),
+    },
+    {
+      label: "$(sparkle) 开关 AI 补全",
+      description: "Ctrl+Alt+A",
+      run: () => vscode.commands.executeCommand("flux.completion.toggle"),
+    },
+    {
+      label: "$(pulse) 补全自检",
+      run: () => vscode.commands.executeCommand("flux.completion.selfCheck"),
+    },
+    {
+      label: "$(server-process) 语言服务器…",
+      run: () => vscode.commands.executeCommand("flux.showLanguageServers"),
+    },
+    {
+      label: "$(book) 与 Agent 确认需求文档…",
+      run: () => vscode.commands.executeCommand("flux.spec.draft"),
+    },
+    {
+      label: "$(plug) 设置服务器地址…",
+      description: serverUrl(),
+      run: () => vscode.commands.executeCommand("flux.setServer"),
+    },
+    {
+      label: connected ? "$(debug-disconnect) 检查连接" : "$(debug-disconnect) 重试连接",
+      description: connected ? serverUrl() : "当前离线",
+      run: () => vscode.commands.executeCommand("flux.healthCheck"),
+    },
+    {
+      label: "$(gear) 打开 Flux 设置",
+      run: () => vscode.commands.executeCommand("flux.openSettings"),
+    },
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: connected ? "Flux 已连接 · 选择要执行的操作" : "Flux 离线 · 可以先检查连接",
+  });
+  await picked?.run();
+}
+
+let extensionContext: vscode.ExtensionContext;
+
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   client = clientFromConfig();
-  projectsProvider = new ProjectsProvider(() => client);
-  tasksProvider = new TasksProvider(() => client, () => config().get<string>("projectId") || "");
-  changesProvider = new ChangesProvider(() => client, () => config().get<string>("projectId") || "");
+  projectsProvider = new ProjectsProvider(() => client, () => projectId());
+  tasksProvider = new TasksProvider(() => client, () => projectId());
+  changesProvider = new ChangesProvider(() => client, () => projectId());
 
   const contentProvider = new ChangeContentProvider(() => client);
   context.subscriptions.push(
@@ -72,16 +272,20 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
-  statusItem.command = "flux.healthCheck";
-
+  statusItem.command = "flux.quickMenu";
   context.subscriptions.push(statusItem);
-  context.subscriptions.push(vscode.window.registerTreeDataProvider("fluxProjects", projectsProvider));
-  context.subscriptions.push(vscode.window.registerTreeDataProvider("fluxTasks", tasksProvider));
+
+  projectsView = vscode.window.createTreeView("fluxProjects", { treeDataProvider: projectsProvider });
+  tasksView = vscode.window.createTreeView("fluxTasks", { treeDataProvider: tasksProvider });
   changesView = vscode.window.createTreeView("fluxChanges", {
     treeDataProvider: changesProvider,
     canSelectMany: true,
   });
-  context.subscriptions.push(changesView);
+  context.subscriptions.push(projectsView, tasksView, changesView);
+
+  projectsProvider.setStateListener((state) => applyState(projectsView as vscode.TreeView<unknown>, state));
+  tasksProvider.setStateListener((state) => applyState(tasksView as vscode.TreeView<unknown>, state));
+  changesProvider.setStateListener((state) => applyState(changesView as vscode.TreeView<unknown>, state));
 
   context.subscriptions.push(
     vscode.commands.registerCommand("flux.refresh", () => {
@@ -91,6 +295,13 @@ export function activate(context: vscode.ExtensionContext): void {
       contentProvider.invalidate();
       void updateStatus();
     }),
+    vscode.commands.registerCommand("flux.quickMenu", () => quickMenu()),
+    vscode.commands.registerCommand("flux.pickProject", () => selectProject()),
+    vscode.commands.registerCommand("flux.selectProject", (arg?: ProjectNode | string) => selectProject(arg)),
+    vscode.commands.registerCommand("flux.openTaskPanel", (arg?: TaskNode | string) => openTaskPanel(arg)),
+    vscode.commands.registerCommand("flux.openSettings", () =>
+      vscode.commands.executeCommand("workbench.action.openSettings", "@ext:flux.flux-vscode")
+    ),
     vscode.commands.registerCommand("flux.openChangeDiff", async (changeId: string) => {
       try {
         await openChangeDiff(() => client, changeId);
@@ -146,7 +357,14 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       try {
-        await client.applyChanges(nodes.map((n) => n.change.id));
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `正在应用 ${nodes.length} 条提案（写入磁盘并运行测试）`,
+            cancellable: false,
+          },
+          () => client.applyChanges(nodes.map((n) => n.change.id))
+        );
         contentProvider.invalidate();
         changesProvider.refresh();
         void vscode.window.showInformationMessage(`已应用 ${nodes.length} 条提案`);
@@ -168,9 +386,22 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       try {
-        for (const node of nodes) {
-          await client.rollbackChange(node.change.id);
-        }
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `正在回滚 ${nodes.length} 个变更`,
+            cancellable: false,
+          },
+          async (progress) => {
+            let done = 0;
+            for (const node of nodes) {
+              progress.report({ message: node.change.file_path, increment: 100 / nodes.length });
+              await client.rollbackChange(node.change.id);
+              done += 1;
+            }
+            progress.report({ message: `已完成 ${done}/${nodes.length}` });
+          }
+        );
         contentProvider.invalidate();
         changesProvider.refresh();
       } catch (err) {
@@ -182,19 +413,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("flux.newTask", async () => {
       const projects = await client.projects().catch(() => []);
-      let projectId = config().get<string>("projectId") || "";
-      if (!projectId && projects.length > 1) {
+      let target = resolveProjectId(projects);
+      if (!target && projects.length > 1) {
         const picked = await vscode.window.showQuickPick(
-          projects.map((p) => ({ label: p.name || p.id, description: p.path || p.root_path || "", id: p.id })),
+          projects.map((p) => ({ label: p.name || p.id, description: shortProjectPath(p), id: p.id })),
           { placeHolder: "选择项目" }
         );
         if (!picked) {
           return;
         }
-        projectId = picked.id;
-      }
-      if (!projectId && projects.length === 1) {
-        projectId = projects[0].id;
+        target = picked.id;
       }
       const description = await vscode.window.showInputBox({
         prompt: "描述这个任务要做什么",
@@ -204,16 +432,20 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!description?.trim()) {
         return;
       }
+      // 先问是否立即开始，再建任务：取消这一步不会留下一条没人管的任务
+      const startNow = await vscode.window.showQuickPick(
+        [
+          { label: "$(play) 创建并立即开始", value: true },
+          { label: "$(clock) 仅创建，稍后手动开始", value: false },
+        ],
+        { placeHolder: "是否立即启动任务？" }
+      );
+      if (!startNow) {
+        return;
+      }
       try {
-        const task = await client.createTask({ description: description.trim(), project_id: projectId || undefined });
-        const startNow = await vscode.window.showQuickPick(
-          [
-            { label: "创建并立即开始", value: true },
-            { label: "仅创建，稍后手动开始", value: false },
-          ],
-          { placeHolder: "是否立即启动任务？" }
-        );
-        if (startNow?.value) {
+        const task = await client.createTask({ description: description.trim(), project_id: target || undefined });
+        if (startNow.value) {
           await client.startTask(task.id);
         }
         tasksProvider.refresh();
@@ -232,15 +464,20 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!goal?.trim()) {
         return;
       }
-      let projectId = config().get<string>("projectId") || "";
-      if (!projectId) {
-        const projects = await client.projects().catch(() => []);
-        if (projects.length === 1) {
-          projectId = projects[0].id;
+      const projects = await client.projects().catch(() => []);
+      let target = resolveProjectId(projects);
+      if (!target) {
+        const picked = await vscode.window.showQuickPick(
+          projects.map((p) => ({ label: p.name || p.id, description: shortProjectPath(p), id: p.id })),
+          { placeHolder: "这个需求属于哪个项目？" }
+        );
+        if (!picked) {
+          return;
         }
+        target = picked.id;
       }
+      // 首行直接写目标：任务标题由后端取描述首行，标题里不该出现 Markdown 记号
       const description = [
-        "## 目标",
         goal.trim(),
         "",
         "## 范围",
@@ -253,7 +490,7 @@ export function activate(context: vscode.ExtensionContext): void {
         "- （明确排除的项）",
       ].join("\n");
       try {
-        const task = await client.createTask({ description, project_id: projectId || undefined });
+        const task = await client.createTask({ description, project_id: target || undefined });
         tasksProvider.refresh();
         TaskPanel.show(context, client, task.id);
       } catch (err) {
@@ -264,10 +501,13 @@ export function activate(context: vscode.ExtensionContext): void {
       const value = await vscode.window.showInputBox({
         prompt: "Flux 后端地址",
         value: config().get<string>("serverUrl") || "http://127.0.0.1:8000",
+        placeHolder: "http://127.0.0.1:8000",
         ignoreFocusOut: true,
+        validateInput: (input) => (/^https?:\/\/.+/i.test(input.trim()) ? undefined : "请填写 http(s):// 开头的地址"),
       });
       if (value?.trim()) {
         await config().update("serverUrl", value.trim(), vscode.ConfigurationTarget.Global);
+        void updateStatus();
       }
     }),
     vscode.commands.registerCommand("flux.healthCheck", async () => {
@@ -275,10 +515,23 @@ export function activate(context: vscode.ExtensionContext): void {
         const started = Date.now();
         const health = await client.health();
         await updateStatus();
-        void vscode.window.showInformationMessage(`Flux 连接正常（${Date.now() - started}ms）: ${JSON.stringify(health).slice(0, 120)}`);
+        projectsProvider.refresh();
+        tasksProvider.refresh();
+        changesProvider.refresh();
+        void vscode.window.showInformationMessage(
+          `Flux 连接正常（${Date.now() - started}ms）: ${JSON.stringify(health).slice(0, 120)}`
+        );
       } catch (err) {
         await updateStatus();
-        void vscode.window.showErrorMessage(`Flux 连接失败：${(err as Error).message}`);
+        void vscode.window.showErrorMessage(`Flux 连接失败：${(err as Error).message}`, "设置地址", "重试").then(
+          async (choice) => {
+            if (choice === "设置地址") {
+              await vscode.commands.executeCommand("flux.setServer");
+            } else if (choice === "重试") {
+              await vscode.commands.executeCommand("flux.refresh");
+            }
+          }
+        );
       }
     })
   );
@@ -292,12 +545,22 @@ export function activate(context: vscode.ExtensionContext): void {
         changesProvider.refresh();
         void updateStatus();
       }
+      if (event.affectsConfiguration("flux.projectId")) {
+        projectsProvider.refresh();
+        tasksProvider.refresh();
+        changesProvider.refresh();
+      }
     })
   );
 
   void updateStatus();
   projectsProvider.refresh();
   tasksProvider.refresh();
+
+  healthTimer = setInterval(() => {
+    void updateStatus();
+  }, 60_000);
+  context.subscriptions.push({ dispose: () => healthTimer && clearInterval(healthTimer) });
 
   // 代码智能：补全 / 悬停 / 跳转 / 重命名 / 诊断 / 语义高亮，全部走 Flux 后端的 LSP 网关
   const languageService = new LanguageService(() => client);

@@ -59,10 +59,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -115,6 +120,74 @@ fun Modifier.shellBackground(): Modifier = drawBehind {
 
 // ------------------------------------------------------------------ 面板
 
+/**
+ * 内发光：光从边缘往里面晕开，而不是投影到外面。
+ *
+ * 深色底用 [BlendMode.Plus] 叠亮；浅色底加亮只会洗白，所以改成直接叠加很淡的青，
+ * 视觉上同样是「面板内部被点亮」。最后补一圈 1dp 的高光描边勾出边缘。
+ */
+fun Modifier.innerGlow(
+    shape: Shape,
+    color: Color = V2Colors.cyan400,
+    alpha: Float = .22f,
+): Modifier = drawWithContent {
+    drawContent()
+    val w = size.width
+    val h = size.height
+    if (w <= 0f || h <= 0f) return@drawWithContent
+    val blend = if (V2Colors.isDark) BlendMode.Plus else BlendMode.SrcOver
+    val strength = if (V2Colors.isDark) alpha else alpha * .8f
+    // 左上主光
+    drawRect(
+        brush = Brush.radialGradient(
+            colors = listOf(color.copy(alpha = strength), Color.Transparent),
+            center = Offset(w * .12f, 0f),
+            radius = maxOf(w, h) * .95f,
+        ),
+        blendMode = blend,
+    )
+    // 右下补一层紫，冷暖对冲后更像「内部发光的玻璃」
+    drawRect(
+        brush = Brush.radialGradient(
+            colors = listOf(Color(0xFF8B5CF6).copy(alpha = strength * .7f), Color.Transparent),
+            center = Offset(w, h),
+            radius = maxOf(w, h) * 1.05f,
+        ),
+        blendMode = blend,
+    )
+    // 贴边的内描边：让边缘比中间亮一点点
+    val rimBrush = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = strength * .9f),
+            color.copy(alpha = strength * .5f),
+            Color.Transparent,
+        ),
+        start = Offset(0f, 0f),
+        end = Offset(w, h),
+    )
+    val rim = Stroke(width = 1.2.dp.toPx())
+    when (val outline = shape.createOutline(size, layoutDirection, this)) {
+        is Outline.Rounded -> {
+            val rect = outline.roundRect
+            drawRoundRect(
+                brush = rimBrush,
+                topLeft = Offset(rect.left, rect.top),
+                size = Size(rect.right - rect.left, rect.bottom - rect.top),
+                cornerRadius = rect.topLeftCornerRadius,
+                style = rim,
+                blendMode = blend,
+            )
+        }
+        is Outline.Generic -> drawPath(
+            path = outline.path,
+            brush = rimBrush,
+            style = rim,
+            blendMode = blend,
+        )
+        else -> Unit
+    }
+}
+
 /** demo 的 `.glass`：白色渐变 + 发丝线 + 极轻阴影。 */
 @Composable
 fun GlassCard(
@@ -132,6 +205,7 @@ fun GlassCard(
                     listOf(V2Colors.surface(.86f), V2Colors.surface(.64f)),
                 ),
             )
+            .innerGlow(shape)
             .border(1.dp, V2Colors.line, shape)
             .padding(contentPadding),
         content = content,
@@ -321,7 +395,12 @@ fun V2ComposerActionButton(
         modifier = modifier
             .size(size)
             .clip(shape)
-            .background(background)
+            .background(
+                Brush.linearGradient(
+                    listOf(background, background.copy(alpha = .74f)),
+                ),
+            )
+            .innerGlow(shape, color = Color.White, alpha = .50f)
             .v2Pressable(
                 enabled = if (running) stopEnabled && !stopping else sendEnabled,
                 pressScale = .94f,

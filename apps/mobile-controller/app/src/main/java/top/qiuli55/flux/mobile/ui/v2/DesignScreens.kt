@@ -61,6 +61,7 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Redo
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Tune
@@ -84,6 +85,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -113,7 +115,16 @@ import top.qiuli55.flux.mobile.data.DesignNode
 import top.qiuli55.flux.mobile.data.DesignPreview
 import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
+import top.qiuli55.flux.mobile.ui.v2.design.DesignHandle
+import top.qiuli55.flux.mobile.ui.v2.design.DesignInteract
+import top.qiuli55.flux.mobile.ui.v2.design.DesignPainter
+import top.qiuli55.flux.mobile.ui.v2.design.DesignResolver
+import top.qiuli55.flux.mobile.ui.v2.design.DesignSpec
+import top.qiuli55.flux.mobile.ui.v2.design.NodeFrame
+import top.qiuli55.flux.mobile.ui.v2.design.ResolvedNode
+import top.qiuli55.flux.mobile.ui.v2.design.SnapResult
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -576,12 +587,12 @@ private fun DesignPreviewThumb(
     summary: top.qiuli55.flux.mobile.data.DesignSummary,
 ) {
     val preview = summary.preview
-    val density = LocalDensity.current.density
     val measurer = rememberTextMeasurer()
+    val resolver = rememberDesignResolver(measurer)
     Box(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(designColor(summary.bg, V2Colors.shellTop))
+            .background(designColor(summary.bg, DesignSpec.SHELL_TOP))
             .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
     ) {
@@ -596,17 +607,15 @@ private fun DesignPreviewThumb(
                 )
                 translate(origin.x, origin.y) {
                     scale(scale, scale, pivot = Offset.Zero) {
-                        drawRect(
-                            color = designColor(preview.bg ?: summary.bg, V2Colors.shellTop),
-                            size = Size(preview.w, preview.h),
-                        )
-                        drawDesignNodes(
-                            nodes = preview.nodes,
-                            origin = Offset.Zero,
-                            parentAlpha = 1f,
-                            measurer = measurer,
-                            density = density,
-                        )
+                        with(DesignPainter) {
+                            drawScreen(
+                                nodes = resolver.resolve(preview.nodes),
+                                width = preview.w,
+                                height = preview.h,
+                                bg = designColor(preview.bg ?: summary.bg, DesignSpec.SHELL_TOP),
+                                device = false,
+                            )
+                        }
                     }
                 }
             }
@@ -621,12 +630,12 @@ internal fun DesignMiniPreview(
     preview: DesignPreview?,
     bg: String?,
 ) {
-    val density = LocalDensity.current.density
     val measurer = rememberTextMeasurer()
+    val resolver = rememberDesignResolver(measurer)
     Box(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(designColor(bg ?: preview?.bg, V2Colors.shellTop))
+            .background(designColor(bg ?: preview?.bg, DesignSpec.SHELL_TOP))
             .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
     ) {
@@ -641,17 +650,15 @@ internal fun DesignMiniPreview(
                 )
                 translate(origin.x, origin.y) {
                     scale(scale, scale, pivot = Offset.Zero) {
-                        drawRect(
-                            color = designColor(preview.bg ?: bg, V2Colors.shellTop),
-                            size = Size(preview.w, preview.h),
-                        )
-                        drawDesignNodes(
-                            nodes = preview.nodes,
-                            origin = Offset.Zero,
-                            parentAlpha = 1f,
-                            measurer = measurer,
-                            density = density,
-                        )
+                        with(DesignPainter) {
+                            drawScreen(
+                                nodes = resolver.resolve(preview.nodes),
+                                width = preview.w,
+                                height = preview.h,
+                                bg = designColor(preview.bg ?: bg, DesignSpec.SHELL_TOP),
+                                device = false,
+                            )
+                        }
                     }
                 }
             }
@@ -746,8 +753,12 @@ fun DesignCanvasScreen(
     onToggleMultiSelect: () -> Unit,
     onSetAiScope: (String) -> Unit,
     onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onBeginDrag: (Set<String>) -> Unit,
     onDrag: (Set<String>, Float, Float) -> Unit,
+    onSelectNodes: (Set<String>) -> Unit,
+    onTransformNode: (String, Float, Float, Float, Float) -> Unit,
+    onRotateNode: (String, Float) -> Unit,
     onMoveLayer: (String, Boolean) -> Unit,
     onDeleteLayer: (String) -> Unit,
     onDuplicateLayer: (String) -> Unit,
@@ -766,7 +777,6 @@ fun DesignCanvasScreen(
 ) {
     val document = state.document
     val screen = state.screen
-    val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
 
     var zoom by remember(document?.id, state.screenIndex) { mutableFloatStateOf(1f) }
@@ -903,26 +913,49 @@ fun DesignCanvasScreen(
 
                 DesignFlash(state.error ?: state.notice, state.error != null, onDismissMessages)
 
+                // 解析一次、绘制与命中测试共用；节点不变时不会重新量字（Resolver 内部还有 LRU）
+                val resolver = rememberDesignResolver(textMeasurer)
+                val resolved = remember(screen.id, screen.nodes) { resolver.resolve(screen.nodes) }
+                val boardBg = designColor(document.bg, DesignSpec.SHELL_TOP)
+
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     // 手势回调与数据都用 rememberUpdatedState 取最新值：画布自绘不重组节点，
                     // 拖动过程中 document 每帧都在变，闭包里必须读到新节点。
                     val latestScreen = rememberUpdatedState(screen)
+                    val latestResolved = rememberUpdatedState(resolved)
                     val latestSelection = rememberUpdatedState(state.selectedNodeIds)
                     val latestMulti = rememberUpdatedState(state.multiSelect)
                     val latestSelect = rememberUpdatedState(onSelectNode)
+                    val latestSelectNodes = rememberUpdatedState(onSelectNodes)
                     val latestBeginDrag = rememberUpdatedState(onBeginDrag)
                     val latestDrag = rememberUpdatedState(onDrag)
+                    val latestTransform = rememberUpdatedState(onTransformNode)
+                    val latestRotate = rememberUpdatedState(onRotateNode)
                     val haptics = LocalV2Haptics.current
+
+                    // 吸附参考线 / 框选矩形：只在手势期间有值，绘制时叠加在画板之上
+                    var guides by remember(document.id, state.screenIndex) {
+                        mutableStateOf(SnapResult(0f, 0f, emptyList(), emptyList()))
+                    }
+                    var marquee by remember(document.id, state.screenIndex) {
+                        mutableStateOf<Rect?>(null)
+                    }
 
                     Canvas(
                         Modifier
                             .fillMaxSize()
+                            .padding(bottom = 76.dp)
                             .onSizeChanged { viewSize = it.toSize() }
                             .pointerInput(document.id, state.screenIndex) {
+                                // 双击复位：两次点按的间隔与位移都够小
+                                var lastTapTime = 0L
+                                var lastTapX = 0f
+                                var lastTapY = 0f
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     val drawScreen = latestScreen.value
                                     val view = viewSize
+                                    if (view.width <= 0f || view.height <= 0f) return@awaitEachGesture
                                     val slop = viewConfiguration.touchSlop
 
                                     fun currentScale(): Float = min(
@@ -935,23 +968,43 @@ fun DesignCanvasScreen(
                                         (view.height - drawScreen.h * scale) / 2f + pan.y,
                                     )
 
-                                    val scaleAtDown = currentScale()
-                                    val originAtDown = currentOrigin(scaleAtDown)
-                                    val hit = hitTestNode(
-                                        drawScreen.nodes,
-                                        Offset(
-                                            (down.position.x - originAtDown.x) / scaleAtDown,
-                                            (down.position.y - originAtDown.y) / scaleAtDown,
-                                        ),
-                                        Offset.Zero,
-                                        Float.MAX_VALUE,
-                                    )
+                                    fun toDesign(position: Offset, scale: Float): Offset {
+                                        val origin = currentOrigin(scale)
+                                        return Offset(
+                                            (position.x - origin.x) / scale,
+                                            (position.y - origin.y) / scale,
+                                        )
+                                    }
 
-                                    var mode = 0 // 0 未定；1 拖图层；2 平移画布；3 双指缩放
+                                    val scaleAtDown = currentScale()
+                                    val downDesign = toDesign(down.position, scaleAtDown)
+                                    // 热区按缩放反算，保证屏幕上永远是 44dp 的手指友好尺寸
+                                    val hotRadius = 22.dp.toPx() / scaleAtDown
+                                    val rotateOffset = 26.dp.toPx() / scaleAtDown
+                                    val snapThreshold = 6.dp.toPx() / scaleAtDown
+
+                                    // 手柄只在单选时出现与响应
+                                    val selectedNode = latestSelection.value.singleOrNull()
+                                        ?.let { findResolved(latestResolved.value, it) }
+                                    val handleDown = selectedNode?.let {
+                                        DesignInteract.hitHandle(it, downDesign, hotRadius, rotateOffset)
+                                    }
+                                    val startFrame = selectedNode?.let {
+                                        NodeFrame(it.x, it.y, it.w, it.h)
+                                    }
+                                    val hit = DesignInteract.hitTest(latestResolved.value, downDesign)
+
+                                    // 0 未定；1 拖图层；2 平移画布；3 双指缩放；4 手柄缩放；5 旋转；6 框选
+                                    var mode = 0
                                     var dragIds: Set<String> = emptySet()
+                                    var dragStartRect: Rect? = null
+                                    val dragTargets = mutableListOf<Rect>()
+                                    var appliedX = 0f
+                                    var appliedY = 0f
+                                    var rotateBase = selectedNode?.rotation ?: 0f
                                     var lastX = down.position.x
                                     var lastY = down.position.y
-                                    var multiTouch = false
+                                    var marqueeStart = downDesign
 
                                     while (true) {
                                         val event = awaitPointerEvent()
@@ -960,7 +1013,6 @@ fun DesignCanvasScreen(
 
                                         if (pressed.size > 1) {
                                             // 双指：缩放 + 平移，按双指中点做锚点
-                                            multiTouch = true
                                             mode = 3
                                             val next = (zoom * event.calculateZoom()).coerceIn(.6f, 4f)
                                             val ratio = next / zoom
@@ -985,33 +1037,142 @@ fun DesignCanvasScreen(
                                                 change.position.y - down.position.y,
                                             )
                                             if (distance <= slop) continue
-                                            // 只有按住「已选中」的图层才移动图层，其余一律平移画布：
-                                            // 组件常铺满画板，若按下就拖容易误移动，想平移画布却动了组件。
-                                            val selected = latestSelection.value
-                                            val dragHit = hit != null && hit.id in selected
-                                            mode = if (dragHit) 1 else 2
-                                            if (mode == 1) {
-                                                dragIds = if (latestMulti.value) selected else setOfNotNull(hit?.id)
-                                                latestBeginDrag.value(dragIds)
-                                                haptics?.play(V2HapticLevel.TICK)
+                                            // 命中优先级：手柄 > 已选中图层拖动 > 空白（多选时框选，否则平移）
+                                            mode = when {
+                                                handleDown == DesignHandle.Rotate -> 5
+                                                handleDown != null && selectedNode != null -> 4
+                                                hit != null && hit.id in latestSelection.value -> 1
+                                                hit == null && latestMulti.value -> 6
+                                                else -> 2
+                                            }
+                                            when (mode) {
+                                                1 -> {
+                                                    val selected = latestSelection.value
+                                                    dragIds = if (latestMulti.value) {
+                                                        selected
+                                                    } else {
+                                                        setOfNotNull(hit?.id)
+                                                    }
+                                                    latestBeginDrag.value(dragIds)
+                                                    dragStartRect = unionRect(latestResolved.value, dragIds)
+                                                    dragTargets.clear()
+                                                    dragTargets += flattenResolved(latestResolved.value)
+                                                        .filter {
+                                                            it.id !in dragIds &&
+                                                                it.alpha > .05f && it.type != "decor"
+                                                        }
+                                                        .map { Rect(it.x, it.y, it.right, it.bottom) }
+                                                    haptics?.play(V2HapticLevel.TICK)
+                                                }
+                                                4, 5 -> {
+                                                    latestBeginDrag.value(setOfNotNull(selectedNode?.id))
+                                                    rotateBase = selectedNode?.rotation ?: 0f
+                                                    haptics?.play(V2HapticLevel.TICK)
+                                                }
+                                                6 -> marqueeStart = toDesign(down.position, scaleAtDown)
                                             }
                                         }
 
-                                        if (mode == 1) {
-                                            val scale = currentScale()
-                                            if (scale > 0f) latestDrag.value(dragIds, dx / scale, dy / scale)
-                                        } else if (!multiTouch) {
-                                            pan += Offset(dx, dy)
+                                        when (mode) {
+                                            1 -> {
+                                                val start = dragStartRect
+                                                if (start != null && dragIds.isNotEmpty() && scaleAtDown > 0f) {
+                                                    val pointer = toDesign(change.position, scaleAtDown)
+                                                    val totalX = pointer.x - downDesign.x
+                                                    val totalY = pointer.y - downDesign.y
+                                                    val moved = Rect(
+                                                        start.left + totalX,
+                                                        start.top + totalY,
+                                                        start.right + totalX,
+                                                        start.bottom + totalY,
+                                                    )
+                                                    val snap = DesignInteract.snapMove(
+                                                        moved, dragTargets, snapThreshold,
+                                                    )
+                                                    val targetX = totalX + snap.dx
+                                                    val targetY = totalY + snap.dy
+                                                    val stepX = targetX - appliedX
+                                                    val stepY = targetY - appliedY
+                                                    appliedX = targetX
+                                                    appliedY = targetY
+                                                    if (stepX != 0f || stepY != 0f) {
+                                                        latestDrag.value(dragIds, stepX, stepY)
+                                                    }
+                                                    guides = snap
+                                                }
+                                            }
+                                            2 -> pan += Offset(dx, dy)
+                                            4 -> {
+                                                val frame = startFrame
+                                                val handle = handleDown
+                                                if (selectedNode != null && frame != null &&
+                                                    handle != null && scaleAtDown > 0f
+                                                ) {
+                                                    val pointer = toDesign(change.position, scaleAtDown)
+                                                    val next = DesignInteract.resizeFrame(
+                                                        frame, selectedNode.rotation, handle, pointer,
+                                                    )
+                                                    latestTransform.value(
+                                                        selectedNode.id, next.x, next.y, next.w, next.h,
+                                                    )
+                                                }
+                                            }
+                                            5 -> {
+                                                if (selectedNode != null && scaleAtDown > 0f) {
+                                                    val pointer = toDesign(change.position, scaleAtDown)
+                                                    val delta = DesignInteract.rotationDegrees(
+                                                        selectedNode.center, downDesign, pointer,
+                                                    )
+                                                    latestRotate.value(
+                                                        selectedNode.id,
+                                                        DesignInteract.snapRotation(rotateBase + delta),
+                                                    )
+                                                }
+                                            }
+                                            6 -> {
+                                                val pointer = toDesign(change.position, scaleAtDown)
+                                                val rect = Rect(
+                                                    min(marqueeStart.x, pointer.x),
+                                                    min(marqueeStart.y, pointer.y),
+                                                    max(marqueeStart.x, pointer.x),
+                                                    max(marqueeStart.y, pointer.y),
+                                                )
+                                                marquee = rect
+                                                latestSelectNodes.value(
+                                                    DesignInteract.marqueeSelection(
+                                                        latestResolved.value, rect,
+                                                    ),
+                                                )
+                                            }
                                         }
                                         change.consume()
                                     }
 
-                                    // 没拖动 = 点按：命中就选中，空白处取消选择
-                                    if (mode == 0) latestSelect.value(hit?.id)
+                                    if (mode == 0) {
+                                        // 没拖动 = 点按：短时间内两次点按视为双击，回到适配视图
+                                        val now = down.uptimeMillis
+                                        val doubleTap = now - lastTapTime < 320L && hypot(
+                                            down.position.x - lastTapX,
+                                            down.position.y - lastTapY,
+                                        ) < 40f
+                                        lastTapTime = now
+                                        lastTapX = down.position.x
+                                        lastTapY = down.position.y
+                                        if (doubleTap) {
+                                            zoom = 1f
+                                            pan = Offset.Zero
+                                        } else {
+                                            latestSelect.value(hit?.id)
+                                        }
+                                    }
+                                    guides = SnapResult(0f, 0f, emptyList(), emptyList())
+                                    marquee = null
                                 }
                             },
                     ) {
-                        drawDotGrid()
+                        with(DesignPainter) {
+                            drawDotGrid(V2Colors.ink(.045f), step = 22.dp.toPx())
+                        }
                         val scale = min(size.width / screen.w, size.height / screen.h) * .92f * zoom
                         val origin = Offset(
                             (size.width - screen.w * scale) / 2f + pan.x,
@@ -1019,19 +1180,35 @@ fun DesignCanvasScreen(
                         )
                         translate(origin.x, origin.y) {
                             scale(scale, scale, pivot = Offset.Zero) {
-                                drawRect(
-                                    color = designColor(document.bg, V2Colors.shellTop),
-                                    size = Size(screen.w, screen.h),
-                                )
-                                drawDesignNodes(
-                                    nodes = screen.nodes,
-                                    origin = Offset.Zero,
-                                    parentAlpha = 1f,
-                                    measurer = textMeasurer,
-                                    density = density.density,
-                                )
-                                state.selectedNodes.forEach { selected ->
-                                    drawNodeSelection(screen.nodes, selected.id)
+                                with(DesignPainter) {
+                                    drawScreen(
+                                        nodes = resolved,
+                                        width = screen.w,
+                                        height = screen.h,
+                                        bg = boardBg,
+                                        device = true,
+                                    )
+                                }
+                                with(DesignInteract) {
+                                    val strokeWidth = 1.5.dp.toPx() / scale
+                                    state.selectedNodes.forEach { selected ->
+                                        val node = findResolved(resolved, selected.id)
+                                            ?: return@forEach
+                                        drawSelection(
+                                            node = node,
+                                            strokeWidth = strokeWidth,
+                                            handleRadius = 4.5.dp.toPx() / scale,
+                                            rotateOffset = 26.dp.toPx() / scale,
+                                            handles = state.selectedNodes.size == 1,
+                                        )
+                                    }
+                                    val snap = guides
+                                    if (snap.vertical.isNotEmpty() || snap.horizontal.isNotEmpty()) {
+                                        drawSnapGuides(
+                                            snap.vertical, snap.horizontal, screen.w, screen.h,
+                                        )
+                                    }
+                                    marquee?.let { drawMarquee(it, strokeWidth) }
                                 }
                             }
                         }
@@ -1108,17 +1285,35 @@ fun DesignCanvasScreen(
                         Modifier.align(Alignment.TopEnd).padding(14.dp),
                         horizontalAlignment = Alignment.End,
                     ) {
-                        // 撤销放在画布右上角：手指正好在画布附近，改错了能立刻退回
-                        if (state.canUndo) {
-                            RoundIconButton(
-                                Icons.Outlined.Undo,
-                                onClick = onUndo,
-                                size = 30.dp,
-                                iconSize = 13.dp,
-                                background = V2Colors.accent.copy(alpha = .10f),
-                                tint = V2Colors.cyan800,
-                                contentDescription = "撤销上一步",
-                            )
+                        // 撤销 / 重做放在画布右上角：手指正好在画布附近，改错了能立刻退回
+                        if (state.canUndo || state.canRedo) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (state.canUndo) {
+                                    RoundIconButton(
+                                        Icons.Outlined.Undo,
+                                        onClick = onUndo,
+                                        size = 30.dp,
+                                        iconSize = 13.dp,
+                                        background = V2Colors.accent.copy(alpha = .10f),
+                                        tint = V2Colors.cyan800,
+                                        contentDescription = "撤销上一步",
+                                    )
+                                }
+                                if (state.canRedo) {
+                                    RoundIconButton(
+                                        Icons.Outlined.Redo,
+                                        onClick = onRedo,
+                                        size = 30.dp,
+                                        iconSize = 13.dp,
+                                        background = V2Colors.accent.copy(alpha = .10f),
+                                        tint = V2Colors.cyan800,
+                                        contentDescription = "重做",
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(6.dp))
                         }
                         Label("${(zoom * 100).roundToInt()}%", 9.5f, V2Colors.ink(.30f), mono = true)
@@ -1224,8 +1419,8 @@ private fun DesignDemoPreview(
     val screens = document.screens
     if (screens.isEmpty()) return
     val screen = screens[index.coerceIn(0, screens.lastIndex)]
-    val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
+    val resolver = rememberDesignResolver(textMeasurer)
     val haptics = LocalV2Haptics.current
 
     // 演示交互只改画面，不写回设计稿：滑杆值 / 开关态 / 导航选中项各存一份
@@ -1285,6 +1480,13 @@ private fun DesignDemoPreview(
                 val canvasW = (screen.w * scale).dp
                 val canvasH = (screen.h * scale).dp
                 val radius = RoundedCornerShape(26.dp)
+
+                // 演示态（滑杆 / 开关 / 导航）先叠回节点树，再解析成可直接绘制的节点
+                val demoNodes = remember(screen.id, screen.nodes, sliders, switches, navs) {
+                    screen.nodes.map { it.withDemoState(sliders, switches, navs) }
+                }
+                val demoResolved = remember(demoNodes) { resolver.resolve(demoNodes) }
+                val demoBg = designColor(document.bg, DesignSpec.SHELL_TOP)
 
                 Canvas(
                     Modifier
@@ -1361,16 +1563,17 @@ private fun DesignDemoPreview(
                             }
                         },
                 ) {
-                    drawRect(designColor(document.bg, V2Colors.shellTop))
                     val scalePx = size.width / screen.w
                     scale(scalePx, scalePx, pivot = Offset.Zero) {
-                        drawDesignNodes(
-                            nodes = screen.nodes.map { it.withDemoState(sliders, switches, navs) },
-                            origin = Offset.Zero,
-                            parentAlpha = 1f,
-                            measurer = textMeasurer,
-                            density = density.density,
-                        )
+                        with(DesignPainter) {
+                            drawScreen(
+                                nodes = demoResolved,
+                                width = screen.w,
+                                height = screen.h,
+                                bg = demoBg,
+                                device = false,
+                            )
+                        }
                     }
                 }
 
@@ -1602,7 +1805,9 @@ private fun DesignEditSheet(
     onSetOpacity: (Float) -> Unit,
 ) {
     var text by remember(node.id) { mutableStateOf(node.text.orEmpty()) }
-    var radius by remember(node.id) { mutableFloatStateOf(node.radius ?: defaultRadius(node)) }
+    var radius by remember(node.id) {
+        mutableFloatStateOf(node.radius?.tl ?: DesignSpec.radiusOf(node))
+    }
     var opacity by remember(node.id) { mutableFloatStateOf(node.opacity ?: 1f) }
 
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .78f) {
@@ -2305,254 +2510,58 @@ private fun DesignAction(
 
 // ------------------------------------------------------------------ 渲染
 
-private fun DrawScope.drawDotGrid() {
-    val step = 22.dp.toPx()
-    val color = V2Colors.ink(.045f)
-    var y = step
-    while (y < size.height) {
-        var x = step
-        while (x < size.width) {
-            drawCircle(color, radius = 1.1f, center = Offset(x, y))
-            x += step
-        }
-        y += step
+/**
+ * 跨帧复用的解析器：文本排版带 LRU 缓存，拖动 / 缩放时不会反复重新量字。
+ * 具体规则全部在 [DesignSpec] / [DesignResolver] / [DesignPainter] 里，与网页预览一一对应。
+ */
+@Composable
+private fun rememberDesignResolver(measurer: TextMeasurer): DesignResolver {
+    val density = LocalDensity.current
+    val densityValue = density.density
+    val fontScale = density.fontScale
+    return remember(measurer, densityValue, fontScale) {
+        DesignResolver(measurer, densityValue, fontScale)
     }
 }
 
-private fun DrawScope.drawDesignNodes(
-    nodes: List<DesignNode>,
-    origin: Offset,
-    parentAlpha: Float,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    density: Float,
-) {
+/** 在解析后的树里按 id 找节点（含子节点）。 */
+private fun findResolved(nodes: List<ResolvedNode>, id: String): ResolvedNode? {
     nodes.forEach { node ->
-        val x = origin.x + node.x
-        val y = origin.y + node.y
-        val alpha = (parentAlpha * (node.opacity ?: 1f)).coerceIn(0f, 1f)
-        drawDesignNode(node, Offset(x, y), alpha, measurer, density)
-        if (node.children.isNotEmpty()) {
-            drawDesignNodes(node.children, Offset(x, y), alpha, measurer, density)
-        }
-    }
-}
-
-private fun DrawScope.drawDesignNode(
-    node: DesignNode,
-    at: Offset,
-    alpha: Float,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    density: Float,
-) {
-    if (alpha <= 0.01f || node.w <= 0f || node.h <= 0f) return
-    val size = Size(node.w, node.h)
-    val corner = CornerRadius((node.radius ?: defaultRadius(node)).coerceAtLeast(0f))
-    val hasShape = node.type != "text" || node.fill != null
-
-    if (hasShape) {
-        if (node.type == "card") {
-            drawRoundRect(
-                color = Color.Black.copy(alpha = .05f * alpha),
-                topLeft = at + Offset(0f, 6f),
-                size = size,
-                cornerRadius = corner,
-            )
-        }
-        if (node.type == "circle" || (node.type == "decor" && node.w == node.h)) {
-            drawCircle(
-                brush = designBrush(node.fill, defaultFill(node)),
-                radius = node.w / 2f,
-                center = at + Offset(node.w / 2f, node.h / 2f),
-                alpha = alpha,
-            )
-        } else if (node.type == "slider") {
-            drawSlider(node, at, alpha)
-        } else if (node.type == "switch") {
-            drawSwitch(node, at, alpha)
-        } else {
-            drawRoundRect(
-                brush = designBrush(node.fill, defaultFill(node)),
-                topLeft = at,
-                size = size,
-                cornerRadius = corner,
-                alpha = alpha,
-            )
-        }
-        node.stroke?.let { stroke ->
-            drawRoundRect(
-                color = designColor(stroke, Color.Transparent).copy(alpha = alpha),
-                topLeft = at,
-                size = size,
-                cornerRadius = corner,
-                style = Stroke(width = 1f),
-            )
-        }
-    }
-
-    when (node.type) {
-        "nav" -> drawNav(node, at, alpha, measurer, density)
-        "input" -> drawNodeText(node, at + Offset(node.padLeft ?: 12f, 0f), alpha, measurer, density)
-        "button", "pill" -> drawNodeText(node, at, alpha, measurer, density)
-        else -> if (node.text != null) drawNodeText(node, at, alpha, measurer, density)
-    }
-}
-
-private fun DrawScope.drawNav(
-    node: DesignNode,
-    at: Offset,
-    alpha: Float,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    density: Float,
-) {
-    val items = node.items.ifEmpty { listOf("首页", "任务", "我的") }
-    val active = (node.active ?: 0).coerceIn(0, items.lastIndex)
-    val cell = node.w / items.size
-    items.forEachIndexed { index, item ->
-        val style = TextStyle(
-            color = if (index == active) V2Colors.accent else V2Colors.ink(.42f),
-            fontSize = (node.fontSize ?: 10.5f).div(density).sp,
-            fontWeight = if (index == active) FontWeight.SemiBold else FontWeight.Normal,
-        )
-        val layout = measurer.measure(AnnotatedString(item), style, maxLines = 1)
-        drawText(
-            textLayoutResult = layout,
-            topLeft = Offset(
-                at.x + cell * index + (cell - layout.size.width) / 2f,
-                at.y + (node.h - layout.size.height) / 2f - 2f,
-            ),
-            alpha = alpha,
-        )
-        if (index == active) {
-            drawRoundRect(
-                color = V2Colors.accent.copy(alpha = .9f * alpha),
-                topLeft = Offset(at.x + cell * index + cell / 2f - 6f, at.y + node.h - 6f),
-                size = Size(12f, 2f),
-                cornerRadius = CornerRadius(1f),
-            )
-        }
-    }
-}
-
-private fun DrawScope.drawSlider(node: DesignNode, at: Offset, alpha: Float) {
-    val value = (node.value ?: .5f).coerceIn(0f, 1f)
-    val barH = 4f
-    val cy = at.y + node.h / 2f
-    drawRoundRect(
-        color = designColor(node.track, Color(0xFFE2E8F0)).copy(alpha = alpha),
-        topLeft = Offset(at.x, cy - barH / 2f),
-        size = Size(node.w, barH),
-        cornerRadius = CornerRadius(barH / 2f),
-    )
-    drawRoundRect(
-        color = designColor(node.fill, V2Colors.accent).copy(alpha = alpha),
-        topLeft = Offset(at.x, cy - barH / 2f),
-        size = Size(node.w * value, barH),
-        cornerRadius = CornerRadius(barH / 2f),
-    )
-    drawCircle(
-        color = Color.White.copy(alpha = alpha),
-        radius = 8f,
-        center = Offset(at.x + node.w * value, cy),
-    )
-    drawCircle(
-        color = designColor(node.fill, V2Colors.accent).copy(alpha = .22f * alpha),
-        radius = 10f,
-        center = Offset(at.x + node.w * value, cy),
-    )
-}
-
-private fun DrawScope.drawSwitch(node: DesignNode, at: Offset, alpha: Float) {
-    val on = node.on == true
-    drawRoundRect(
-        color = if (on) designColor(node.fill, V2Colors.accent).copy(alpha = alpha)
-        else Color(0xFFE2E8F0).copy(alpha = alpha),
-        topLeft = at,
-        size = Size(node.w, node.h),
-        cornerRadius = CornerRadius(node.h / 2f),
-    )
-    val knob = node.h - 6f
-    drawCircle(
-        color = Color.White.copy(alpha = alpha),
-        radius = knob / 2f,
-        center = Offset(
-            if (on) at.x + node.w - knob / 2f - 3f else at.x + knob / 2f + 3f,
-            at.y + node.h / 2f,
-        ),
-    )
-}
-
-private fun DrawScope.drawNodeText(
-    node: DesignNode,
-    at: Offset,
-    alpha: Float,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    density: Float,
-) {
-    val text = node.text ?: return
-    if (text.isBlank()) return
-    val fontSize = node.fontSize ?: 13f
-    val style = TextStyle(
-        color = designColor(node.color, V2Colors.ink),
-        fontSize = (fontSize / density).sp,
-        fontWeight = node.fontWeight?.let { FontWeight(it) } ?: FontWeight.Normal,
-        lineHeight = ((node.lineHeight ?: 1.35f) * fontSize / density).sp,
-        letterSpacing = ((node.letterSpacing ?: 0f) / density).sp,
-        textAlign = when (node.align) {
-            "center" -> TextAlign.Center
-            "right" -> TextAlign.End
-            else -> TextAlign.Start
-        },
-    )
-    val maxWidth = node.w.toInt().coerceAtLeast(1)
-    val layout = measurer.measure(
-        AnnotatedString(text),
-        style = style,
-        maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
-        constraints = Constraints(maxWidth = maxWidth),
-    )
-    val dx = at.x + when (node.align) {
-        "center" -> (node.w - layout.size.width) / 2f
-        "right" -> node.w - layout.size.width
-        else -> 0f
-    }
-    val dy = at.y + (node.h - layout.size.height) / 2f
-    drawText(layout, topLeft = Offset(dx, dy), alpha = alpha)
-}
-
-private fun DrawScope.drawNodeSelection(nodes: List<DesignNode>, nodeId: String) {
-    val placed = findPlacedNode(nodes, nodeId, Offset.Zero) ?: return
-    val padding = 2f
-    drawRoundRect(
-        color = V2Colors.accent,
-        topLeft = Offset(placed.first.x - padding, placed.first.y - padding),
-        size = Size(placed.second.w + padding * 2, placed.second.h + padding * 2),
-        cornerRadius = CornerRadius(2f),
-        style = Stroke(width = 1.6f),
-    )
-    val corners = listOf(
-        Offset(placed.first.x - padding, placed.first.y - padding),
-        Offset(placed.first.x + placed.second.w + padding, placed.first.y - padding),
-        Offset(placed.first.x - padding, placed.first.y + placed.second.h + padding),
-        Offset(placed.first.x + placed.second.w + padding, placed.first.y + placed.second.h + padding),
-    )
-    corners.forEach { corner ->
-        drawCircle(V2Colors.accent, radius = 3f, center = corner)
-        drawCircle(Color.White, radius = 1.6f, center = corner)
-    }
-}
-
-private fun findPlacedNode(
-    nodes: List<DesignNode>,
-    id: String,
-    origin: Offset,
-): Pair<Offset, DesignNode>? {
-    for (node in nodes) {
-        val at = origin + Offset(node.x, node.y)
-        if (node.id == id) return at to node
-        findPlacedNode(node.children, id, at)?.let { return it }
+        if (node.id == id) return node
+        findResolved(node.children, id)?.let { return it }
     }
     return null
+}
+
+/** 展平所有层级（框选、吸附参考线都用它）。 */
+private fun flattenResolved(nodes: List<ResolvedNode>): List<ResolvedNode> {
+    val out = ArrayList<ResolvedNode>(nodes.size * 2)
+    fun walk(list: List<ResolvedNode>) {
+        list.forEach { node ->
+            out.add(node)
+            walk(node.children)
+        }
+    }
+    walk(nodes)
+    return out
+}
+
+/** 一组节点在画板坐标下的包围盒。 */
+private fun unionRect(nodes: List<ResolvedNode>, ids: Set<String>): Rect? {
+    var rect: Rect? = null
+    flattenResolved(nodes).forEach { node ->
+        if (node.id !in ids) return@forEach
+        val item = Rect(node.x, node.y, node.right, node.bottom)
+        rect = rect?.let {
+            Rect(
+                min(it.left, item.left),
+                min(it.top, item.top),
+                max(it.right, item.right),
+                max(it.bottom, item.bottom),
+            )
+        } ?: item
+    }
+    return rect
 }
 
 /** 从上往下命中最近绘制的节点；子节点坐标相对父节点。 */
@@ -2576,75 +2585,5 @@ private fun hitTestNode(
     return null
 }
 
-private fun designColor(raw: String?, fallback: Color): Color {
-    val value = raw?.trim().orEmpty()
-    if (value.isEmpty()) return fallback
-    if (value.startsWith("#")) {
-        val hex = value.removePrefix("#")
-        return runCatching {
-            when (hex.length) {
-                3 -> Color(
-                    0xFF000000L or
-                        (hex[0].digitToInt(16) * 17L shl 16) or
-                        (hex[1].digitToInt(16) * 17L shl 8) or
-                        (hex[2].digitToInt(16) * 17L),
-                )
-                6 -> Color(0xFF000000L or hex.toLong(16))
-                8 -> Color(hex.toLong(16))
-                else -> fallback
-            }
-        }.getOrDefault(fallback)
-    }
-    if (value.startsWith("rgb")) {
-        val parts = value.substringAfter("(").substringBefore(")").split(",").map { it.trim() }
-        if (parts.size >= 3) {
-            val r = parts[0].toFloatOrNull()?.roundToInt() ?: return fallback
-            val g = parts[1].toFloatOrNull()?.roundToInt() ?: return fallback
-            val b = parts[2].toFloatOrNull()?.roundToInt() ?: return fallback
-            val a = parts.getOrNull(3)?.toFloatOrNull() ?: 1f
-            return Color(
-                r.coerceIn(0, 255),
-                g.coerceIn(0, 255),
-                b.coerceIn(0, 255),
-                (a * 255).roundToInt().coerceIn(0, 255),
-            )
-        }
-    }
-    if (value.contains("gradient")) {
-        val tokens = colorTokens(value)
-        if (tokens.isNotEmpty()) return designColor(tokens.last(), fallback)
-    }
-    return fallback
-}
-
-private fun colorTokens(value: String): List<String> =
-    Regex("""#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)""").findAll(value).map { it.value }.toList()
-
-private fun designBrush(raw: String?, fallback: Color): Brush {
-    if (raw != null && raw.contains("gradient")) {
-        val colors = colorTokens(raw).map { designColor(it, fallback) }
-        if (colors.size >= 2) return Brush.verticalGradient(colors)
-    }
-    val color = designColor(raw, fallback)
-    return Brush.verticalGradient(listOf(color, color))
-}
-
-private fun defaultRadius(node: DesignNode): Float = when (node.type) {
-    "button", "pill", "input", "slider" -> node.h / 2f
-    "card" -> 18f
-    "nav" -> 18f
-    "switch" -> node.h / 2f
-    "circle" -> node.w / 2f
-    else -> 0f
-}
-
-private fun defaultFill(node: DesignNode): Color = when (node.type) {
-    "button" -> V2Colors.accent
-    "pill" -> V2Colors.accent.copy(alpha = .12f)
-    "card", "nav" -> Color.White
-    "input" -> Color(0xFFF8FAFC)
-    "decor" -> V2Colors.accent.copy(alpha = .12f)
-    "switch" -> V2Colors.accent
-    "slider" -> V2Colors.accent
-    else -> V2Colors.ink(.08f)
-}
+/** 颜色解析统一走 [DesignSpec]，与网页预览 / 桌面端保持同一套语义。 */
+private fun designColor(raw: String?, fallback: Color): Color = DesignSpec.color(raw, fallback)

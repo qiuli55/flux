@@ -8,6 +8,7 @@ import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -218,6 +219,31 @@ internal fun dropStaleStreamEvents(events: List<TaskStreamEvent>): List<TaskStre
     return if (lastTerminal >= 0) events.drop(lastTerminal + 1) else events
 }
 
+/**
+ * 实时气泡什么时候该收尾。
+ *
+ * 两条判据都会单独出现：
+ *  - 任务已经到终态，但终态事件丢了/晚到 → 运行条会一直亮着；
+ *  - 这条正文已经被落库成正式消息 → 流式气泡与历史气泡同时在场，同一段话显示两遍。
+ * 两种情况都必须把 [TaskDetailUiState.liveText] 清掉，历史消息才是唯一事实来源。
+ */
+internal fun shouldSettleLiveBubble(
+    finished: Boolean,
+    messages: List<TaskMessage>,
+    liveText: String,
+): Boolean {
+    if (finished) return true
+    val live = liveText.trim()
+    if (live.isEmpty()) return false
+    val lastAssistant = messages.lastOrNull {
+        it.role.lowercase() in setOf("assistant", "agent", "ai")
+    } ?: return false
+    val persisted = lastAssistant.content.trim()
+    if (persisted.isEmpty()) return false
+    // 完整相等是最常见的重复；流式正文只保留尾部 3000 字，长回复退化成「落库文本以实时文本结尾」
+    return persisted == live || (live.length >= 80 && persisted.endsWith(live))
+}
+
 
 class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
 
@@ -232,9 +258,19 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private val _state = MutableStateFlow(TaskDetailUiState())
     val state = _state.asStateFlow()
 
+    /**
+     * SSE 每条事件原来各起一个协程，落到 [applyStreamEvent] 的顺序无法保证：
+     * assistant_delta 乱序会让正文错位，终态事件抢在前面又会让后到的 delta 把气泡重新点亮。
+     * 统一进队列，由单个协程按到达顺序消费。
+     */
+    private val streamEvents = Channel<TaskStreamEvent>(Channel.UNLIMITED)
+
     init {
         refresh()
         startPolling()
+        viewModelScope.launch {
+            for (event in streamEvents) applyStreamEvent(event)
+        }
     }
 
     fun startPolling() {
@@ -401,11 +437,15 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     runCatching { api.listTaskRuns(taskId) }.getOrDefault(emptyList())
                 }
                 val finished = task.isFinished
+                val messages = messagesDeferred.await()
+                // 终态事件可能丢失或晚于这次刷新：只按事件收尾会留下常亮的运行条，
+                // 以及「流式气泡 + 落库消息」两份同样的回复。这里以接口状态为准收尾。
+                val settleLive = shouldSettleLiveBubble(finished, messages, _state.value.liveText)
                 _state.value = _state.value.copy(
                     loading = false,
                     error = null,
                     task = task,
-                    messages = messagesDeferred.await(),
+                    messages = messages,
                     changes = changesDeferred.await(),
                     contextUsage = contextDeferred.await() ?: _state.value.contextUsage,
                     run = runDeferred.await(),
@@ -413,6 +453,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     // 一轮结束后实时轨迹收进「任务耗时 → 详情」里，聊天只留结论气泡，
                     // 避免执行步骤和详情弹层重复铺满屏幕
                     runItems = if (finished) emptyList() else _state.value.runItems,
+                    liveActive = if (settleLive) false else _state.value.liveActive,
+                    liveText = if (settleLive) "" else _state.value.liveText,
+                    liveLabel = if (settleLive) null else _state.value.liveLabel,
                 )
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(loading = false, error = e.message)
@@ -523,7 +566,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 api.openTaskStream(
                     taskId = taskId,
                     afterSeq = lastStreamSeq,
-                    onEvent = { event -> viewModelScope.launch { applyStreamEvent(event) } },
+                    onEvent = { event -> streamEvents.trySend(event) },
                     onFailure = {
                         viewModelScope.launch {
                             if (generation != streamGeneration) return@launch

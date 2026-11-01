@@ -17,8 +17,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装
-        versionCode = 53
-        versionName = "0.8.11"
+        versionCode = 57
+        versionName = "0.9.0"
     }
 
     buildFeatures {
@@ -28,12 +28,16 @@ android {
 
     // 固定的分发签名：历史 APK 全部用 A 机的 debug keystore（证书 SHA-256 ec560d8d…）签名，
     // 若不固定，各机器会用各自的 ~/.android/debug.keystore，导致升级时报签名冲突。
+    // 口令优先读环境变量（CI 由 secrets 注入），本地未设置时回落到历史默认值，保证 OTA 签名一致。
+    fun envOr(name: String, fallback: String): String =
+        System.getenv(name)?.takeIf { it.isNotBlank() } ?: fallback
+
     signingConfigs {
         create("flux") {
             storeFile = rootProject.file("keystore/flux-release.jks")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            storePassword = envOr("FLUX_KEYSTORE_PASSWORD", "android")
+            keyAlias = envOr("FLUX_KEY_ALIAS", "androiddebugkey")
+            keyPassword = envOr("FLUX_KEY_PASSWORD", "android")
         }
     }
 

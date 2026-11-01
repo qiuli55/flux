@@ -16,6 +16,17 @@ public partial class DesignsView : UserControl
 
     private DesignsViewModel? ViewModel => DataContext as DesignsViewModel;
 
+    /// <summary>画布演示态点按钮/导航时切屏；走 SelectScreenCommand 复用同一套状态更新。</summary>
+    private void OnCanvasScreenRequested(object? sender, int index)
+    {
+        if (ViewModel is not { } vm || index < 0 || index >= vm.Screens.Count)
+        {
+            return;
+        }
+
+        vm.SelectScreenCommand.Execute(vm.Screens[index]);
+    }
+
     private async void OnImportClick(object? sender, RoutedEventArgs e)
     {
         if (ViewModel is not { } vm || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storage)

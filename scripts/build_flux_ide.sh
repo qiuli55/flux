@@ -89,6 +89,40 @@ data["applicationName"] = "flux-ide"
 data["dataFolderName"] = ".flux-ide"
 if archive == "tar.gz":
     data["linuxIconName"] = "flux-ide"
+
+# 开箱即用的 Flux 外观：默认 Flux Dark 主题 + 字号/行高/连字等配色与排版
+defaults = data.setdefault("configurationDefaults", {})
+defaults.update(
+    {
+        "workbench.colorTheme": "Flux Dark",
+        "workbench.preferredDarkColorTheme": "Flux Dark",
+        "workbench.preferredLightColorTheme": "Flux Dark",
+        "window.autoDetectColorScheme": False,
+        "window.autoDetectHighContrast": False,
+        "workbench.startupEditor": "none",
+        "workbench.tips.enabled": False,
+        "workbench.editor.tabSizing": "shrink",
+        "workbench.tree.indent": 14,
+        "workbench.tree.renderIndentGuides": "onHover",
+        "editor.fontFamily": "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace",
+        "editor.fontSize": 13,
+        "editor.fontLigatures": True,
+        "editor.lineHeight": 1.7,
+        "editor.letterSpacing": 0.2,
+        "editor.cursorBlinking": "smooth",
+        "editor.cursorSmoothCaretAnimation": "on",
+        "editor.smoothScrolling": True,
+        "editor.padding.top": 12,
+        "editor.padding.bottom": 12,
+        "editor.bracketPairColorization.enabled": True,
+        "editor.guides.bracketPairs": "active",
+        "editor.stickyScroll.enabled": True,
+        "editor.inlineSuggest.enabled": True,
+        "terminal.integrated.fontFamily": "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace",
+        "terminal.integrated.fontSize": 12,
+        "terminal.integrated.lineHeight": 1.35,
+    }
+)
 with open(path, "w") as fh:
     json.dump(data, fh, ensure_ascii=False, separators=(",", ":"))
 print("product.json 已改为 Flux IDE")

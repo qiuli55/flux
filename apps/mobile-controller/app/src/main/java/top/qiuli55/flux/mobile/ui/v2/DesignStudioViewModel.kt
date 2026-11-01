@@ -16,8 +16,10 @@ import kotlinx.serialization.json.put
 import top.qiuli55.flux.mobile.data.DesignAiOp
 import top.qiuli55.flux.mobile.data.DesignDocument
 import top.qiuli55.flux.mobile.data.DesignNode
+import top.qiuli55.flux.mobile.data.DesignRadius
 import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
+import top.qiuli55.flux.mobile.data.DesignStroke
 import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.DesignWebPreview
 import top.qiuli55.flux.mobile.data.FluxApi
@@ -47,6 +49,8 @@ data class DesignStudioState(
     val notice: String? = null,
     /** 本地撤销栈：每次手工编辑 / AI 修改前的画板快照（最多 30 步）。 */
     val undoStack: List<DesignDocument> = emptyList(),
+    /** 重做栈：撤销后按原顺序回放；任何新的修改都会清空它。 */
+    val redoStack: List<DesignDocument> = emptyList(),
     val revisions: List<DesignRevision> = emptyList(),
     val revisionsLoading: Boolean = false,
     val restoringVersion: Int? = null,
@@ -78,6 +82,8 @@ data class DesignStudioState(
         }
 
     val canUndo: Boolean get() = undoStack.isNotEmpty()
+
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
 }
 
 private fun findDesignNode(nodes: List<DesignNode>, id: String): DesignNode? {
@@ -432,12 +438,8 @@ class DesignStudioViewModel : FluxViewModel() {
         val coalesce = fullKey == lastEditKey && now - lastEditAt < EDIT_COALESCE_MS
         lastEditKey = fullKey
         lastEditAt = now
-        _state.value = current.copy(
-            document = updated,
-            dirty = true,
-            notice = null,
-            undoStack = if (coalesce) current.undoStack else pushUndoStack(current.undoStack, document),
-        )
+        val base = if (coalesce) current else current.historyAfter(document)
+        _state.value = base.copy(document = updated, dirty = true, notice = null)
     }
 
     fun setNodeText(text: String) = editSelected("text") { it.copy(text = text) }
@@ -446,7 +448,8 @@ class DesignStudioViewModel : FluxViewModel() {
 
     fun setNodeTextColor(color: String) = editSelected("color") { it.copy(color = color) }
 
-    fun setNodeRadius(radius: Float) = editSelected("radius") { it.copy(radius = radius) }
+    fun setNodeRadius(radius: Float) =
+        editSelected("radius") { it.copy(radius = DesignRadius.all(radius)) }
 
     fun setNodeOpacity(opacity: Float) = editSelected("opacity") {
         it.copy(opacity = opacity.coerceIn(0.1f, 1f))
@@ -460,10 +463,7 @@ class DesignStudioViewModel : FluxViewModel() {
         val document = current.document ?: return
         if (ids.isEmpty()) return
         lastEditKey = null
-        _state.value = current.copy(
-            undoStack = pushUndoStack(current.undoStack, document),
-            notice = null,
-        )
+        _state.value = current.historyAfter(document).copy(notice = null)
     }
 
     /** 拖动中：按增量平移选中图层，并限制在画板内。 */
@@ -492,6 +492,55 @@ class DesignStudioViewModel : FluxViewModel() {
         _state.value = current.copy(document = document.copy(screens = screens), dirty = true)
     }
 
+    /** 框选 / 批量选中：直接替换选中集合。 */
+    fun selectNodes(ids: Set<String>) {
+        val current = _state.value
+        val nodes = current.screen?.nodes ?: return
+        val valid = ids.filterTo(mutableSetOf()) { findDesignNode(nodes, it) != null }
+        _state.value = current.copy(
+            selectedNodeId = valid.lastOrNull(),
+            selectedNodeIds = valid,
+            aiScope = if (valid.isEmpty()) current.aiScope else "selection",
+            aiReply = null,
+        )
+    }
+
+    /** 手柄缩放：写入新框，不压撤销栈（手势开始时已经压过）。 */
+    fun updateNodeFrame(id: String, x: Float, y: Float, w: Float, h: Float) {
+        val current = _state.value
+        val document = current.document ?: return
+        val screenIndex = current.screenIndex
+        val screen = document.screens.getOrNull(screenIndex) ?: return
+        val node = findDesignNode(screen.nodes, id) ?: return
+        val nextW = w.coerceIn(4f, screen.w)
+        val nextH = h.coerceIn(4f, screen.h)
+        val nextX = x.coerceIn(0f, (screen.w - nextW).coerceAtLeast(0f))
+        val nextY = y.coerceIn(0f, (screen.h - nextH).coerceAtLeast(0f))
+        if (nextX == node.x && nextY == node.y && nextW == node.w && nextH == node.h) return
+        val nodes = mapDesignNode(screen.nodes, id) {
+            it.copy(x = nextX, y = nextY, w = nextW, h = nextH)
+        }
+        val screens = document.screens.toMutableList()
+        screens[screenIndex] = screen.copy(nodes = nodes)
+        _state.value = current.copy(document = document.copy(screens = screens), dirty = true)
+    }
+
+    /** 旋转手柄：只改角度，同样不压栈；角度归一到 (-180, 180]。 */
+    fun setNodeRotation(id: String, degrees: Float) {
+        val current = _state.value
+        val document = current.document ?: return
+        val screenIndex = current.screenIndex
+        val screen = document.screens.getOrNull(screenIndex) ?: return
+        val node = findDesignNode(screen.nodes, id) ?: return
+        var next = ((degrees % 360f) + 360f) % 360f
+        if (next > 180f) next -= 360f
+        if (kotlin.math.abs(next - (node.rotation ?: 0f)) < .01f) return
+        val nodes = mapDesignNode(screen.nodes, id) { it.copy(rotation = next) }
+        val screens = document.screens.toMutableList()
+        screens[screenIndex] = screen.copy(nodes = nodes)
+        _state.value = current.copy(document = document.copy(screens = screens), dirty = true)
+    }
+
     // ------------------------------------------------------------ 图层编辑
 
     /** 图层上移 / 下移：后者在上，所以「上移」= 在列表里往后挪一位。 */
@@ -515,11 +564,10 @@ class DesignStudioViewModel : FluxViewModel() {
         val screens = document.screens.toMutableList()
         screens[screenIndex] = screen.copy(nodes = nodes)
         lastEditKey = null
-        _state.value = current.copy(
+        _state.value = current.historyAfter(document).copy(
             document = document.copy(screens = screens),
             dirty = true,
             notice = "已删除图层",
-            undoStack = pushUndoStack(current.undoStack, document),
             selectedNodeId = current.selectedNodeId?.takeIf { it != id && findDesignNode(nodes, it) != null },
             selectedNodeIds = current.selectedNodeIds.filterTo(mutableSetOf()) {
                 it != id && findDesignNode(nodes, it) != null
@@ -549,11 +597,10 @@ class DesignStudioViewModel : FluxViewModel() {
         val screens = document.screens.toMutableList()
         screens[screenIndex] = screen.copy(nodes = nodes)
         lastEditKey = null
-        _state.value = current.copy(
+        _state.value = current.historyAfter(document).copy(
             document = document.copy(screens = screens),
             dirty = true,
             notice = "已复制图层",
-            undoStack = pushUndoStack(current.undoStack, document),
             selectedNodeId = copy.id,
             selectedNodeIds = setOf(copy.id),
             aiScope = "selection",
@@ -579,11 +626,13 @@ class DesignStudioViewModel : FluxViewModel() {
     fun undo() {
         val current = _state.value
         val snapshot = current.undoStack.lastOrNull() ?: return
+        val document = current.document ?: return
         lastEditKey = null
         val stillDirty = snapshot !== baseline
         _state.value = current.copy(
             document = snapshot,
             undoStack = current.undoStack.dropLast(1),
+            redoStack = (current.redoStack + document).takeLast(UNDO_LIMIT),
             dirty = stillDirty,
             selectedNodeId = null,
             selectedNodeIds = emptySet(),
@@ -591,6 +640,29 @@ class DesignStudioViewModel : FluxViewModel() {
             notice = if (stillDirty) "已撤销上一步修改（画布仍未保存）" else "已撤销到已保存版本",
         )
     }
+
+    /** 重做上一步撤销；撤销后只要没做新的修改就能一直往前回放。 */
+    fun redo() {
+        val current = _state.value
+        val snapshot = current.redoStack.lastOrNull() ?: return
+        val document = current.document ?: return
+        lastEditKey = null
+        val stillDirty = snapshot !== baseline
+        _state.value = current.copy(
+            document = snapshot,
+            undoStack = (current.undoStack + document).takeLast(UNDO_LIMIT),
+            redoStack = current.redoStack.dropLast(1),
+            dirty = stillDirty,
+            selectedNodeId = null,
+            selectedNodeIds = emptySet(),
+            aiReply = null,
+            notice = if (stillDirty) "已重做（画布仍未保存）" else "已重做到已保存版本",
+        )
+    }
+
+    /** 压入撤销栈并清空重做栈：任何新的修改都会让重做分支失效。 */
+    private fun DesignStudioState.historyAfter(document: DesignDocument): DesignStudioState =
+        copy(undoStack = pushUndoStack(undoStack, document), redoStack = emptyList())
 
     private fun pushUndoStack(stack: List<DesignDocument>, document: DesignDocument): List<DesignDocument> =
         (stack + document).takeLast(UNDO_LIMIT)
@@ -606,11 +678,10 @@ class DesignStudioViewModel : FluxViewModel() {
         val screens = document.screens.toMutableList()
         screens[screenIndex] = screen.copy(nodes = nodes)
         lastEditKey = null
-        _state.value = current.copy(
+        _state.value = current.historyAfter(document).copy(
             document = document.copy(screens = screens),
             dirty = true,
             notice = notice,
-            undoStack = pushUndoStack(current.undoStack, document),
         )
     }
 
@@ -728,14 +799,10 @@ class DesignStudioViewModel : FluxViewModel() {
                         "ops=${result.ops.size} applied=$applied",
                 )
                 if (applied > 0) lastEditKey = null
-                _state.value = latest.copy(
+                val base = if (applied > 0) latest.historyAfter(baseDoc) else latest
+                _state.value = base.copy(
                     asking = false,
                     document = if (applied > 0) updated else latest.document,
-                    undoStack = if (applied > 0) {
-                        pushUndoStack(latest.undoStack, baseDoc)
-                    } else {
-                        latest.undoStack
-                    },
                     dirty = latest.dirty || applied > 0,
                     aiReply = result.reply.ifBlank { "已按你的要求调整画布" },
                     notice = if (applied > 0) "AI 已应用 $applied 项修改，记得保存" else null,
@@ -880,7 +947,7 @@ class DesignStudioViewModel : FluxViewModel() {
         y = patch.float("y") ?: node.y,
         w = patch.float("w") ?: node.w,
         h = patch.float("h") ?: node.h,
-        radius = patch.float("radius") ?: node.radius,
+        radius = patch.float("radius")?.let { DesignRadius.all(it) } ?: node.radius,
         fill = patch.string("fill") ?: node.fill,
         color = patch.string("color") ?: node.color,
         text = patch.string("text") ?: node.text,
@@ -888,7 +955,7 @@ class DesignStudioViewModel : FluxViewModel() {
         fontWeight = patch.float("fontWeight")?.toInt() ?: node.fontWeight,
         opacity = patch.float("opacity") ?: node.opacity,
         letterSpacing = patch.float("letterSpacing") ?: node.letterSpacing,
-        stroke = patch.string("stroke") ?: node.stroke,
+        stroke = patch.string("stroke")?.let { DesignStroke(color = it) } ?: node.stroke,
         lineHeight = patch.float("lineHeight") ?: node.lineHeight,
         align = patch.string("align") ?: node.align,
         blur = patch.float("blur") ?: node.blur,

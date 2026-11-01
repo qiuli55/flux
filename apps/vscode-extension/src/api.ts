@@ -312,6 +312,11 @@ export class FluxClient {
     return this.request<unknown>("POST", `/tasks/${encodeURIComponent(taskId)}/messages`, { content });
   }
 
+  /** 终态对话续跑：新消息作为本轮 Agent 指令，重开同一个对话（历史与归属都保留）。 */
+  async continueTask(taskId: string, content: string): Promise<unknown> {
+    return this.request<unknown>("POST", `/tasks/${encodeURIComponent(taskId)}/continue`, { content });
+  }
+
   async changes(status?: string, projectId?: string): Promise<FluxChange[]> {
     const query = new URLSearchParams();
     if (status) {
@@ -348,9 +353,10 @@ export class FluxClient {
     return this.request<unknown>("POST", `/workspace/changes/${encodeURIComponent(changeId)}/rollback`, {});
   }
 
-  /** 订阅任务 SSE 事件流；回调收到每条 data 负载的原始字符串。 */
-  streamTask(taskId: string, onEvent: (payload: string) => void, signal: AbortSignal): Promise<void> {
-    const url = this.target(`/tasks/${encodeURIComponent(taskId)}/stream`);
+  /** 订阅任务 SSE 事件流；回调收到每条 data 负载的原始字符串。`afterSeq` 用于断线续接，避免回放历史。 */
+  streamTask(taskId: string, onEvent: (payload: string) => void, signal: AbortSignal, afterSeq = 0): Promise<void> {
+    const query = afterSeq > 0 ? `?after_seq=${afterSeq}` : "";
+    const url = this.target(`/tasks/${encodeURIComponent(taskId)}/stream${query}`);
     const transport = url.protocol === "https:" ? https : http;
 
     return new Promise<void>((resolve, reject) => {

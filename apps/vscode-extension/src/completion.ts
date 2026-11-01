@@ -18,10 +18,10 @@ import {
  *
  * 结构：
  * - `provideInlineCompletionItems` 只做三件事：判断该不该请求、拿现有会话的文本、
- *   在会话还没吐字时等第一段；
- * - 真正的网络请求由「会话」在后台跑完，增量按 150ms 节流重触发
- *   `editor.action.inlineSuggest.trigger`，让 provider 用更长的文本重新 resolve，
- *   视觉上 ghost 由短到长逐段生长（§4.2）；
+ *   等这条会话结束；
+ * - 真正的网络请求由「会话」在后台跑完，provider 拿到的是完整文本再一次性返回：
+ *   本版 VS Code 在 ghost 已展示时不会因 `inlineSuggest.trigger` 重跑 provider，
+ *   先给半截会永远停在半截（Tab 接受的也是截断文本）；
  * - 会话按 `uri|version|offset|model|maxLines|mode` 缓存，同一位置的重复触发直接复用，
  *   不会重复打模型，也不会出现「整块突然铺满」。
  *
@@ -39,9 +39,21 @@ const MAX_SESSIONS = 8;
 /** 增量重取间隔：太密会打断 ghost 的稳定渲染 */
 const REFRESH_INTERVAL_MS = 150;
 /** 一个会话最多刷新多久：用户 Esc 关闭后不至于被无限拉起 */
-const REFRESH_WINDOW_MS = 4_000;
+// 首 token 常要 5~8s（冷缓存），流式增量也就在这个时间点之后才开始。
+// 窗口必须覆盖整条流，否则 done 时的最终刷新会被判为「会话过期」，
+// ghost 永远停在半截，用户 Tab 接受的也是截断文本。
+const REFRESH_WINDOW_MS = 30_000;
 /** 偏好写回后端的合并窗口 */
 const PREFS_PUSH_DEBOUNCE_MS = 400;
+/**
+ * 等待整条流结束的上限。
+ *
+ * 本版 VS Code 里，ghost 已经在展示时再执行 `inlineSuggest.trigger` 不会让
+ * provider 重新 resolve，所以「先给半截、后面再刷新」这条路走不通：首 token
+ * 一到就返回，ghost 就永远停在半截，用户 Tab 接受的也是截断文本。
+ * 因此 provider 等到流结束（或失败）再返回整段，超时则退回当前已收到文本。
+ */
+const MATERIALIZE_TIMEOUT_MS = 15_000;
 
 interface Session {
   key: string;
@@ -258,8 +270,8 @@ export class FluxCompletionService implements vscode.Disposable {
     position: vscode.Position,
     token: vscode.CancellationToken
   ): Promise<vscode.InlineCompletionItem[] | undefined> {
-    if (!session.text && !session.done && !session.failed) {
-      await this.waitForText(session, token);
+    if (!session.done && !session.failed) {
+      await this.waitForDone(session, token);
     }
     if (token.isCancellationRequested) {
       return undefined;
@@ -291,19 +303,27 @@ export class FluxCompletionService implements vscode.Disposable {
     return [new vscode.InlineCompletionItem(text, range, command)];
   }
 
-  private waitForText(session: Session, token: vscode.CancellationToken): Promise<void> {
-    if (session.text || session.done || session.failed) {
+  /** 等到会话结束（done / failed），或超时 / 取消后返回，保证 ghost 一次就是完整文本。 */
+  private waitForDone(session: Session, token: vscode.CancellationToken): Promise<void> {
+    if (session.done || session.failed) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
       let subscription: vscode.Disposable | undefined;
+      const timer = setTimeout(() => finish(), MATERIALIZE_TIMEOUT_MS);
       const finish = () => {
+        clearTimeout(timer);
         subscription?.dispose();
-        session.waiters.delete(finish);
+        session.waiters.delete(onNotify);
         resolve();
       };
+      const onNotify = () => {
+        if (session.done || session.failed) {
+          finish();
+        }
+      };
       subscription = token.onCancellationRequested(finish);
-      session.waiters.add(finish);
+      session.waiters.add(onNotify);
     });
   }
 
@@ -378,7 +398,6 @@ export class FluxCompletionService implements vscode.Disposable {
             }
             session.text += piece;
             this.notify(session);
-            this.scheduleRefresh(session);
             return;
           }
           if (event === "done") {
@@ -575,13 +594,36 @@ export class FluxCompletionService implements vscode.Disposable {
       return;
     }
     const config = this.config();
+    const section = vscode.workspace.getConfiguration("flux.completion");
+    // 只回写用户真正显式配置过的项：否则默认值（如 model="follow-agent"）
+    // 会把桌面端 / Web 端保存的偏好冲掉，导致补全通道被悄悄改回默认。
+    const isExplicit = (key: string): boolean => {
+      const info = section.inspect(key);
+      return (
+        info !== undefined &&
+        (info.globalValue !== undefined ||
+          info.workspaceValue !== undefined ||
+          info.workspaceFolderValue !== undefined)
+      );
+    };
+    const patch: Partial<FluxCompletionPrefs> = {};
+    if (isExplicit("enabled")) {
+      patch.enabled = config.enabled;
+    }
+    if (isExplicit("model")) {
+      patch.model = config.model;
+    }
+    if (isExplicit("debounceMs")) {
+      patch.debounce_ms = config.debounceMs;
+    }
+    if (isExplicit("maxLines")) {
+      patch.max_lines = config.maxLines;
+    }
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
     try {
-      await client.putCompletionPrefs({
-        enabled: config.enabled,
-        model: config.model,
-        debounce_ms: config.debounceMs,
-        max_lines: config.maxLines,
-      });
+      await client.putCompletionPrefs(patch);
     } catch (err) {
       this.log(`偏好写回失败：${err instanceof Error ? err.message : String(err)}`);
     }

@@ -8,15 +8,15 @@
 
 ## 下载与安装
 
-Release 附件：[`flux-mobile-0.1.0-debug.apk`](https://github.com/qiuli55/flux/releases) （**SHA256** `151c741c1cb4d59a062b8b72db6b687be84b18d0dd3be55ba5cf5856ed49eb1e`，约 16.3 MiB，debug 签名）。
+分发节点：[`flux-mobile/latest.json`](https://flux.app.qiuli55.top/flux-mobile/latest.json)（每次发版由 `deploy/release-mobile.sh` 原子更新，含 APK 地址、SHA256 与更新说明；App 内「检查更新」读的也是这一份）。
 
 ```bash
 # 任选一种方式推到设备
-adb install -r flux-mobile-0.1.0-debug.apk
+adb install -r flux-mobile-0.9.0-vc57.apk
 # 或者把 APK 复制到手机文件管理器里点开安装
 ```
 
-应用版本 `0.1.2`（versionName / versionCode 3），最低 Android 8.0（API 26），target API 34。
+应用版本 `0.9.0`（versionCode 57），最低 Android 8.0（API 26），target API 34。
 
 ## 首次配置
 

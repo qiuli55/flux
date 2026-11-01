@@ -322,7 +322,7 @@ fun V2ChatScreen(
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Label(agent.name, 13f, V2Colors.ink(.95f), FontWeight.Medium, maxLines = 1)
+                            Label(agent.name, 15f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
                             if (!agent.nativeStreaming) {
                                 Spacer(Modifier.width(5.dp))
                                 NonStreamingBadge()
@@ -342,8 +342,8 @@ fun V2ChatScreen(
                             Spacer(Modifier.width(4.dp))
                             Label(
                                 "${chat.title} · ${chat.device}",
-                                9.5f,
-                                V2Colors.ink(.36f),
+                                10.5f,
+                                V2Colors.ink(.40f),
                                 maxLines = 1,
                                 modifier = Modifier.weight(1f, fill = false),
                             )
@@ -367,7 +367,7 @@ fun V2ChatScreen(
                                 ) {
                                     Label(
                                         currentModelLabel,
-                                        8.5f,
+                                        9.5f,
                                         V2Colors.cyan800,
                                         mono = true,
                                         maxLines = 1,
@@ -575,6 +575,7 @@ fun V2ChatScreen(
                         onOpenRunTrace = onOpenRunTrace,
                         onOpenUrl = onOpenUrl,
                         onOpenDesign = onOpenDesign,
+                        onSend = onSend,
                         onLongPress = openBubbleMenu,
                     )
                 }
@@ -591,11 +592,13 @@ fun V2ChatScreen(
                     }
                 }
                 if (liveActive && (runItems.isEmpty() || liveText.isNotBlank())) {
-                    item(key = "live-streaming") { StreamingRow(liveText, liveLabel, onOpenUrl) }
+                    item(key = "live-streaming") {
+                        StreamingRow(liveText, liveLabel, onOpenUrl, onSend)
+                    }
                 } else if (sending) {
                     item(key = "waiting-agent") {
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Label("Agent 正在处理…", 9f, V2Colors.ink(.30f), mono = true)
+                            Label("Agent 正在处理…", 11f, V2Colors.ink(.30f), mono = true)
                         }
                     }
                 }
@@ -628,9 +631,9 @@ fun V2ChatScreen(
                             .background(V2Colors.surface(.45f))
                             .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(999.dp))
                             .v2Pressable(pressScale = .96f, enabled = inputEnabled) { onSend(suggestion) }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
                     ) {
-                        Label(suggestion, 10f, V2Colors.ink(.42f))
+                        Label(suggestion, 11.5f, V2Colors.ink(.46f))
                     }
                 }
             }
@@ -716,18 +719,20 @@ fun V2ChatScreen(
             Spacer(Modifier.height(6.dp))
         }
 
+        val composerShape = RoundedCornerShape(16.dp)
         Row(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .heightIn(min = composerMinHeight)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(composerShape)
                 .background(
                     androidx.compose.ui.graphics.Brush.verticalGradient(
                         listOf(V2Colors.surface(.86f), V2Colors.surface(.64f)),
                     ),
                 )
-                .border(1.dp, composerBorder, RoundedCornerShape(16.dp))
+                .innerGlow(composerShape, alpha = .26f)
+                .border(1.dp, composerBorder, composerShape)
                 .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -752,8 +757,8 @@ fun V2ChatScreen(
                         else if (sending) "等待 ${agent.name} 回复…"
                         else if (chat.permissionMode == "plan") "让 Agent 先出计划，不动手…"
                         else "继续向 ${agent.name} 发送",
-                        12f,
-                        V2Colors.ink(.26f),
+                        14f,
+                        V2Colors.ink(.30f),
                     )
                 }
                 BasicTextField(
@@ -764,7 +769,7 @@ fun V2ChatScreen(
                         .focusRequester(inputFocus)
                         .onFocusChanged { inputFocused = it.isFocused },
                     enabled = inputEnabled,
-                    textStyle = TextStyle(fontSize = 12.sp, color = V2Colors.ink(.85f)),
+                    textStyle = TextStyle(fontSize = 14.sp, lineHeight = 21.sp, color = V2Colors.ink(.88f)),
                     cursorBrush = SolidColor(V2Colors.accent),
                     maxLines = 4,
                 )
@@ -1183,22 +1188,29 @@ private fun SummaryCard(text: String, time: String, note: String = "来自上一
 }
 
 @Composable
-private fun StreamingRow(text: String, label: String?, onOpenUrl: (String) -> Unit = {}) {
+private fun StreamingRow(
+    text: String,
+    label: String?,
+    onOpenUrl: (String) -> Unit = {},
+    onSend: (String) -> Unit = {},
+) {
     // 流式气泡沿用在场 Agent 气泡的样式，只比最终消息多一个光标，避免跳动
+    val shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         Column(
             Modifier
-                .widthIn(max = 320.dp)
-                .clip(RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp))
+                .widthIn(max = 344.dp)
+                .clip(shape)
                 .background(V2Colors.surface(.75f))
-                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .innerGlow(shape)
+                .border(1.dp, V2Colors.ink(.08f), shape)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
         ) {
             if (text.isBlank()) {
-                Label((label ?: "正在处理…") + "▍", 12f, V2Colors.ink(.42f))
+                Label((label ?: "正在处理…") + "▍", 15f, V2Colors.ink(.42f))
             } else {
                 // 流式正文与最终答复共用同一套卡片渲染：代码/表格在生成过程中就能成卡
-                RichMessageBody(text, streaming = true, onOpenUrl = onOpenUrl)
+                RichMessageBody(text, streaming = true, onOpenUrl = onOpenUrl, onAction = onSend)
             }
         }
     }
@@ -1211,6 +1223,8 @@ private fun MessageRow(
     onOpenRunTrace: (String) -> Unit = {},
     onOpenUrl: (String) -> Unit = {},
     onOpenDesign: (String) -> Unit = {},
+    /** 生成式卡片里的动作胶囊：点一下就把按钮的 prompt 发出去。 */
+    onSend: (String) -> Unit = {},
     /** 长按气泡：回传消息与气泡在根容器中的位置，用于浮出复制/引用/重发菜单。 */
     onLongPress: (V2Message, Rect) -> Unit = { _, _ -> },
 ) {
@@ -1276,19 +1290,21 @@ private fun MessageRow(
             }
         }
         V2MessageRole.AGENT -> {
+            val shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                 Column(
                     Modifier
-                        .widthIn(max = 320.dp)
-                        .clip(RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp))
+                        .widthIn(max = 344.dp)
+                        .clip(shape)
                         .background(V2Colors.surface(.75f))
-                        .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp))
+                        .innerGlow(shape)
+                        .border(1.dp, V2Colors.ink(.08f), shape)
                         .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
                         .v2CombinedPressable(pressScale = .98f, onLongClick = { onLongPress(message, bubbleBounds) }) {}
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
                 ) {
                     if (run != null) RunDurationRow(run) { onOpenRunTrace(run.runId) }
-                    RichMessageBody(message.text, onOpenUrl = onOpenUrl)
+                    RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
                     Spacer(Modifier.height(4.dp))
                     Label(
                         message.time,
@@ -1301,17 +1317,19 @@ private fun MessageRow(
             }
         }
         V2MessageRole.USER -> {
+            val shape = RoundedCornerShape(16.dp, 16.dp, 6.dp, 16.dp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Column(
                     Modifier
-                        .widthIn(max = 320.dp)
-                        .clip(RoundedCornerShape(16.dp, 16.dp, 6.dp, 16.dp))
+                        .widthIn(max = 344.dp)
+                        .clip(shape)
                         .background(V2Colors.accent)
+                        .innerGlow(shape, color = Color.White, alpha = .34f)
                         .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
                         .v2CombinedPressable(pressScale = .98f, onLongClick = { onLongPress(message, bubbleBounds) }) {}
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
                 ) {
-                    Label(message.text, 12f, Color.White)
+                    Label(message.text, 15f, Color.White)
                     Spacer(Modifier.height(4.dp))
                     Label(
                         message.time,

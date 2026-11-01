@@ -29,7 +29,11 @@
     "onCommand:flux.showLanguageServers",
     "onCommand:flux.completion.toggle",
     "onCommand:flux.completion.selfCheck",
-    "onCommand:flux.spec.draft"
+    "onCommand:flux.spec.draft",
+    "onCommand:flux.openTask",
+    "onCommand:flux.openTaskPanel",
+    "onCommand:flux.quickMenu",
+    "onCommand:flux.openSettings"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -58,73 +62,136 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "fluxProjects",
+        "contents": "还没有从 Flux 读取到项目。\n[新建任务](command:flux.newTask)\n[检查连接](command:flux.healthCheck)\n后端地址不对时，运行 [设置服务器地址](command:flux.setServer)。"
+      },
+      {
+        "view": "fluxTasks",
+        "contents": "这里会列出所选项目的任务。\n[新建任务](command:flux.newTask)\n[选择项目](command:flux.pickProject)"
+      },
+      {
+        "view": "fluxChanges",
+        "contents": "没有待处理的提案。\nAgent 产出的改动会出现在这里，可以逐条查看差异、接受或拒绝。\n刷新可点右上角 ⟳，或按 Ctrl+Alt+F 打开快捷菜单。"
+      }
+    ],
     "commands": [
       {
+        "command": "flux.quickMenu",
+        "title": "快捷菜单",
+        "category": "Flux",
+        "icon": "$(zap)"
+      },
+      {
         "command": "flux.newTask",
-        "title": "Flux: 新建任务",
+        "title": "新建任务",
+        "category": "Flux",
         "icon": "$(add)"
       },
       {
+        "command": "flux.openTaskPanel",
+        "title": "打开任务面板…",
+        "category": "Flux",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "flux.openTask",
+        "title": "打开任务",
+        "category": "Flux"
+      },
+      {
         "command": "flux.refresh",
-        "title": "Flux: 刷新",
+        "title": "刷新",
+        "category": "Flux",
         "icon": "$(refresh)"
       },
       {
+        "command": "flux.pickProject",
+        "title": "选择项目",
+        "category": "Flux",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "flux.selectProject",
+        "title": "切换到此项目",
+        "category": "Flux",
+        "icon": "$(folder-active)"
+      },
+      {
         "command": "flux.setServer",
-        "title": "Flux: 设置服务器地址"
+        "title": "设置服务器地址",
+        "category": "Flux"
       },
       {
         "command": "flux.healthCheck",
-        "title": "Flux: 检查连接"
+        "title": "检查连接",
+        "category": "Flux"
       },
       {
         "command": "flux.openChangeDiff",
-        "title": "Flux: 查看提案差异"
+        "title": "查看提案差异",
+        "category": "Flux"
       },
       {
         "command": "flux.acceptChanges",
-        "title": "Flux: 接受提案",
+        "title": "接受提案",
+        "category": "Flux",
         "icon": "$(check)"
       },
       {
         "command": "flux.rejectChanges",
-        "title": "Flux: 拒绝提案",
+        "title": "拒绝提案",
+        "category": "Flux",
         "icon": "$(circle-slash)"
       },
       {
         "command": "flux.applyChanges",
-        "title": "Flux: 应用提案",
+        "title": "应用提案",
+        "category": "Flux",
         "icon": "$(check-all)"
       },
       {
         "command": "flux.rollbackChange",
-        "title": "Flux: 回滚已应用变更",
+        "title": "回滚已应用变更",
+        "category": "Flux",
         "icon": "$(history)"
       },
       {
         "command": "flux.restartLanguageServer",
-        "title": "Flux: 重启语言服务",
+        "title": "重启语言服务",
+        "category": "Flux",
         "icon": "$(debug-restart)"
       },
       {
         "command": "flux.showLanguageServers",
-        "title": "Flux: 语言服务器…",
+        "title": "语言服务器…",
+        "category": "Flux",
         "icon": "$(server-process)"
       },
       {
         "command": "flux.completion.toggle",
-        "title": "Flux: 开关 AI 补全",
+        "title": "开关 AI 补全",
+        "category": "Flux",
         "icon": "$(sparkle)"
       },
       {
         "command": "flux.completion.selfCheck",
-        "title": "Flux: 补全自检",
+        "title": "补全自检",
+        "category": "Flux",
         "icon": "$(pulse)"
       },
       {
         "command": "flux.spec.draft",
-        "title": "Flux: 与 Agent 确认需求文档",
+        "title": "与 Agent 确认需求文档",
+        "category": "Flux",
         "icon": "$(book)"
+      },
+      {
+        "command": "flux.openSettings",
+        "title": "打开设置",
+        "category": "Flux",
+        "icon": "$(gear)"
       }
     ],
     "menus": {
@@ -160,8 +227,182 @@
           "command": "flux.rollbackChange",
           "when": "view == fluxChanges && viewItem == fluxChange.applied",
           "group": "inline@1"
+        },
+        {
+          "command": "flux.selectProject",
+          "when": "view == fluxProjects && viewItem == fluxProject",
+          "group": "inline@1"
+        },
+        {
+          "command": "flux.openTaskPanel",
+          "when": "view == fluxTasks && viewItem == fluxTask",
+          "group": "inline@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "flux.newTask",
+          "when": "resourceScheme == file",
+          "group": "flux@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "flux.spec.draft",
+          "when": "editorTextFocus",
+          "group": "flux@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "flux.selectProject",
+          "when": "false"
+        },
+        {
+          "command": "flux.openTask",
+          "when": "false"
+        },
+        {
+          "command": "flux.openChangeDiff",
+          "when": "false"
         }
       ]
+    },
+    "keybindings": [
+      {
+        "command": "flux.quickMenu",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f"
+      },
+      {
+        "command": "flux.newTask",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n"
+      },
+      {
+        "command": "flux.openTaskPanel",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t"
+      },
+      {
+        "command": "flux.completion.toggle",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Flux Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/flux-dark-color-theme.json"
+      }
+    ],
+    "colors": [
+      {
+        "id": "flux.accent",
+        "description": "Flux 主强调色（Terminal Noir 电光青绿）",
+        "defaults": {
+          "dark": "#3df5a8",
+          "light": "#0f9d6b",
+          "highContrast": "#3df5a8",
+          "highContrastLight": "#0f9d6b"
+        }
+      },
+      {
+        "id": "flux.info",
+        "description": "Flux 信息色",
+        "defaults": {
+          "dark": "#7fb6e0",
+          "light": "#2563a8",
+          "highContrast": "#7fb6e0",
+          "highContrastLight": "#2563a8"
+        }
+      },
+      {
+        "id": "flux.warn",
+        "description": "Flux 警告色",
+        "defaults": {
+          "dark": "#e8b25e",
+          "light": "#9a6a10",
+          "highContrast": "#e8b25e",
+          "highContrastLight": "#9a6a10"
+        }
+      },
+      {
+        "id": "flux.danger",
+        "description": "Flux 危险色",
+        "defaults": {
+          "dark": "#ff7a6e",
+          "light": "#b3261e",
+          "highContrast": "#ff7a6e",
+          "highContrastLight": "#b3261e"
+        }
+      },
+      {
+        "id": "flux.muted",
+        "description": "Flux 次级/弱化文字色",
+        "defaults": {
+          "dark": "#6c7674",
+          "light": "#6b7472",
+          "highContrast": "#9ca6a4",
+          "highContrastLight": "#4a5250"
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "workbench.colorTheme": "Flux Dark",
+      "workbench.preferredDarkColorTheme": "Flux Dark",
+      "workbench.preferredLightColorTheme": "Flux Dark",
+      "window.autoDetectColorScheme": false,
+      "window.autoDetectHighContrast": false,
+      "workbench.startupEditor": "none",
+      "workbench.tips.enabled": false,
+      "workbench.enableExperiments": false,
+      "workbench.list.smoothScrolling": true,
+      "workbench.editor.tabSizing": "shrink",
+      "workbench.editor.decorations.badges": true,
+      "workbench.tree.indent": 14,
+      "workbench.tree.renderIndentGuides": "onHover",
+      "breadcrumbs.enabled": true,
+      "editor.fontFamily": "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace",
+      "editor.fontSize": 13,
+      "editor.fontLigatures": true,
+      "editor.lineHeight": 1.7,
+      "editor.letterSpacing": 0.2,
+      "editor.cursorBlinking": "smooth",
+      "editor.cursorSmoothCaretAnimation": "on",
+      "editor.smoothScrolling": true,
+      "editor.renderWhitespace": "selection",
+      "editor.renderLineHighlight": "all",
+      "editor.guides.indentation": true,
+      "editor.bracketPairColorization.enabled": true,
+      "editor.guides.bracketPairs": "active",
+      "editor.stickyScroll.enabled": true,
+      "editor.minimap.enabled": true,
+      "editor.minimap.renderCharacters": false,
+      "editor.minimap.maxColumn": 100,
+      "editor.occurrencesHighlight": "singleFile",
+      "editor.selectionHighlight": true,
+      "editor.padding.top": 12,
+      "editor.padding.bottom": 12,
+      "editor.scrollBeyondLastLine": true,
+      "editor.suggest.preview": true,
+      "editor.inlineSuggest.enabled": true,
+      "editor.inlineSuggest.showToolbar": "onHover",
+      "editor.linkedEditing": true,
+      "editor.formatOnPaste": false,
+      "files.trimTrailingWhitespace": true,
+      "files.insertFinalNewline": true,
+      "files.trimFinalNewlines": true,
+      "terminal.integrated.fontFamily": "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace",
+      "terminal.integrated.fontSize": 12,
+      "terminal.integrated.lineHeight": 1.35,
+      "terminal.integrated.cursorStyle": "line",
+      "terminal.integrated.cursorBlinking": true,
+      "terminal.integrated.smoothScrolling": true,
+      "explorer.compactFolders": false,
+      "explorer.decorations.badges": true,
+      "scm.diffDecorations": "gutter"
     },
     "configuration": {
       "title": "Flux",

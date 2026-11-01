@@ -575,8 +575,14 @@ fun FluxV2Root() {
                             onToggleMultiSelect = { designVm.toggleMultiSelect() },
                             onSetAiScope = { designVm.setAiScope(it) },
                             onUndo = { designVm.undo() },
+                            onRedo = { designVm.redo() },
                             onBeginDrag = { designVm.beginNodeDrag(it) },
                             onDrag = { ids, dx, dy -> designVm.dragNodes(ids, dx, dy) },
+                            onSelectNodes = { designVm.selectNodes(it) },
+                            onTransformNode = { id, x, y, w, h ->
+                                designVm.updateNodeFrame(id, x, y, w, h)
+                            },
+                            onRotateNode = { id, degrees -> designVm.setNodeRotation(id, degrees) },
                             onMoveLayer = { id, up -> designVm.moveLayer(id, up) },
                             onDeleteLayer = { designVm.deleteLayer(it) },
                             onDuplicateLayer = { designVm.duplicateLayer(it) },
