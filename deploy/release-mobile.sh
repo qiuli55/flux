@@ -24,7 +24,8 @@ NOTES_RAW="${1:-稳定性改进与问题修复}"
 VERSION_CODE="$(sed -nE 's/.*versionCode = ([0-9]+).*/\1/p' "$APP_DIR/app/build.gradle.kts" | head -1)"
 VERSION_NAME="$(sed -nE 's/.*versionName = "([^"]+)".*/\1/p' "$APP_DIR/app/build.gradle.kts" | head -1)"
 [[ -n "$VERSION_CODE" && -n "$VERSION_NAME" ]] || { echo "读取版本号失败" >&2; exit 1; }
-if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+# 只校验已跟踪文件：未跟踪的设计素材不影响安装包，也不进 tag 对应的代码。
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
   echo "工作区有未提交改动，先提交再发版（保证 tag 与安装包对应同一份代码）" >&2
   exit 1
 fi
