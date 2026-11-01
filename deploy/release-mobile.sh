@@ -5,32 +5,41 @@
 #   deploy/release-mobile.sh "更新说明1|更新说明2"
 #   FLUX_RELEASE_HOST=shanghai FLUX_MIN_VERSION_CODE=10 deploy/release-mobile.sh
 #
-# 依赖：A 机 Android SDK（aapt2）、ssh 免密登录 B 机、B 机可写 /opt/downloads/flux-mobile。
+# 依赖：remote-build skill（远程构建机，含 Android SDK）、ssh 免密登录 B 机、
+#      B 机可写 /opt/downloads/flux-mobile。
 # 注意：脚本会写 B 机（上传 APK + 替换清单），执行前请确认目标主机与目录。
 set -euo pipefail
 
-# 发版机制自包含：调用方 shell 没配 SDK 时也按 A 机约定补齐，避免构建失败。
-export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/opt/gradle-home}"
-
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../apps/mobile-controller" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_DIR="$REPO_ROOT/apps/mobile-controller"
+RB="${FLUX_REMOTE_BUILD:-/root/.trae-cn/skills/remote-build/remote-build.sh}"
 HOST="${FLUX_RELEASE_HOST:-shanghai}"
 REMOTE_DIR="${FLUX_RELEASE_DIR:-/opt/downloads/flux-mobile}"
 DOMAIN="${FLUX_RELEASE_DOMAIN:-https://flux.app.qiuli55.top}"
 MIN_VERSION_CODE="${FLUX_MIN_VERSION_CODE:-0}"
 NOTES_RAW="${1:-稳定性改进与问题修复}"
-AAPT="${AAPT:-$(command -v aapt2 || ls /opt/android-sdk/build-tools/*/aapt2 | tail -1)}"
 
-cd "$APP_DIR"
-echo "==> 构建 debug APK"
-./gradlew :app:assembleDebug --console=plain -q
+# 版本号是构建输入的权威来源；同时要求工作区干净，
+# 避免 tag 打在一份和安装包不对应的代码上。
+VERSION_CODE="$(sed -nE 's/.*versionCode = ([0-9]+).*/\1/p' "$APP_DIR/app/build.gradle.kts" | head -1)"
+VERSION_NAME="$(sed -nE 's/.*versionName = "([^"]+)".*/\1/p' "$APP_DIR/app/build.gradle.kts" | head -1)"
+[[ -n "$VERSION_CODE" && -n "$VERSION_NAME" ]] || { echo "读取版本号失败" >&2; exit 1; }
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+  echo "工作区有未提交改动，先提交再发版（保证 tag 与安装包对应同一份代码）" >&2
+  exit 1
+fi
 
-APK="app/build/outputs/apk/debug/app-debug.apk"
-BADGING="$("$AAPT" dump badging "$APK")"
-VERSION_CODE="$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" <<<"$BADGING" | head -1)"
-VERSION_NAME="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$BADGING" | head -1)"
-[[ -n "$VERSION_CODE" && -n "$VERSION_NAME" ]] || { echo "读取 APK 版本失败" >&2; exit 1; }
+echo "==> 远程构建 debug APK（remote-build：grokbot-build）"
+OUT_DIR="$(mktemp -d)"
+trap 'rm -rf "$OUT_DIR"' EXIT
+"$RB" -C "$APP_DIR" -t 3600 \
+  -x './app/build' \
+  -c "chmod +x gradlew && ./gradlew :app:assembleDebug --console=plain" \
+  -a "app/build/outputs/apk/debug/*.apk" \
+  -o "$OUT_DIR"
+
+APK="$OUT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+[[ -f "$APK" ]] || { echo "远程构建产物缺失：$APK" >&2; exit 1; }
 
 REMOTE_APK="flux-mobile-${VERSION_NAME}-vc${VERSION_CODE}.apk"
 SHA256="$(sha256sum "$APK" | cut -d' ' -f1)"
@@ -43,7 +52,7 @@ scp "$APK" "$HOST:$REMOTE_DIR/.upload-${REMOTE_APK}"
 ssh "$HOST" "mv '$REMOTE_DIR/.upload-${REMOTE_APK}' '$REMOTE_DIR/${REMOTE_APK}' && chmod 644 '$REMOTE_DIR/${REMOTE_APK}'"
 
 TMP_JSON="$(mktemp)"
-trap 'rm -f "$TMP_JSON"' EXIT
+trap 'rm -rf "$OUT_DIR"; rm -f "$TMP_JSON"' EXIT
 VERSION_CODE="$VERSION_CODE" VERSION_NAME="$VERSION_NAME" APK_URL="$APK_URL" \
 SHA256="$SHA256" SIZE_BYTES="$SIZE_BYTES" MIN_VERSION_CODE="$MIN_VERSION_CODE" \
 NOTES_RAW="$NOTES_RAW" python3 - "$TMP_JSON" <<'PY'
@@ -74,3 +83,12 @@ echo "    清单: ${DOMAIN}/flux-mobile/latest.json"
 echo "    安装包: ${APK_URL}"
 echo "    sha256: ${SHA256}"
 echo "    大小: ${SIZE_BYTES} bytes"
+
+# 每次发版都打 tag：发版后 tag 必须存在，避免出现「装的是哪个 commit」说不清。
+TAG="v${VERSION_NAME}"
+if git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "==> tag ${TAG} 已存在，跳过"
+else
+  git -C "$REPO_ROOT" tag -a "$TAG" -m "Flux 移动端 ${VERSION_NAME} (vc${VERSION_CODE})"
+  echo "==> 已打 tag ${TAG}；推送到远端：git push origin ${TAG}"
+fi

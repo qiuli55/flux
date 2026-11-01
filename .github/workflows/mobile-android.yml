@@ -3,6 +3,7 @@ name: Mobile Android
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - "apps/mobile-controller/**"
       - ".github/workflows/mobile-android.yml"
@@ -28,14 +29,24 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # 运行镜像已自带 Android SDK，但 cmdline-tools 的版本与 setup-android@v3
+      # 预期不一致，走该 action 会卡在非交互的 --licenses 上（exit 1）。
+      # 这里直接用镜像里的 sdkmanager：先显式接受许可，再装所需组件。
       - name: Install Android SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+          SDKMANAGER="$(ls -d "${SDK_ROOT}"/cmdline-tools/*/bin/sdkmanager | tail -1)"
+          yes | "${SDKMANAGER}" --licenses > /dev/null
+          "${SDKMANAGER}" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Run JVM tests
         run: ./gradlew testDebugUnitTest --no-daemon
 
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --no-daemon
+        env:
+          FLUX_KEYSTORE_PASSWORD: ${{ secrets.FLUX_KEYSTORE_PASSWORD }}
+          FLUX_KEY_PASSWORD: ${{ secrets.FLUX_KEY_PASSWORD }}
+          FLUX_KEY_ALIAS: ${{ secrets.FLUX_KEY_ALIAS }}
