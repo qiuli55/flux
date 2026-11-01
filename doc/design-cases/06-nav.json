@@ -1,0 +1,27 @@
+{
+  "name": "导航栏",
+  "meta": {
+    "case": "nav",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "默认项、自定义项、选中态样式、指示条几何、超长文案截断"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "nav",
+      "name": "导航",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "nav-default", "type": "nav", "x": 24, "y": 64, "w": 342, "h": 60 },
+        { "id": "nav-active2", "type": "nav", "x": 24, "y": 148, "w": 342, "h": 60, "active": 2 },
+        { "id": "nav-custom", "type": "nav", "x": 24, "y": 232, "w": 342, "h": 64, "items": ["首页", "发现", "消息", "我的"], "active": 1 },
+        { "id": "nav-long", "type": "nav", "x": 24, "y": 320, "w": 342, "h": 60, "items": ["一个非常非常长的导航项目名称", "短", "中"], "active": 0 },
+        { "id": "nav-size", "type": "nav", "x": 24, "y": 404, "w": 342, "h": 60, "fontSize": 12, "active": 0 },
+        { "id": "nav-dark", "type": "nav", "x": 24, "y": 488, "w": 342, "h": 60, "fill": "#0F172A", "active": 0 },
+        { "id": "nav-empty-items", "type": "nav", "x": 24, "y": 572, "w": 342, "h": 60, "items": [] }
+      ]
+    }
+  ]
+}

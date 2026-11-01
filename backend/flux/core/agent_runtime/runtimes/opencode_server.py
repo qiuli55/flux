@@ -532,9 +532,7 @@ class OpenCodeServerClient:
                 logger.warning("opencode 校验会话 %s 失败（%s），改为新建", session_id, exc)
         return await self._create_session(title, model)
 
-    async def _prompt_async(
-        self, session_id: str, instruction: str, model: str = ""
-    ) -> None:
+    async def _prompt_async(self, session_id: str, instruction: str, model: str = "") -> None:
         """提交本轮消息：204 = 已接受，回合结束由 `_await_turn` 收口。
 
         用异步提交（而不是阻塞的 `POST /message`）是关键：长回答不会再占住一条

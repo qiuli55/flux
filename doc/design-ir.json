@@ -1,0 +1,247 @@
+{
+  "version": 2,
+  "note": "设计稿 IR（中间表示）契约。由 backend/flux/core/design_compile.py 的 compile_design() 生成；网页 design_render.py、手机 DesignResolve.kt、桌面 DesignCanvas.cs 只消费 IR，不再各自推断默认值。凡是这里已经展开的字段，渲染端不得再做缺省判断。version 2 随 0.9.0 发布：新增文字效果、节点阴影、渐变填充与组合圆角等字段，旧字段语义不变。",
+  "entry": "compile_design(design: object) -> IRDocument",
+  "principles": [
+    "颜色、渐变、圆角、填充、描边、阴影、文字样式全部在编译期展开成显式值",
+    "hidden 节点、w<=0 或 h<=0 的节点、opacity<=0.01 的节点直接剔除，不进入 IR",
+    "type 统一 trim + lower，缺省 text",
+    "所有数值保留 3 位小数；颜色 hex 统一小写",
+    "渲染端只画不算：拿到 IR 后不需要任何默认值表"
+  ],
+  "IRDocument": {
+    "version": "number，当前 2",
+    "name": "string，缺省「未命名设计稿」",
+    "bg": "IRColor，取 document.bg，缺省 shellTop #F4F6F9",
+    "screens": "IRScreen[]，w<=0 或 h<=0 的画板直接剔除"
+  },
+  "IRScreen": {
+    "id": "string",
+    "name": "string",
+    "w": "number > 0",
+    "h": "number > 0",
+    "bg": "IRColor，恒等于 IRDocument.bg（screen.bg 一律忽略）",
+    "nodes": "IRNode[]"
+  },
+  "IRColor": {
+    "shape": { "hex": "#rrggbb", "alpha": "number 0..1，省略表示 1" },
+    "input": [
+      "#rgb / #rgba（先展开成 6/8 位）",
+      "#rrggbb",
+      "#aarrggbb（Android ARGB 顺序，前两位是 alpha）",
+      "rgb() / rgba()，通道支持百分比，alpha 支持 0..1 与百分比",
+      "hsl() / hsla()",
+      "CSS 具名色（含 transparent）",
+      "none / transparent -> kind=none（仅用于 fill）"
+    ]
+  },
+  "IRFill": {
+    "kind": "none | solid | linear | radial",
+    "solid": { "kind": "solid", "color": "IRColor" },
+    "linear": {
+      "kind": "linear",
+      "angle": "number，与 CSS 同义：0 向上、90 向右、180 向下、顺时针",
+      "center": { "x": 0.5, "y": 0.5 },
+      "stops": [{ "color": "IRColor", "offset": "number 0..1" }]
+    },
+    "radial": {
+      "kind": "radial",
+      "angle": 180.0,
+      "center": { "x": "number 0..1", "y": "number 0..1" },
+      "stops": [{ "color": "IRColor", "offset": "number 0..1" }]
+    },
+    "rules": [
+      "to top=0 / to top right=45 / to right=90 / to bottom right=135 / to bottom=180 / to bottom left=225 / to left=270 / to top left=315",
+      "angle 支持 deg / turn / rad，统一折算成 0..360 的 deg",
+      "radial 支持 circle at x y（百分比或 left/top/center/right/bottom 关键字），渲染端按正圆近似",
+      "未标位置的色标按 CSS 规则在相邻已标位置之间均分；首尾缺失分别贴 0 / 1",
+      "不支持 conic-gradient 与多重背景；无法解析时退回 solid，再失败为 kind=none"
+    ]
+  },
+  "IRRadius": {
+    "shape": { "tl": 0, "tr": 0, "br": 0, "bl": 0 },
+    "rules": [
+      "显式值优先；数值 / [tl,tr,br,bl] / {tl,tr,br,bl|topLeft...} 均支持",
+      "显式负值按 0 处理（不回落默认值）",
+      "上限 min(w, h) / 2",
+      "默认：button/pill/input/slider/switch/progress/badge/chip = h/2；avatar = w/2；card/nav = 18；circle = w/2；divider 与其余 = 0"
+    ]
+  },
+  "IRStroke": {
+    "shape": {
+      "color": "IRColor",
+      "width": "number >= 0",
+      "align": "inside | center | outside",
+      "dash": ["number"],
+      "sides": "null | {top,right,bottom,left: boolean}"
+    },
+    "rules": [
+      "字符串形式等价于 width=1 / align=inside",
+      "三端统一按 align=inside 落笔（网页 border 在盒内），center/outside 仅记录不改变绘制",
+      "dash 非空即虚线：网页 dashed；手机 dashPathEffect([w×3, w×2])；桌面 DashStyle(Dash, w×3, w×2)",
+      "sides 非空且至少一边 true 时只画这些边"
+    ]
+  },
+  "IRShadow": {
+    "shape": {
+      "dx": "number",
+      "dy": "number",
+      "blur": "number >= 0",
+      "color": "IRColor",
+      "inset": "boolean"
+    },
+    "rules": [
+      "card 未显式给 shadow 时补 dy=6 / blur=0 / #000000@0.05",
+      "blur=0：单段真实阴影（dx/dy 平移，无外扩），与历史基准图一致",
+      "blur>0：按 N=10 环近似。spread_i = blur × i / N（i=1..N）；alpha_i = color.alpha × 3/N × (1 − i/N)²，Σalpha_i ≈ color.alpha",
+      "绘制顺序：大 spread 在下、小 spread 在上；网页 box-shadow 列表以「小 spread 在前」书写",
+      "inset：环在盒内绘制；网页用 inset 段，手机/桌面用 EvenOdd 环形区域",
+      "模糊溢出节点边界的部分不裁剪"
+    ]
+  },
+  "IRText": {
+    "shape": {
+      "value": "string",
+      "fontFamily": "system | noto-sans-sc | noto-serif-sc | inter | mono",
+      "fontSize": "number，缺省 13",
+      "fontWeight": "integer 1..1000，缺省 400",
+      "italic": "boolean",
+      "underline": "boolean",
+      "strikethrough": "boolean",
+      "lineHeight": "number，缺省 1.35",
+      "letterSpacing": "number，缺省 0",
+      "align": "left | center | right",
+      "valign": "center",
+      "maxLines": "integer 1..64，缺省 3",
+      "ellipsis": true,
+      "autoFit": "boolean",
+      "color": "IRColor",
+      "fill": "null | IRGradient（文字渐变）",
+      "stroke": "null | {width, color, align}（文字描边，align 缺省 outside）",
+      "glow": "null | IRTextEffect",
+      "shadow": "null | IRTextEffect",
+      "padLeft": "number，input 缺省 12，其余 0",
+      "placeholderAlpha": "number，input 为 0.5，其余 1",
+      "area": { "w": "number", "h": "number" }
+    },
+    "rules": [
+      "只有 text 内容非空（trim 后）才输出 IRText，否则为 null",
+      "button / pill / nav 强制 align=center",
+      "input 的 color 保持全不透明，占位符透明度由 placeholderAlpha 单独应用，避免与 CSS ::placeholder opacity 相乘",
+      "fontFamily 别名（sans/serif/monospace/noto-sans...）在编译期归一成枚举"
+    ]
+  },
+  "IRTextEffect": {
+    "shape": {
+      "dx": "number",
+      "dy": "number",
+      "blur": "number >= 0",
+      "intensity": "number 0..1",
+      "color": "IRColor",
+      "rings": [[0.35, 0.55], [0.7, 0.35], [1.0, 0.18]]
+    },
+    "rules": [
+      "三端按 rings 里的同一套模糊环叠加，避免不同高斯实现导致不一致",
+      "绘制端把每个环当成「字形轮廓外扩 blur × 半径」：居中描边线宽 = 外扩 × 2，内侧一半被填充盖住",
+      "环透明度 = color.alpha × intensity × 环透明度，≤ 0.004 的环整环跳过",
+      "blur=0 退化为同形偏移实心副本；颜色解析失败整段效果丢弃",
+      "绘制顺序（底层 → 顶层）：投影环（半径大 → 小）→ 发光环（半径大 → 小）→ 描边 → 填充"
+    ]
+  },
+  "IRNode": {
+    "shape": {
+      "id": "string",
+      "type": "string，已 trim + lower",
+      "name": "string",
+      "parentType": "string | null",
+      "x": "number",
+      "y": "number",
+      "w": "number > 0",
+      "h": "number > 0",
+      "rotation": "number，顺时针角度",
+      "opacity": "number 0..1",
+      "radius": "IRRadius",
+      "fill": "IRFill",
+      "stroke": "null | IRStroke",
+      "shadow": "null | IRShadow",
+      "insetShadow": "null | IRShadow",
+      "blur": "number >= 0",
+      "clip": "boolean，text/button/pill/input/nav 为 true",
+      "ellipse": "boolean，circle 或等宽高的 decor",
+      "text": "null | IRText",
+      "children": "IRNode[]",
+      "control": "switch / slider / nav 专有，见 IRControl"
+    },
+    "defaultFill": {
+      "button": "accent",
+      "pill": "accent@0.12",
+      "decor": "accent@0.12",
+      "card": "#FFFFFF",
+      "nav": "#FFFFFF",
+      "input": "inputFill",
+      "switch": "accent",
+      "slider": "accent",
+      "progress": "accent",
+      "badge": "accent",
+      "chip": "accent@0.12",
+      "avatar": "accent@0.12",
+      "other": "ink@0.08",
+      "textWithoutFill": "kind=none"
+    },
+    "defaultTextColor": {
+      "badge": "#FFFFFF",
+      "chip": "accent",
+      "avatar": "accent",
+      "other": "ink"
+    }
+  },
+  "IRControl": {
+    "switch": {
+      "on": "boolean",
+      "knob": "number，缺省 h-6",
+      "inset": 3,
+      "knobTop": "number",
+      "onColor": "IRColor",
+      "offColor": "IRColor"
+    },
+    "slider": {
+      "value": "number 0..1，缺省 0.5",
+      "trackColor": "IRColor",
+      "fillColor": "IRColor",
+      "trackHeight": 4,
+      "thumb": 16,
+      "ring": 20,
+      "ringColor": "IRColor（fillColor @0.22）",
+      "thumbX": "number"
+    },
+    "nav": {
+      "items": [
+        {
+          "label": "string",
+          "active": "boolean",
+          "fontSize": "number，缺省 10.5",
+          "fontWeight": "600 选中 / 400 未选中",
+          "color": "IRColor（选中 accent，未选中 ink@0.42）",
+          "lineHeight": 1.2
+        }
+      ],
+      "cellWidth": "number",
+      "indicator": { "w": 12, "h": 2, "bottom": 4, "alpha": 0.9 },
+      "labelOffsetY": -2
+    },
+    "progress": {
+      "value": "number 0..1，缺省 0.5",
+      "trackColor": "IRColor，取 node.track，缺省 switchOff",
+      "fillColor": "IRColor，取节点 fill（solid），缺省 accent",
+      "radius": "h/2（填充段与轨道同圆角）"
+    }
+  },
+  "skip": {
+    "when": [
+      "hidden 归一后为 true（字符串 \"false\"/\"0\"/\"none\"/\"null\"/\"\" 都算 false）",
+      "w <= 0 或 h <= 0",
+      "opacity <= 0.01",
+      "非对象节点"
+    ]
+  }
+}

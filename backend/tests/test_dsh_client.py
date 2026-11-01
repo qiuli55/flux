@@ -268,6 +268,46 @@ async def test_error_finish_reason_does_not_map_to_completed(
     client.close()
 
 
+async def test_error_finish_reason_surfaces_upstream_detail(tmp_path: Path) -> None:
+    """额度类错误要把上游原文带出来：只说"执行出错"，用户不知道该充值还是换模型。"""
+    detail = "Insufficient Balance (request_id: abc-123)"
+
+    def behavior(
+        harness: FakeDshHarness,
+        instruction: str,
+        session_id: str | None,
+        on_notification: Callable[[Notification], None] | None,
+    ) -> RunResult:
+        sid = session_id or "session"
+        end = {
+            "type": "turn/end",
+            "data": {"reason": {"kind": "error", "error": {"message": detail, "code": "QUOTA"}}},
+        }
+        if on_notification is not None:
+            on_notification(
+                Notification(method="session.event", payload={"sessionId": sid, "event": end})
+            )
+        return RunResult(
+            session_id=sid,
+            final_response="",
+            finish_reason="error",
+            events=[end],
+            notifications=[],
+        )
+
+    client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory(behavior))
+    run = await client.start_run("会被额度挡住", session_id="s-quota")
+
+    finished = await _wait_terminal(client, run.run_id)
+    assert finished.status is DshRunStatus.FAILED
+    assert finished.upstream_error == detail
+    assert finished.events[0]["error_detail"] == detail
+    assert finished.error is not None
+    assert "模型额度或鉴权异常" in finished.error
+    assert detail in finished.error
+    client.close()
+
+
 class _InitTimeoutHarness(FakeDshHarness):
     """初始化阶段必超时的替身：模拟 runtime 迟迟不就绪（黑洞 MCP / Provider 无响应）。"""
 

@@ -59,9 +59,11 @@ FIM_CONTEXT_HEADER_MAX_CHARS = 1_600
 #: 这些状态码表示"该端点不支持 FIM"，可以安全降级为 chat
 FIM_FALLBACK_STATUS = frozenset({400, 404, 405, 406, 415, 422, 501})
 
-#: 补全输出上限：默认给 512，避免 reasoning 类模型把预算全花在思考上
+#: 补全输出上限：原生 FIM 默认 512（模型不思考，够用且首字快）
 DEFAULT_MAX_TOKENS = 512
 MIN_MAX_TOKENS = 64
+#: chat 路径下限。reasoning 类模型会先花 token 思考，预算太小会把额度吃光导致 content 为空
+CHAT_MIN_MAX_TOKENS = 1024
 
 
 class _FimUnsupported(Exception):
@@ -331,8 +333,7 @@ def _fim_context_header(request: FimRequest, context: dict[str, Any]) -> str:
     start, end = _comment_prefix(request)
     body = _head(body, FIM_CONTEXT_HEADER_MAX_CHARS)
     lines = [
-        f"{start}{line}{end}".rstrip() if line else start.rstrip()
-        for line in body.splitlines()
+        f"{start}{line}{end}".rstrip() if line else start.rstrip() for line in body.splitlines()
     ]
     return "\n".join(lines) + "\n\n"
 
@@ -544,9 +545,7 @@ class CompletionService:
                     body = (await response.aread()).decode("utf-8", "replace")
                     if response.status_code in FIM_FALLBACK_STATUS:
                         raise _FimUnsupported()
-                    raise map_status_to_error(
-                        response.status_code, body, provider="deepseek"
-                    )
+                    raise map_status_to_error(response.status_code, body, provider="deepseek")
                 async for line in response.aiter_lines():
                     parsed = _parse_fim_line(line)
                     if parsed is None:
@@ -623,7 +622,7 @@ class CompletionService:
 
         async for text in provider.stream(
             messages,
-            max_tokens=self._max_tokens(request),
+            max_tokens=self._max_tokens(request, floor=CHAT_MIN_MAX_TOKENS),
             temperature=request.temperature if request.temperature is not None else 0.2,
         ):
             deduped = deduper.feed(text)
@@ -690,11 +689,11 @@ class CompletionService:
         return self._http
 
     @staticmethod
-    def _max_tokens(request: FimRequest) -> int:
+    def _max_tokens(request: FimRequest, *, floor: int = DEFAULT_MAX_TOKENS) -> int:
         if request.max_tokens:
             return max(MIN_MAX_TOKENS, int(request.max_tokens))
-        # 按行数给预算：每行约 48 token，至少 256，封顶 1024
-        return max(256, min(1024, max(DEFAULT_MAX_TOKENS, request.max_lines * 48)))
+        # 按行数给预算：每行约 48 token，封顶 1024；floor 由调用方按通道给
+        return max(floor, min(1024, max(DEFAULT_MAX_TOKENS, request.max_lines * 48)))
 
     @staticmethod
     def _split(request: FimRequest) -> tuple[str, str]:

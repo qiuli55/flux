@@ -152,9 +152,7 @@ def test_opencode_go_key_falls_back_to_merged_provider(tmp_path) -> None:
     from flux.core.billing.sources import opencode_go_key
 
     config = tmp_path / "opencode.json"
-    settings = container_settings(tmp_path).model_copy(
-        update={"opencode_config_file": str(config)}
-    )
+    settings = container_settings(tmp_path).model_copy(update={"opencode_config_file": str(config)})
 
     config.write_text(json.dumps({"provider": {}}), encoding="utf-8")
     assert opencode_go_key(settings) is None

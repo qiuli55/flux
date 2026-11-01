@@ -1,0 +1,32 @@
+{
+  "name": "文本排版",
+  "meta": {
+    "case": "text-layout",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "对齐、三行省略、行高、字距、中英混排、空文本、超长英文单词"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "text",
+      "name": "文本排版",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "t-left", "type": "text", "x": 24, "y": 24, "w": 342, "h": 40, "text": "左对齐左对齐左对齐左对齐左对齐左对齐左对齐左对齐", "fontSize": 14 },
+        { "id": "t-center", "type": "text", "x": 24, "y": 76, "w": 342, "h": 40, "text": "居中对齐", "fontSize": 14, "align": "center" },
+        { "id": "t-right", "type": "text", "x": 24, "y": 128, "w": 342, "h": 40, "text": "右对齐", "fontSize": 14, "align": "right" },
+        { "id": "t-clamp", "type": "text", "x": 24, "y": 180, "w": 200, "h": 72, "text": "这段文字很长需要被截断到三行以内并且显示省略号因为容器的宽度只有两百像素而高度只有七十二像素", "fontSize": 14 },
+        { "id": "t-lineheight", "type": "text", "x": 24, "y": 264, "w": 200, "h": 90, "text": "行高 1.8 的段落文字用于验证行盒居中与行间距", "fontSize": 13, "lineHeight": 1.8 },
+        { "id": "t-spacing", "type": "text", "x": 244, "y": 264, "w": 120, "h": 24, "text": "字距 2px", "fontSize": 13, "letterSpacing": 2 },
+        { "id": "t-mixed", "type": "text", "x": 24, "y": 368, "w": 342, "h": 60, "text": "Flux 设计画布 v0.9.0 更新说明", "fontSize": 15, "fontWeight": 600 },
+        { "id": "t-longword", "type": "text", "x": 24, "y": 440, "w": 120, "h": 60, "text": "Supercalifragilisticexpialidocious", "fontSize": 13 },
+        { "id": "t-empty", "type": "text", "x": 24, "y": 512, "w": 120, "h": 30, "text": "" },
+        { "id": "t-punct", "type": "text", "x": 24, "y": 552, "w": 150, "h": 60, "text": "你好，世界。这是一个测试：标点符号不能出现在行首。", "fontSize": 13 },
+        { "id": "t-tiny", "type": "text", "x": 24, "y": 624, "w": 200, "h": 16, "text": "字号 9 的辅助说明文字", "fontSize": 9, "color": "#64748B" },
+        { "id": "t-bold", "type": "text", "x": 24, "y": 656, "w": 342, "h": 30, "text": "字重 700 的标题文字", "fontSize": 18, "fontWeight": 700 }
+      ]
+    }
+  ]
+}

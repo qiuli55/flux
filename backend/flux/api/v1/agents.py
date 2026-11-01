@@ -97,9 +97,7 @@ async def put_active_agent(
     if selection.key_id:
         row = await container.key_vault.get(selection.key_id)
         if not row.enabled:
-            raise BadRequestError(
-                f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)}
-            )
+            raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
         models = [str(item).strip() for item in (row.models or []) if str(item).strip()]
         if selection.model and models and selection.model not in models:
             raise BadRequestError(

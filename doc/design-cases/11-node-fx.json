@@ -1,0 +1,161 @@
+{
+  "name": "节点效果与新类型",
+  "meta": {
+    "case": "node-fx",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "渐变角度/径向、四角圆角、描边对象（虚线/单边）、阴影环、内阴影、节点模糊、divider/progress/badge/chip/avatar、任意角度文字渐变"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "fx",
+      "name": "节点效果",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        {
+          "id": "grad-angle",
+          "type": "card",
+          "x": 24,
+          "y": 24,
+          "w": 160,
+          "h": 120,
+          "radius": 12,
+          "fill": "linear-gradient(45deg, #0891B2, #22C55E 40%, #F59E0B)"
+        },
+        {
+          "id": "grad-radial",
+          "type": "card",
+          "x": 200,
+          "y": 24,
+          "w": 166,
+          "h": 120,
+          "radius": 12,
+          "fill": "radial-gradient(circle at 30% 70%, #FFFFFF, #0891B2)"
+        },
+        {
+          "id": "corners",
+          "type": "card",
+          "x": 24,
+          "y": 160,
+          "w": 160,
+          "h": 100,
+          "radius": [20, 0, 20, 0],
+          "fill": "#FFFFFF"
+        },
+        {
+          "id": "stroke-dash",
+          "type": "card",
+          "x": 200,
+          "y": 160,
+          "w": 166,
+          "h": 100,
+          "radius": 16,
+          "fill": "#FFFFFF",
+          "stroke": { "color": "#0891B2", "width": 2, "align": "inside", "dash": [4, 4] }
+        },
+        {
+          "id": "stroke-sides",
+          "type": "card",
+          "x": 24,
+          "y": 276,
+          "w": 160,
+          "h": 60,
+          "radius": 12,
+          "fill": "#FFFFFF",
+          "stroke": { "color": "#0891B2", "width": 2, "sides": ["bottom"] }
+        },
+        {
+          "id": "shadow-soft",
+          "type": "card",
+          "x": 200,
+          "y": 276,
+          "w": 166,
+          "h": 60,
+          "radius": 16,
+          "fill": "#FFFFFF",
+          "shadow": { "dx": 0, "dy": 8, "blur": 18, "color": "rgba(15,23,42,0.30)" }
+        },
+        {
+          "id": "shadow-inset",
+          "type": "card",
+          "x": 24,
+          "y": 352,
+          "w": 160,
+          "h": 60,
+          "radius": 16,
+          "fill": "#FFFFFF",
+          "insetShadow": { "dx": 0, "dy": 2, "blur": 8, "color": "rgba(15,23,42,0.35)", "inset": true }
+        },
+        {
+          "id": "blur-node",
+          "type": "card",
+          "x": 200,
+          "y": 352,
+          "w": 166,
+          "h": 60,
+          "radius": 16,
+          "fill": "#0891B2",
+          "blur": 2
+        },
+        {
+          "id": "divider",
+          "type": "divider",
+          "x": 24,
+          "y": 428,
+          "w": 342,
+          "h": 1
+        },
+        {
+          "id": "progress",
+          "type": "progress",
+          "x": 24,
+          "y": 444,
+          "w": 342,
+          "h": 8,
+          "value": 0.62
+        },
+        {
+          "id": "badge",
+          "type": "badge",
+          "x": 24,
+          "y": 468,
+          "w": 38,
+          "h": 20,
+          "text": "3"
+        },
+        {
+          "id": "chip",
+          "type": "chip",
+          "x": 74,
+          "y": 468,
+          "w": 76,
+          "h": 26,
+          "text": "标签"
+        },
+        {
+          "id": "avatar",
+          "type": "avatar",
+          "x": 166,
+          "y": 460,
+          "w": 44,
+          "h": 44,
+          "text": "L"
+        },
+        {
+          "id": "text-gradient-angle",
+          "type": "text",
+          "x": 24,
+          "y": 528,
+          "w": 342,
+          "h": 40,
+          "text": "任意角度渐变文字",
+          "fontSize": 24,
+          "fontWeight": 700,
+          "textFill": "linear-gradient(90deg, #0891B2, #F59E0B)"
+        }
+      ]
+    }
+  ]
+}

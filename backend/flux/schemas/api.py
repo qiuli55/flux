@@ -319,12 +319,16 @@ class CompletionContextRequest(BaseModel):
 
 
 class CompletionPrefsRequest(BaseModel):
-    """补全偏好（AI_COMPLETION_SPEC §5.3）。"""
+    """补全偏好（AI_COMPLETION_SPEC §5.3）。
 
-    enabled: bool = True
-    model: str = Field(default="follow-agent", max_length=128)
-    debounce_ms: int = Field(default=400, ge=100, le=2000)
-    max_lines: int = Field(default=8, ge=1, le=64)
+    所有字段都是可选的：未传的字段保持原值，避免 IDE 只切换开关时
+    把桌面端 / Web 端已经选好的模型悄悄重置回默认。
+    """
+
+    enabled: bool | None = None
+    model: str | None = Field(default=None, max_length=128)
+    debounce_ms: int | None = Field(default=None, ge=100, le=2000)
+    max_lines: int | None = Field(default=None, ge=1, le=64)
 
 
 class ActiveAgentRequest(BaseModel):

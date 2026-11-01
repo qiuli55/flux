@@ -88,6 +88,19 @@ Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），
 
 **硬禁令**（不是"忘了注册"，且没有任何开关能打开）：`workspace.apply`、`git.commit`、`git.push`、`secret.read`、`shell.exec` 一律不在工具表内——落盘、提交、推送、读密钥、裸 shell 通道都不对 agent 开放。
 
+### 权限模式
+
+模式权威来自 `agent_runs.permission_mode`（每轮 Run 启动时从任务快照），**不是令牌 scopes**；未识别或缺失时一律回落到 `normal`（fail-closed，宁可多问一次）。切换模式只影响后续消息的承接，不改历史消息，下一轮生效。
+
+| 模式 | 可做 | 不可做 |
+| --- | --- | --- |
+| `plan` · 只读 | 读上下文 / 工作区 / 设计稿，写计划文档 | `terminal.execute`、`proposal.create/preview`、`design.*` 写入 |
+| `normal` · 正常（默认） | 全部只读工具、提案、设计工具；低风险命令自动放行 | 未经允许的高风险命令（`rm`/`npm install`/`git push`…）、任何受保护对象 |
+| `full` · 完全访问 | 全部工具；高风险命令不再逐步审批 | 受保护对象（`~/.ssh`、密钥文件、系统服务）仍需逐次申请 |
+| `unattended` · 免审核无人值守 | 高风险与受保护对象全部自动放行，仅留审计日志 | 凭猜测执行破坏性操作、外传密钥内容 |
+
+两层闸门：MCP 模式白名单（`permissions/modes.py`）先拦工具，再由令牌能力位做第二道检查；`terminal.execute` 在执行前用 `permissions/risk.py` 分类，命中高风险或受保护对象就把审批卡写进对话并阻塞等待（最长 10 分钟，超时/拒绝/任务取消都不执行）。落盘、commit、push 没有对应工具，agent 只能提交提案，由用户在 UI 侧应用与提交。
+
 ---
 
 ## 变更落地：Virtual Workspace（M2）

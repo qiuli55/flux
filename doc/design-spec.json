@@ -1,0 +1,216 @@
+{
+  "version": 2,
+  "note": "设计稿渲染契约。手机端 DesignSpec.kt、后端 design_render.py、桌面端 DesignCanvas.cs 三处必须与此文件一致。version 2 随 0.9.0 发布：新增文字效果、节点渐变/阴影、分边描边与单值圆角等约定，旧字段语义不变。",
+  "colors": {
+    "accent": "#0891B2",
+    "ink": "#0F172A",
+    "shellTop": "#F4F6F9",
+    "switchOff": "#E2E8F0",
+    "inputFill": "#F8FAFC"
+  },
+  "typography": {
+    "defaultFontSize": 13,
+    "defaultLineHeight": 1.35,
+    "defaultLetterSpacing": 0,
+    "defaultFontFamily": "system",
+    "maxTextLines": 3,
+    "textLinesLimit": 64,
+    "autoFitMinScale": 0.6,
+    "autoFitStep": 0.5,
+    "navFontSize": 10.5,
+    "navActiveWeight": 600,
+    "navIdleWeight": 400
+  },
+  "fonts": {
+    "note": "三端只认这 5 个枚举；别名先按 [\\s_]+ -> '-' 归一，再查 aliases，未命中落到 system。渲染时按 stack 顺序取本机第一个已安装的字族。",
+    "enums": ["system", "noto-sans-sc", "noto-serif-sc", "inter", "mono"],
+    "stacks": {
+      "system": ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+      "noto-sans-sc": ["Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "sans-serif"],
+      "noto-serif-sc": ["Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "serif"],
+      "inter": ["Inter", "Helvetica Neue", "Arial", "sans-serif"],
+      "mono": ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"]
+    },
+    "aliases": {
+      "": "system",
+      "sans": "system",
+      "sans-serif": "system",
+      "noto-sans": "noto-sans-sc",
+      "source-han-sans": "noto-sans-sc",
+      "serif": "noto-serif-sc",
+      "noto-serif": "noto-serif-sc",
+      "source-han-serif": "noto-serif-sc",
+      "jetbrains-mono": "mono",
+      "monospace": "mono"
+    },
+    "mobileMapping": {
+      "system": "FontFamily.Default",
+      "noto-sans-sc": "FontFamily.SansSerif",
+      "inter": "FontFamily.SansSerif",
+      "noto-serif-sc": "FontFamily.Serif",
+      "mono": "FontFamily.Monospace"
+    },
+    "nav": "nav 文字不应用 fontFamily，继承系统默认栈（对齐网页 .nav-cell span）"
+  },
+  "lineBreaking": {
+    "wrap": "word-break: normal；CJK 逐字断行，拉丁按词断行，超长单词才强制断开",
+    "mobile": "LineBreak(strategy=Simple, strictness=Strict, wordBreak=Default)",
+    "desktop": "TextWrapping.Wrap + TextTrimming.CharacterEllipsis",
+    "clamp": "maxLines 缺省 3，范围 1..64，超出裁掉并加省略号",
+    "lineBox": "行高均匀分布在文字上下（CSS line-height 行为）；手机 includeFontPadding=false + LineHeightStyle(Center, None)，桌面 TextLayout 的 lineHeight 参数",
+    "autoFit": "autoFit=true 时先按基准字号单行量宽，放不下则按 0.5 递减，最低 60%；结果为单行 + 省略号，maxLines 忽略"
+  },
+  "textEffects": {
+    "rings": [[0.35, 0.55], [0.7, 0.35], [1.0, 0.18]],
+    "spread": "环外扩距离 = blur × 半径倍率；居中描边线宽 = 外扩 × 2",
+    "alpha": "color.alpha × intensity × 环透明度；结果 <= 0.004 的环跳过",
+    "blurZero": "blur=0 退化为同形偏移实心副本（网页硬阴影）",
+    "blurFallback": "blur 缺省时回退成 radius（发光习惯写 radius）",
+    "offset": "发光忽略 dx/dy，投影才用 dx/dy",
+    "order": "底层→顶层：投影环（大→小）→ 发光环（大→小）→ 描边 → 填充，对应 CSS text-shadow「先列在上层」",
+    "strokeWidth": "align=inside 用原宽；其余（outside 为缺省）宽度翻倍，与 -webkit-text-stroke 居中描边对齐",
+    "discard": "颜色解析失败的整段效果丢弃",
+    "textFill": "textFill 支持任意角度的 linear-gradient（按节点包围盒的 90deg 方向向量换算起止点）与 radial-gradient（circle at x y）；三端共用同一套 angle/center，不再只认竖向",
+    "desktopLimit": "FormattedText 无 letterSpacing，带字距的文字环按无字距字形近似",
+    "mobileLimit": "渐变字在节点 alpha<1 时 Compose 可能走逐 run 慢路径，渐变按行重复"
+  },
+  "nodeEffects": {
+    "note": "节点级圆角 / 描边 / 阴影 / 模糊。三端必须按本节同一套近似方式绘制。",
+    "radius": {
+      "shape": { "tl": 0, "tr": 0, "br": 0, "bl": 0 },
+      "input": ["number", "[tl,tr,br,bl]", "{tl,tr,br,bl} 或 {topLeft,topRight,bottomRight,bottomLeft}"],
+      "clamp": "每个角先按显式值（负值→0）再夹到 0..min(w,h)/2；未给出的角回落到类型默认值"
+    },
+    "stroke": {
+      "align": "三端统一按 inside 绘制（网页 border 在盒内；手机/桌面向盒内偏移）。center/outside 也按 inside 落笔，保证同一份 IR 三端一致",
+      "dash": "dash 非空 → 虚线。网页 dashed；手机 PathEffect.dashPathEffect([w×3, w×2])；桌面 DashStyle(Dash, w×3, w×2)",
+      "sides": "sides 非空且至少一边为 true → 只画这些边（单边描边）；否则四边全画"
+    },
+    "shadow": {
+      "ringCount": 10,
+      "spread": "spread_i = blur × i / N，i = 1..N（含两端）",
+      "alpha": "alpha_i = color.alpha × 3 / N × (1 − i/N)²；总透明度≈color.alpha",
+      "order": "大 spread 在下、小 spread 在上；网页 box-shadow 列表按「小 spread 在前（在上层）」书写",
+      "blurZero": "blur=0 退化为单段 spread=0 的真实阴影，输出与历史基准图完全一致",
+      "inset": "inset 时环在盒内绘制；网页用 inset 段，手机/桌面用 EvenOdd 环形区域",
+      "overflow": "模糊溢出节点边界的部分不裁剪（网页 .t-card overflow:visible）"
+    },
+    "blur": "节点级 blur 仅网页支持（filter:blur）；手机/桌面保留 IR 原值但忽略绘制，属于已知限制",
+    "gradient": "节点 fill 的 linear/radial 与色标 offset 三端都按 design-ir.json 的 IRFill 规则绘制；不支持 conic"
+  },
+  "screen": {
+    "bgDefault": "#F4F6F9",
+    "bgField": "document.bg (screen.bg ignored)"
+  },
+  "nav": {
+    "defaultItems": ["首页", "任务", "我的"],
+    "defaultActive": 0,
+    "idleAlpha": 0.42,
+    "lineHeight": 1.2
+  },
+  "inputPlaceholderAlpha": 0.5,
+  "inputPlaceholderNote": "绘制期乘一次，不并进文字颜色（否则会与节点 alpha 二次相乘）",
+  "geometry": {
+    "deviceRadius": 26,
+    "deviceShadow": { "dy": 26, "blur": 60, "alpha": 140 },
+    "cardShadow": { "dy": 6, "blur": 0, "alpha": 0.05 },
+    "navIndicator": { "width": 12, "height": 2, "bottom": 4, "alpha": 0.9 },
+    "navLabelOffsetY": -2,
+    "switchKnobInset": 3,
+    "sliderTrackHeight": 4,
+    "sliderThumb": 16,
+    "sliderRing": 20,
+    "sliderRingAlpha": 0.22,
+    "inputPad": 12,
+    "progressDefaultValue": 0.5
+  },
+  "types": {
+    "note": "除基础类型外新增的 5 个语义类型；网页 / 手机 / 桌面必须同形。",
+    "divider": "分隔线：一条短边矩形，默认 fill=ink@0.08，圆角 0，不裁剪",
+    "progress": "进度条：fill=填充段颜色（默认 accent），control.trackColor=轨道底色（默认 switchOff），value 0..1 缺省 0.5，圆角 h/2，填充段宽度 = w×value",
+    "badge": "徽标：fill=accent，文字默认 #FFFFFF，圆角 h/2，文字居中，裁剪",
+    "chip": "标签：fill=accent@0.12，文字默认 accent，圆角 h/2，文字居中，裁剪",
+    "avatar": "头像：fill=accent@0.12，文字默认 accent，圆角 w/2（正圆），文字居中，裁剪"
+  },
+  "defaults": {
+    "radius": {
+      "button": "h/2",
+      "pill": "h/2",
+      "input": "h/2",
+      "slider": "h/2",
+      "switch": "h/2",
+      "progress": "h/2",
+      "badge": "h/2",
+      "chip": "h/2",
+      "avatar": "w/2",
+      "card": 18,
+      "nav": 18,
+      "circle": "w/2",
+      "divider": 0,
+      "text": 0
+    },
+    "fill": {
+      "button": "accent",
+      "pill": "accent@0.12",
+      "card": "#FFFFFF",
+      "nav": "#FFFFFF",
+      "input": "inputFill",
+      "decor": "accent@0.12",
+      "switch": "accent",
+      "slider": "accent",
+      "progress": "accent",
+      "badge": "accent",
+      "chip": "accent@0.12",
+      "avatar": "accent@0.12",
+      "other": "ink@0.08"
+    },
+    "textAlign": {
+      "button": "center",
+      "pill": "center",
+      "badge": "center",
+      "chip": "center",
+      "avatar": "center",
+      "text": "align or left",
+      "input": "align or left"
+    },
+    "textColor": {
+      "badge": "#FFFFFF",
+      "chip": "accent",
+      "avatar": "accent",
+      "other": "ink"
+    },
+    "radiusClamp": "explicit radius is clamped to 0..min(w,h)/2; negative -> 0",
+    "textFill": "type=text without a non-blank fill draws no background (no ink@0.08 fallback)"
+  },
+  "colorParsing": {
+    "hex3": "expand to hex6",
+    "hex4": "expand each digit, then parse as aarrggbb",
+    "hex6": "opaque",
+    "hex8": "aarrggbb (Android ARGB)",
+    "rgb": "rgb()/rgba(), channels 0..255 or n%, alpha 0..1 or n%",
+    "hsl": "hsl()/hsla(), hue in deg, saturation/lightness 0..1 or n%",
+    "named": "CSS named colors (incl. transparent) from design_tokens.NAMED_COLORS",
+    "args": "channels split on comma, whitespace or slash",
+    "none": "fill: none / transparent -> no background",
+    "gradient": "180deg vertical, all stops; single-color fallback uses the last stop"
+  },
+  "skipNode": {
+    "when": [
+      "hidden is true",
+      "w <= 0 or h <= 0",
+      "opacity <= 0.01"
+    ],
+    "typeMissing": "text",
+    "note": "when 的顺序就是三端的判断顺序；type 缺失不跳过，按 text 渲染"
+  },
+  "overflow": {
+    "clip": ["text", "button", "pill", "input", "nav", "badge", "chip", "avatar"],
+    "visible": ["card"],
+    "visibleNote": "未列在 clip 里的类型一律可见（不裁剪）"
+  },
+  "transform": {
+    "rotationField": "rotation",
+    "unit": "degrees clockwise",
+    "origin": "center"
+  }
+}

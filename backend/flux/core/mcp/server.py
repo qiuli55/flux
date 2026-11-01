@@ -343,9 +343,7 @@ async def _attach_run_id(
     if run_id:
         row = await container.run_repo.get(run_id)
         if row is None or not row.agent_id or row.agent_id != identity.agent_id:
-            logger.warning(
-                "mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id
-            )
+            logger.warning("mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id)
             return identity
         return replace(
             identity,

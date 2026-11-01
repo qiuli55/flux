@@ -1,0 +1,36 @@
+{
+  "name": "变换与裁剪",
+  "meta": {
+    "case": "transform",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "旋转中心、透明度、越界裁剪、嵌套子节点、负坐标"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "transform",
+      "name": "变换与裁剪",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "rot15", "type": "card", "x": 40, "y": 40, "w": 120, "h": 80, "rotation": 15 },
+        { "id": "rot-30", "type": "card", "x": 200, "y": 40, "w": 120, "h": 80, "rotation": -30, "fill": "#0891B2" },
+        { "id": "op50", "type": "pill", "x": 40, "y": 160, "w": 120, "h": 32, "text": "半透明", "opacity": 0.5 },
+        { "id": "op0", "type": "pill", "x": 180, "y": 160, "w": 120, "h": 32, "text": "不该出现", "opacity": 0 },
+        { "id": "hidden1", "type": "text", "x": 40, "y": 210, "w": 200, "h": 24, "text": "hidden 应被跳过", "hidden": true },
+        { "id": "nested", "type": "card", "x": 40, "y": 250, "w": 200, "h": 140, "children": [
+          { "id": "nested-text", "type": "text", "x": 16, "y": 16, "w": 160, "h": 20, "text": "子节点相对父节点", "fontSize": 13 },
+          { "id": "nested-btn", "type": "button", "x": 16, "y": 48, "w": 120, "h": 40, "text": "子按钮" }
+        ] },
+        { "id": "overflow", "type": "card", "x": 260, "y": 250, "w": 100, "h": 100, "children": [
+          { "id": "overflow-child", "type": "card", "x": 60, "y": 60, "w": 120, "h": 120, "fill": "#22D3EE" }
+        ] },
+        { "id": "negs", "type": "decor", "x": -20, "y": 430, "w": 80, "h": 80 },
+        { "id": "no-size", "type": "card", "x": 40, "y": 520, "w": 0, "h": 80 },
+        { "id": "no-type", "x": 40, "y": 560, "w": 200, "h": 24, "text": "缺省 type 当 text", "fontSize": 13 },
+        { "id": "radius", "type": "card", "x": 40, "y": 600, "w": 120, "h": 80, "radius": 4 }
+      ]
+    }
+  ]
+}

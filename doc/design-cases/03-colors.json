@@ -1,0 +1,31 @@
+{
+  "name": "颜色语法",
+  "meta": {
+    "case": "colors",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "#rgb / #rrggbb / #aarrggbb(ARGB) / rgb() / rgba() / 渐变字符串 / 非法值回退"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "colors",
+      "name": "颜色语法",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "c-hex3", "type": "card", "x": 24, "y": 24, "w": 100, "h": 60, "fill": "#f80" },
+        { "id": "c-hex6", "type": "card", "x": 140, "y": 24, "w": 100, "h": 60, "fill": "#0891B2" },
+        { "id": "c-hex8", "type": "card", "x": 256, "y": 24, "w": 100, "h": 60, "fill": "#800891B2" },
+        { "id": "c-rgb", "type": "card", "x": 24, "y": 100, "w": 100, "h": 60, "fill": "rgb(8,145,178)" },
+        { "id": "c-rgba", "type": "card", "x": 140, "y": 100, "w": 100, "h": 60, "fill": "rgba(8,145,178,0.5)" },
+        { "id": "c-grad", "type": "card", "x": 256, "y": 100, "w": 100, "h": 60, "fill": "linear-gradient(180deg,#0891B2,#22D3EE)" },
+        { "id": "c-bad", "type": "card", "x": 24, "y": 176, "w": 100, "h": 60, "fill": "not-a-color" },
+        { "id": "c-stroke", "type": "card", "x": 140, "y": 176, "w": 100, "h": 60, "fill": "#FFFFFF", "stroke": "#0891B2" },
+        { "id": "c-text", "type": "text", "x": 24, "y": 256, "w": 342, "h": 24, "text": "文字也走同一套颜色解析", "fontSize": 14, "color": "#80570DF2" },
+        { "id": "c-btn", "type": "button", "x": 24, "y": 296, "w": 160, "h": 44, "text": "自定义填充", "fill": "linear-gradient(180deg,#FF7A59,#FF3D00)" },
+        { "id": "c-nav", "type": "nav", "x": 24, "y": 360, "w": 342, "h": 60, "active": 1, "items": ["记录", "统计", "设置"] }
+      ]
+    }
+  ]
+}

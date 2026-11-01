@@ -1441,4 +1441,3 @@ def test_codex_pool_reuses_the_app_server_process(
             os.environ.pop("FAKE_CODEX_SPAWN_LOG", None)
         else:
             os.environ["FAKE_CODEX_SPAWN_LOG"] = previous
-

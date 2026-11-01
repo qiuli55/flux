@@ -352,9 +352,7 @@ class CompletionContextBuilder:
             except Exception as exc:  # noqa: BLE001 - 读不到就退化为空上下文
                 logger.debug("ide_completion.l0_read_failed path=%s error=%s", path, exc)
                 source = None
-        l0 = self._build_l0(
-            path=path, caret=caret, text=source, language_id=language_id, root=root
-        )
+        l0 = self._build_l0(path=path, caret=caret, text=source, language_id=language_id, root=root)
         l1 = self._build_l1(path=path, root=root, text=source)
         l2 = await self._build_l2(root=root)
         return {

@@ -36,6 +36,9 @@ def to_flux_event(notification: Notification) -> tuple[str, dict[str, Any]]:
                 body["text"] = _assistant_text(data)
             elif event_type == "turn/end":
                 body["finish_reason"] = _finish_reason(data)
+                detail = _failure_detail(data)
+                if detail:
+                    body["error_detail"] = detail
             elif event_type == "tool/call":
                 body.update(_tool_call(data))
             elif event_type == "tool/result":
@@ -131,6 +134,26 @@ def _finish_reason(data: Any) -> str | None:
     reason = data.get("reason") if isinstance(data, dict) else None
     kind = reason.get("kind") if isinstance(reason, dict) else None
     return kind if isinstance(kind, str) else None
+
+
+def _failure_detail(data: Any) -> str:
+    """取失败原因原文：`turn/end` 的 `reason.error/failure.message`。
+
+    额度/鉴权这类错误在运行库层面只表现为 `kind=error`，用户能据以自救的只有这句
+    上游原文（如 "Insufficient Balance ... QUOTA 402"）；丢掉它任务面板就只剩
+    "执行出错"四个字，无法判断是该充值还是该换模型。
+    """
+    reason = data.get("reason") if isinstance(data, dict) else None
+    if not isinstance(reason, dict):
+        return ""
+    for key in ("error", "failure"):
+        failure = reason.get(key)
+        if not isinstance(failure, dict):
+            continue
+        message = failure.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return ""
 
 
 __all__ = ["to_flux_event"]

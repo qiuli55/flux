@@ -1,0 +1,36 @@
+{
+  "name": "边界与异常",
+  "meta": {
+    "case": "edge-cases",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "非法数值、极端尺寸、未知类型、超长文本、颜色缺失、重复 id"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "edge",
+      "name": "边界",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "neg-w", "type": "card", "x": 24, "y": 24, "w": -40, "h": 60 },
+        { "id": "zero-h", "type": "card", "x": 24, "y": 100, "w": 100, "h": 0 },
+        { "id": "nan-x", "type": "card", "x": "abc", "y": 100, "w": 100, "h": 60 },
+        { "id": "unknown", "type": "widget", "x": 140, "y": 100, "w": 100, "h": 60, "text": "未知类型" },
+        { "id": "upper", "type": "BUTTON", "x": 260, "y": 100, "w": 100, "h": 44, "text": "大写类型" },
+        { "id": "spaced", "type": " text ", "x": 24, "y": 176, "w": 200, "h": 24, "text": "类型带空格" },
+        { "id": "huge", "type": "text", "x": 24, "y": 212, "w": 342, "h": 60, "text": "超长文本超长文本超长文本超长文本超长文本超长文本超长文本超长文本超长文本超长文本", "fontSize": 14 },
+        { "id": "op-small", "type": "card", "x": 24, "y": 288, "w": 100, "h": 60, "opacity": 0.005 },
+        { "id": "op-nan", "type": "card", "x": 140, "y": 288, "w": 100, "h": 60, "opacity": "x" },
+        { "id": "fs-nan", "type": "text", "x": 24, "y": 364, "w": 200, "h": 24, "text": "字号非法回退 13", "fontSize": "big" },
+        { "id": "dup", "type": "card", "x": 24, "y": 400, "w": 100, "h": 60 },
+        { "id": "dup", "type": "card", "x": 140, "y": 400, "w": 100, "h": 60, "fill": "#0891B2" },
+        { "id": "big-radius", "type": "card", "x": 24, "y": 476, "w": 100, "h": 60, "radius": 999 },
+        { "id": "neg-radius", "type": "card", "x": 140, "y": 476, "w": 100, "h": 60, "radius": -20 },
+        { "id": "empty-children", "type": "card", "x": 260, "y": 476, "w": 100, "h": 60, "children": [] },
+        { "id": "bad-children", "type": "card", "x": 24, "y": 552, "w": 100, "h": 60, "children": "oops" }
+      ]
+    }
+  ]
+}

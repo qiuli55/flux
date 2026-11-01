@@ -14,7 +14,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flux.core.ide_completion.context import L0_AFTER_LINES, L0_BEFORE_LINES
-from flux.core.ide_completion.fim import _LeadingDeduper, _parse_fim_line, _StreamFormatter
+from flux.core.ide_completion.fim import (
+    CHAT_MIN_MAX_TOKENS,
+    CompletionService,
+    _LeadingDeduper,
+    _parse_fim_line,
+    _StreamFormatter,
+)
 from flux.core.ide_completion.prefs import (
     DEFAULT_DEBOUNCE_MS,
     DEFAULT_MAX_LINES,
@@ -206,9 +212,7 @@ def test_stats_store_counts_requests_results_and_accepts(tmp_path: Path) -> None
     store = CompletionStatsStore(path)
 
     store.record_request(model="stub-model")
-    store.record_result(
-        mode="chat", model="stub-model", first_token_ms=120, total_ms=480, chars=12
-    )
+    store.record_result(mode="chat", model="stub-model", first_token_ms=120, total_ms=480, chars=12)
     store.record_request(model="stub-model")
     store.record_result(
         mode="chat", model="stub-model", first_token_ms=None, total_ms=90, chars=0, empty=True
@@ -437,6 +441,22 @@ def test_completion_prefs_api_roundtrip(client: TestClient) -> None:
     assert reloaded["model"] == "deepseek-chat"
 
 
+def test_completion_prefs_api_partial_update_keeps_model(client: TestClient) -> None:
+    client.put(
+        "/api/v1/ide/completion/prefs",
+        json={"model": "deepseek-chat", "max_lines": 12},
+    )
+
+    saved = client.put("/api/v1/ide/completion/prefs", json={"enabled": False})
+
+    assert saved.status_code == 200, saved.text
+    data = saved.json()["data"]
+    assert data["enabled"] is False
+    # IDE 只切开关时，不能把桌面端 / Web 端已经选好的模型与行数重置回默认
+    assert data["model"] == "deepseek-chat"
+    assert data["max_lines"] == 12
+
+
 def test_completion_prefs_api_rejects_out_of_range(client: TestClient) -> None:
     response = client.put(
         "/api/v1/ide/completion/prefs",
@@ -559,9 +579,7 @@ def test_completion_service_done_event_carries_latency_metrics(container) -> Non
     service._stream_impl = fake_impl
     target = SimpleNamespace(model="stub-model")
 
-    events = asyncio.run(
-        _collect(service.stream(FimRequest(prefix="x", path="a.py"), target))
-    )
+    events = asyncio.run(_collect(service.stream(FimRequest(prefix="x", path="a.py"), target)))
 
     done = events[-1][1]
     assert done["chars"] == 5
@@ -580,15 +598,24 @@ def test_completion_service_marks_empty_completion(container) -> None:
     service._stream_impl = fake_impl
     target = SimpleNamespace(model="stub-model")
 
-    events = asyncio.run(
-        _collect(service.stream(FimRequest(prefix="x", path="a.py"), target))
-    )
+    events = asyncio.run(_collect(service.stream(FimRequest(prefix="x", path="a.py"), target)))
 
     done = events[-1][1]
     assert done["chars"] == 0
     assert done["empty"] is True
     # 一个 delta 都没有，就不该有首字延迟样本
     assert done["first_token_ms"] is None
+
+
+def test_completion_service_chat_budget_has_reasoning_floor() -> None:
+    # reasoning 模型会先花 token 思考：chat 路径必须留足预算，否则 content 全空
+    request = FimRequest(prefix="x", path="a.py")
+
+    assert CompletionService._max_tokens(request, floor=CHAT_MIN_MAX_TOKENS) == 1024
+    # 原生 FIM 不需要放这么多
+    assert CompletionService._max_tokens(request) == 512
+    # 调用方显式给值时不覆盖
+    assert CompletionService._max_tokens(FimRequest(prefix="x", max_tokens=128)) == 128
 
 
 def test_completion_stats_api_starts_empty(client: TestClient) -> None:

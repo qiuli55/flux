@@ -24,7 +24,7 @@ from flux.core.code_intelligence.registry import (
 )
 from flux.core.code_intelligence.service import LspSession
 
-FAKE_SERVER = '''
+FAKE_SERVER = """
 import json
 import sys
 
@@ -77,7 +77,7 @@ while True:
                                   "items": [{"label": "alpha"}]}})
     elif request_id is not None:
         write_message({"jsonrpc": "2.0", "id": request_id, "result": None})
-'''
+"""
 
 
 def test_registry_exposes_all_servers() -> None:
@@ -192,8 +192,14 @@ def test_gateway_shares_one_server_between_clients(
             # 3. 文档引用计数：同一 URI 两个客户端只 didOpen 一次，
             #    第二个客户端的 didOpen 被改写成 didChange
             uri = (tmp_path / "main.py").as_uri()
-            open_params = {"textDocument": {"uri": uri, "languageId": "python",
-                                            "version": 1, "text": "x = 1\n"}}
+            open_params = {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "python",
+                    "version": 1,
+                    "text": "x = 1\n",
+                }
+            }
             await session.handle_client_message(
                 client_a, rpc.make_notification("textDocument/didOpen", open_params)
             )
@@ -201,8 +207,8 @@ def test_gateway_shares_one_server_between_clients(
                 client_b, rpc.make_notification("textDocument/didOpen", open_params)
             )
             await session.handle_client_message(
-                client_a, rpc.make_notification("textDocument/didClose",
-                                                {"textDocument": {"uri": uri}})
+                client_a,
+                rpc.make_notification("textDocument/didClose", {"textDocument": {"uri": uri}}),
             )
             await asyncio.sleep(0.2)
             entries = [
@@ -229,17 +235,15 @@ def test_gateway_shares_one_server_between_clients(
             assert completion["result"]["items"][0]["label"] == "alpha"
 
             # 5. shutdown 被网关拦下：客户端拿到成功响应，进程还活着
-            await session.handle_client_message(
-                client_a, rpc.make_request(11, "shutdown")
-            )
+            await session.handle_client_message(client_a, rpc.make_request(11, "shutdown"))
             shutdown = await first.expect(lambda m: m.get("id") == 11)
             assert shutdown["result"] is None
             assert session.alive
 
             # 6. 最后一个客户端关闭文档后才补 didClose
             await session.handle_client_message(
-                client_b, rpc.make_notification("textDocument/didClose",
-                                                {"textDocument": {"uri": uri}})
+                client_b,
+                rpc.make_notification("textDocument/didClose", {"textDocument": {"uri": uri}}),
             )
             await asyncio.sleep(0.2)
             entries = [

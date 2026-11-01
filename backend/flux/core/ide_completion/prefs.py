@@ -194,9 +194,7 @@ class CompletionPrefsStore:
         data = self._read()
         return {
             **CompletionPrefs.from_mapping(data.get("completion")).to_dict(),
-            "active_agent": ActiveAgentSelection.from_mapping(
-                data.get("active_agent")
-            ).to_dict(),
+            "active_agent": ActiveAgentSelection.from_mapping(data.get("active_agent")).to_dict(),
         }
 
 

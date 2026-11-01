@@ -864,10 +864,7 @@ def _timeout_reason(
     idle_for = clock() - max(
         monitor.last_output_mono, monitor.last_mcp_mono, monitor.last_state_mono
     )
-    return (
-        f"空闲超时（idle）：{idle_for:.0f} 秒内既无输出也无 MCP 活动"
-        f"（上限 {idle_limit:g} 秒）"
-    )
+    return f"空闲超时（idle）：{idle_for:.0f} 秒内既无输出也无 MCP 活动（上限 {idle_limit:g} 秒）"
 
 
 def _monotonic() -> float:

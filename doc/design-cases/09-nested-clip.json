@@ -1,0 +1,37 @@
+{
+  "name": "嵌套与裁剪",
+  "meta": {
+    "case": "nested-clip",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "多层嵌套、子层越界裁剪、圆角裁剪、透明度继承"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "nested",
+      "name": "嵌套",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "outer", "type": "card", "x": 24, "y": 24, "w": 342, "h": 200, "children": [
+          { "id": "outer-band", "type": "decor", "x": -20, "y": -20, "w": 400, "h": 80, "fill": "#0891B2" },
+          { "id": "outer-title", "type": "text", "x": 24, "y": 24, "w": 200, "h": 24, "text": "卡片标题", "fontSize": 16, "fontWeight": 600, "color": "#FFFFFF" },
+          { "id": "inner", "type": "card", "x": 24, "y": 88, "w": 294, "h": 88, "children": [
+            { "id": "inner-text", "type": "text", "x": 16, "y": 16, "w": 200, "h": 20, "text": "第二层卡片文字", "fontSize": 13 },
+            { "id": "inner-pill", "type": "pill", "x": 16, "y": 44, "w": 80, "h": 24, "text": "标签" }
+          ] }
+        ] },
+        { "id": "clip-card", "type": "card", "x": 24, "y": 248, "w": 160, "h": 120, "radius": 20, "children": [
+          { "id": "clip-img", "type": "decor", "x": 0, "y": 0, "w": 160, "h": 60, "fill": "linear-gradient(180deg,#22D3EE,#0891B2)" },
+          { "id": "clip-over", "type": "circle", "x": 120, "y": 80, "w": 80, "h": 80, "fill": "#F97316", "opacity": 0.6 }
+        ] },
+        { "id": "clip-text", "type": "button", "x": 200, "y": 248, "w": 166, "h": 44, "text": "这段按钮文字特别长会被裁剪掉后半段内容", "fill": "#FFFFFF", "color": "#0F172A" },
+        { "id": "clip-nav", "type": "nav", "x": 24, "y": 392, "w": 342, "h": 60, "items": ["超长导航项目文字需要被截断显示", "第二项", "第三项"] },
+        { "id": "op-parent", "type": "card", "x": 24, "y": 476, "w": 160, "h": 80, "opacity": 0.4, "children": [
+          { "id": "op-child", "type": "text", "x": 16, "y": 24, "w": 128, "h": 20, "text": "透明度继承", "fontSize": 13 }
+        ] }
+      ]
+    }
+  ]
+}

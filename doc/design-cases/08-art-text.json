@@ -1,0 +1,29 @@
+{
+  "name": "艺术字",
+  "meta": {
+    "case": "art-text",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "渐变字、描边字、发光字、投影字、斜体/下划线/删除线、等宽数字、预设组合"
+  },
+  "bg": "#0F172A",
+  "screens": [
+    {
+      "id": "art",
+      "name": "艺术字",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "a-grad", "type": "text", "x": 24, "y": 32, "w": 342, "h": 44, "text": "渐变标题", "fontSize": 32, "fontWeight": 700, "align": "center", "textFill": "linear-gradient(135deg,#22D3EE,#A78BFA)" },
+        { "id": "a-stroke", "type": "text", "x": 24, "y": 92, "w": 342, "h": 40, "text": "描边字", "fontSize": 28, "fontWeight": 700, "align": "center", "color": "#0F172A", "textStroke": { "width": 2, "color": "#22D3EE", "align": "outside" } },
+        { "id": "a-glow", "type": "text", "x": 24, "y": 148, "w": 342, "h": 40, "text": "霓虹发光", "fontSize": 28, "fontWeight": 700, "align": "center", "color": "#E0F2FE", "textGlow": { "color": "#22D3EE", "radius": 12, "intensity": 0.9 } },
+        { "id": "a-shadow", "type": "text", "x": 24, "y": 204, "w": 342, "h": 40, "text": "投影字", "fontSize": 28, "fontWeight": 700, "align": "center", "textShadow": { "dx": 3, "dy": 4, "blur": 0, "color": "#0891B2" } },
+        { "id": "a-italic", "type": "text", "x": 24, "y": 260, "w": 342, "h": 26, "text": "斜体 + 下划线 + 删除线", "fontSize": 16, "italic": true, "underline": true, "strikethrough": true, "align": "center" },
+        { "id": "a-mono", "type": "text", "x": 24, "y": 300, "w": 342, "h": 26, "text": "1,234.56  +0.8%", "fontFamily": "mono", "fontSize": 16, "align": "center" },
+        { "id": "a-serif", "type": "text", "x": 24, "y": 340, "w": 342, "h": 34, "text": "思源宋体标题", "fontFamily": "noto-serif-sc", "fontSize": 24, "align": "center" },
+        { "id": "a-ticket", "type": "text", "x": 24, "y": 392, "w": 342, "h": 34, "text": "¥ 128.00", "fontFamily": "mono", "fontSize": 26, "fontWeight": 700, "align": "center", "color": "#FDE68A", "textStroke": { "width": 1, "color": "#B45309", "align": "outside" } },
+        { "id": "a-autofit", "type": "text", "x": 24, "y": 448, "w": 120, "h": 24, "text": "自适应缩到一行", "fontSize": 24, "autoFit": true, "align": "center" }
+      ]
+    }
+  ]
+}

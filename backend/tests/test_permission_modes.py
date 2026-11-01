@@ -775,3 +775,53 @@ async def test_native_plan_mode_never_allows(apply_container, monkeypatch) -> No
     )
     assert allowed is False
     assert kinds == []
+
+
+# ---------------------------------------------------------------- 7. 默认模式边界
+
+
+def test_default_mode_has_no_direct_write_or_push_tools() -> None:
+    """默认（normal）模式：Agent 没有直接写盘 / 提交 / 推送的工具；
+    `git push` 与重定向写文件都属于高风险，必须走审批。"""
+    from flux.core.mcp.tools import FORBIDDEN_TOOL_NAMES, TOOLS
+
+    assert normalize_mode(None) == PermissionMode.NORMAL.value
+    for name in ("workspace.apply", "git.commit", "git.push", "shell.exec", "secret.read"):
+        assert name in FORBIDDEN_TOOL_NAMES
+        assert name not in TOOLS
+    assert classify_command("git push origin main").level == LEVEL_HIGH
+    assert classify_command("echo hi > app.py").level == LEVEL_HIGH
+
+
+async def test_default_mode_push_stops_for_approval(apply_container, monkeypatch) -> None:
+    """默认模式下 `git push` 不会直接执行：先落审批卡，等用户点「允许」。"""
+    task, run_id = await _seed_task_and_run(apply_container)
+    ctx = _ctx(apply_container, mode=PermissionMode.NORMAL.value, run_id=run_id)
+    calls: list[str] = []
+
+    async def fake_raise(container, **kwargs):
+        calls.append(kwargs["kind"])
+        return {"id": "d-1"}
+
+    monkeypatch.setattr(terminal_tools, "raise_approval", fake_raise)
+    monkeypatch.setattr(terminal_tools, "wait_for_approval", lambda *a, **k: _allowed())
+
+    await terminal_tools._approve_if_needed(ctx, "git push origin main")
+    assert calls == ["high_risk_command"]
+
+
+async def test_default_mode_cannot_call_forbidden_write_tools(apply_container) -> None:
+    """即便令牌带全部能力位，默认模式也调不到落盘/推送工具（工具面根本不存在）。"""
+    server = McpServer(apply_container)
+    identity = _ctx(apply_container, mode=PermissionMode.NORMAL.value).identity
+    result = await server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "workspace.apply", "arguments": {"change_id": "c-1"}},
+        },
+        identity,
+    )
+    payload = result["error"]
+    assert payload["message"] == "未知工具：workspace.apply"

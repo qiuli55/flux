@@ -1,0 +1,31 @@
+{
+  "name": "表单页",
+  "meta": {
+    "case": "form",
+    "viewport": [390, 844],
+    "scale": 2,
+    "notes": "输入框占位符透明度、内边距、按钮、导航组合"
+  },
+  "bg": "#F4F6F9",
+  "screens": [
+    {
+      "id": "form",
+      "name": "登录",
+      "w": 390,
+      "h": 844,
+      "nodes": [
+        { "id": "brand", "type": "circle", "x": 155, "y": 72, "w": 80, "h": 80, "fill": "#0891B2" },
+        { "id": "h1", "type": "text", "x": 24, "y": 176, "w": 342, "h": 32, "text": "欢迎回来", "fontSize": 24, "fontWeight": 700, "align": "center" },
+        { "id": "sub", "type": "text", "x": 24, "y": 216, "w": 342, "h": 20, "text": "登录后同步你的设计稿", "fontSize": 13, "align": "center", "color": "#64748B" },
+        { "id": "l1", "type": "text", "x": 24, "y": 276, "w": 120, "h": 18, "text": "邮箱", "fontSize": 12, "color": "#64748B" },
+        { "id": "i1", "type": "input", "x": 24, "y": 298, "w": 342, "h": 46, "text": "you@example.com" },
+        { "id": "l2", "type": "text", "x": 24, "y": 360, "w": 120, "h": 18, "text": "密码", "fontSize": 12, "color": "#64748B" },
+        { "id": "i2", "type": "input", "x": 24, "y": 382, "w": 342, "h": 46, "text": "至少 8 位字符", "padLeft": 16 },
+        { "id": "row", "type": "text", "x": 24, "y": 444, "w": 342, "h": 20, "text": "忘记密码？", "fontSize": 13, "align": "right", "color": "#0891B2" },
+        { "id": "submit", "type": "button", "x": 24, "y": 488, "w": 342, "h": 48, "text": "登录" },
+        { "id": "ghost", "type": "button", "x": 24, "y": 548, "w": 342, "h": 48, "text": "使用验证码登录", "fill": "#E0F2FE", "color": "#0891B2" },
+        { "id": "tip", "type": "text", "x": 24, "y": 612, "w": 342, "h": 20, "text": "继续即表示同意服务条款", "fontSize": 11, "align": "center", "color": "#94A3B8" }
+      ]
+    }
+  ]
+}

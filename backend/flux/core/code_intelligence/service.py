@@ -246,9 +246,7 @@ class LspSession:
         if method == "shutdown":
             # 常驻进程不能因为某个客户端断开就关掉
             if is_request:
-                await self._safe_send(
-                    client, rpc.make_response(request_id, result=None)
-                )
+                await self._safe_send(client, rpc.make_response(request_id, result=None))
             return
         if method == "exit":
             return
@@ -377,9 +375,7 @@ class LspSession:
             self._doc_versions.pop(uri, None)
             if count == 1:
                 await self._write_to_server(
-                    rpc.make_notification(
-                        "textDocument/didClose", {"textDocument": {"uri": uri}}
-                    )
+                    rpc.make_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
                 )
             return
         self._open_counts[uri] = count - 1
@@ -524,9 +520,7 @@ class LspSession:
             return
         if method == "workspace/configuration":
             items = params.get("items") or []
-            await self._write_to_server(
-                rpc.make_response(request_id, result=[None for _ in items])
-            )
+            await self._write_to_server(rpc.make_response(request_id, result=[None for _ in items]))
             return
         if method == "workspace/workspaceFolders":
             root_uri = self.workspace_root.as_uri()
@@ -546,9 +540,7 @@ class LspSession:
             )
             return
         if method == "window/showDocument":
-            await self._write_to_server(
-                rpc.make_response(request_id, result={"success": False})
-            )
+            await self._write_to_server(rpc.make_response(request_id, result={"success": False}))
             return
         if method in (
             "window/workDoneProgress/create",
@@ -772,9 +764,7 @@ async def install_server(server_id: str, *, timeout: float = 600.0) -> dict[str,
     if spec is None:
         raise LanguageServerUnavailable(f"未知的语言服务器：{server_id}")
     if spec.install is None:
-        raise LanguageServerUnavailable(
-            f"{spec.name} 不支持自动安装：{spec.install_hint}"
-        )
+        raise LanguageServerUnavailable(f"{spec.name} 不支持自动安装：{spec.install_hint}")
 
     executable = shutil.which(spec.install[0])
     if executable is None:

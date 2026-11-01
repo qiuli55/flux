@@ -1,46 +1,87 @@
-"""设计稿 → 单文件可交互 HTML（App 内网页预览）。
+"""设计稿 IR → 单文件可交互 HTML（App 内网页预览）。
 
-设计稿只存在本机 Luma Studio（画布 JSON），手机端原本只能看 Canvas 演示。把同一份 JSON
-直接渲染成 HTML：App 用 WebView 打开即可离线交互，不需要起服务、也不需要联网。
+渲染分两层：
 
-渲染规则严格对齐移动端 ``DesignScreens.kt`` 的 ``drawDesignNode`` / ``drawNav`` /
-``drawSlider`` / ``drawSwitch`` / ``drawNodeText`` 与 ``DesignDemoPreview`` 的演示语义
-（默认圆角、默认填充、卡片投影、滑杆/开关几何、按钮切屏规则），否则"网页预览"会和
-App 内演示对不上。
+* ``design_compile`` 把 Luma 画布 JSON 编译成 IR（默认值全部展开）
+* 本模块只把 IR 翻成 HTML/CSS，不再做任何"缺省推断"
 
 坐标：画板与节点都用设计单位（≈dp），节点坐标相对父节点；整块画板用 CSS transform
 等比缩放到视口内，交互命中直接用元素自身矩形换算，不受缩放影响。
+
+网页是跨端一致性的**权威基准**：手机 Compose 画布与桌面 Avalonia 画布都以这里
+的输出为准，三者共用 ``doc/design-spec.json`` + ``doc/design-ir.json`` 两份契约。
 """
 
 from __future__ import annotations
 
 import html
 import json
-import re
 from typing import Any
 
-#: 与移动端 V2Colors 对齐：绘制默认值都基于这几个色（见 DesignScreens.kt defaultFill）。
-ACCENT = "#0891B2"
-INK = "#0F172A"
-SHELL_TOP = "#F4F6F9"
-SWITCH_OFF = "#E2E8F0"
-INPUT_FILL = "#F8FAFC"
-
-_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
-_RGB_RE = re.compile(r"^rgba?\(([^)]*)\)$", re.IGNORECASE)
-_COLOR_TOKEN_RE = re.compile(r"#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)")
+from .design_compile import (
+    DEFAULT_FONT_SIZE,
+    compile_design,
+    compile_fill,
+    compile_node,
+    default_fill_color,
+    default_radius,
+    normalize_type,
+    shadow_layers,
+    text_style,
+)
+from .design_tokens import (
+    ACCENT,
+    INK,
+    INPUT_FILL,
+    SHELL_TOP,
+    SWITCH_OFF,
+    alpha_css,
+    color_css,
+    css_color,
+    ir_color_css,
+    rgba_hex,
+)
+from .design_tokens import (
+    clamp as _clamp,
+)
+from .design_tokens import (
+    num as _num,
+)
+from .design_tokens import (
+    num_str as _num_str,
+)
+from .design_tokens import (
+    px as _px,
+)
 
 #: 演示里的"返回"类文案；命中即回上一屏（与 demoNextScreen 一致）。
 _BACK_WORDS = ("返回", "取消", "关闭", "退出")
 
+#: 字族枚举 → CSS 字体栈。三端各自注册同名回退链，保证同一份 IR 落到同样的字形。
+_FONT_STACKS = {
+    "system": (
+        '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",'
+        '"Hiragino Sans GB","Microsoft YaHei",sans-serif'
+    ),
+    "noto-sans-sc": '"Noto Sans SC","Noto Sans CJK SC","Source Han Sans SC","PingFang SC",sans-serif',
+    "noto-serif-sc": '"Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif',
+    "inter": '"Inter","Helvetica Neue",Arial,sans-serif',
+    "mono": '"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
+}
+
 
 def render_design_html(design: dict[str, Any], *, page_title: str | None = None) -> str:
     """把一份设计稿渲染成自包含的单文件 HTML（无外部依赖，可直接 loadDataWithBaseURL）。"""
-    design = design if isinstance(design, dict) else {}
-    raw_screens = design.get("screens")
+    return render_ir_html(compile_design(design), page_title=page_title)
+
+
+def render_ir_html(ir: dict[str, Any], *, page_title: str | None = None) -> str:
+    """把编译好的 IR 渲染成 HTML。调用方已有 IR 时走这里，省一次编译。"""
+    ir = ir if isinstance(ir, dict) else {}
+    raw_screens = ir.get("screens")
     screens = [item for item in (raw_screens or []) if isinstance(item, dict)]
-    name = str(design.get("name") or "未命名设计稿")
-    bg = _single_color(design.get("bg"), SHELL_TOP)
+    name = str(ir.get("name") or "未命名设计稿")
+    bg = ir_color_css(ir.get("bg"), SHELL_TOP)
     title = (page_title or name).strip() or "设计稿演示"
 
     meta = [
@@ -49,9 +90,7 @@ def render_design_html(design: dict[str, Any], *, page_title: str | None = None)
     ]
 
     if screens:
-        devices = "\n".join(
-            _screen_html(screen, bg) for screen in screens if _screen_size(screen) is not None
-        )
+        devices = "\n".join(_screen_html(screen, bg) for screen in screens)
         body_main = (
             '<main class="stage"><div class="holder" id="holder">\n'
             f"{devices}\n"
@@ -86,20 +125,12 @@ def render_design_html(design: dict[str, Any], *, page_title: str | None = None)
 # ------------------------------------------------------------------ 画板 / 节点
 
 
-def _screen_size(screen: dict[str, Any]) -> tuple[float, float] | None:
+def _screen_html(screen: dict[str, Any], bg: str) -> str:
     w = _num(screen.get("w"), 0.0)
     h = _num(screen.get("h"), 0.0)
-    return (w, h) if w > 0 and h > 0 else None
-
-
-def _screen_html(screen: dict[str, Any], bg: str) -> str:
-    size = _screen_size(screen)
-    if size is None:
+    if w <= 0 or h <= 0:
         return ""
-    w, h = size
-    raw_nodes = screen.get("nodes")
-    nodes = raw_nodes if isinstance(raw_nodes, list) else []
-    inner = "\n".join(_node_html(node) for node in nodes if isinstance(node, dict))
+    inner = "\n".join(_ir_node_html(node) for node in screen.get("nodes") or [])
     return (
         f'<section class="device" data-w="{_num_str(w)}" data-h="{_num_str(h)}" '
         f'data-id="{html.escape(str(screen.get("id") or ""), quote=True)}" '
@@ -111,140 +142,238 @@ def _screen_html(screen: dict[str, Any], bg: str) -> str:
 
 
 def _node_html(node: dict[str, Any]) -> str:
+    """单节点 → HTML（旧调用方入口，内部走编译层，保证与整稿渲染同一条路径）。"""
+    compiled = compile_node(node)
+    return "" if compiled is None else _ir_node_html(compiled)
+
+
+def _ir_node_html(node: dict[str, Any]) -> str:
+    ntype = str(node.get("type") or "text")
     w = _num(node.get("w"), 0.0)
     h = _num(node.get("h"), 0.0)
-    if w <= 0 or h <= 0:
-        return ""
-    opacity = _num(node.get("opacity"), 1.0)
-    if opacity <= 0.01:
-        return ""
-
-    ntype = str(node.get("type") or "text")
-    text = str(node.get("text") or "")
-    base = [
+    style: list[str] = [
         f"left:{_px(_num(node.get('x'), 0.0))}",
         f"top:{_px(_num(node.get('y'), 0.0))}",
         f"width:{_px(w)}",
         f"height:{_px(h)}",
     ]
+    opacity = _clamp(_num(node.get("opacity"), 1.0), 0.0, 1.0)
     if opacity < 1:
-        base.append(f"opacity:{_num_str(opacity)}")
+        style.append(f"opacity:{_num_str(opacity)}")
+    rotation = _num(node.get("rotation"), 0.0)
+    if abs(rotation) > 0.01:
+        # transform-origin 默认 50% 50%，与 Compose rotate(pivot = center) 一致。
+        style.append(f"transform:rotate({_num_str(rotation)}deg)")
+    blur = _num(node.get("blur"), 0.0)
+    if blur > 0:
+        style.append(f"filter:blur({_px(blur)})")
 
-    radius = max(_num(node.get("radius"), _default_radius(ntype, w, h)), 0.0)
-    stroke = node.get("stroke")
-    if isinstance(stroke, str) and stroke.strip():
-        base.append(f"border:1px solid {_single_color(stroke, 'transparent')}")
-
-    fill = node.get("fill")
+    classes = ["n"]
     attrs = {
         "data-id": str(node.get("id") or ""),
         "data-type": ntype,
         "data-name": str(node.get("name") or ""),
-        "data-text": text,
+        "data-text": _text_value(node.get("text")),
     }
-    children = node.get("children")
-    child_html = ""
-    if isinstance(children, list):
-        child_html = "".join(_node_html(child) for child in children if isinstance(child, dict))
+    children_html = "".join(_ir_node_html(child) for child in node.get("children") or [])
+    fill = node.get("fill") if isinstance(node.get("fill"), dict) else {"kind": "none"}
+    fill_css = _fill_css(fill)
+    radius_css = _radius_css(node.get("radius"), node.get("ellipse") is True)
+    stroke_css = _stroke_css(node.get("stroke"))
+    shadow_css = _shadow_css(node.get("shadow"))
+    inset_shadow_css = _shadow_css(node.get("insetShadow"), inset=True)
+
+    def surface(*, background: bool = True, radius: bool = True) -> None:
+        if background and fill_css:
+            style.append(f"background:{fill_css}")
+        if radius:
+            style.append(radius_css)
+        if stroke_css:
+            style.append(stroke_css)
+        if shadow_css:
+            style.append(shadow_css)
+        if inset_shadow_css:
+            style.append(inset_shadow_css)
 
     if ntype == "text":
-        if fill is None:
-            classes = ["n", "t-text"]
-            inner = _text_span(node, text)
-            return _element(classes, base, attrs, inner + child_html)
-        # 带底色的文本节点：先画圆角矩形，再叠文字（Compose: hasShape 同上）
-        classes = ["n", "t-text"]
-        base.append(f"background:{_background(fill, _default_fill(ntype))}")
-        base.append(f"border-radius:{_px(radius)}")
-        return _element(classes, base, attrs, _text_span(node, text) + child_html)
+        classes.append("t-text")
+        text_html = _text_span(node.get("text"))
+        if fill.get("kind") != "none":
+            surface()
+        return _element(classes, style, attrs, text_html + children_html)
 
     if ntype in ("button", "pill"):
-        base.append(f"background:{_background(fill, _default_fill(ntype))}")
-        base.append(f"border-radius:{_px(radius)}")
+        surface()
         attrs["role"] = "button"
         attrs["tabindex"] = "0"
-        return _element(["n", f"t-{ntype}"], base, attrs, _text_span(node, text) + child_html)
+        return _element(
+            ["n", f"t-{ntype}"], style, attrs, _text_span(node.get("text")) + children_html
+        )
 
     if ntype == "slider":
-        value = _clamp(_num(node.get("value"), 0.5), 0.0, 1.0)
-        fill_color = _single_color(fill, ACCENT)
-        track_color = _single_color(node.get("track"), SWITCH_OFF)
-        base.append(f"--v:{_num_str(value)}")
-        base.append(f"border-radius:{_px(radius)}")
+        control = node.get("control") or {}
+        track = ir_color_css(control.get("trackColor"), SWITCH_OFF)
+        fill_color = ir_color_css(control.get("fillColor"), ACCENT)
+        ring = ir_color_css(control.get("ringColor"), alpha_css(ACCENT, 0.22))
+        style.append(f"--v:{_num_str(_num(control.get('value'), 0.5))}")
+        surface(background=False)
         inner = (
-            f'<div class="sl-track" style="background:{track_color}"></div>'
+            f'<div class="sl-track" style="background:{track}"></div>'
             f'<div class="sl-fill" style="background:{fill_color}"></div>'
             '<div class="sl-thumb"></div>'
-            f'<div class="sl-ring" style="background:{_alpha_css(fill_color, 0.22)}"></div>'
+            f'<div class="sl-ring" style="background:{ring}"></div>'
         )
-        return _element(["n", "t-slider"], base, attrs, inner + child_html)
+        return _element(["n", "t-slider"], style, attrs, inner + children_html)
 
     if ntype == "switch":
-        knob = max(h - 6.0, 1.0)
-        base.append(f"border-radius:{_px(radius)}")
-        base.append(f"--c-on:{_single_color(fill, ACCENT)}")
-        base.append(f"--knob:{_px(knob)}")
-        base.append(f"--knob-top:{_px((h - knob) / 2.0)}")
-        classes = ["n", "t-switch"] + (["on"] if node.get("on") is True else [])
-        return _element(classes, base, attrs, '<div class="sw-knob"></div>' + child_html)
+        control = node.get("control") or {}
+        style.append("--c-on:" + ir_color_css(control.get("onColor"), ACCENT))
+        style.append(f"--knob:{_px(_num(control.get('knob'), max(h - 6.0, 1.0)))}")
+        style.append(
+            f"--knob-top:{_px(_num(control.get('knobTop'), (h - max(h - 6.0, 1.0)) / 2.0))}"
+        )
+        base = [item for item in style if not item.startswith("background:")]
+        base.append(_radius_css(node.get("radius"), False))
+        if stroke_css:
+            base.append(stroke_css)
+        if shadow_css:
+            base.append(shadow_css)
+        on_class = ["on"] if control.get("on") is True else []
+        return _element(
+            ["n", "t-switch"] + on_class, base, attrs, '<div class="sw-knob"></div>' + children_html
+        )
 
     if ntype == "nav":
-        raw_items = node.get("items")
-        items = [str(item) for item in raw_items] if isinstance(raw_items, list) else []
-        items = [item for item in items if item.strip()] or ["首页", "任务", "我的"]
-        active = int(_clamp(_num(node.get("active"), 0.0), 0.0, float(len(items) - 1)))
-        size = _num(node.get("fontSize"), 10.5)
+        control = node.get("control") or {}
         cells = []
-        for i, item in enumerate(items):
-            on = i == active
-            style = (
-                f"font-size:{_px(size)};"
-                f"font-weight:{600 if on else 400};"
-                f"color:{ACCENT if on else _alpha_css(INK, 0.42)}"
+        for item in control.get("items") or []:
+            on = item.get("active") is True
+            cell_style = (
+                f"font-size:{_px(_num(item.get('fontSize'), 10.5))};"
+                f"font-weight:{int(_num(item.get('fontWeight'), 400))};"
+                f"line-height:{_num_str(_num(item.get('lineHeight'), 1.2))};"
+                f"color:{ir_color_css(item.get('color'), ACCENT if on else INK)}"
             )
             cells.append(
                 f'<div class="nav-cell{" on" if on else ""}">'
-                f'<span style="{style}">{html.escape(item)}</span>'
-                f'<i style="background:{ACCENT}"></i></div>'
+                f'<span style="{cell_style}">{html.escape(str(item.get("label") or ""))}</span>'
+                f'<i style="background:{ir_color_css(item.get("color"), ACCENT)}"></i></div>'
             )
-        attrs["data-items"] = json.dumps(items, ensure_ascii=False)
-        base.append(f"background:{_background(fill, '#FFFFFF')}")
-        base.append(f"border-radius:{_px(radius)}")
-        return _element(["n", "t-nav"], base, attrs, "".join(cells) + child_html)
+        attrs["data-items"] = json.dumps(
+            [str(item.get("label") or "") for item in control.get("items") or []],
+            ensure_ascii=False,
+        )
+        surface()
+        return _element(["n", "t-nav"], style, attrs, "".join(cells) + children_html)
 
     if ntype == "input":
-        pad = _num(node.get("padLeft"), 12.0)
-        base.append(f"background:{_background(fill, _default_fill(ntype))}")
-        base.append(f"border-radius:{_px(radius)}")
+        text = node.get("text") or {}
+        placeholder_alpha = _num(text.get("placeholderAlpha"), 0.5)
+        attrs["data-placeholder-alpha"] = _num_str(placeholder_alpha)
+        surface()
         inner = (
             f'<input type="text" autocomplete="off" '
-            f'placeholder="{html.escape(text, quote=True)}" '
-            f'style="{_text_css(node)}padding-left:{_px(pad)}">'
+            f'placeholder="{html.escape(_text_value(text), quote=True)}" '
+            f'style="{_text_css_from(text)}padding-left:{_px(_num(text.get("padLeft"), 12.0))}">'
         )
-        return _element(["n", "t-input"], base, attrs, inner + child_html)
+        return _element(["n", "t-input"], style, attrs, inner + children_html)
 
-    # card / circle / decor / 未知类型：都是"底色圆角矩形"（圆或方形另算）
-    base.append(f"background:{_background(fill, _default_fill(ntype))}")
-    classes = ["n"]
-    if ntype == "circle" or (ntype == "decor" and abs(w - h) < 0.01):
-        base.append("border-radius:50%")
-        classes.append("t-circle" if ntype == "circle" else "t-decor")
-    else:
-        base.append(f"border-radius:{_px(radius)}")
-        if ntype == "card":
-            base.append("box-shadow:0 6px 0 rgba(0,0,0,.05)")
-        if ntype == "decor":
-            classes.append("t-decor")
-    if ntype == "card":
+    if ntype == "progress":
+        control = node.get("control") or {}
+        track = ir_color_css(control.get("trackColor"), SWITCH_OFF)
+        fill_color = ir_color_css(control.get("fillColor"), ACCENT)
+        style.append(f"--v:{_num_str(_num(control.get('value'), 0.5))}")
+        surface(background=False)
+        inner = (
+            f'<div class="pg-track" style="background:{track}"></div>'
+            f'<div class="pg-fill" style="background:{fill_color}"></div>'
+        )
+        return _element(["n", "t-progress"], style, attrs, inner + children_html)
+
+    if ntype in ("badge", "chip", "avatar"):
+        surface()
+        return _element(
+            ["n", f"t-{ntype}"], style, attrs, _text_span(node.get("text")) + children_html
+        )
+
+    # card / circle / decor / divider / 未知类型：都是"底色圆角矩形"（圆或方形另算）
+    surface()
+    if ntype == "circle":
+        classes.append("t-circle")
+    elif ntype == "decor":
+        classes.append("t-decor")
+    elif ntype == "card":
         classes.append("t-card")
-    return _element(classes, base, attrs, child_html)
+    return _element(classes, style, attrs, children_html)
 
 
-def _text_span(node: dict[str, Any], text: str) -> str:
-    """文字块：垂直居中、最多 3 行、超出省略（与 drawNodeText 一致）。"""
-    if not text.strip():
+def _text_value(block: Any) -> str:
+    if isinstance(block, dict):
+        return str(block.get("value") or "")
+    return ""
+
+
+def _text_span(block: Any) -> str:
+    """文字块：垂直居中、按 maxLines 省略、可选渐变/描边/发光/投影。"""
+    if not isinstance(block, dict) or not str(block.get("value") or "").strip():
         return ""
-    return f'<span class="tx" style="{_text_css(node)}">{html.escape(text)}</span>'
+    style = _text_css_from(block)
+    classes = ["tx"]
+    if isinstance(block.get("fill"), dict):
+        style += f"background-image:{_gradient_css(block['fill'])};"
+        classes.append("tx-fill")
+    stroke = block.get("stroke")
+    if isinstance(stroke, dict) and _num(stroke.get("width"), 0.0) > 0:
+        width = _num(stroke.get("width"), 1.0)
+        # -webkit-text-stroke 以字形轮廓为中线；fill 覆盖内侧一半，
+        # 因此 align=outside 时要把线宽翻倍，才能与 Compose 的"外描边"占位相同。
+        if str(stroke.get("align") or "outside").lower() != "inside":
+            width *= 2.0
+        style += f"-webkit-text-stroke:{_px(width)} {ir_color_css(stroke.get('color'), INK)};"
+    shadows = _text_shadow_css(block)
+    if shadows:
+        style += f"text-shadow:{','.join(shadows)};"
+    auto_fit = ""
+    if block.get("autoFit") is True:
+        classes.append("tx-autofit")
+        auto_fit = f' data-fit="{_num_str(_num(block.get("fontSize"), DEFAULT_FONT_SIZE))}"'
+    return (
+        f'<span class="{" ".join(classes)}" style="{html.escape(style, quote=True)}"{auto_fit}>'
+        f"{html.escape(str(block.get('value') or ''))}</span>"
+    )
+
+
+def _text_shadow_css(block: dict[str, Any]) -> list[str]:
+    """发光/投影 → 固定环叠加的 text-shadow，三端用同一套环参数。"""
+    parts: list[str] = []
+    for key, is_glow in (("glow", True), ("shadow", False)):
+        effect = block.get(key)
+        if not isinstance(effect, dict):
+            continue
+        color = effect.get("color")
+        base_alpha = _num(color.get("alpha"), 1.0) if isinstance(color, dict) else 1.0
+        intensity = _num(effect.get("intensity"), 1.0)
+        dx = _num(effect.get("dx"), 0.0)
+        dy = _num(effect.get("dy"), 0.0)
+        blur = _num(effect.get("blur"), 0.0)
+        rings = effect.get("rings") or [[1.0, 1.0]]
+        for radius, ring_alpha in rings:
+            alpha = _clamp(base_alpha * intensity * float(ring_alpha), 0.0, 1.0)
+            if alpha <= 0.004:
+                continue
+            ox = 0.0 if is_glow else dx
+            oy = 0.0 if is_glow else dy
+            parts.append(
+                f"{_num_str(ox)}px {_num_str(oy)}px {_px(blur * float(radius))} "
+                f"{_rgba_css(color, alpha)}"
+            )
+    return parts
+
+
+def _rgba_css(color: Any, alpha: float) -> str:
+    if not isinstance(color, dict):
+        return alpha_css("#000000", alpha)
+    return alpha_css(str(color.get("hex") or "#000000"), alpha)
 
 
 def _element(classes: list[str], style: list[str], attrs: dict[str, str], inner: str) -> str:
@@ -260,149 +389,187 @@ def _element(classes: list[str], style: list[str], attrs: dict[str, str], inner:
 # ------------------------------------------------------------------ 样式计算
 
 
-def _text_css(node: dict[str, Any], default_size: float = 13.0) -> str:
-    size = _num(node.get("fontSize"), default_size)
-    weight = int(_clamp(_num(node.get("fontWeight"), 400.0), 1.0, 1000.0))
-    line_height = _num(node.get("lineHeight"), 1.35)
-    spacing = _num(node.get("letterSpacing"), 0.0)
-    align = str(node.get("align") or "")
-    text_align = {"center": "center", "right": "right"}.get(align, "left")
-    color = _single_color(node.get("color"), INK)
-    return (
+def _text_css(
+    node: dict[str, Any], default_size: float = DEFAULT_FONT_SIZE, *, force_center: bool = False
+) -> str:
+    """文字 CSS（旧调用方入口，走编译层的同一份样式计算）。"""
+    node = node if isinstance(node, dict) else {}
+    style = text_style(
+        node,
+        normalize_type(node.get("type")),
+        default_size=default_size,
+        force_center=force_center,
+    )
+    return _text_css_from(style)
+
+
+def _text_css_from(block: dict[str, Any]) -> str:
+    block = block if isinstance(block, dict) else {}
+    size = _num(block.get("fontSize"), DEFAULT_FONT_SIZE)
+    weight = int(_clamp(_num(block.get("fontWeight"), 400.0), 1.0, 1000.0))
+    line_height = _num(block.get("lineHeight"), 1.35)
+    spacing = _num(block.get("letterSpacing"), 0.0)
+    align = str(block.get("align") or "left")
+    css = (
         f"font-size:{_px(size)};"
         f"font-weight:{weight};"
         f"line-height:{_num_str(line_height)};"
         f"letter-spacing:{_px(spacing)};"
-        f"text-align:{text_align};"
-        f"color:{color}"
+        f"text-align:{align if align in ('center', 'right') else 'left'};"
+        f"color:{ir_color_css(block.get('color'), INK)};"
     )
+    family = _FONT_STACKS.get(str(block.get("fontFamily") or "system"), _FONT_STACKS["system"])
+    css += f"font-family:{family};"
+    decorations = []
+    if block.get("underline") is True:
+        decorations.append("underline")
+    if block.get("strikethrough") is True:
+        decorations.append("line-through")
+    if decorations:
+        css += f"text-decoration:{' '.join(decorations)};"
+    if block.get("italic") is True:
+        css += "font-style:italic;"
+    max_lines = int(_clamp(_num(block.get("maxLines"), 3), 1.0, 64.0))
+    css += f"-webkit-line-clamp:{max_lines};"
+    return css
 
 
-def _default_radius(ntype: str, w: float, h: float) -> float:
-    """与设计工作室的 defaultRadius 完全一致。"""
-    if ntype in ("button", "pill", "input", "slider", "switch"):
-        return h / 2.0
-    if ntype in ("card", "nav"):
-        return 18.0
-    if ntype == "circle":
-        return w / 2.0
-    return 0.0
+def _radius_css(radius: Any, ellipse: bool) -> str:
+    if ellipse:
+        return "border-radius:50%"
+    if not isinstance(radius, dict):
+        return "border-radius:0"
+    corners = [round(_num(radius.get(key), 0.0), 3) for key in ("tl", "tr", "br", "bl")]
+    if len(set(corners)) == 1:
+        return f"border-radius:{_px(corners[0])}"
+    return "border-radius:" + " ".join(_px(value) for value in corners)
 
 
-def _default_fill(ntype: str) -> str:
-    """与设计工作室的 defaultFill 完全一致。"""
-    if ntype == "button":
-        return ACCENT
-    if ntype == "pill":
-        return _alpha_css(ACCENT, 0.12)
-    if ntype in ("card", "nav"):
-        return "#FFFFFF"
-    if ntype == "input":
-        return INPUT_FILL
-    if ntype == "decor":
-        return _alpha_css(ACCENT, 0.12)
-    if ntype in ("switch", "slider"):
-        return ACCENT
-    return _alpha_css(INK, 0.08)
-
-
-def _background(raw: Any, fallback: str) -> str:
-    """填充：带 gradient 的取所有色标做竖向渐变，否则按单色处理。"""
-    value = raw.strip() if isinstance(raw, str) else ""
-    if "gradient" in value.lower():
-        colors = [_single_color(token, fallback) for token in _COLOR_TOKEN_RE.findall(value)]
-        if len(colors) >= 2:
-            return f"linear-gradient(180deg, {', '.join(colors)})"
-    return _single_color(raw, fallback)
-
-
-def _single_color(raw: Any, fallback: str) -> str:
-    """等价于 designColor：支持 #rgb / #rrggbb / #aarrggbb / rgb() / rgba()。
-
-    注意 #aarrggbb 是 Android 的 ARGB 顺序，CSS 不认识，必须转成 rgba()。
-    """
-    value = raw.strip() if isinstance(raw, str) else ""
-    if not value:
-        return fallback
-    parsed = _parse_color(value)
-    if parsed is not None:
-        r, g, b, a = parsed
-        return f"#{r:02x}{g:02x}{b:02x}" if a >= 255 else f"rgba({r},{g},{b},{a / 255:.3f})"
-    if "gradient" in value.lower():
-        tokens = _COLOR_TOKEN_RE.findall(value)
-        if tokens:
-            return _single_color(tokens[-1], fallback)
-    return fallback
-
-
-def _parse_color(value: str) -> tuple[int, int, int, int] | None:
-    """解析成 (r, g, b, a)，a 取 0..255。"""
-    match = _HEX_RE.match(value)
-    if match:
-        hex_value = match.group(1)
-        try:
-            if len(hex_value) == 3:
-                hex_value = "".join(char * 2 for char in hex_value)
-            if len(hex_value) == 8:
-                return (
-                    int(hex_value[2:4], 16),
-                    int(hex_value[4:6], 16),
-                    int(hex_value[6:8], 16),
-                    int(hex_value[0:2], 16),
-                )
-            return (
-                int(hex_value[0:2], 16),
-                int(hex_value[2:4], 16),
-                int(hex_value[4:6], 16),
-                255,
-            )
-        except ValueError:
-            return None
-    match = _RGB_RE.match(value)
-    if match:
-        parts = [part.strip() for part in match.group(1).split(",")]
-        if len(parts) >= 3:
-            try:
-                r = _clamp(float(parts[0]), 0.0, 255.0)
-                g = _clamp(float(parts[1]), 0.0, 255.0)
-                b = _clamp(float(parts[2]), 0.0, 255.0)
-                alpha = _clamp(float(parts[3]), 0.0, 1.0) if len(parts) >= 4 else 1.0
-            except ValueError:
-                return None
-            return (int(round(r)), int(round(g)), int(round(b)), int(round(alpha * 255)))
+def _fill_css(fill: dict[str, Any]) -> str | None:
+    kind = str(fill.get("kind") or "none")
+    if kind == "solid":
+        return ir_color_css(fill.get("color"), "transparent")
+    if kind in ("linear", "radial"):
+        return _gradient_css(fill)
     return None
 
 
+def _gradient_css(gradient: dict[str, Any]) -> str:
+    stops = []
+    for index, stop in enumerate(gradient.get("stops") or []):
+        color = ir_color_css(stop.get("color"), "transparent")
+        offset = _clamp(_num(stop.get("offset"), 0.0), 0.0, 1.0)
+        if (index == 0 and offset <= 0.0001) or (
+            index == len(gradient.get("stops") or []) - 1 and offset >= 0.9999
+        ):
+            stops.append(color)
+        else:
+            stops.append(f"{color} {round(offset * 100, 3)}%")
+    body = ", ".join(stops)
+    if str(gradient.get("kind")) == "radial":
+        center = gradient.get("center") or {}
+        cx = round(_num(center.get("x"), 0.5) * 100, 3)
+        cy = round(_num(center.get("y"), 0.5) * 100, 3)
+        return f"radial-gradient(circle at {cx}% {cy}%, {body})"
+    return f"linear-gradient({_num_str(_num(gradient.get('angle'), 180.0))}deg, {body})"
+
+
+def _stroke_css(stroke: Any) -> str | None:
+    if not isinstance(stroke, dict):
+        return None
+    width = _num(stroke.get("width"), 0.0)
+    if width <= 0:
+        return None
+    color = ir_color_css(stroke.get("color"), INK)
+    style = "dashed" if stroke.get("dash") else "solid"
+    sides = stroke.get("sides")
+    if isinstance(sides, dict) and any(sides.values()):
+        return ";".join(
+            f"border-{side}:{_px(width)} {style} {color}"
+            for side in ("top", "right", "bottom", "left")
+            if sides.get(side)
+        )
+    return f"border:{_px(width)} {style} {color}"
+
+
+def _shadow_css(shadow: Any, *, inset: bool = False) -> str | None:
+    """IRShadow → CSS box-shadow。
+
+    blur>0 时按 N=10 环近似展开成多段（小 spread 在前 = 在上层），
+    与手机 / 桌面同一套公式；blur=0 保持单段，输出与历史基准图一致。
+    """
+    if not isinstance(shadow, dict):
+        return None
+    layers = shadow_layers(shadow)
+    if not layers:
+        return None
+    color = shadow.get("color")
+
+    def length(value: float) -> str:
+        # CSS 允许 0 不带单位；统一成 0 让输出更紧凑，也和历史基准图一致。
+        return "0" if abs(value) < 0.0001 else _px(value)
+
+    parts: list[str] = []
+    for layer in reversed(layers):
+        chunk = ["inset"] if inset or layer.get("inset") is True else []
+        chunk.append(length(_num(layer.get("dx"), 0.0)))
+        chunk.append(length(_num(layer.get("dy"), 0.0)))
+        # blur 恒为 0：模糊完全由多层 spread 的叠加模拟。
+        chunk.append("0")
+        spread = _num(layer.get("spread"), 0.0)
+        if abs(spread) > 0.0001:
+            chunk.append(_px(spread))
+        chunk.append(_rgba_css(color, _num(layer.get("alpha"), 0.0)))
+        parts.append(" ".join(chunk))
+    return "box-shadow:" + ",".join(parts)
+
+
+def _default_radius(ntype: str, w: float, h: float) -> float:
+    """历史入口：默认圆角只由编译层定义。"""
+    return default_radius(ntype, w, h)
+
+
+def _default_fill(ntype: str) -> str:
+    """历史入口：默认填充只由编译层定义。"""
+    return ir_color_css(default_fill_color(ntype), "#000000")
+
+
+def _background(raw: Any, fallback: str) -> str:
+    """历史入口：填充字符串 → CSS（渐变带角度，失败用 fallback）。"""
+    fill = compile_fill(raw, None)
+    if fill.get("kind") == "solid":
+        return ir_color_css(fill.get("color"), fallback)
+    if fill.get("kind") in ("linear", "radial"):
+        return _gradient_css(fill)
+    return fallback
+
+
+def _single_color(raw: Any, fallback: str) -> str:
+    """等价于 designColor：支持 #rgb / #rgba / #rrggbb / #aarrggbb / rgb() / hsl() / 具名色。"""
+    return color_css(raw, fallback)
+
+
+def _parse_color(value: str) -> tuple[int, int, int, int] | None:
+    return _parse_color_impl(value)
+
+
 def _alpha_css(color: str, alpha: float) -> str:
-    parsed = _parse_color(color)
-    if parsed is None:
-        return color
-    r, g, b, _ = parsed
-    return f"rgba({r},{g},{b},{alpha:.3f})"
+    return alpha_css(color, alpha)
 
 
-# ------------------------------------------------------------------ 数值格式
+from .design_tokens import parse_color as _parse_color_impl  # noqa: E402  (循环友好)
 
-
-def _num(value: Any, fallback: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def _num_str(value: float) -> str:
-    text = f"{round(value, 3):.3f}".rstrip("0").rstrip(".")
-    return text or "0"
-
-
-def _px(value: float) -> str:
-    return f"{_num_str(value)}px"
-
+__all__ = [
+    "ACCENT",
+    "INK",
+    "INPUT_FILL",
+    "SHELL_TOP",
+    "SWITCH_OFF",
+    "render_design_html",
+    "render_ir_html",
+    "rgba_hex",
+    "css_color",
+]
 
 # ------------------------------------------------------------------ 模板
 
@@ -471,6 +638,20 @@ _TEMPLATE = """<!doctype html>
     return current + 1 < SCREENS.length ? current + 1 : null;
   }}
 
+  // autoFit：单行放不下时按 0.5px 步长缩字号，最低 60%，与手机/桌面的自适应规则一致。
+  function fitTexts() {{
+    Array.prototype.forEach.call(document.querySelectorAll("[data-fit]"), function (el) {{
+      var base = parseFloat(el.getAttribute("data-fit")) || 13;
+      var min = base * 0.6;
+      var size = base;
+      el.style.fontSize = size + "px";
+      while (size > min && el.scrollWidth > el.clientWidth + 0.5) {{
+        size -= 0.5;
+        el.style.fontSize = size + "px";
+      }}
+    }});
+  }}
+
   function fit() {{
     var device = devices[index];
     if (!device || !stage) return;
@@ -499,6 +680,7 @@ _TEMPLATE = """<!doctype html>
     if (prevEl) prevEl.disabled = target === 0;
     if (nextEl) nextEl.disabled = target === devices.length - 1;
     fit();
+    fitTexts();
   }}
 
   function setSlider(el, clientX) {{
@@ -635,12 +817,19 @@ body{
 .t-input input{width:100%;height:100%;border:0;outline:0;background:transparent;font:inherit;color:inherit;padding:0}
 .t-input input::placeholder{color:currentColor;opacity:.5}
 .t-slider{cursor:pointer;touch-action:none;-webkit-tap-highlight-color:transparent}
+.t-progress{overflow:hidden;pointer-events:none}
+.pg-track,.pg-fill{position:absolute;left:0;top:0;height:100%;border-radius:inherit}
+.pg-track{width:100%}
+.pg-fill{width:calc(var(--v, .5) * 100%)}
+.t-badge,.t-chip,.t-avatar{display:flex;align-items:center;justify-content:center;overflow:hidden}
 .t-switch{background:#E2E8F0;cursor:pointer;transition:background-color .18s ease;-webkit-tap-highlight-color:transparent}
 .t-switch.on{background:var(--c-on,#0891B2)}
 .sw-knob{position:absolute;top:var(--knob-top,3px);left:3px;width:var(--knob,28px);height:var(--knob,28px);border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:left .18s cubic-bezier(.2,.8,.2,1)}
 .t-switch.on .sw-knob{left:calc(100% - var(--knob,28px) - 3px)}
 
 .tx{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;width:100%;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.tx-fill{-webkit-background-clip:text;background-clip:text;color:transparent !important}
+.tx-autofit{white-space:nowrap;text-overflow:ellipsis}
 
 .sl-track,.sl-fill{position:absolute;left:0;top:50%;height:4px;margin-top:-2px;border-radius:2px}
 .sl-track{width:100%}

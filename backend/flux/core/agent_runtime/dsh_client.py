@@ -106,6 +106,35 @@ _FINISH_REASON_ERROR = {
     "aborted": "Agent 运行被中止（运行库 finish_reason=aborted）",
 }
 
+#: 上游「额度/鉴权」类错误的特征词：命中就换成可操作的说法（与 CLI runtime 同一套口径）
+_QUOTA_HINTS: tuple[str, ...] = (
+    "insufficient",
+    "quota",
+    "balance",
+    "billing",
+    "subscription",
+    "unauthorized",
+    "invalid api key",
+    "authentication",
+    "余额",
+    "额度",
+)
+
+
+def _failure_error(kind: str, detail: str | None) -> str:
+    """失败原因：带上上游原文；额度/鉴权类换成用户能照着处理的说法。
+
+    没有原文时保持原来的通用说法（运行库只给 finish_reason 的情况），
+    不臆造原因，也不把 SDK 的英文异常直接甩给用户。
+    """
+    base = _FINISH_REASON_ERROR[kind]
+    if not detail:
+        return base
+    if any(hint in detail.lower() for hint in _QUOTA_HINTS):
+        return f"模型额度或鉴权异常，本轮已立即终止：{detail}。请切换其他模型或补充额度后重新发送。"
+    return f"{base}，上游原因：{detail}"
+
+
 #: DSH MCP 客户端插件（runtime 捆绑的 cordis 插件名）
 MCP_PLUGIN_NAME = "@deepseek-ai/dsh-mcp-client"
 #: patch 文件落点（dsh_home 下，仓库外）
@@ -132,6 +161,8 @@ class DshRun:
     final_response: str = ""
     finish_reason: str | None = None
     error: str | None = None
+    #: 上游失败原文（turn/end 的 reason.error/failure.message），用于把原因讲清楚
+    upstream_error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -470,6 +501,10 @@ class FluxDshClient:
             event, body = to_flux_event(notification)
             record = {**body, "run_id": run_id}
             run.events.append(record)
+            detail = body.get("error_detail")
+            if isinstance(detail, str) and detail:
+                # 失败原因随 turn/end 一起到达，先存下来给终态消息用（见 _failure_error）
+                run.upstream_error = detail
             # 旁路已经逐 token 推过正文时，SDK 收尾那条整段 assistant/message 只留档不外发，
             # 否则手机端会把同一段答复再整段贴一遍。
             duplicate = (
@@ -564,7 +599,7 @@ class FluxDshClient:
                 if mapped is not None:
                     logger.warning("dsh.run 非成功结束 run=%s finish_reason=%s", run.run_id, kind)
                     status = mapped
-                    error = _FINISH_REASON_ERROR[kind]
+                    error = _failure_error(kind, run.upstream_error)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 上游任何异常都归到失败终态

@@ -102,6 +102,13 @@ class CompletionModelResolver:
         if wanted.lower() == FOLLOW_AGENT:
             wanted = ""
 
+        # 请求没点名模型/密钥时，偏好里保存的模型就是默认通道；
+        # 只有偏好是 follow-agent 才继续走下面的 Agent 解析。
+        if not wanted and not key_id:
+            stored = str(self._prefs.snapshot().get("model") or "").strip()
+            if stored and stored.lower() != FOLLOW_AGENT:
+                wanted = stored
+
         # 0. 显式 agent_id：先确认档案存在（不存在直接 404，而不是悄悄用别的模型）
         handle = None
         if agent_id:
@@ -138,9 +145,7 @@ class CompletionModelResolver:
     async def _from_key(self, key_id: str, model: str) -> CompletionTarget:
         row = await self._key_vault.get(key_id)
         if not row.enabled:
-            raise BadRequestError(
-                f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)}
-            )
+            raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
         models = [str(item).strip() for item in (row.models or []) if str(item).strip()]
         selected = model or (models[0] if models else "")
         if not selected:
