@@ -47,9 +47,6 @@ android {
     }
     val distributionSigning =
         if (releaseKeystore.exists()) signingConfigs.getByName("flux") else null
-    if (distributionSigning == null) {
-        logger.warning("keystore/flux-release.jks 不存在：使用默认 debug 签名，产物不可用于分发")
-    }
 
     buildTypes {
         debug {
