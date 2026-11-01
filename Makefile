@@ -13,7 +13,7 @@ BACKEND := backend
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup lint fmt test migrate openapi openapi-check verify run up down clean
+.PHONY: help setup lint fmt test migrate openapi openapi-check verify run demo up down clean
 
 help:
 	@echo "Flux 本地开发命令"
@@ -28,6 +28,7 @@ help:
 	@echo "  make openapi-check  校验 docs/openapi.json 与当前代码是否一致（CI 用，不写盘）"
 	@echo "  make verify         执行 scripts/verify.sh 全量自检（ruff / 契约 / 迁移往返 / pytest）"
 	@echo "  make run            以热重载方式启动后端 API（http://127.0.0.1:8000，文档 /docs）"
+	@echo "  make demo           一键启动展示页（http://127.0.0.1:5188，纯前端、无需后端）"
 	@echo "  make up             用 Docker Compose 构建并后台启动 postgres / redis / backend"
 	@echo "  make down           停止并移除 Docker Compose 启动的服务与网络"
 	@echo "  make clean          清理 __pycache__ / .pytest_cache / .ruff_cache 缓存目录"
@@ -63,6 +64,10 @@ verify:
 
 run:
 	$(PY) -m uvicorn flux.main:app --reload --app-dir $(BACKEND)
+
+# 一键 demo：展示页自带 mock 数据，不需要后端也能完整点击/交互。
+demo:
+	cd apps/showcase-web && npm ci --no-audit --no-fund && npm run dev
 
 up:
 	docker compose up -d --build
