@@ -29,27 +29,37 @@ android {
     // 固定的分发签名：历史 APK 全部用 A 机的 debug keystore（证书 SHA-256 ec560d8d…）签名，
     // 若不固定，各机器会用各自的 ~/.android/debug.keystore，导致升级时报签名冲突。
     // 口令优先读环境变量（CI 由 secrets 注入），本地未设置时回落到历史默认值，保证 OTA 签名一致。
+    // keystore 不进仓库（*.jks 已忽略）：CI 通过 FLUX_KEYSTORE_BASE64 注入；未注入时回落到
+    // AGP 默认 debug 签名，仅用于编译验证，该产物不可用于分发。
     fun envOr(name: String, fallback: String): String =
         System.getenv(name)?.takeIf { it.isNotBlank() } ?: fallback
 
+    val releaseKeystore = rootProject.file("keystore/flux-release.jks")
     signingConfigs {
         create("flux") {
-            storeFile = rootProject.file("keystore/flux-release.jks")
-            storePassword = envOr("FLUX_KEYSTORE_PASSWORD", "android")
-            keyAlias = envOr("FLUX_KEY_ALIAS", "androiddebugkey")
-            keyPassword = envOr("FLUX_KEY_PASSWORD", "android")
+            if (releaseKeystore.exists()) {
+                storeFile = releaseKeystore
+                storePassword = envOr("FLUX_KEYSTORE_PASSWORD", "android")
+                keyAlias = envOr("FLUX_KEY_ALIAS", "androiddebugkey")
+                keyPassword = envOr("FLUX_KEY_PASSWORD", "android")
+            }
         }
+    }
+    val distributionSigning =
+        if (releaseKeystore.exists()) signingConfigs.getByName("flux") else null
+    if (distributionSigning == null) {
+        logger.warning("keystore/flux-release.jks 不存在：使用默认 debug 签名，产物不可用于分发")
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("flux")
+            signingConfig = distributionSigning ?: signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("flux")
+            signingConfig = distributionSigning ?: signingConfigs.getByName("debug")
         }
     }
 

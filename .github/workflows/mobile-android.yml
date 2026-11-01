@@ -41,6 +41,20 @@ jobs:
           yes | "${SDKMANAGER}" --licenses > /dev/null
           "${SDKMANAGER}" "platforms;android-34" "build-tools;34.0.0"
 
+      # keystore 不进仓库，仓库 CI 用默认 debug 签名（仅验证编译）；
+      # 配置了 FLUX_KEYSTORE_BASE64 时还原分发签名，保证产物可覆盖安装。
+      - name: Restore signing keystore (optional)
+        env:
+          FLUX_KEYSTORE_BASE64: ${{ secrets.FLUX_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$FLUX_KEYSTORE_BASE64" ]; then
+            mkdir -p keystore
+            printf '%s' "$FLUX_KEYSTORE_BASE64" | base64 -d > keystore/flux-release.jks
+            echo "分发签名 keystore 已还原"
+          else
+            echo "未配置 FLUX_KEYSTORE_BASE64，使用默认 debug 签名（产物不可分发）"
+          fi
+
       - name: Run JVM tests
         run: ./gradlew testDebugUnitTest --no-daemon
 
