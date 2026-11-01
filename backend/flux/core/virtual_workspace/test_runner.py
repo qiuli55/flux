@@ -61,6 +61,10 @@ class TestRunner:
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                # 测试输出常含中文（断言失败信息）。Windows 文本管道默认按 locale
+                # 解码，遇到 UTF-8 汉字会抛 UnicodeDecodeError 把整条门禁链路打断。
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout,
                 check=False,
             )

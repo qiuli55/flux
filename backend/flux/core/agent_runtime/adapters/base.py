@@ -35,6 +35,10 @@ def run_probe(argv: Sequence[str], *, timeout: float = PROBE_TIMEOUT_SECONDS) ->
         list(platforms.executable_argv(argv)),
         capture_output=True,
         text=True,
+        # CLI 协议统一按 UTF-8：Windows 默认走 locale（cp1252），中文版本号/提示会直接抛
+        # UnicodeDecodeError；探测输出里夹带不可解码字节时降级为替换符，不阻断探测。
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
     )
@@ -146,6 +150,11 @@ class CliAgentAdapter(ABC):
             stderr=stderr if stderr is not None else subprocess.STDOUT,
             stdin=stdin,
             text=True,
+            # 协议流是 UTF-8（agent 指令与答复都含中文）。Windows 文本管道默认用 locale
+            # 编码：写中文指令会 UnicodeEncodeError（cp1252 编不出汉字），读子进程的
+            # UTF-8 输出又会 UnicodeDecodeError——必须显式钉住编码。
+            encoding="utf-8",
+            errors="replace",
         )
         # 独立进程组：POSIX 下 pid == pgid；Windows 以组长 pid 作为组标识
         pid, pgid = platforms.process_group_of(process)

@@ -330,6 +330,10 @@ class GitClient:
                 cwd=root,
                 capture_output=True,
                 text=True,
+                # git 输出含非 ASCII（中文文件名/提交信息）时按 UTF-8 解码；
+                # Windows 默认 locale 解码会抛 UnicodeDecodeError，直接打断 Git 集成。
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout,
                 check=False,
             )
