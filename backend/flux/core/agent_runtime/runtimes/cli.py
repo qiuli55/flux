@@ -1716,6 +1716,9 @@ class CliRuntime:
             runtime_id=self.runtime_id, model=launch.model
         )
         try:
+            # 先把租约交还池子再写终态：终态一落库，续聊可能立刻开始；迟一步 release
+            # 会让下一轮误判「同任务并发」而冷启动一个新进程（实测偶发多起一个 serve）。
+            await self._release_pool(launch.run_id)
             final = await self._supervisor.finish(
                 launch.run_id,
                 status,
@@ -1727,7 +1730,8 @@ class CliRuntime:
             await self._revoke(self._tokens.pop(launch.run_id, launch.token_id))
             self._close_stderr(launch.run_id)
             self._stop_flags.pop(launch.run_id, None)
-            # 本轮收口后才交还租约：干净收口留池复用，否则停进程 + 撤销任务级令牌
+            # 兜底：正常路径已在写终态前交还；这里保证异常分支也不会把租约挂死在池子里
+            # （_release_pool 幂等，key 已弹出时直接返回）
             await self._release_pool(launch.run_id)
         if final is not status:
             # 看护器改写了终态（取消/超时先落定）：本线程算出的失败原因不串进结果
