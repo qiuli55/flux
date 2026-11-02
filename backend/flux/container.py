@@ -60,6 +60,7 @@ from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
+from flux.core.supervisor import SupervisorOutbox, SupervisorRepository, SupervisorService
 from flux.core.task_engine.agent_switch import AgentSwitchService
 from flux.core.task_engine.assistant import TaskAssistant
 from flux.core.task_engine.conversation_summary import ConversationSummarizer
@@ -142,6 +143,10 @@ class Container:
     context_redactions: RedactionStore = field(init=False)
     # 回补率观测（§6.7）：进程内累积打包给出去的引用数与按需取回次数
     context_backfill: BackfillObserver = field(init=False)
+    #: 助理（Supervisor）：外部事件幂等入库 + outbox；判断与派发在后续阶段接入
+    supervisor_repo: SupervisorRepository = field(init=False)
+    supervisor_outbox: SupervisorOutbox = field(init=False)
+    supervisor: SupervisorService = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -377,6 +382,14 @@ class Container:
         self.terminal.redactions = self.context_redactions
         # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
         self.context_backfill = BackfillObserver()
+        # 助理（Supervisor）：P0 只有事件幂等入库 + outbox 排队；判断层（P1）与派发
+        # （P2）默认关闭，没有事件进入就不会产生任何副作用。
+        self.supervisor_repo = SupervisorRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.supervisor_outbox = SupervisorOutbox(
+            self.session_factory,  # type: ignore[attr-defined]
+            max_attempts=self.settings.supervisor_outbox_max_attempts,
+        )
+        self.supervisor = SupervisorService(self.supervisor_repo, self.supervisor_outbox)
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""

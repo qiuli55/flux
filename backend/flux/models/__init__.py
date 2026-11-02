@@ -17,6 +17,21 @@ from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
 from flux.models.run_trace import RunTraceItem
 from flux.models.runtime_session import TaskRuntimeSession
+from flux.models.supervisor import (
+    SupervisorAssignment,
+    SupervisorDigest,
+    SupervisorEval,
+    SupervisorMandate,
+    SupervisorOutbox,
+    SupervisorPolicy,
+    SupervisorReport,
+    SupervisorSettings,
+    SupervisorSource,
+    SupervisorSubscription,
+    SupervisorThread,
+    SupervisorTicket,
+    SupervisorTrigger,
+)
 from flux.models.task import Task, TaskMessage
 from flux.models.task_memory import TaskMemoryCard
 from flux.models.terminal import TerminalEvent, TerminalSession
@@ -47,6 +62,19 @@ __all__ = [
     "ProjectMemory",
     "ProviderAccount",
     "RunTraceItem",
+    "SupervisorAssignment",
+    "SupervisorDigest",
+    "SupervisorEval",
+    "SupervisorMandate",
+    "SupervisorOutbox",
+    "SupervisorPolicy",
+    "SupervisorReport",
+    "SupervisorSettings",
+    "SupervisorSource",
+    "SupervisorSubscription",
+    "SupervisorThread",
+    "SupervisorTicket",
+    "SupervisorTrigger",
     "Task",
     "TaskMemoryCard",
     "TaskMessage",

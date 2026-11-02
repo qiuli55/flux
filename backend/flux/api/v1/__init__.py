@@ -19,6 +19,7 @@ from flux.api.v1 import (
     memory,
     models,
     projects,
+    supervisor,
     tasks,
     terminal,
     uploads,
@@ -46,5 +47,6 @@ api_v1_router.include_router(designs.router)
 api_v1_router.include_router(deliveries.router)
 api_v1_router.include_router(uploads.router)
 api_v1_router.include_router(codex_account.router)
+api_v1_router.include_router(supervisor.router)
 
 __all__ = ["api_v1_router"]

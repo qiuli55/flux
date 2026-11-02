@@ -222,6 +222,60 @@ class MemoryLayer(StrEnum):
     ENVIRONMENT = "environment"
 
 
+class AcceptMode(StrEnum):
+    """Supervisor 的准入模式（参考 DeepSeek Super-agent 的三档）。
+
+    - OFF：只收事件落库，不做任何判断与派活；
+    - OBSERVE：跑完整的 Gate + Assessment，把判断结果写成可回放的 observation，
+      但不创建 ticket、不起 Run——用来在真实流量上校准判断层；
+    - AUTO：判断通过后直接进入编排（plan → dispatch）。
+    """
+
+    OFF = "off"
+    OBSERVE = "observe"
+    AUTO = "auto"
+
+
+class SupervisorDecision(StrEnum):
+    """一次判断的结论。UNAVAILABLE 表示判断层没跑成（模型超时/输出不合协议），
+    与 IGNORE 严格区分：前者是"不知道"，后者是"明确不该管"。"""
+
+    ACCEPT = "accept"
+    STOP = "stop"
+    IGNORE = "ignore"
+    UNAVAILABLE = "unavailable"
+
+
+class MandateStrength(StrEnum):
+    """用户授权的强度：显式下达 vs 从上下文推断（推断授权必须更保守）。"""
+
+    EXPLICIT = "explicit"
+    INFERRED = "inferred"
+
+
+class TicketStage(StrEnum):
+    """工单生命周期阶段。阶段不落库，由结构化事实（task/report/assignment）派生。"""
+
+    INTAKE = "intake"
+    PLANNED = "planned"
+    RUNNING = "running"
+    WAITING = "waiting"
+    REVIEWING = "reviewing"
+    DONE = "done"
+    STOPPED = "stopped"
+
+
+class ReportStatus(StrEnum):
+    """子 Agent 交回的六态报告（与 TaskStatus 解耦，避免把"任务状态"当"结论"）。"""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    NEEDS_INPUT = "needs_input"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+
+
 class MessageType(StrEnum):
     """Agent 通信协议消息类型（主规格 §12.8）。"""
 

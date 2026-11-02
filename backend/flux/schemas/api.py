@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from flux.enums import (
+    AcceptMode,
     AgentRole,
     BrainSection,
     Capability,
@@ -468,3 +470,32 @@ class InstallationConnectRequest(BaseModel):
 
     agent: str | None = Field(default=None, max_length=64)
     all: bool = False
+
+
+class SupervisorEventRequest(BaseModel):
+    """一条外部事件（飞书 / 微信 / Flux 内部）。
+
+    `external_id` 必须是平台侧稳定标识：重复投递靠 `(source_key, event_type,
+    external_id)` 幂等，重投只会命中同一条 trigger，不会再排一次动作。
+    """
+
+    source_key: str = Field(min_length=1, max_length=64)
+    external_id: str = Field(min_length=1, max_length=255)
+    event_type: str = Field(default="message", max_length=64)
+    actor_id: str = Field(default="", max_length=255)
+    actor_platform: str = Field(default="", max_length=32)
+    thread_key: str = Field(default="", max_length=255)
+    project_id: uuid.UUID | None = None
+    content: str = Field(default="", max_length=20000)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class SupervisorSettingsRequest(BaseModel):
+    """Supervisor 设置的局部更新：字段为 None 表示"不改"。"""
+
+    accept_mode: AcceptMode | None = None
+    model_provider: str | None = Field(default=None, max_length=32)
+    model_name: str | None = Field(default=None, max_length=128)
+    max_tickets_per_thread: int | None = Field(default=None, ge=1, le=20)
+    max_ticket_depth: int | None = Field(default=None, ge=1, le=3)
+    max_concurrent_runs: int | None = Field(default=None, ge=1, le=8)

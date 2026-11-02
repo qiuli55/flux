@@ -1,6 +1,16 @@
 {
   "components": {
     "schemas": {
+      "AcceptMode": {
+        "description": "Supervisor 的准入模式（参考 DeepSeek Super-agent 的三档）。\n\n- OFF：只收事件落库，不做任何判断与派活；\n- OBSERVE：跑完整的 Gate + Assessment，把判断结果写成可回放的 observation，\n  但不创建 ticket、不起 Run——用来在真实流量上校准判断层；\n- AUTO：判断通过后直接进入编排（plan → dispatch）。",
+        "enum": [
+          "off",
+          "observe",
+          "auto"
+        ],
+        "title": "AcceptMode",
+        "type": "string"
+      },
       "ActiveAgentRequest": {
         "description": "当前生效的 Agent 选择（AI_COMPLETION_SPEC §7）。\n\n`model`/`key_id` 留空表示沿用该 Agent 自身默认。",
         "properties": {
@@ -1516,6 +1526,156 @@
           "value"
         ],
         "title": "SecureInputRequest",
+        "type": "object"
+      },
+      "SupervisorEventRequest": {
+        "description": "一条外部事件（飞书 / 微信 / Flux 内部）。\n\n`external_id` 必须是平台侧稳定标识：重复投递靠 `(source_key, event_type,\nexternal_id)` 幂等，重投只会命中同一条 trigger，不会再排一次动作。",
+        "properties": {
+          "actor_id": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_platform": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Actor Platform",
+            "type": "string"
+          },
+          "content": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Content",
+            "type": "string"
+          },
+          "event_type": {
+            "default": "message",
+            "maxLength": 64,
+            "title": "Event Type",
+            "type": "string"
+          },
+          "external_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "External Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "raw": {
+            "additionalProperties": true,
+            "title": "Raw",
+            "type": "object"
+          },
+          "source_key": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Key",
+            "type": "string"
+          },
+          "thread_key": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Thread Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_key",
+          "external_id"
+        ],
+        "title": "SupervisorEventRequest",
+        "type": "object"
+      },
+      "SupervisorSettingsRequest": {
+        "description": "Supervisor 设置的局部更新：字段为 None 表示\"不改\"。",
+        "properties": {
+          "accept_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AcceptMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_concurrent_runs": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Runs"
+          },
+          "max_ticket_depth": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Ticket Depth"
+          },
+          "max_tickets_per_thread": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tickets Per Thread"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "model_provider": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider"
+          }
+        },
+        "title": "SupervisorSettingsRequest",
         "type": "object"
       },
       "TaskAgentRequest": {
@@ -6780,6 +6940,219 @@
         "summary": "Replace Project Files",
         "tags": [
           "projects"
+        ]
+      }
+    },
+    "/api/v1/supervisor/events": {
+      "post": {
+        "description": "记录一条外部事件（幂等）。重复投递只回同一条记录，metadata.created=false。",
+        "operationId": "ingest_event_api_v1_supervisor_events_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ingest Event Api V1 Supervisor Events Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ingest Event",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/observations": {
+      "get": {
+        "description": "观察模式回放：事件按时间倒序，带最近一次判断（若已判断）。",
+        "operationId": "list_observations_api_v1_supervisor_observations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "按 trigger.status 过滤",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按 trigger.status 过滤",
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Observations Api V1 Supervisor Observations Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Observations",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/settings": {
+      "get": {
+        "description": "读取准入模式与计划上限。",
+        "operationId": "read_supervisor_settings_api_v1_supervisor_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Supervisor Settings Api V1 Supervisor Settings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Supervisor Settings",
+        "tags": [
+          "supervisor"
+        ]
+      },
+      "put": {
+        "description": "局部更新设置；字段缺省/为 null 表示保持原值。",
+        "operationId": "update_supervisor_settings_api_v1_supervisor_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Supervisor Settings Api V1 Supervisor Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Supervisor Settings",
+        "tags": [
+          "supervisor"
         ]
       }
     },
