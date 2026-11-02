@@ -7,8 +7,16 @@
 - 有状态的只有 thread / ticket / assignment / report。
 """
 
+from flux.core.supervisor.assess import SupervisorAssessor
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
 from flux.core.supervisor.service import SupervisorService
+from flux.core.supervisor.worker import SupervisorWorker
 
-__all__ = ["SupervisorOutbox", "SupervisorRepository", "SupervisorService"]
+__all__ = [
+    "SupervisorAssessor",
+    "SupervisorOutbox",
+    "SupervisorRepository",
+    "SupervisorService",
+    "SupervisorWorker",
+]

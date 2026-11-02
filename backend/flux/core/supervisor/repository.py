@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,6 +28,7 @@ from flux.models.project import Project
 from flux.models.supervisor import (
     SupervisorEval,
     SupervisorOutbox,
+    SupervisorPolicy,
     SupervisorSettings,
     SupervisorSource,
     SupervisorThread,
@@ -118,11 +119,39 @@ class SupervisorRepository:
                 await session.refresh(source)
             return source
 
+    async def get_source(self, key: str) -> SupervisorSource | None:
+        async with self._session_factory() as session:
+            return await session.scalar(select(SupervisorSource).where(SupervisorSource.key == key))
+
     async def list_sources(self) -> list[SupervisorSource]:
         async with self._session_factory() as session:
             return list(
                 await session.scalars(select(SupervisorSource).order_by(SupervisorSource.key))
             )
+
+    # --- 策略 ---
+
+    async def list_policies(
+        self,
+        *,
+        source_key: str,
+        project_id: uuid.UUID | None = None,
+    ) -> list[SupervisorPolicy]:
+        """取候选策略：项目/来源为空的策略视为通配，由 gate.select_policy 排优先级。"""
+        statement = select(SupervisorPolicy).where(SupervisorPolicy.enabled.is_(True))
+        statement = statement.where(
+            (SupervisorPolicy.source_key.is_(None)) | (SupervisorPolicy.source_key == source_key)
+        )
+        if project_id is None:
+            statement = statement.where(SupervisorPolicy.project_id.is_(None))
+        else:
+            statement = statement.where(
+                (SupervisorPolicy.project_id.is_(None))
+                | (SupervisorPolicy.project_id == project_id)
+            )
+        statement = statement.order_by(SupervisorPolicy.created_at, SupervisorPolicy.id)
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
 
     # --- 事件（幂等）---
 
@@ -234,6 +263,38 @@ class SupervisorRepository:
                 )
             return trigger
 
+    async def set_trigger_status(self, trigger_id: uuid.UUID, status: str) -> None:
+        """推进 trigger 的处理状态（received → gated → assessed / ignored）。"""
+        async with self._session_factory() as session:
+            trigger = await session.get(SupervisorTrigger, trigger_id)
+            if trigger is None:
+                raise NotFoundError(
+                    f"Supervisor 事件 {trigger_id} 不存在", details={"trigger_id": str(trigger_id)}
+                )
+            trigger.status = status
+            await self._commit(session, "Supervisor 事件状态")
+
+    async def count_triggers_since(
+        self,
+        *,
+        source_key: str,
+        since: datetime,
+        exclude_id: uuid.UUID | None = None,
+    ) -> int:
+        """统计窗口内同一来源的事件数（Gate 的速率规则用）。"""
+        statement = (
+            select(func.count())
+            .select_from(SupervisorTrigger)
+            .where(
+                SupervisorTrigger.source_key == source_key,
+                SupervisorTrigger.received_at >= since,
+            )
+        )
+        if exclude_id is not None:
+            statement = statement.where(SupervisorTrigger.id != exclude_id)
+        async with self._session_factory() as session:
+            return int(await session.scalar(statement) or 0)
+
     # --- 判断（只追加）---
 
     async def record_eval(
@@ -277,6 +338,16 @@ class SupervisorRepository:
             for evaluation in await session.scalars(statement):
                 latest[evaluation.trigger_id] = evaluation
         return latest
+
+    async def list_evals(self, trigger_id: uuid.UUID) -> list[SupervisorEval]:
+        """一条事件的全部判断历史（升序）；手动重判会追加新行，旧结论不覆盖。"""
+        statement = (
+            select(SupervisorEval)
+            .where(SupervisorEval.trigger_id == trigger_id)
+            .order_by(SupervisorEval.created_at, SupervisorEval.id)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
 
     # --- 内部 ---
 

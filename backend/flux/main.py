@@ -75,6 +75,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 循环内部直接跳过，不产生任何网络请求。
         if app_settings.context_cloud_sync:
             context_sync_task = asyncio.create_task(container.context_cloud.start())
+        # 助理（Supervisor）后台判断：消费 outbox → Gate → Assessment；观察模式只记判断，
+        # 不派活。没有事件进入就永远空转等待，不产生任何副作用。
+        if app_settings.supervisor_worker_enabled:
+            await container.supervisor_worker.start()
         yield
         if log_upload_task is not None and not log_upload_task.done():
             log_upload_task.cancel()
@@ -84,6 +88,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             billing_sync_task.cancel()
         if context_sync_task is not None and not context_sync_task.done():
             context_sync_task.cancel()
+        # 先停助理 worker，再 dispose 容器：避免停库后仍有判断在写 outbox。
+        await container.supervisor_worker.stop()
         # Container.dispose() owns service shutdown ordering, including Human PTY.
         await container.dispose()
         # 内部旁路的上游连接池随应用一起关闭

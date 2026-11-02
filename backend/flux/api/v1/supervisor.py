@@ -1,7 +1,7 @@
-"""Supervisor（助理）API：事件入口、观察回放、设置。
+"""Supervisor（助理）API：事件入口、观察回放、手动重判、设置。
 
 权限面与其它 v1 接口一致，统一由 `require_rest_auth` 把关（见 flux.main）。
-本组接口只写"事实"：事件入库、设置调整；派活/停止等动作在 P2 起另开端点。
+本组接口只写"事实"：事件入库、判断追加、设置调整；派活/停止等动作在 P2 起另开端点。
 """
 
 from __future__ import annotations
@@ -56,6 +56,35 @@ async def list_observations(
             "pending_outbox": data["pending_outbox"],
         },
     )
+
+
+@router.get("/observations/{trigger_id}")
+async def read_observation(
+    trigger_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """单条事件的完整判断历史（旧结论不会被覆盖）。"""
+    return ok(await container.supervisor.observation_detail(trigger_id))
+
+
+@router.post("/observations/{trigger_id}/assess")
+async def reassess_observation(
+    trigger_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """人工重判：追加一条判断并推进状态；观察模式下不会派活。"""
+    data = await container.supervisor.assess_now(trigger_id)
+    assessment = data.get("assessment") or {}
+    return ok(data, metadata={"decision": assessment.get("decision")})
+
+
+@router.post("/process")
+async def process_pending(
+    limit: int = Query(default=10, ge=1, le=50),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """手动推进一轮 outbox（与后台 worker 同一条路径，供运维与测试使用）。"""
+    return ok(await container.supervisor.process_pending(limit=limit))
 
 
 @router.get("/settings")

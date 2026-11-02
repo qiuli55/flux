@@ -59,6 +59,8 @@ def settings(tmp_path) -> Settings:
         billing_sync_file=str(tmp_path / "billing-sync.json"),
         # 对话上下文上云同理：测试不能把对话推到开发机 /etc 凭据对应的真实设备
         context_cloud_sync=False,
+        # 助理后台 worker 关掉：否则事件刚入队就被判断消费，幂等断言会看到不同的 outbox 数
+        supervisor_worker_enabled=False,
         memory_prefs_file=str(tmp_path / "memory-prefs.json"),
         # 补全偏好同样落临时目录：不能读写开发机 ~/.flux/completion-prefs.json
         completion_prefs_file=str(tmp_path / "completion-prefs.json"),

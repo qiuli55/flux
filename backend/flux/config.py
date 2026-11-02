@@ -222,6 +222,8 @@ class Settings(BaseSettings):
 
     # --- Supervisor（助理）运行期参数 ---
     # 准入模式与计划上限落库（supervisor_settings），这里只放不属于业务策略的运维参数。
+    # 后台判断 worker 开关：测试里关掉，避免与用例的事件入队断言抢时序。
+    supervisor_worker_enabled: bool = True
     # outbox 轮询间隔（秒）：判断/派发 worker 的节拍，0.5 以下对 SQLite 压力偏大。
     supervisor_poll_seconds: float = 5.0
     # 判断层单次模型调用上限（秒）；超时按"判断不可用"处理，绝不默认放行。

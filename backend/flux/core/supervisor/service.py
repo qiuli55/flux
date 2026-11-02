@@ -1,7 +1,9 @@
-"""Supervisor 服务层（P0：事件入库与观察回放）。
+"""Supervisor 服务层：事件入库、观察回放、手动推进。
 
-这里刻意不做判断、不派活：准入（P1）与规划（P2）各自成模块，服务层只负责
-把外部事实收敛成结构化记录，并保证幂等。
+判断与派发由 worker / planner 负责，服务层只做参数校验与编排：
+- 事件入库幂等（P0）；
+- 观察回放（P1，人工重判只追加判断）；
+- 手动推进 outbox（运维/测试用）。
 """
 
 from __future__ import annotations
@@ -11,13 +13,21 @@ from typing import Any
 
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
+from flux.core.supervisor.worker import SupervisorWorker
 from flux.errors import ValidationError
 
 
 class SupervisorService:
-    def __init__(self, repo: SupervisorRepository, outbox: SupervisorOutbox) -> None:
+    def __init__(
+        self,
+        repo: SupervisorRepository,
+        outbox: SupervisorOutbox,
+        *,
+        worker: SupervisorWorker | None = None,
+    ) -> None:
         self._repo = repo
         self._outbox = outbox
+        self._worker = worker
 
     # --- 事件 ---
 
@@ -75,6 +85,35 @@ class SupervisorService:
             "items": items,
             "pending_outbox": await self._outbox.pending_count(),
         }
+
+    async def observation_detail(self, trigger_id: uuid.UUID) -> dict[str, Any]:
+        """单条事件的全部判断历史（旧结论不会被新判断覆盖）。"""
+        trigger = await self._repo.get_trigger(trigger_id)
+        evals = await self._repo.list_evals(trigger_id)
+        item = trigger.to_dict()
+        item["evals"] = [evaluation.to_dict() for evaluation in evals]
+        item["eval"] = item["evals"][-1] if item["evals"] else None
+        return item
+
+    async def process_pending(self, *, limit: int = 10) -> dict[str, Any]:
+        """手动推进一轮 outbox（与后台 worker 走同一条处理路径）。"""
+        worker = self._require_worker()
+        processed = await worker.run_once(limit=limit)
+        return {
+            "processed": processed,
+            "pending_outbox": await self._outbox.pending_count(),
+        }
+
+    async def assess_now(self, trigger_id: uuid.UUID) -> dict[str, Any]:
+        """人工重判：追加一条判断并推进状态，不派活。"""
+        return await self._require_worker().assess_now(trigger_id)
+
+    def _require_worker(self) -> SupervisorWorker:
+        if self._worker is None:
+            raise ValidationError(
+                "Supervisor worker 未装配", details={"component": "supervisor_worker"}
+            )
+        return self._worker
 
     # --- 设置 ---
 

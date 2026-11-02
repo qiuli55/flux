@@ -60,7 +60,13 @@ from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
-from flux.core.supervisor import SupervisorOutbox, SupervisorRepository, SupervisorService
+from flux.core.supervisor import (
+    SupervisorAssessor,
+    SupervisorOutbox,
+    SupervisorRepository,
+    SupervisorService,
+    SupervisorWorker,
+)
 from flux.core.task_engine.agent_switch import AgentSwitchService
 from flux.core.task_engine.assistant import TaskAssistant
 from flux.core.task_engine.conversation_summary import ConversationSummarizer
@@ -143,9 +149,11 @@ class Container:
     context_redactions: RedactionStore = field(init=False)
     # 回补率观测（§6.7）：进程内累积打包给出去的引用数与按需取回次数
     context_backfill: BackfillObserver = field(init=False)
-    #: 助理（Supervisor）：外部事件幂等入库 + outbox；判断与派发在后续阶段接入
+    #: 助理（Supervisor）：外部事件幂等入库 + outbox；判断层无状态，执行仍归 Task Engine
     supervisor_repo: SupervisorRepository = field(init=False)
     supervisor_outbox: SupervisorOutbox = field(init=False)
+    supervisor_assessor: SupervisorAssessor = field(init=False)
+    supervisor_worker: SupervisorWorker = field(init=False)
     supervisor: SupervisorService = field(init=False)
 
     def __post_init__(self) -> None:
@@ -389,7 +397,20 @@ class Container:
             self.session_factory,  # type: ignore[attr-defined]
             max_attempts=self.settings.supervisor_outbox_max_attempts,
         )
-        self.supervisor = SupervisorService(self.supervisor_repo, self.supervisor_outbox)
+        self.supervisor_assessor = SupervisorAssessor(
+            self.router,
+            timeout_seconds=self.settings.supervisor_assess_timeout_seconds,
+            max_retries=self.settings.supervisor_max_assess_retries,
+        )
+        self.supervisor_worker = SupervisorWorker(
+            self.supervisor_repo,
+            self.supervisor_outbox,
+            self.supervisor_assessor,
+            poll_seconds=self.settings.supervisor_poll_seconds,
+        )
+        self.supervisor = SupervisorService(
+            self.supervisor_repo, self.supervisor_outbox, worker=self.supervisor_worker
+        )
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""
