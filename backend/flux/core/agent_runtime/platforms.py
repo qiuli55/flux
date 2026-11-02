@@ -236,6 +236,10 @@ def secure_file(path: str | Path) -> bool:
                 ["icacls", target, "/inheritance:r", "/grant:r", f"{user}:F"],
                 capture_output=True,
                 text=True,
+                # 路径含中文时 icacls 输出不是 locale 可解码的：Windows 默认 cp1252 会在
+                # _readerthread 抛 UnicodeDecodeError（仅告警但污染日志），显式钉 UTF-8。
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
         except OSError:
@@ -288,6 +292,8 @@ def _windows_taskkill(pid: int) -> None:
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
 

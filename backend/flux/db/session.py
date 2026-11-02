@@ -23,13 +23,19 @@ def create_engine(database_url: str) -> AsyncEngine:
     SQLite（本地开发）不支持连接池参数，故按方言分支。
     """
     if database_url.startswith("sqlite"):
-        engine = create_async_engine(database_url, future=True)
+        # timeout 是 sqlite3.connect 的 busy 超时（秒）：默认 5 秒，Windows 上磁盘与
+        # 线程调度更慢，并发写（心跳 / 令牌撤销 / 终态落库）容易直接被打成 locked。
+        engine = create_async_engine(database_url, future=True, connect_args={"timeout": 30})
 
-        # SQLite 默认不强制外键，本地会静默吞掉违反外键的写入；开启后与 PostgreSQL 行为一致。
         @event.listens_for(engine.sync_engine, "connect")
-        def _enable_sqlite_fk(dbapi_connection, _record):  # pragma: no cover - 驱动回调
+        def _config_sqlite(dbapi_connection, _record):  # pragma: no cover - 驱动回调
             cursor = dbapi_connection.cursor()
+            # SQLite 默认不强制外键，本地会静默吞掉违反外键的写入；开启后与 PostgreSQL 行为一致。
             cursor.execute("PRAGMA foreign_keys=ON")
+            # 默认 rollback journal 下读事务会阻塞写提交：测试里 20ms 一次的轮询读会把
+            # 后台心跳 UPDATE 饿到 busy 超时（Windows CI 实测 database is locked）。
+            # WAL 让读写互不阻塞，写写仍串行，由上面的 busy 超时兜住。
+            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
         return engine

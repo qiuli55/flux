@@ -317,6 +317,10 @@ class TerminalService:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                # 命令输出常含中文（git / pytest / 用户脚本）：Windows 文本管道默认走
+                # locale（cp1252），读取线程会 UnicodeDecodeError 并丢掉整段输出。
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 **platforms.popen_kwargs(),  # 独立进程组：Stop 只杀本会话，不误伤 Flux 自身
             )
