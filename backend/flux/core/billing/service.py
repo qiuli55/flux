@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from flux.cloud.billing_sync import SYNC_INTERVAL_SECONDS, CloudBillingSync
 from flux.config import Settings
 from flux.core.billing.accounts import (
     account_label,
@@ -138,6 +139,14 @@ class BillingService:
         #: plan_key → 最近一次采集尝试的时刻（失败也算，避免反复打官方接口）
         self._cache_at: dict[str, datetime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        #: 跨设备归集：本机账本增量上传 + 云端「全部设备」合计（关闭时整体不发起请求）
+        self._cloud_sync = CloudBillingSync(settings, self._repo)
+        #: 汇总键（plan|account|window）→ 云端合计
+        self._cloud: dict[str, dict[str, Any]] = {}
+        self._cloud_at: datetime | None = None
+        self._cloud_error: str = ""
+        #: plan_key → 云端出现过的账号指纹（补齐本机没见过的账号）
+        self._cloud_accounts: dict[str, list[str]] = {}
 
     # --- 配置 ---
 
@@ -152,6 +161,10 @@ class BillingService:
     @property
     def _refresh_seconds(self) -> int:
         return max(int(self._settings.billing_refresh_seconds or 0), 0)
+
+    @property
+    def _cloud_enabled(self) -> bool:
+        return bool(self._settings.billing_cloud_sync)
 
     # --- 落账 ---
 
@@ -223,6 +236,12 @@ class BillingService:
             #: 官方快照的刷新周期（前端据此判断数据是否过期）
             "refresh_seconds": self._refresh_seconds,
             "plans_file": str(self._settings.billing_plans_file or ""),
+            #: 跨设备归集状态：synced_at / error 由后台同步与「立即对账」共同维护
+            "cloud": {
+                "enabled": self._cloud_enabled,
+                "synced_at": self._cloud_at.isoformat() if self._cloud_at else None,
+                "error": self._cloud_error,
+            },
             "plans": plans,
         }
 
@@ -279,7 +298,66 @@ class BillingService:
                     "error": error,
                 }
             )
-        return {"results": results}
+        # 顺手把本机新增账本推上云端，并刷新「全部设备」合计（失败不影响官方对账结果）
+        cloud = await self.sync_cloud()
+        return {"results": results, "cloud": cloud}
+
+    # --- 跨设备归集 ---
+
+    async def sync_cloud(self) -> dict[str, Any]:
+        """增量上传本机账本 + 拉取云端合计；任何失败只记状态，不抛错。"""
+        sync = self._cloud_sync
+        if not sync.enabled:
+            return {"ok": False, "error": "未启用套餐云归集"}
+        pushed = await sync.push()
+        accounts = await sync.accounts()
+        if accounts is not None:
+            self._cloud_accounts = accounts
+        queries = await self._cloud_queries()
+        items = await sync.summary(queries) if queries else {}
+        if items is None:
+            self._cloud_error = sync.last_error or "云端汇总拉取失败"
+            return {
+                "ok": False,
+                "pushed": pushed,
+                "queries": len(queries),
+                "error": self._cloud_error,
+            }
+        self._cloud = items
+        self._cloud_at = _utcnow()
+        self._cloud_error = ""
+        return {"ok": True, "pushed": pushed, "queries": len(queries), "error": ""}
+
+    async def start_cloud_sync(self, interval: float = SYNC_INTERVAL_SECONDS) -> None:
+        """后台循环：启动先跑一轮，之后按周期归集；取消时安静退出。"""
+        while True:
+            try:
+                await self.sync_cloud()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 同步失败只记账，等下一轮
+                logger.warning("套餐用量云归集失败", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _cloud_queries(self) -> list[dict[str, Any]]:
+        """把「套餐 × 账号 × 窗口」展开成云端汇总请求。"""
+        queries: list[dict[str, Any]] = []
+        for plan in self._plans.values():
+            for account_key in await self._account_keys(plan):
+                for window in plan.windows:
+                    queries.append(
+                        {
+                            "key": self._cloud_key(plan.key, account_key, window.key),
+                            "plan_key": plan.key,
+                            "account_key": account_key,
+                            "since": window.start().isoformat(),
+                        }
+                    )
+        return queries
+
+    @staticmethod
+    def _cloud_key(plan_key: str, account_key: str, window_key: str) -> str:
+        return f"{plan_key}|{account_key}|{window_key}"
 
     # --- 闸门 ---
 
@@ -325,18 +403,12 @@ class BillingService:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             grouped.setdefault(str(row.get("account_key") or ""), []).append(row)
-        # 展示顺序：本机当前账号 → 账本里出现过的账号 → 只出现在官方快照里的账号
-        ledger_accounts = (
-            await self._repo.record_accounts(plan_key=plan.key, since=earliest)
-            if earliest is not None
-            else []
-        )
-        order: list[str] = []
-        for key in [current, *ledger_accounts, *grouped.keys()]:
+        # 展示顺序：本机当前账号 → 账本里出现过的账号 → 云端其它设备用过的账号 →
+        # 只出现在官方快照里的账号
+        order = await self._account_keys(plan)
+        for key in grouped:
             if key not in order:
                 order.append(key)
-        if not order:
-            order = [""]
         accounts = [
             await self._account_view(
                 plan,
@@ -363,6 +435,21 @@ class BillingService:
             # 向后兼容：顶层 windows / gate 都是「本机当前账号」的口径
             "windows": primary["windows"],
         }
+
+    async def _account_keys(self, plan: PlanDefinition) -> list[str]:
+        """账号展示顺序：本机当前账号 → 本地账本 → 云端其它设备用过的账号。"""
+        current = self._accounts.get(plan.key, "")
+        earliest = min((window.start() for window in plan.windows), default=None)
+        ledger = (
+            await self._repo.record_accounts(plan_key=plan.key, since=earliest)
+            if earliest is not None
+            else []
+        )
+        order: list[str] = []
+        for key in [current, *ledger, *self._cloud_accounts.get(plan.key, [])]:
+            if key not in order:
+                order.append(key)
+        return order or [""]
 
     async def _account_view(
         self,
@@ -410,6 +497,10 @@ class BillingService:
                         plan_key=plan.key, since=window.start(), account_key=account_key
                     ),
                     "official": official_row,
+                    #: 云端「全部设备」合计（未启用归集或还没同步时为 None）
+                    "cloud": self._cloud.get(
+                        self._cloud_key(plan.key, account_key, window.key)
+                    ),
                     "external": await self._external_view(
                         plan.key,
                         window.key,

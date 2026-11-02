@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     billing_prices_file: str = "~/.flux/billing-prices.json"
     # 人民币价（火山方舟）换算美元用的汇率；只影响本地估算，不影响官方账单
     billing_cny_per_usd: float = 7.2
+    # 跨设备用量归集：各设备把本地账本增量推到账号云，再把云端合计拉回来显示
+    # 「全部设备」。关掉后只显示本机账本（无设备凭据时也自动跳过）。
+    billing_cloud_sync: bool = True
+    # 增量上传游标（已推到云端最大的 occurred_at）；留空 = ~/.flux/billing-sync.json
+    billing_sync_file: str | None = None
 
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。
@@ -280,6 +285,15 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path("/etc/flux-device-credentials")
+
+    @property
+    def billing_sync_path(self) -> Path:
+        """套餐用量增量上传游标文件路径。"""
+        raw = (self.billing_sync_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "billing-sync.json"
 
     @property
     def memory_prefs_path(self) -> Path:

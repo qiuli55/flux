@@ -718,6 +718,25 @@ export interface BillingOfficialWindow {
   error: string | null;
 }
 
+/** 云端「全部设备」合计（跨设备归集；未启用或还没同步时为 null） */
+export interface BillingCloudTotals {
+  /** 回显的汇总键（plan|account|window） */
+  key?: string;
+  plan_key?: string;
+  account_key?: string;
+  since?: string;
+  records: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost: number;
+  /** 该窗口内有上传记录的设备数 */
+  devices: number;
+  last_at: string | null;
+}
+
 /** 套餐的一个额度窗口：本地账本 + 官方快照 */
 export interface BillingWindow {
   key: string;
@@ -725,6 +744,8 @@ export interface BillingWindow {
   since: string;
   local: BillingTotals;
   official: BillingOfficialWindow | null;
+  /** 账号下所有设备上传后的合计（含本机） */
+  cloud?: BillingCloudTotals | null;
 }
 
 /** 套餐下单个账号的视图（同一套餐换过 key 时会有多份） */
@@ -769,6 +790,13 @@ export interface BillingOverview {
   refresh_seconds?: number;
   /** 自定义套餐文件路径（~ 未展开）；空 = 只用内置套餐 */
   plans_file?: string;
+  /** 跨设备归集状态（各设备把本地账本增量上传到账号云） */
+  cloud?: {
+    enabled: boolean;
+    /** 最近一次成功拉取云端合计的时刻 */
+    synced_at: string | null;
+    error: string;
+  };
   plans: BillingPlan[];
 }
 

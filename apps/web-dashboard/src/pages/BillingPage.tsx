@@ -107,6 +107,17 @@ function WindowRow({ window, refreshSeconds }: { window: BillingWindow; refreshS
         <span className="fx-dim">入 {fmtNum(window.local.input_tokens)} · 出 {fmtNum(window.local.output_tokens)} · 缓存 {fmtNum(window.local.cache_read_tokens)}</span>
         {window.local.cost > 0 ? <span>≈ ${window.local.cost.toFixed(2)}</span> : null}
       </div>
+      {window.cloud && window.cloud.records > 0 ? (
+        <div className="fx-row fx-wrap fx-gap-3" style={{ marginTop: 4, fontSize: 11 }}>
+          <Badge tone="blue">全部设备</Badge>
+          <span>{fmtNum(window.cloud.total_tokens)} tok</span>
+          <span className="fx-dim">{window.cloud.records} 次调用</span>
+          <span className="fx-dim">入 {fmtNum(window.cloud.input_tokens)} · 出 {fmtNum(window.cloud.output_tokens)} · 缓存 {fmtNum(window.cloud.cache_read_tokens)}</span>
+          <span className="fx-dim">{window.cloud.devices} 台设备</span>
+          {window.cloud.cost > 0 ? <span>≈ ${window.cloud.cost.toFixed(2)}</span> : null}
+          {window.cloud.last_at ? <span className="fx-dim" style={{ fontSize: 11 }}>同步 {fmtTime(window.cloud.last_at)}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -175,7 +186,8 @@ function PlanCard({ plan, refreshSeconds, accountKey, onAccountChange }: {
   );
 }
 
-/** 汇总所有套餐在"月"窗口的本地账本，给出一个总览数字（各套餐窗口不重叠，可安全相加）。 */
+/** 汇总所有套餐在"月"窗口的用量，给出一个总览数字（各套餐窗口不重叠，可安全相加）。
+ *  有云端归集时优先用「全部设备」合计，否则退回本机账本。 */
 function totalsOf(overview: BillingOverview | null) {
   let tokens = 0;
   let records = 0;
@@ -183,9 +195,10 @@ function totalsOf(overview: BillingOverview | null) {
   for (const plan of overview?.plans ?? []) {
     const window = plan.windows.find((item) => item.key === "monthly") ?? plan.windows[0];
     if (!window) continue;
-    tokens += window.local.total_tokens;
-    records += window.local.records;
-    cost += window.local.cost;
+    const totals = window.cloud && window.cloud.records > 0 ? window.cloud : window.local;
+    tokens += totals.total_tokens;
+    records += totals.records;
+    cost += totals.cost;
   }
   return { tokens, records, cost };
 }
@@ -376,6 +389,10 @@ export function BillingPage() {
       {overview !== null ? (
         <div className="fx-dim" style={{ fontSize: 11, marginTop: 12 }}>
           告警阈值 {overview.alert_percent}% · 拦截阈值 {overview.block_percent}% · 计费总开关 {overview.enabled ? "已启用" : "已关闭"}
+          <br />
+          云端归集 {overview.cloud?.enabled ? "已启用" : "未启用"}
+          {overview.cloud?.synced_at ? ` · 最近同步 ${fmtTime(overview.cloud.synced_at)}` : ""}
+          {overview.cloud?.error ? ` · 同步失败：${overview.cloud.error}` : ""}
           <br />
           新增套餐（Codex / Claude / 任意订阅）写进 {overview.plans_file || "~/.flux/billing-plans.json"} 即可生效；未登记前缀的模型只记账、不限额。
         </div>

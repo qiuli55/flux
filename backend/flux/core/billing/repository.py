@@ -153,6 +153,24 @@ class BillingRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
+    async def records_after(
+        self, since: datetime | None, *, limit: int = 200
+    ) -> list[UsageRecord]:
+        """增量同步用：按 `occurred_at` 升序取 `since` 之后（含）的已归因明细。
+
+        只同步 `plan_key` 非空的记录——未归因的调用没有套餐意义，云端也不需要。
+        调用方按批推进 `since`（取本批最后一条的时刻），重复窗口交给云端幂等兜底。
+        """
+        statement = select(UsageRecord).where(UsageRecord.plan_key.is_not(None))
+        if since is not None:
+            statement = statement.where(UsageRecord.occurred_at >= since)
+        statement = (
+            statement.order_by(UsageRecord.occurred_at, UsageRecord.id)
+            .limit(max(limit, 1))
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
     # --- 官方快照 ---
 
     async def add_snapshot(

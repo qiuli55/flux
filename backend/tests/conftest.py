@@ -54,6 +54,9 @@ def settings(tmp_path) -> Settings:
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'flux-test.db'}",
         # 测试一律不碰账号云：开发机 /etc 下可能有真实设备凭据，必须显式关掉
         memory_cloud_sync=False,
+        # 同上：套餐用量归集也要关掉，且游标落临时目录（防污染 ~/.flux/billing-sync.json）
+        billing_cloud_sync=False,
+        billing_sync_file=str(tmp_path / "billing-sync.json"),
         memory_prefs_file=str(tmp_path / "memory-prefs.json"),
         # 补全偏好同样落临时目录：不能读写开发机 ~/.flux/completion-prefs.json
         completion_prefs_file=str(tmp_path / "completion-prefs.json"),
