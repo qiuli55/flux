@@ -17,6 +17,7 @@ from flux.schemas.api import (
     SupervisorActionRequest,
     SupervisorEventRequest,
     SupervisorSettingsRequest,
+    SupervisorSubscriptionRequest,
 )
 
 router = APIRouter(prefix="/supervisor", tags=["supervisor"])
@@ -126,6 +127,66 @@ async def read_supervisor_ticket(
 ) -> dict[str, object]:
     """单张工单的详情：阶段、最近派活、全部报告。"""
     return ok(await container.supervisor.ticket_detail(ticket_id))
+
+
+@router.get("/reports")
+async def list_supervisor_reports(
+    limit: int = Query(default=50, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """最近的报告（时间倒序）；只读，供助理看板与外部助手查询。"""
+    items = await container.supervisor.reports(limit=limit)
+    return ok(items, metadata={"count": len(items)})
+
+
+@router.get("/timeline")
+async def read_supervisor_timeline(
+    thread_id: uuid.UUID | None = Query(default=None),
+    project_id: uuid.UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """把事件、工单、报告合成一条时间线（时间倒序），只读不写。"""
+    items = await container.supervisor.timeline(
+        thread_id=thread_id, project_id=project_id, limit=limit
+    )
+    return ok(items, metadata={"count": len(items)})
+
+
+@router.get("/tickets/{ticket_id}/subscriptions")
+async def list_supervisor_subscriptions(
+    ticket_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """工单的订阅列表：报告落库后直通投递的目标会话。"""
+    items = await container.supervisor.list_subscriptions(ticket_id)
+    return ok(items, metadata={"count": len(items)})
+
+
+@router.post("/tickets/{ticket_id}/subscriptions")
+async def create_supervisor_subscription(
+    ticket_id: uuid.UUID,
+    payload: SupervisorSubscriptionRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """给工单订阅一个平台会话；同一目标重复提交返回既有订阅。"""
+    data = await container.supervisor.create_subscription(
+        ticket_id,
+        source_key=payload.source_key,
+        external_id=payload.external_id,
+        mode=payload.mode,
+    )
+    return ok(data["subscription"], metadata={"created": data["created"]})
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_supervisor_subscription(
+    subscription_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """取消订阅：之后该会话不再收到这张工单的报告。"""
+    await container.supervisor.delete_subscription(subscription_id)
+    return ok({"deleted": True}, metadata={"subscription_id": str(subscription_id)})
 
 
 @router.post("/threads/{thread_id}/dispatch")

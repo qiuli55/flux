@@ -9,7 +9,10 @@
 """
 
 from flux.core.supervisor.assess import SupervisorAssessor
+from flux.core.supervisor.channels import FeishuChannel, NullChannel, SupervisorChannel
+from flux.core.supervisor.delivery import SupervisorNotifier
 from flux.core.supervisor.dispatcher import DispatchOutcome, SupervisorDispatcher, derive_stage
+from flux.core.supervisor.feishu import FeishuWebhook, WebhookResult
 from flux.core.supervisor.orchestrator import SupervisorOrchestrator
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.planner import PlannedTicket, SupervisorPlanner, TicketPlan
@@ -19,9 +22,14 @@ from flux.core.supervisor.worker import SupervisorWorker
 
 __all__ = [
     "DispatchOutcome",
+    "FeishuChannel",
+    "FeishuWebhook",
+    "NullChannel",
     "PlannedTicket",
     "SupervisorAssessor",
+    "SupervisorChannel",
     "SupervisorDispatcher",
+    "SupervisorNotifier",
     "SupervisorOrchestrator",
     "SupervisorOutbox",
     "SupervisorPlanner",
@@ -29,5 +37,6 @@ __all__ = [
     "SupervisorService",
     "SupervisorWorker",
     "TicketPlan",
+    "WebhookResult",
     "derive_stage",
 ]

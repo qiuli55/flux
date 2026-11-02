@@ -18,9 +18,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flux.core.supervisor.assess import Assessment, SupervisorAssessor
+from flux.core.supervisor.delivery import SupervisorNotifier
 from flux.core.supervisor.gate import GateContext, evaluate, select_policy
 from flux.core.supervisor.orchestrator import SupervisorOrchestrator
-from flux.core.supervisor.outbox import SupervisorOutbox
+from flux.core.supervisor.outbox import REPORT_READY_TOPIC, TRIGGER_TOPIC, SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
 from flux.enums import AcceptMode, SupervisorDecision
 from flux.logging import get_logger
@@ -31,9 +32,6 @@ logger = get_logger(__name__)
 
 __all__ = ["SupervisorWorker"]
 
-#: 事件入队时使用的 topic
-TRIGGER_TOPIC = "supervisor.trigger_received"
-
 
 class SupervisorWorker:
     def __init__(
@@ -43,6 +41,7 @@ class SupervisorWorker:
         assessor: SupervisorAssessor,
         *,
         orchestrator: SupervisorOrchestrator | None = None,
+        notifier: SupervisorNotifier | None = None,
         poll_seconds: float = 5.0,
         batch_size: int = 10,
     ) -> None:
@@ -50,6 +49,7 @@ class SupervisorWorker:
         self._outbox = outbox
         self._assessor = assessor
         self._orchestrator = orchestrator
+        self._notifier = notifier
         self._poll_seconds = max(0.1, float(poll_seconds))
         self._batch_size = max(1, int(batch_size))
         self._task: asyncio.Task[None] | None = None
@@ -211,6 +211,9 @@ class SupervisorWorker:
             logger.exception("Supervisor 对账失败")
 
     async def _handle_row(self, row: SupervisorOutboxRow) -> None:
+        if row.topic == REPORT_READY_TOPIC:
+            await self._deliver(row)
+            return
         if row.topic != TRIGGER_TOPIC:
             logger.warning("Supervisor 忽略未知 outbox topic：%s", row.topic)
             return
@@ -219,6 +222,16 @@ class SupervisorWorker:
             raise ValueError(f"outbox {row.id} 缺少 trigger_id")
         trigger = await self._repo.get_trigger(uuid.UUID(str(raw_id)))
         await self.evaluate(trigger)
+
+    async def _deliver(self, row: SupervisorOutboxRow) -> None:
+        """把报告投递到订阅的会话；失败抛出，交给 outbox 退避重试。"""
+        if self._notifier is None:
+            logger.warning("Supervisor 未装配投递通道，跳过报告 id=%s", row.id)
+            return
+        raw_id = (row.payload or {}).get("report_id")
+        if not raw_id:
+            raise ValueError(f"outbox {row.id} 缺少 report_id")
+        await self._notifier.deliver_report(uuid.UUID(str(raw_id)))
 
     async def _recent_count(self, trigger: SupervisorTrigger, rules: dict[str, Any]) -> int:
         window = _positive_int(rules.get("window_seconds"))

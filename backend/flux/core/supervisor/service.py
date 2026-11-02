@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from flux.core.supervisor.delivery import DELIVERY_MODES
 from flux.core.supervisor.orchestrator import SupervisorOrchestrator
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
@@ -161,6 +162,60 @@ class SupervisorService:
 
     async def stop_ticket(self, ticket_id: uuid.UUID, *, reason: str = "") -> dict[str, Any]:
         return await self._require_orchestrator().stop_ticket(ticket_id, reason=reason)
+
+    async def reports(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """最近的报告（时间倒序），助理看板与 MCP 只读工具共用。"""
+        return await self._require_orchestrator().reports(limit=limit)
+
+    async def timeline(
+        self,
+        *,
+        thread_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """事件 / 工单 / 报告合成的只读时间线（时间倒序）。"""
+        return await self._require_orchestrator().timeline(
+            thread_id=thread_id, project_id=project_id, limit=limit
+        )
+
+    # --- 订阅 ---
+
+    async def create_subscription(
+        self,
+        ticket_id: uuid.UUID,
+        *,
+        source_key: str,
+        external_id: str,
+        mode: str = "terminal",
+    ) -> dict[str, Any]:
+        """给工单订阅一个平台会话：报告好了直通回那里（同目标幂等）。"""
+        source_key = source_key.strip()
+        external_id = external_id.strip()
+        if not source_key:
+            raise ValidationError("source_key 不能为空", details={"param": "source_key"})
+        if not external_id:
+            raise ValidationError("external_id 不能为空", details={"param": "external_id"})
+        if mode not in DELIVERY_MODES:
+            raise ValidationError(
+                f"不支持的投递策略：{mode}",
+                details={"param": "mode", "allowed": sorted(DELIVERY_MODES)},
+            )
+        await self._repo.get_ticket(ticket_id)
+        subscription, created = await self._repo.create_subscription(
+            ticket_id, source_key=source_key, external_id=external_id, mode=mode
+        )
+        return {"subscription": subscription.to_dict(), "created": created}
+
+    async def list_subscriptions(self, ticket_id: uuid.UUID) -> list[dict[str, Any]]:
+        await self._repo.get_ticket(ticket_id)
+        return [
+            subscription.to_dict()
+            for subscription in await self._repo.list_subscriptions(ticket_id)
+        ]
+
+    async def delete_subscription(self, subscription_id: uuid.UUID) -> None:
+        await self._repo.delete_subscription(subscription_id)
 
     def _require_orchestrator(self) -> SupervisorOrchestrator:
         if self._orchestrator is None:

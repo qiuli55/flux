@@ -235,6 +235,20 @@ class Settings(BaseSettings):
     # outbox 行失败重试上限；超过落 dead，保留错误信息供排查。
     supervisor_outbox_max_attempts: int = 5
 
+    # --- Supervisor · 飞书接入 ---
+    # 自建应用凭据：只用于主动发消息（报告直通回原会话）。留空 = 走空通道，
+    # 投递只记日志，不让 outbox 在本地开发环境里反复重试到 dead。
+    supervisor_feishu_app_id: str | None = None
+    supervisor_feishu_app_secret: str | None = None
+    # 事件订阅的 verification token；留空 = 拒绝一切回调（fail-closed）。
+    supervisor_feishu_verification_token: str | None = None
+    # 加密回调的 Encrypt Key：本仓库不做 AES 解密，配了只用于在报错里提示关闭。
+    supervisor_feishu_encrypt_key: str | None = None
+    # 飞书开放平台 API 基址（私有化部署可改）。
+    supervisor_feishu_api_base: str = "https://open.feishu.cn"
+    # 回调事件在 Supervisor 里的来源标识，同时也是订阅/通道的键。
+    supervisor_feishu_source_key: str = "feishu"
+
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。
     # 主密钥丢失后已存 key 无法解密，只能重新录入（接口不会返回乱码明文）。

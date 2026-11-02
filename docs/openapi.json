@@ -1691,6 +1691,35 @@
         "title": "SupervisorSettingsRequest",
         "type": "object"
       },
+      "SupervisorSubscriptionRequest": {
+        "description": "给工单订阅一个平台会话：报告落库后按 `mode` 直通投递回该会话。",
+        "properties": {
+          "external_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "External Id",
+            "type": "string"
+          },
+          "mode": {
+            "default": "terminal",
+            "maxLength": 32,
+            "title": "Mode",
+            "type": "string"
+          },
+          "source_key": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_key",
+          "external_id"
+        ],
+        "title": "SupervisorSubscriptionRequest",
+        "type": "object"
+      },
       "TaskAgentRequest": {
         "description": "切换任务的执行 Agent：同一对话继续，后续 Run 交给新 Agent。",
         "properties": {
@@ -6956,6 +6985,26 @@
         ]
       }
     },
+    "/api/v1/supervisor/channels/feishu": {
+      "post": {
+        "description": "飞书事件回调：验签 → 解析文本消息 → 幂等入库。",
+        "operationId": "feishu_callback_api_v1_supervisor_channels_feishu_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Feishu Callback",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
     "/api/v1/supervisor/events": {
       "post": {
         "description": "记录一条外部事件（幂等）。重复投递只回同一条记录，metadata.created=false。",
@@ -7364,6 +7413,59 @@
         ]
       }
     },
+    "/api/v1/supervisor/reports": {
+      "get": {
+        "description": "最近的报告（时间倒序）；只读，供助理看板与外部助手查询。",
+        "operationId": "list_supervisor_reports_api_v1_supervisor_reports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Supervisor Reports Api V1 Supervisor Reports Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Supervisor Reports",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
     "/api/v1/supervisor/settings": {
       "get": {
         "description": "读取准入模式与计划上限。",
@@ -7435,6 +7537,57 @@
           }
         ],
         "summary": "Update Supervisor Settings",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/subscriptions/{subscription_id}": {
+      "delete": {
+        "description": "取消订阅：之后该会话不再收到这张工单的报告。",
+        "operationId": "delete_supervisor_subscription_api_v1_supervisor_subscriptions__subscription_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Supervisor Subscription Api V1 Supervisor Subscriptions  Subscription Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Supervisor Subscription",
         "tags": [
           "supervisor"
         ]
@@ -7777,6 +7930,203 @@
           }
         ],
         "summary": "Stop Supervisor Ticket",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets/{ticket_id}/subscriptions": {
+      "get": {
+        "description": "工单的订阅列表：报告落库后直通投递的目标会话。",
+        "operationId": "list_supervisor_subscriptions_api_v1_supervisor_tickets__ticket_id__subscriptions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Supervisor Subscriptions Api V1 Supervisor Tickets  Ticket Id  Subscriptions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Supervisor Subscriptions",
+        "tags": [
+          "supervisor"
+        ]
+      },
+      "post": {
+        "description": "给工单订阅一个平台会话；同一目标重复提交返回既有订阅。",
+        "operationId": "create_supervisor_subscription_api_v1_supervisor_tickets__ticket_id__subscriptions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorSubscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Supervisor Subscription Api V1 Supervisor Tickets  Ticket Id  Subscriptions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Supervisor Subscription",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/timeline": {
+      "get": {
+        "description": "把事件、工单、报告合成一条时间线（时间倒序），只读不写。",
+        "operationId": "read_supervisor_timeline_api_v1_supervisor_timeline_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Supervisor Timeline Api V1 Supervisor Timeline Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Supervisor Timeline",
         "tags": [
           "supervisor"
         ]

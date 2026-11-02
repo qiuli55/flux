@@ -29,6 +29,9 @@ __all__ = ["SupervisorOrchestrator"]
 #: 占用并发位的阶段：running / waiting（等用户决策时 Run 可能还活着）
 _ACTIVE_STAGE_VALUES = frozenset({TicketStage.RUNNING.value, TicketStage.WAITING.value})
 
+#: 没有外部通道的来源：不需要（也无法）自动订阅回投
+_INTERNAL_SOURCES = frozenset({"flux_internal"})
+
 
 class SupervisorOrchestrator:
     """规划 → 落库 → 派发 → 对账的唯一入口。"""
@@ -77,6 +80,7 @@ class SupervisorOrchestrator:
             plan=plan,
             key_prefix=trigger.id.hex[:8],
         )
+        await self._subscribe_thread(trigger, tickets)
         await self._repo.set_trigger_status(trigger.id, "planned")
         outcomes: list[DispatchOutcome] = []
         if dispatch:
@@ -184,9 +188,110 @@ class SupervisorOrchestrator:
             assignment.to_dict() for assignment in await self._repo.list_assignments(ticket_id)
         ]
         item["reports"] = [report.to_dict() for report in await self._repo.list_reports(ticket_id)]
+        item["subscriptions"] = [
+            subscription.to_dict()
+            for subscription in await self._repo.list_subscriptions(ticket_id)
+        ]
         return item
 
+    async def reports(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """最近的报告（时间倒序），供助理看板与 MCP 只读工具使用。"""
+        return [report.to_dict() for report in await self._repo.recent_reports(limit=limit)]
+
+    async def timeline(
+        self,
+        *,
+        thread_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """把事件、工单、报告合成一条时间线（时间倒序），只读不写。"""
+        cap = max(1, min(limit, 200))
+        thread_key: str | None = None
+        if thread_id is not None:
+            thread = await self._repo.get_thread(thread_id)
+            thread_key = thread.thread_key
+            project_id = project_id or thread.project_id
+        triggers = await self._repo.list_triggers(
+            limit=cap, project_id=project_id, thread_key=thread_key
+        )
+        tickets = await self._repo.list_tickets(
+            thread_id=thread_id,
+            project_id=project_id if thread_id is None else None,
+            limit=cap,
+        )
+        items = await self._ticket_items(tickets)
+        events: list[dict[str, Any]] = []
+        for trigger in triggers:
+            events.append(
+                {
+                    "at": _iso(trigger.created_at),
+                    "kind": "trigger",
+                    "id": str(trigger.id),
+                    "title": (trigger.content or "")[:80],
+                    "status": trigger.status,
+                    "source_key": trigger.source_key,
+                    "actor_id": trigger.actor_id,
+                }
+            )
+        for item in items:
+            events.append(
+                {
+                    "at": item.get("created_at"),
+                    "kind": "ticket",
+                    "id": item["id"],
+                    "title": item["title"],
+                    "status": item["stage"],
+                    "thread_id": item["thread_id"],
+                }
+            )
+            report = item.get("report")
+            if report:
+                events.append(
+                    {
+                        "at": report.get("created_at"),
+                        "kind": "report",
+                        "id": report["id"],
+                        "title": item["title"],
+                        "status": report["status"],
+                        "summary": (report.get("summary") or "")[:200],
+                        "ticket_id": item["id"],
+                    }
+                )
+        events.sort(key=lambda event: str(event.get("at") or ""), reverse=True)
+        return events[:cap]
+
     # --- 内部 ---
+
+    async def _subscribe_thread(
+        self,
+        trigger: SupervisorTrigger,
+        tickets: list[SupervisorTicket],
+    ) -> None:
+        """外部平台来的工单自动订阅回原会话：报告好了就直通回话说的地方。
+
+        仅对"有平台会话"的 trigger 生效（flux_internal 没有外部通道），
+        每条订阅都走唯一约束幂等，重复规划不会重复投递。
+        """
+        source_key = (trigger.source_key or "").strip()
+        thread_key = (trigger.thread_key or "").strip()
+        if not thread_key or source_key in _INTERNAL_SOURCES:
+            return
+        for ticket in tickets:
+            try:
+                await self._repo.create_subscription(
+                    ticket.id,
+                    source_key=source_key,
+                    external_id=thread_key,
+                    mode="terminal",
+                )
+            except Exception:  # noqa: BLE001 - 订阅失败不能拖垮规划
+                logger.warning(
+                    "Supervisor 自动订阅失败 ticket=%s source=%s",
+                    ticket.id,
+                    source_key,
+                    exc_info=True,
+                )
 
     async def _refresh(self, tickets: list[SupervisorTicket]) -> None:
         """只对"在途"的工单物化报告，已收尾的工单不重复写。"""
@@ -228,6 +333,16 @@ class SupervisorOrchestrator:
             item["report"] = report.to_dict() if report is not None else None
             items.append(item)
         return items
+
+
+def _iso(value: Any) -> str:
+    """时间统一成 ISO 字符串，缺失时返回空串（排序时空串自然沉底）。"""
+    if value is None:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
 
 
 def _thread_key(trigger: SupervisorTrigger) -> str:

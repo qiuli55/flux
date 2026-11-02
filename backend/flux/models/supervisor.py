@@ -26,6 +26,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -345,6 +346,15 @@ class SupervisorSubscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """订阅直通：发生在这个工单上的报告，同时投递回指定平台线程。"""
 
     __tablename__ = "supervisor_subscriptions"
+    __table_args__ = (
+        # 同一工单对同一平台线程只允许一条订阅，否则一条报告会被发多次
+        UniqueConstraint(
+            "ticket_id",
+            "source_key",
+            "external_id",
+            name="ix_supervisor_subscriptions_target",
+        ),
+    )
 
     ticket_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -472,6 +482,8 @@ class SupervisorOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     topic: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    #: 幂等键：同一件事只排一次队（唯一索引，重复入队静默跳过）
+    dedupe_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     #: pending / processing / done / dead
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default="pending", index=True

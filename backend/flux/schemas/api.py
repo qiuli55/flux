@@ -505,3 +505,11 @@ class SupervisorActionRequest(BaseModel):
     """工单动作（停止等）的附加说明；只做审计，不参与派发决策。"""
 
     note: str = Field(default="", max_length=2000)
+
+
+class SupervisorSubscriptionRequest(BaseModel):
+    """给工单订阅一个平台会话：报告落库后按 `mode` 直通投递回该会话。"""
+
+    source_key: str = Field(min_length=1, max_length=64)
+    external_id: str = Field(min_length=1, max_length=255)
+    mode: str = Field(default="terminal", max_length=32)

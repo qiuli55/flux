@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from flux.core.supervisor.outbox import REPORT_READY_TOPIC
 from flux.enums import AcceptMode, ReportStatus, SupervisorDecision
 from flux.errors import BadRequestError, NotFoundError, ValidationError
 from flux.logging import get_logger
@@ -33,6 +34,7 @@ from flux.models.supervisor import (
     SupervisorReport,
     SupervisorSettings,
     SupervisorSource,
+    SupervisorSubscription,
     SupervisorThread,
     SupervisorTicket,
     SupervisorTrigger,
@@ -252,6 +254,7 @@ class SupervisorRepository:
         limit: int = 50,
         status: str | None = None,
         project_id: uuid.UUID | None = None,
+        thread_key: str | None = None,
     ) -> list[SupervisorTrigger]:
         statement = select(SupervisorTrigger).order_by(
             SupervisorTrigger.created_at.desc(), SupervisorTrigger.id.desc()
@@ -260,6 +263,8 @@ class SupervisorRepository:
             statement = statement.where(SupervisorTrigger.status == status)
         if project_id is not None:
             statement = statement.where(SupervisorTrigger.project_id == project_id)
+        if thread_key is not None:
+            statement = statement.where(SupervisorTrigger.thread_key == thread_key)
         statement = statement.limit(max(1, min(limit, 200)))
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
@@ -464,6 +469,7 @@ class SupervisorRepository:
         self,
         *,
         thread_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
         limit: int = 100,
     ) -> list[SupervisorTicket]:
         statement = select(SupervisorTicket).order_by(
@@ -471,6 +477,8 @@ class SupervisorRepository:
         )
         if thread_id is not None:
             statement = statement.where(SupervisorTicket.thread_id == thread_id)
+        if project_id is not None:
+            statement = statement.where(SupervisorTicket.project_id == project_id)
         statement = statement.limit(max(1, min(limit, 200)))
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
@@ -582,9 +590,40 @@ class SupervisorRepository:
         )
         async with self._session_factory() as session:
             session.add(report)
+            # 报告与"投递这件事"同事务入队：崩溃后由 outbox 重放，且 dedupe_key
+            # 唯一保证同一份报告只投递一次（订阅直通不重复发消息）。
+            session.add(
+                SupervisorOutbox(
+                    id=uuid.uuid4(),
+                    topic=REPORT_READY_TOPIC,
+                    payload={"report_id": str(report.id), "ticket_id": str(ticket_id)},
+                    dedupe_key=f"report:{report.id}",
+                    status="pending",
+                    attempts=0,
+                )
+            )
             await self._commit(session, "Supervisor 报告")
             await session.refresh(report)
             return report
+
+    async def get_report(self, report_id: uuid.UUID) -> SupervisorReport:
+        async with self._session_factory() as session:
+            report = await session.get(SupervisorReport, report_id)
+            if report is None:
+                raise NotFoundError(
+                    f"Supervisor 报告 {report_id} 不存在", details={"report_id": str(report_id)}
+                )
+            return report
+
+    async def recent_reports(self, *, limit: int = 50) -> list[SupervisorReport]:
+        """最近报告（时间倒序）：助理看板与 MCP 只读工具共用。"""
+        statement = (
+            select(SupervisorReport)
+            .order_by(SupervisorReport.created_at.desc(), SupervisorReport.id.desc())
+            .limit(max(1, min(limit, 200)))
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
 
     async def latest_reports(
         self, ticket_ids: list[uuid.UUID]
@@ -610,6 +649,83 @@ class SupervisorRepository:
         )
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    # --- 订阅直通 ---
+
+    async def create_subscription(
+        self,
+        ticket_id: uuid.UUID,
+        *,
+        source_key: str,
+        external_id: str,
+        mode: str = "terminal",
+    ) -> tuple[SupervisorSubscription, bool]:
+        """幂等建订阅：同一工单对同一平台线程只有一条，重复调用返回既有行。"""
+        async with self._session_factory() as session:
+            existing = await session.scalar(
+                select(SupervisorSubscription).where(
+                    SupervisorSubscription.ticket_id == ticket_id,
+                    SupervisorSubscription.source_key == source_key,
+                    SupervisorSubscription.external_id == external_id,
+                )
+            )
+            if existing is not None:
+                return existing, False
+            subscription = SupervisorSubscription(
+                id=uuid.uuid4(),
+                ticket_id=ticket_id,
+                source_key=source_key,
+                external_id=external_id,
+                mode=mode,
+            )
+            session.add(subscription)
+            try:
+                await self._commit(session, "Supervisor 订阅")
+            except BadRequestError:
+                # 并发建同一条订阅：唯一索引挡下后到者，回读既有行即可。
+                await session.rollback()
+                duplicate = await session.scalar(
+                    select(SupervisorSubscription).where(
+                        SupervisorSubscription.ticket_id == ticket_id,
+                        SupervisorSubscription.source_key == source_key,
+                        SupervisorSubscription.external_id == external_id,
+                    )
+                )
+                if duplicate is not None:
+                    return duplicate, False
+                raise
+            await session.refresh(subscription)
+            return subscription, True
+
+    async def list_subscriptions(self, ticket_id: uuid.UUID) -> list[SupervisorSubscription]:
+        statement = (
+            select(SupervisorSubscription)
+            .where(SupervisorSubscription.ticket_id == ticket_id)
+            .order_by(SupervisorSubscription.created_at, SupervisorSubscription.id)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def get_subscription(self, subscription_id: uuid.UUID) -> SupervisorSubscription:
+        async with self._session_factory() as session:
+            subscription = await session.get(SupervisorSubscription, subscription_id)
+            if subscription is None:
+                raise NotFoundError(
+                    f"Supervisor 订阅 {subscription_id} 不存在",
+                    details={"subscription_id": str(subscription_id)},
+                )
+            return subscription
+
+    async def delete_subscription(self, subscription_id: uuid.UUID) -> None:
+        async with self._session_factory() as session:
+            subscription = await session.get(SupervisorSubscription, subscription_id)
+            if subscription is None:
+                raise NotFoundError(
+                    f"Supervisor 订阅 {subscription_id} 不存在",
+                    details={"subscription_id": str(subscription_id)},
+                )
+            await session.delete(subscription)
+            await self._commit(session, "Supervisor 订阅")
 
     async def task_statuses(self, task_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
         """批量读任务状态（工单阶段派生只信 tasks 表）。"""

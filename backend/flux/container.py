@@ -61,8 +61,13 @@ from flux.core.project_brain.service import ProjectBrain
 from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.supervisor import (
+    FeishuChannel,
+    FeishuWebhook,
+    NullChannel,
     SupervisorAssessor,
+    SupervisorChannel,
     SupervisorDispatcher,
+    SupervisorNotifier,
     SupervisorOrchestrator,
     SupervisorOutbox,
     SupervisorPlanner,
@@ -161,6 +166,11 @@ class Container:
     supervisor_orchestrator: SupervisorOrchestrator = field(init=False)
     supervisor_worker: SupervisorWorker = field(init=False)
     supervisor: SupervisorService = field(init=False)
+    #: 出站通道（按 source_key 索引）与报告投递器；未配凭据时飞书走空通道
+    supervisor_channels: dict[str, SupervisorChannel] = field(init=False)
+    supervisor_notifier: SupervisorNotifier = field(init=False)
+    #: 飞书事件回调（验签 + 解析 + 幂等入库），免 REST 鉴权单独挂载
+    supervisor_feishu: FeishuWebhook = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -427,11 +437,18 @@ class Container:
             self.supervisor_dispatcher,
             outbox=self.supervisor_outbox,
         )
+        # 出站通道：报告落库后由 outbox 驱动投递回订阅的原会话。
+        # 飞书凭据缺失时不装配真实通道（空实现只记日志），避免本地环境反复重试。
+        self.supervisor_channels = _supervisor_channels(self.settings)
+        self.supervisor_notifier = SupervisorNotifier(
+            self.supervisor_repo, self.supervisor_channels
+        )
         self.supervisor_worker = SupervisorWorker(
             self.supervisor_repo,
             self.supervisor_outbox,
             self.supervisor_assessor,
             orchestrator=self.supervisor_orchestrator,
+            notifier=self.supervisor_notifier,
             poll_seconds=self.settings.supervisor_poll_seconds,
         )
         self.supervisor = SupervisorService(
@@ -439,6 +456,12 @@ class Container:
             self.supervisor_outbox,
             worker=self.supervisor_worker,
             orchestrator=self.supervisor_orchestrator,
+        )
+        self.supervisor_feishu = FeishuWebhook(
+            self.supervisor,
+            source_key=self.settings.supervisor_feishu_source_key,
+            verification_token=self.settings.supervisor_feishu_verification_token,
+            encrypt_key=self.settings.supervisor_feishu_encrypt_key,
         )
 
     def set_workspace_root(self, root: str) -> str:
@@ -492,5 +515,22 @@ class Container:
         from flux.core.agent_runtime.runtimes.cli import shutdown_cli_process_pool
 
         await shutdown_cli_process_pool()
+        # 出站通道持有 httpx 连接池，退出时一并释放
+        for channel in self.supervisor_channels.values():
+            await channel.aclose()
         await self.dsh.shutdown()
         await self.engine.dispose()
+
+
+def _supervisor_channels(settings: Settings) -> dict[str, SupervisorChannel]:
+    """按配置装配出站通道：没配飞书凭据就退化为只记日志的空通道。"""
+    source_key = settings.supervisor_feishu_source_key
+    if settings.supervisor_feishu_app_id and settings.supervisor_feishu_app_secret:
+        return {
+            source_key: FeishuChannel(
+                app_id=settings.supervisor_feishu_app_id,
+                app_secret=settings.supervisor_feishu_app_secret,
+                api_base=settings.supervisor_feishu_api_base,
+            )
+        }
+    return {source_key: NullChannel(source_key)}
