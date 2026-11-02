@@ -46,6 +46,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -63,12 +64,16 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -100,6 +105,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
@@ -220,6 +229,10 @@ fun V2ChatScreen(
     onStopTask: () -> Unit = {},
     /** 审批请求正在提交：底部审核条的按钮临时禁用。 */
     approvalBusy: Boolean = false,
+    /** 安全输入卡片：把密钥交给后端密钥库（明文只出现在这一次请求里）。 */
+    onSubmitSecureInput: (messageId: String, value: String) -> Unit = { _, _ -> },
+    /** 安全输入正在提交：保存按钮临时禁用。 */
+    secureInputBusy: Boolean = false,
 ) {
     val agent = demoAgent(chat.agentId)
     val currentModelOption = modelOptions.firstOrNull {
@@ -577,6 +590,8 @@ fun V2ChatScreen(
                         onOpenDesign = onOpenDesign,
                         onSend = onSend,
                         onLongPress = openBubbleMenu,
+                        onSubmitSecureInput = onSubmitSecureInput,
+                        secureInputBusy = secureInputBusy,
                     )
                 }
                 if (runItems.isNotEmpty()) {
@@ -1227,8 +1242,23 @@ private fun MessageRow(
     onSend: (String) -> Unit = {},
     /** 长按气泡：回传消息与气泡在根容器中的位置，用于浮出复制/引用/重发菜单。 */
     onLongPress: (V2Message, Rect) -> Unit = { _, _ -> },
+    /** 安全输入卡片提交：messageId 是卡片消息本身，value 是用户粘贴的密钥。 */
+    onSubmitSecureInput: (String, String) -> Unit = { _, _ -> },
+    secureInputBusy: Boolean = false,
 ) {
     var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
+    val secureCard = message.secureInputCard
+    if (message.kind == "secure_input" && secureCard != null) {
+        SecureInputMessage(
+            message = message,
+            card = secureCard,
+            busy = secureInputBusy,
+            onOpenUrl = onOpenUrl,
+            onAction = onSend,
+            onSubmit = { value -> onSubmitSecureInput(secureCard.messageId, value) },
+        )
+        return
+    }
     if (message.kind == "design_card" && message.designCard != null) {
         // Agent 通过 design.share 写入的设计稿卡片：点开进原生画布，不套普通文字气泡
         DesignCardMessage(message.designCard, message.time) { onOpenDesign(message.designCard.id) }
@@ -1340,6 +1370,179 @@ private fun MessageRow(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 安全输入卡片：助手先给一段说明（普通气泡），下面跟一张钥匙卡。
+ *
+ * 用户填的密钥只进本机密钥库，不会写进对话消息；提交后卡片锁成「已安全存储」。
+ */
+@Composable
+private fun SecureInputMessage(
+    message: V2Message,
+    card: V2SecureInputCard,
+    busy: Boolean,
+    onOpenUrl: (String) -> Unit,
+    onAction: (String) -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (message.text.isNotBlank()) {
+            val shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                Column(
+                    Modifier
+                        .widthIn(max = 344.dp)
+                        .clip(shape)
+                        .background(V2Colors.surface(.75f))
+                        .innerGlow(shape)
+                        .border(1.dp, V2Colors.ink(.08f), shape)
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                ) {
+                    RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onAction)
+                }
+            }
+        }
+        SecureInputCardBody(card, message.time, busy, onSubmit)
+    }
+}
+
+@Composable
+private fun SecureInputCardBody(
+    card: V2SecureInputCard,
+    time: String,
+    busy: Boolean,
+    onSubmit: (String) -> Unit,
+) {
+    var value by remember(card.messageId) { mutableStateOf("") }
+    var visible by remember(card.messageId) { mutableStateOf(false) }
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(V2Colors.surface(.84f))
+            .border(1.dp, V2Colors.accent.copy(alpha = .20f), shape)
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(V2Colors.accent.copy(alpha = .12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.VpnKey, null, tint = V2Colors.accent, modifier = Modifier.size(15.dp))
+            }
+            Spacer(Modifier.width(9.dp))
+            Label(
+                "密钥",
+                10.5f,
+                V2Colors.ink(.55f),
+                weight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Label(time, 8.5f, V2Colors.ink(.22f), mono = true)
+        }
+        Spacer(Modifier.height(10.dp))
+        Label(card.title, 17f, V2Colors.ink(.90f), weight = FontWeight.SemiBold)
+        if (card.description.isNotBlank()) {
+            Spacer(Modifier.height(3.dp))
+            Label(card.description, 11f, V2Colors.ink(.45f))
+        }
+        Spacer(Modifier.height(10.dp))
+        if (card.stored) {
+            // 已存储：不再收集输入，只留掩码与一句「不会再展示」
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(V2Colors.ink(.04f))
+                    .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+            ) {
+                Label(card.keyHint.ifBlank { "已保存" }, 13f, V2Colors.ink(.55f), mono = true)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Lock, null, tint = V2Colors.ink(.34f), modifier = Modifier.size(11.dp))
+                Spacer(Modifier.width(5.dp))
+                Label("已安全存储，绝不会展示给你的", 9.5f, V2Colors.ink(.38f), mono = true)
+            }
+        } else {
+            val fieldShape = RoundedCornerShape(12.dp)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(fieldShape)
+                    .background(V2Colors.ink(.04f))
+                    .border(1.dp, V2Colors.ink(.08f), fieldShape)
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.weight(1f)) {
+                    if (value.isEmpty()) {
+                        Label(card.placeholder, 13f, V2Colors.ink(.30f))
+                    }
+                    BasicTextField(
+                        value = value,
+                        onValueChange = { value = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 11.dp),
+                        textStyle = TextStyle(fontSize = 13.sp, color = V2Colors.ink(.86f)),
+                        cursorBrush = SolidColor(V2Colors.accent),
+                        visualTransformation = if (visible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        singleLine = true,
+                    )
+                }
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .clickable { visible = !visible },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                        contentDescription = if (visible) "隐藏密钥" else "显示密钥",
+                        tint = V2Colors.ink(.42f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                val enabled = value.isNotBlank() && !busy
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (enabled) V2Colors.accent else V2Colors.ink(.10f))
+                        .clickable(enabled = enabled) { onSubmit(value.trim()) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Label(
+                        if (busy) "保存中…" else "保存",
+                        10.5f,
+                        if (enabled) Color.White else V2Colors.ink(.38f),
+                        weight = FontWeight.Medium,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Label("密钥只进密钥库，不写入对话上下文", 8.5f, V2Colors.ink(.30f), mono = true)
         }
     }
 }

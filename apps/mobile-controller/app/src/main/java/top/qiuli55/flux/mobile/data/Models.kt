@@ -162,6 +162,14 @@ data class Task(
     @SerialName("pending_agent_id") val pendingAgentId: String? = null,
 )
 
+/** 安全输入提交的返回：任务 + 落库后的密钥（只有掩码）+「已存储」回执消息。 */
+@Serializable
+data class SecureInputOutcome(
+    val task: Task = Task(),
+    val key: ApiKeyEntry? = null,
+    val message: TaskMessage = TaskMessage(),
+)
+
 /** 密钥库条目（GET /keys）：只有掩码，没有明文/密文。 */
 @Serializable
 data class ApiKeyEntry(

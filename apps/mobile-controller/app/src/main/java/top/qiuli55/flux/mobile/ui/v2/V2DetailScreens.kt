@@ -587,11 +587,34 @@ fun V2TaskChatScreen(
             .mapNotNull { it.approvalCard?.id }
             .toSet()
         val deduped = mapped.filterNot { it.kind == "decision" && it.approvalCard?.id in resolvedIds }
-        if (deduped.isEmpty() && task != null && task.description.isNotBlank()) {
+        // 安全输入：已经存过的卡片按回执锁住输入框，只展示掩码
+        val secureStored = state.messages
+            .filter { it.kind == "secure_input_result" }
+            .mapNotNull { message ->
+                val root = message.payload as? JsonObject ?: return@mapNotNull null
+                val cardId = (root["message_id"] as? JsonPrimitive)?.contentOrNull
+                    ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                cardId to (root["key_hint"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+            }
+            .toMap()
+        val secured = deduped.map { message ->
+            val card = message.secureInputCard
+            if (message.kind == "secure_input" && card != null && secureStored.containsKey(card.messageId)) {
+                message.copy(
+                    secureInputCard = card.copy(
+                        stored = true,
+                        keyHint = secureStored.getValue(card.messageId),
+                    ),
+                )
+            } else {
+                message
+            }
+        }
+        if (secured.isEmpty() && task != null && task.description.isNotBlank()) {
             // 任务描述本身就是用户的第一条需求：还没有消息时先把它当成首条用户消息展示。
             listOf(V2Message(V2MessageRole.USER, task.description.trim(), clockLabel(task.createdAt)))
         } else {
-            deduped
+            secured
         }
     }
     // 只在任务还没加载出来时锁输入；已结束的对话可以继续发消息（后端会把任务重开并起新一轮）。
@@ -685,6 +708,9 @@ fun V2TaskChatScreen(
             onStopTask = { vm.cancel() },
             // 审批卡固定在输入框上方，提交期间禁用按钮
             approvalBusy = state.busyAction == "decision",
+            // 安全输入卡片：密钥只走密钥库接口，不经过对话框
+            onSubmitSecureInput = { messageId, value -> vm.submitSecureInput(messageId, value) },
+            secureInputBusy = state.busyAction == "secure-input",
             // 下拉刷新：重新拉任务与历史消息（真实数据，不是假骨架）
             onRefresh = { vm.refresh(quiet = true) },
         )
@@ -704,6 +730,8 @@ fun V2TaskChatScreen(
 private fun TaskMessage.toV2Message(): V2Message? {
     // 「已开始执行」气泡已经下线：旧对话里残留的同 kind 消息不再展示
     if (kind == "run_started") return null
+    // 密钥保存回执只用来把对应卡片切成「已存储」，本身不占一条气泡
+    if (kind == "secure_input_result") return null
     val text = content.trim()
     val mapped = when (role.lowercase()) {
         "user", "human" -> V2MessageRole.USER
@@ -734,6 +762,18 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 clockLabel(createdAt),
                 kind = kind,
                 approvalCard = card.copy(expired = card.expired || expired),
+            )
+        }
+    }
+    // 安全输入卡片：密钥只进本机密钥库，正文仍是助手写的「填到下面输入框」那段落
+    if (kind == "secure_input") {
+        parseSecureInputCard(id, payload)?.let { card ->
+            return V2Message(
+                mapped,
+                text,
+                clockLabel(createdAt),
+                kind = kind,
+                secureInputCard = card,
             )
         }
     }
@@ -808,6 +848,26 @@ internal fun parsePlanCard(payload: JsonElement?): V2PlanCard? {
         files = files,
         planPath = root.stringField("plan_path").orEmpty(),
         markdown = root.stringField("markdown"),
+    )
+}
+
+/**
+ * 解析 secure_input 消息 payload.secure_input → 安全输入卡片。
+ *
+ * 卡片只描述「要什么密钥」，不含任何密钥值；提交走 /tasks/{id}/secure-input。
+ */
+internal fun parseSecureInputCard(messageId: String, payload: JsonElement?): V2SecureInputCard? {
+    val root = payload as? JsonObject ?: return null
+    val spec = root["secure_input"] as? JsonObject ?: return null
+    val title = spec.stringField("title") ?: return null
+    val provider = spec.stringField("provider").orEmpty()
+    return V2SecureInputCard(
+        messageId = messageId,
+        title = title,
+        description = spec.stringField("description").orEmpty(),
+        placeholder = spec.stringField("placeholder") ?: "粘贴密钥",
+        name = spec.stringField("name") ?: title,
+        provider = provider,
     )
 }
 

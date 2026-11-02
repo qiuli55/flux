@@ -91,12 +91,30 @@ data class V2ApprovalCard(
     val expired: Boolean = false,
 )
 
+/**
+ * 安全输入卡片（kind = secure_input）：密钥只进本机密钥库，不进对话上下文。
+ * 已提交过的卡片按 [stored] 显示「已安全存储」并锁住输入框。
+ */
+data class V2SecureInputCard(
+    val messageId: String,
+    val title: String,
+    val description: String = "",
+    val placeholder: String = "粘贴密钥",
+    /** 密钥库里保存的名称（可重名覆盖）。 */
+    val name: String = "",
+    val provider: String = "",
+    /** 已存储时的掩码，如 ••••1234。 */
+    val keyHint: String = "",
+    val stored: Boolean = false,
+)
+
 data class V2Message(
     val role: V2MessageRole,
     val text: String,
     val time: String,
     /** text = 普通消息；summary = 前情摘要；attachments = 附件消息；design_card = 设计稿卡片；
-     *  plan_card = 实施计划；decision = 待审批；decision_result = 审批结果。 */
+     *  plan_card = 实施计划；decision = 待审批；decision_result = 审批结果；
+     *  secure_input = 安全输入卡片；secure_input_result = 密钥已保存回执。 */
     val kind: String = "text",
     /** kind = attachments 时的文件清单。 */
     val attachments: List<V2MessageFile> = emptyList(),
@@ -106,6 +124,8 @@ data class V2Message(
     val planCard: V2PlanCard? = null,
     /** kind = decision / decision_result 时的审批信息。 */
     val approvalCard: V2ApprovalCard? = null,
+    /** kind = secure_input 时的安全输入卡片。 */
+    val secureInputCard: V2SecureInputCard? = null,
     /** run_finished 关联的 Run：有值时答案上方显示「任务耗时」入口。 */
     val runId: String = "",
     /** kind = handoff 时的交接双方（平台自动生成的 Agent 交接卡）。 */

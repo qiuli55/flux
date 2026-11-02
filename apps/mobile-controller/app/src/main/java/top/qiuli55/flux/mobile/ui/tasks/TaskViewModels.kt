@@ -943,6 +943,33 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         _state.value = _state.value.copy(task = task, notice = if (reject) "已拒绝全部候选方案" else "已提交你的选择")
     }
 
+    /**
+     * 安全输入卡片：把密钥一次性交给后端密钥库。
+     *
+     * 明文不进消息表也不回显，成功后刷新让卡片切成「已安全存储」。
+     */
+    fun submitSecureInput(messageId: String, value: String) {
+        if (_state.value.busyAction != null || _state.value.sending) return
+        if (value.isBlank()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busyAction = "secure-input", error = null, notice = null)
+            try {
+                val outcome = api().submitSecureInput(taskId, messageId, value)
+                _state.value = _state.value.copy(
+                    busyAction = null,
+                    task = outcome.task,
+                    messages = (_state.value.messages + outcome.message).distinctBy { it.id },
+                    notice = "已安全存储，密钥不会出现在对话里",
+                )
+                refresh(quiet = true)
+            } catch (e: FluxApiException) {
+                _state.value = _state.value.copy(busyAction = null, error = e.message)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(busyAction = null, error = e.message ?: "保存失败")
+            }
+        }
+    }
+
     fun acceptChange(changeId: String) = changeAction(changeId, "accept") { api -> api.acceptChanges(listOf(changeId)) }
     fun applyChange(changeId: String) = changeAction(changeId, "apply") { api -> api.applyChanges(listOf(changeId)) }
     fun rejectChange(changeId: String) = changeAction(changeId, "reject") { api -> api.rejectChanges(listOf(changeId), reason = null) }

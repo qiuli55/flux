@@ -154,6 +154,19 @@ class FluxApi(
         },
     )
 
+    /** 安全输入卡片：把密钥交给本机密钥库；明文只在这一个请求里出现，响应只回掩码。 */
+    suspend fun submitSecureInput(
+        taskId: String,
+        messageId: String,
+        value: String,
+    ): SecureInputOutcome = post(
+        "api/v1/tasks/$taskId/secure-input",
+        buildJsonObject {
+            put("message_id", messageId)
+            put("value", value)
+        },
+    )
+
     /**
      * 上传一个聊天附件：裸请求体 + query 参数传文件名 / MIME，不走 multipart。
      *
