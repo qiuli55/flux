@@ -436,6 +436,7 @@ class Container:
             self.supervisor_planner,
             self.supervisor_dispatcher,
             outbox=self.supervisor_outbox,
+            brain=self.brain,
         )
         # 出站通道：报告落库后由 outbox 驱动投递回订阅的原会话。
         # 飞书凭据缺失时不装配真实通道（空实现只记日志），避免本地环境反复重试。

@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,6 +28,7 @@ from flux.logging import get_logger
 from flux.models.project import Project
 from flux.models.supervisor import (
     SupervisorAssignment,
+    SupervisorDigest,
     SupervisorEval,
     SupervisorOutbox,
     SupervisorPolicy,
@@ -735,6 +736,166 @@ class SupervisorRepository:
         async with self._session_factory() as session:
             return {row[0]: str(row[1]) for row in await session.execute(statement)}
 
+    # --- 摘要（线程收尾后生成一次）---
+
+    async def create_digest(
+        self,
+        *,
+        thread_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+        summary: str,
+        decisions: list[dict] | None = None,
+        ticket_ids: list[str] | None = None,
+    ) -> tuple[SupervisorDigest, bool]:
+        """按线程幂等写摘要：已有则回读，不覆盖（摘要只陈述收尾时的结论）。"""
+        async with self._session_factory() as session:
+            existing = await session.scalar(
+                select(SupervisorDigest).where(SupervisorDigest.thread_id == thread_id)
+            )
+            if existing is not None:
+                return existing, False
+            digest = SupervisorDigest(
+                id=uuid.uuid4(),
+                thread_id=thread_id,
+                project_id=project_id,
+                summary=summary,
+                decisions=decisions or [],
+                ticket_ids=ticket_ids or [],
+            )
+            session.add(digest)
+            try:
+                await self._commit(session, "Supervisor 摘要")
+            except BadRequestError:
+                await session.rollback()
+                duplicate = await session.scalar(
+                    select(SupervisorDigest).where(SupervisorDigest.thread_id == thread_id)
+                )
+                if duplicate is not None:
+                    return duplicate, False
+                raise
+            await session.refresh(digest)
+            return digest, True
+
+    async def get_digest_by_thread(self, thread_id: uuid.UUID) -> SupervisorDigest | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(SupervisorDigest).where(SupervisorDigest.thread_id == thread_id)
+            )
+
+    async def list_digests(
+        self,
+        *,
+        thread_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
+        limit: int = 20,
+    ) -> list[SupervisorDigest]:
+        statement = select(SupervisorDigest).order_by(
+            SupervisorDigest.created_at.desc(), SupervisorDigest.id.desc()
+        )
+        if thread_id is not None:
+            statement = statement.where(SupervisorDigest.thread_id == thread_id)
+        if project_id is not None:
+            statement = statement.where(SupervisorDigest.project_id == project_id)
+        statement = statement.limit(max(1, min(limit, 200)))
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    # --- 项目 / 检索 ---
+
+    async def get_project(self, project_id: uuid.UUID) -> Project:
+        async with self._session_factory() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                raise NotFoundError(
+                    f"项目 {project_id} 不存在", details={"project_id": str(project_id)}
+                )
+            return project
+
+    async def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """在工单、报告、线程摘要里做 LIKE 检索，按时间倒序合并。
+
+        `%` / `_` / `\\` 会转义成字面量：搜 "50%" 不会退化成通配符。
+        只返回平台已记录的事实，不改任何状态。
+        """
+        pattern = _like_pattern(query)
+        cap = max(1, min(limit, 200))
+        hits: list[dict[str, Any]] = []
+        async with self._session_factory() as session:
+            tickets = await session.scalars(
+                select(SupervisorTicket)
+                .where(
+                    or_(
+                        SupervisorTicket.title.ilike(pattern, escape="\\"),
+                        SupervisorTicket.description.ilike(pattern, escape="\\"),
+                    )
+                )
+                .order_by(SupervisorTicket.created_at.desc(), SupervisorTicket.id.desc())
+                .limit(cap)
+            )
+            for ticket in tickets:
+                hits.append(
+                    {
+                        "kind": "ticket",
+                        "id": str(ticket.id),
+                        "title": ticket.title,
+                        "snippet": _snippet(ticket.description or ticket.title, query),
+                        "thread_id": str(ticket.thread_id),
+                        "project_id": (
+                            str(ticket.project_id) if ticket.project_id is not None else None
+                        ),
+                        "status": None,
+                        "at": _iso(ticket.created_at),
+                    }
+                )
+
+            reports = await session.scalars(
+                select(SupervisorReport)
+                .where(SupervisorReport.summary.ilike(pattern, escape="\\"))
+                .order_by(SupervisorReport.created_at.desc(), SupervisorReport.id.desc())
+                .limit(cap)
+            )
+            for report in reports:
+                hits.append(
+                    {
+                        "kind": "report",
+                        "id": str(report.id),
+                        "title": _snippet(report.summary, query),
+                        "snippet": _snippet(report.summary, query),
+                        "ticket_id": str(report.ticket_id),
+                        "thread_id": None,
+                        "project_id": None,
+                        "status": report.status,
+                        "at": _iso(report.created_at),
+                    }
+                )
+
+            digests = await session.scalars(
+                select(SupervisorDigest)
+                .where(SupervisorDigest.summary.ilike(pattern, escape="\\"))
+                .order_by(SupervisorDigest.created_at.desc(), SupervisorDigest.id.desc())
+                .limit(cap)
+            )
+            for digest in digests:
+                hits.append(
+                    {
+                        "kind": "digest",
+                        "id": str(digest.id),
+                        "title": _snippet(digest.summary, query),
+                        "snippet": _snippet(digest.summary, query),
+                        "thread_id": (
+                            str(digest.thread_id) if digest.thread_id is not None else None
+                        ),
+                        "project_id": (
+                            str(digest.project_id) if digest.project_id is not None else None
+                        ),
+                        "status": None,
+                        "at": _iso(digest.created_at),
+                    }
+                )
+
+        hits.sort(key=lambda hit: str(hit.get("at") or ""), reverse=True)
+        return hits[:cap]
+
     # --- 内部 ---
 
     @staticmethod
@@ -802,3 +963,34 @@ def _require_accept_mode(value: object) -> None:
             "accept_mode 只能是 off / observe / auto",
             details={"accept_mode": str(value)},
         ) from exc
+
+
+def _like_pattern(query: str) -> str:
+    """把用户输入转成 LIKE 模式：转义符、通配符一律按字面量处理。"""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _snippet(text: str, query: str, *, size: int = 160) -> str:
+    """截取命中位置附近的一段文本，避免把整段报告塞进检索结果。"""
+    clean = " ".join((text or "").split())
+    if len(clean) <= size:
+        return clean
+    index = clean.lower().find((query or "").lower())
+    if index < 0:
+        return f"{clean[:size]}…"
+    start = max(0, index - size // 3)
+    end = min(len(clean), start + size)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(clean) else ""
+    return f"{prefix}{clean[start:end]}{suffix}"
+
+
+def _iso(value: Any) -> str:
+    """时间统一成 ISO 字符串，缺失时返回空串（排序时空串自然沉底）。"""
+    if value is None:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)

@@ -109,6 +109,31 @@ async def supervisor_overview(
     return ok(await container.supervisor.overview(limit=limit))
 
 
+@router.get("/projects/{project_id}")
+async def read_supervisor_project(
+    project_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """项目页：项目信息、阶段计数、工单、最近报告、线程摘要与时间线。"""
+    data = await container.supervisor.project_overview(project_id, limit=limit)
+    return ok(
+        data,
+        metadata={"tickets": len(data["tickets"]), "digests": len(data["digests"])},
+    )
+
+
+@router.get("/search")
+async def search_supervisor(
+    q: str = Query(min_length=1, max_length=200, description="检索关键字"),
+    limit: int = Query(default=20, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """在工单、报告、线程摘要里检索；`%` / `_` 按字面量处理。"""
+    items = await container.supervisor.search(q, limit=limit)
+    return ok(items, metadata={"count": len(items), "query": q})
+
+
 @router.get("/tickets")
 async def list_supervisor_tickets(
     thread_id: uuid.UUID | None = Query(default=None),

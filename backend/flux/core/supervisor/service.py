@@ -136,6 +136,17 @@ class SupervisorService:
     async def overview(self, *, limit: int = 20) -> dict[str, Any]:
         return await self._require_orchestrator().overview(limit=limit)
 
+    async def project_overview(self, project_id: uuid.UUID, *, limit: int = 50) -> dict[str, Any]:
+        """项目页汇总：项目信息、阶段计数、工单、报告、线程摘要与时间线。"""
+        return await self._require_orchestrator().project_overview(project_id, limit=limit)
+
+    async def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """在工单、报告、线程摘要里检索；空关键字直接拒绝（不做全表扫描）。"""
+        text = (query or "").strip()
+        if not text:
+            raise ValidationError("检索关键字不能为空", details={"param": "q"})
+        return await self._require_orchestrator().search(text, limit=limit)
+
     async def tickets(
         self,
         *,

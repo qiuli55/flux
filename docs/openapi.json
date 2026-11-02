@@ -299,12 +299,13 @@
         "type": "object"
       },
       "BrainSection": {
-        "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n前四个是\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n后两个是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
+        "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n`overview` / `tech_stack` / `architecture` / `coding_rules` / `progress` 是\n\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n`decisions` / `agent_notes` 是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
         "enum": [
           "overview",
           "tech_stack",
           "architecture",
           "coding_rules",
+          "progress",
           "decisions",
           "agent_notes"
         ],
@@ -7413,6 +7414,69 @@
         ]
       }
     },
+    "/api/v1/supervisor/projects/{project_id}": {
+      "get": {
+        "description": "项目页：项目信息、阶段计数、工单、最近报告、线程摘要与时间线。",
+        "operationId": "read_supervisor_project_api_v1_supervisor_projects__project_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Supervisor Project Api V1 Supervisor Projects  Project Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Supervisor Project",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
     "/api/v1/supervisor/reports": {
       "get": {
         "description": "最近的报告（时间倒序）；只读，供助理看板与外部助手查询。",
@@ -7461,6 +7525,72 @@
           }
         ],
         "summary": "List Supervisor Reports",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/search": {
+      "get": {
+        "description": "在工单、报告、线程摘要里检索；`%` / `_` 按字面量处理。",
+        "operationId": "search_supervisor_api_v1_supervisor_search_get",
+        "parameters": [
+          {
+            "description": "检索关键字",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "检索关键字",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Supervisor Api V1 Supervisor Search Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search Supervisor",
         "tags": [
           "supervisor"
         ]

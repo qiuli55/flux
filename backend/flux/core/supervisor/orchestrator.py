@@ -14,11 +14,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from flux.core.supervisor.digest import build_thread_digest, is_closed, render_progress
 from flux.core.supervisor.dispatcher import DispatchOutcome, SupervisorDispatcher, derive_stage
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.planner import SupervisorPlanner, TicketPlan
 from flux.core.supervisor.repository import SupervisorRepository
-from flux.enums import TicketStage
+from flux.enums import BrainSection, TicketStage
 from flux.logging import get_logger
 from flux.models.supervisor import SupervisorTicket, SupervisorTrigger
 
@@ -43,11 +44,14 @@ class SupervisorOrchestrator:
         dispatcher: SupervisorDispatcher,
         *,
         outbox: SupervisorOutbox | None = None,
+        brain: Any | None = None,
     ) -> None:
         self._repo = repo
         self._planner = planner
         self._dispatcher = dispatcher
         self._outbox = outbox
+        #: Project Brain（可选）：线程收尾后把摘要写进项目的 progress 分区
+        self._brain = brain
 
     # --- 规划 ---
 
@@ -153,6 +157,7 @@ class SupervisorOrchestrator:
         """把任务的真实终态物化成报告；worker 每轮与读接口都会调用。"""
         tickets = await self._repo.list_tickets(limit=limit)
         await self._refresh(tickets)
+        await self._close_threads(tickets)
         return len(tickets)
 
     async def overview(self, *, limit: int = 20) -> dict[str, Any]:
@@ -168,6 +173,33 @@ class SupervisorOrchestrator:
             "counts": counts,
             "tickets": items,
             "pending_outbox": await self._outbox.pending_count() if self._outbox else 0,
+        }
+
+    async def project_overview(self, project_id: uuid.UUID, *, limit: int = 50) -> dict[str, Any]:
+        """项目页：项目信息 + 阶段计数 + 工单 + 最近报告 + 线程摘要 + 时间线。
+
+        读之前先对账一次并尝试收尾线程，保证用户打开项目页时看到的是最新事实。
+        """
+        project = await self._repo.get_project(project_id)
+        tickets = await self._repo.list_tickets(project_id=project_id, limit=limit)
+        await self._refresh(tickets)
+        await self._close_threads(tickets)
+        items = await self._ticket_items(tickets)
+        counts: dict[str, int] = {stage.value: 0 for stage in TicketStage}
+        for item in items:
+            counts[item["stage"]] = counts.get(item["stage"], 0) + 1
+        reports = [item["report"] for item in items if item.get("report")]
+        reports.sort(key=lambda report: str(report.get("created_at") or ""), reverse=True)
+        digests = await self._repo.list_digests(project_id=project_id, limit=10)
+        settings = await self._repo.get_settings()
+        return {
+            "project": project.to_dict(),
+            "settings": settings.to_dict(),
+            "counts": counts,
+            "tickets": items,
+            "reports": reports,
+            "digests": [digest.to_dict() for digest in digests],
+            "timeline": await self.timeline(project_id=project_id, limit=limit),
         }
 
     async def tickets(
@@ -197,6 +229,10 @@ class SupervisorOrchestrator:
     async def reports(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """最近的报告（时间倒序），供助理看板与 MCP 只读工具使用。"""
         return [report.to_dict() for report in await self._repo.recent_reports(limit=limit)]
+
+    async def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """在工单、报告、线程摘要里检索；只读，空关键字由调用方拦截。"""
+        return await self._repo.search(query, limit=limit)
 
     async def timeline(
         self,
@@ -302,6 +338,69 @@ class SupervisorOrchestrator:
             assignment = latest.get(ticket.id)
             if assignment is not None and assignment.status in {"dispatched", "running"}:
                 await self._dispatcher.sync_ticket(ticket)
+
+    async def _close_threads(self, tickets: list[SupervisorTicket]) -> None:
+        """线程内工单全部收尾后生成一份摘要（按线程幂等）。
+
+        先用本次读到的工单初筛，再回库复核整条线程：避免"线程里还有未收尾
+        工单但这次没被读到"时提前写摘要。
+        """
+        for thread_id in {ticket.thread_id for ticket in tickets}:
+            try:
+                if await self._repo.get_digest_by_thread(thread_id) is not None:
+                    continue
+                thread_tickets = await self._repo.list_tickets(thread_id=thread_id, limit=200)
+                await self._refresh(thread_tickets)
+                items = await self._ticket_items(thread_tickets)
+                if not is_closed(items):
+                    continue
+                await self._create_digest(thread_id, items)
+            except Exception:  # noqa: BLE001 - 摘要失败不能拖垮对账
+                logger.warning("Supervisor 生成摘要失败 thread=%s", thread_id, exc_info=True)
+
+    async def _create_digest(self, thread_id: uuid.UUID, items: list[dict[str, Any]]) -> None:
+        thread = await self._repo.get_thread(thread_id)
+        project_id = thread.project_id or next(
+            (
+                uuid.UUID(str(item["project_id"]))
+                for item in items
+                if item.get("project_id") is not None
+            ),
+            None,
+        )
+        payload = build_thread_digest(
+            thread_id=thread_id,
+            thread_key=thread.thread_key,
+            project_id=project_id,
+            items=items,
+        )
+        _, created = await self._repo.create_digest(
+            thread_id=thread_id,
+            project_id=project_id,
+            summary=payload["summary"],
+            decisions=payload["decisions"],
+            ticket_ids=payload["ticket_ids"],
+        )
+        if created and project_id is not None:
+            await self._write_progress(project_id)
+
+    async def _write_progress(self, project_id: uuid.UUID) -> None:
+        """把该项目最近的线程摘要渲染进 Brain 的 progress 分区（覆盖写入）。"""
+        if self._brain is None:
+            return
+        try:
+            digests = await self._repo.list_digests(project_id=project_id, limit=10)
+            content = render_progress([digest.to_dict() for digest in digests])
+            if not content:
+                return
+            await self._brain.write(
+                project_id,
+                section=BrainSection.PROGRESS,
+                content=content,
+                meta={"source": "supervisor"},
+            )
+        except Exception:  # noqa: BLE001 - 记忆写入失败不影响摘要落库
+            logger.warning("Supervisor 写入项目进度失败 project=%s", project_id, exc_info=True)
 
     async def _ticket_items(self, tickets: list[SupervisorTicket]) -> list[dict[str, Any]]:
         if not tickets:
