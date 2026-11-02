@@ -84,6 +84,22 @@ SPEC_TABLES = {
     "task_memory_cards",
     # 任务 ↔ 外部 Agent 会话绑定（opencode / codex 跨轮续聊）。
     "task_runtime_sessions",
+    # 助理（Supervisor）编排层：外部事实 → 无状态判断 → 工单 → 派活 → 报告。
+    # 执行仍归 tasks / agent_runs，这里只保存编排状态；13 张表同属一个迁移
+    # （e1b7c4a9d2f6），因此一并纳入契约。
+    "supervisor_settings",
+    "supervisor_sources",
+    "supervisor_policies",
+    "supervisor_triggers",
+    "supervisor_threads",
+    "supervisor_evals",
+    "supervisor_mandates",
+    "supervisor_tickets",
+    "supervisor_subscriptions",
+    "supervisor_assignments",
+    "supervisor_reports",
+    "supervisor_digests",
+    "supervisor_outbox",
 }
 
 
