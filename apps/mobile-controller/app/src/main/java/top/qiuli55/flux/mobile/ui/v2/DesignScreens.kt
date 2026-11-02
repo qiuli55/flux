@@ -599,6 +599,8 @@ private fun DesignPreviewThumb(
         if (preview == null || preview.nodes.isEmpty()) {
             DesignGlyph(V2Colors.ink(.22f))
         } else {
+            // 解析放在绘制 lambda 外：Canvas 每帧重绘都会执行 lambda，列表滚动时不能反复量字。
+            val resolved = remember(preview.nodes) { resolver.resolve(preview.nodes) }
             Canvas(Modifier.fillMaxSize()) {
                 val scale = min(size.width / preview.w, size.height / preview.h)
                 val origin = Offset(
@@ -609,7 +611,7 @@ private fun DesignPreviewThumb(
                     scale(scale, scale, pivot = Offset.Zero) {
                         with(DesignPainter) {
                             drawScreen(
-                                nodes = resolver.resolve(preview.nodes),
+                                nodes = resolved,
                                 width = preview.w,
                                 height = preview.h,
                                 bg = designColor(preview.bg ?: summary.bg, DesignSpec.SHELL_TOP),
@@ -642,6 +644,8 @@ internal fun DesignMiniPreview(
         if (preview == null || preview.nodes.isEmpty()) {
             DesignGlyph(V2Colors.ink(.22f))
         } else {
+            // 同上：绘制期只做几何变换，节点解析只在预览数据变化时做一次。
+            val resolved = remember(preview.nodes) { resolver.resolve(preview.nodes) }
             Canvas(Modifier.fillMaxSize()) {
                 val scale = min(size.width / preview.w, size.height / preview.h)
                 val origin = Offset(
@@ -652,7 +656,7 @@ internal fun DesignMiniPreview(
                     scale(scale, scale, pivot = Offset.Zero) {
                         with(DesignPainter) {
                             drawScreen(
-                                nodes = resolver.resolve(preview.nodes),
+                                nodes = resolved,
                                 width = preview.w,
                                 height = preview.h,
                                 bg = designColor(preview.bg ?: bg, DesignSpec.SHELL_TOP),

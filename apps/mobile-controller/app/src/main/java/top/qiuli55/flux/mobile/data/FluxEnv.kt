@@ -11,13 +11,31 @@ object FluxEnv {
 
     private val refreshMutex = Mutex()
 
+    private val apiLock = Any()
+    private var cachedApi: FluxApi? = null
+    private var cachedConfig: ConnectionConfig? = null
+
     fun install(context: Context) {
         if (!::settings.isInitialized) {
             settings = SettingsStore(context.applicationContext)
         }
     }
 
-    fun api(config: ConnectionConfig): FluxApi = FluxApi(config)
+    /**
+     * 按连接配置复用 [FluxApi]。
+     *
+     * 每个 FluxApi 自带一个 OkHttpClient（连接池 + 线程池 + TLS 会话缓存）；之前每次
+     * `api()` 都新建一个，3 秒轮询和每次页面操作都要重新握手，既慢又费电。
+     * 配置（地址 / 令牌）变化时才重建，保证改设置后下一次请求立即生效。
+     */
+    fun api(config: ConnectionConfig): FluxApi = synchronized(apiLock) {
+        val current = cachedApi
+        if (current != null && cachedConfig == config) return@synchronized current
+        FluxApi(config).also {
+            cachedApi = it
+            cachedConfig = config
+        }
+    }
 
     /** 账号模式：baseUrl 指向云端设备中转（AccountSession.proxyBaseUrl）。 */
     private fun ConnectionConfig.isAccountMode(): Boolean = isRelay
