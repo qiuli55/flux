@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -122,6 +123,11 @@ class TaskMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # 结构化附加数据：澄清结论、执行计划步骤、模型调用元信息；无附加数据时为 NULL
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 上下文云同步游标（2026-11-02）：NULL = 尚未处理；有值 = 已上传，或命中密钥红线
+    # 被主动跳过（都表示这条不用再传）。只对可上传类型排队，见 flux.cloud.context_sync。
+    cloud_uploaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -9,9 +9,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -419,6 +420,43 @@ class TaskRepository:
                 .order_by(TaskMessage.seq.desc())
                 .limit(1)
             )
+
+    # --- 对话上下文上云 ---
+
+    async def pending_context_messages(
+        self, kinds: Sequence[str], *, limit: int = 200
+    ) -> list[tuple[TaskMessage, Task]]:
+        """取尚未处理的可上传消息及其所属任务（按落库顺序，最多 limit 条）。
+
+        `cloud_uploaded_at IS NULL` 就是待传队列，不依赖额外的游标文件；
+        任务快照随消息一起取回，避免按任务逐条再查一次。
+        """
+        wanted = tuple(kinds)
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(TaskMessage, Task)
+                .join(Task, Task.id == TaskMessage.task_id)
+                .where(
+                    TaskMessage.cloud_uploaded_at.is_(None),
+                    TaskMessage.kind.in_(wanted),
+                )
+                .order_by(TaskMessage.created_at.asc(), TaskMessage.seq.asc())
+                .limit(limit)
+            )
+            return [(message, task) for message, task in rows.all()]
+
+    async def mark_context_uploaded(self, message_ids: Sequence[uuid.UUID], *, at: datetime) -> int:
+        """把一批消息标记为已处理（上传成功，或按本地密钥红线主动跳过）。"""
+        if not message_ids:
+            return 0
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(TaskMessage)
+                .where(TaskMessage.id.in_(tuple(message_ids)))
+                .values(cloud_uploaded_at=at)
+            )
+            await self._commit(session)
+            return int(result.rowcount or 0)
 
     async def delete(self, task_id: uuid.UUID) -> tuple[int, int]:
         """彻底删除任务及其消息、运行记录、执行轨迹，返回 (消息条数, 运行记录条数)。

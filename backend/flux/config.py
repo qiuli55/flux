@@ -215,6 +215,10 @@ class Settings(BaseSettings):
     billing_cloud_sync: bool = True
     # 增量上传游标（已推到云端最大的 occurred_at）；留空 = ~/.flux/billing-sync.json
     billing_sync_file: str | None = None
+    # 对话上下文上云：隐私输入以外的消息（文本 / 摘要 / 交接 / 安全输入卡片）增量
+    # 备份到账号云，换设备也能回看。手滑贴进聊天的密钥会被本地红线跳过；
+    # 关闭后对话只留在本机（无设备凭据时同样自动跳过）。
+    context_cloud_sync: bool = True
 
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。

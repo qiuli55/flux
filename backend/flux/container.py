@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flux.cloud.context_sync import CloudContextSync
 from flux.cloud.memory_sync import CloudMemorySync
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
@@ -252,6 +253,9 @@ class Container:
         )
         self.memory_cloud = CloudMemorySync(self.settings, self.memory)
         self.memory.attach_cloud(self.memory_cloud)
+        # 对话上下文上云（第二阶段）：隐私输入以外的消息增量备份到账号云；
+        # 待传队列落在 task_messages.cloud_uploaded_at，未配置设备凭据时自动跳过
+        self.context_cloud = CloudContextSync(self.settings, self.task_repo)
         # IDE 行内补全（AI_COMPLETION_SPEC）：偏好与「当前 Agent」落单文件；
         # 三层上下文直接复用文件浏览 / 项目扫描 / Git 的只读能力，不新建索引。
         self.completion_prefs = CompletionPrefsStore(self.settings.completion_prefs_path)

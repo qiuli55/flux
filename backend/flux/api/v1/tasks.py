@@ -235,6 +235,13 @@ async def list_tasks(
     return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
 
 
+@router.post("/context-sync")
+async def sync_context(container: Container = Depends(get_container)) -> dict[str, object]:
+    """手动触发一次对话上下文上云（隐私输入以外的消息），返回本轮统计。"""
+    result = await container.context_cloud.push()
+    return ok(result)
+
+
 @router.get("/{task_id}")
 async def get_task(
     task_id: str, container: Container = Depends(get_container)
