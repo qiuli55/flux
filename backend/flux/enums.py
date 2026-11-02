@@ -186,14 +186,17 @@ class TerminalEventKind(StrEnum):
 class BrainSection(StrEnum):
     """Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。
 
-    前四个是"项目现状"型分区，每区只保留一份最新内容（重新写入即覆盖）；
-    后两个是"累积"型分区，每次写入都新增一条，历史不可被覆盖。
+    `overview` / `tech_stack` / `architecture` / `coding_rules` / `progress` 是
+    "项目现状"型分区，每区只保留一份最新内容（重新写入即覆盖）；
+    `decisions` / `agent_notes` 是"累积"型分区，每次写入都新增一条，历史不可被覆盖。
     """
 
     OVERVIEW = "overview"
     TECH_STACK = "tech_stack"
     ARCHITECTURE = "architecture"
     CODING_RULES = "coding_rules"
+    #: 由助理在线程收尾后从摘要自动汇总，覆盖写入
+    PROGRESS = "progress"
     DECISIONS = "decisions"
     AGENT_NOTES = "agent_notes"
 
@@ -205,6 +208,7 @@ SINGLETON_BRAIN_SECTIONS = frozenset(
         BrainSection.TECH_STACK,
         BrainSection.ARCHITECTURE,
         BrainSection.CODING_RULES,
+        BrainSection.PROGRESS,
     }
 )
 

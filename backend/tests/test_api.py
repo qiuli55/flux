@@ -487,6 +487,7 @@ def test_memory_write_and_read_via_api(client: TestClient) -> None:
         "tech_stack",
         "architecture",
         "coding_rules",
+        "progress",
         "decisions",
         "agent_notes",
     }

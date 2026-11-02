@@ -1,13 +1,14 @@
 """Project Brain 服务层（主规格 §5.6；实施计划 ⑪）。
 
-第一版是**结构化记忆**，不是 RAG：六个分区各自存文本，读取时按固定顺序拼成
+第一版是**结构化记忆**，不是 RAG：七个分区各自存文本，读取时按固定顺序拼成
 一段可供 Agent 直接消费的项目上下文。不上 embedding、不建向量索引——
 按实施计划 ⑪ 的边界，"以后再加 Semantic Search"，现在强行引入只会把
 闭环验证拖长。
 
 分区的两种写入语义（见 `flux.enums.SINGLETON_BRAIN_SECTIONS`）：
 
-- `overview` / `tech_stack` / `architecture` / `coding_rules`：项目**现状**，覆盖写入；
+- `overview` / `tech_stack` / `architecture` / `coding_rules` / `progress`：
+  项目**现状**，覆盖写入（`progress` 由助理从线程摘要自动汇总）；
 - `decisions` / `agent_notes`：**累积**记录，只追加，历史不可被覆盖。
 """
 
@@ -32,12 +33,13 @@ from flux.models.project import Project, ProjectMemory
 
 logger = get_logger(__name__)
 
-#: 拼上下文时的分区顺序与标题（与实施计划 ⑪ 的六项一一对应）
+#: 拼上下文时的分区顺序与标题（与实施计划 ⑪ 的记忆分区一一对应）
 SECTION_TITLES: dict[BrainSection, str] = {
     BrainSection.OVERVIEW: "Project Overview",
     BrainSection.TECH_STACK: "Tech Stack",
     BrainSection.ARCHITECTURE: "Architecture",
     BrainSection.CODING_RULES: "Coding Rules",
+    BrainSection.PROGRESS: "Project Progress",
     BrainSection.DECISIONS: "Decisions",
     BrainSection.AGENT_NOTES: "Agent Notes",
 }
@@ -243,7 +245,7 @@ class ProjectBrain:
         return entry
 
     async def sections(self, project_id: str | uuid.UUID) -> dict[str, list[dict[str, Any]]]:
-        """按分区列出全部记忆（六个分区都会出现，缺的给空列表，便于前端直接渲染）。"""
+        """按分区列出全部记忆（七个分区都会出现，缺的给空列表，便于前端直接渲染）。"""
         entries = await self._repository.entries(project_id)
         grouped: dict[str, list[dict[str, Any]]] = {section.value: [] for section in BrainSection}
         for entry in entries:
