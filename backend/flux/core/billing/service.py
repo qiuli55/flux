@@ -19,6 +19,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from flux.config import Settings
+from flux.core.billing.accounts import (
+    account_label,
+    resolve_plan_accounts,
+)
 from flux.core.billing.plans import (
     PLAN_OPENCODE_GO,
     WINDOW_MONTHLY,
@@ -79,6 +83,8 @@ class GateDecision:
     message: str = ""
     enforce: bool = False
     fallback_model: str = ""
+    #: 判定所依据的账号（空 = 本机没能识别账号）
+    account_key: str = ""
 
     @property
     def blocked(self) -> bool:
@@ -98,6 +104,7 @@ class GateDecision:
             "message": self.message,
             "enforce": self.enforce,
             "fallback_model": self.fallback_model,
+            "account_key": self.account_key,
             "blocked": self.blocked,
         }
 
@@ -119,6 +126,8 @@ class BillingService:
             logger.warning("自定义套餐文件读取失败，回退内置套餐", exc_info=True)
             self._plans = default_plans()
         self._sources = build_sources(settings, self._plans)
+        #: plan_key → 本机账号指纹（同一套餐多账号必须分开聚合；解析不到为空）
+        self._accounts = resolve_plan_accounts(settings, self._plans)
         #: 官方价目表（每百万 token，USD 落账）；runtime 没上报 cost 时按它估算
         self._prices: PriceBook = load_price_book(
             settings.billing_prices_file,
@@ -183,6 +192,8 @@ class BillingService:
                 provider=provider or model_prefix(model) or "unknown",
                 model=model,
                 plan_key=plan.key if plan else None,
+                # 套餐已识别时打上本机账号指纹；未识别的模型只记账
+                account_key=self._accounts.get(plan.key, "") if plan else "",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
@@ -209,6 +220,8 @@ class BillingService:
             "enforce": self.enforce,
             "alert_percent": float(self._settings.billing_alert_percent),
             "block_percent": float(self._settings.billing_block_percent),
+            #: 官方快照的刷新周期（前端据此判断数据是否过期）
+            "refresh_seconds": self._refresh_seconds,
             "plans_file": str(self._settings.billing_plans_file or ""),
             "plans": plans,
         }
@@ -247,6 +260,7 @@ class BillingService:
                 results.append(
                     {
                         "plan_key": plan.key,
+                        "account_key": self._accounts.get(plan.key, ""),
                         "source": "",
                         "refreshed": False,
                         "rows": 0,
@@ -258,6 +272,7 @@ class BillingService:
             results.append(
                 {
                     "plan_key": plan.key,
+                    "account_key": self._accounts.get(plan.key, ""),
                     "source": plan.official_source,
                     "refreshed": error is None,
                     "rows": len(rows),
@@ -276,7 +291,9 @@ class BillingService:
         if plan is None:
             return GateDecision(plan_key="", level=LEVEL_OK)
         rows = await self._snapshot_rows(plan, refresh=refresh)
-        return await self._gate_for_plan(plan, rows)
+        return await self._gate_for_plan(
+            plan, rows, account_key=self._accounts.get(plan.key, "")
+        )
 
     async def ensure_can_start(self, *, model: str, runtime_id: str) -> GateDecision:
         """Run 创建前的闸门：超额且开启拦截时抛 ConflictError。"""
@@ -303,8 +320,62 @@ class BillingService:
     # --- 内部 ---
 
     async def _plan_view(self, plan: PlanDefinition, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        current = self._accounts.get(plan.key, "")
+        earliest = min((window.start() for window in plan.windows), default=None)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row.get("account_key") or ""), []).append(row)
+        # 展示顺序：本机当前账号 → 账本里出现过的账号 → 只出现在官方快照里的账号
+        ledger_accounts = (
+            await self._repo.record_accounts(plan_key=plan.key, since=earliest)
+            if earliest is not None
+            else []
+        )
+        order: list[str] = []
+        for key in [current, *ledger_accounts, *grouped.keys()]:
+            if key not in order:
+                order.append(key)
+        if not order:
+            order = [""]
+        accounts = [
+            await self._account_view(
+                plan,
+                key,
+                grouped.get(key, []),
+                earliest,
+                is_current=(key == current or (not current and key == order[0])),
+            )
+            for key in order
+        ]
+        primary = next((item for item in accounts if item["is_current"]), accounts[0])
+        return {
+            "key": plan.key,
+            "label": plan.label,
+            "vendor": plan.vendor,
+            "model_prefix": plan.model_prefix,
+            "model_prefixes": list(plan.model_prefixes),
+            "runtime_ids": list(plan.runtime_ids),
+            "official_source": plan.official_source,
+            "fallback_model": plan.fallback_model,
+            "account_key": primary["key"],
+            "gate": primary["gate"],
+            "accounts": accounts,
+            # 向后兼容：顶层 windows / gate 都是「本机当前账号」的口径
+            "windows": primary["windows"],
+        }
+
+    async def _account_view(
+        self,
+        plan: PlanDefinition,
+        account_key: str,
+        rows: list[dict[str, Any]],
+        earliest: datetime | None,
+        *,
+        is_current: bool,
+    ) -> dict[str, Any]:
+        """单个账号的窗口视图；`rows` 只包含该账号的官方快照。"""
         official = {str(row.get("window_key")): row for row in rows}
-        # 同一套餐只要有一次采集成功，比它更早的错误快照就不再代表当前状态：
+        # 同一账号只要有一次采集成功，比它更早的错误快照就不再代表当前状态：
         # 例如 Free 版 Codex 只有月度窗口，旧版本写下的 5h/周 报错不应一直挂着。
         latest_ok = max(
             (
@@ -316,9 +387,10 @@ class BillingService:
             ),
             default=None,
         )
-        earliest = min((window.start() for window in plan.windows), default=None)
         flux_times = (
-            await self._repo.record_times(plan_key=plan.key, since=earliest)
+            await self._repo.record_times(
+                plan_key=plan.key, since=earliest, account_key=account_key
+            )
             if earliest is not None
             else []
         )
@@ -334,23 +406,24 @@ class BillingService:
                     "key": window.key,
                     "label": window.label,
                     "since": window.start().isoformat(),
-                    "local": await self._repo.totals(plan_key=plan.key, since=window.start()),
+                    "local": await self._repo.totals(
+                        plan_key=plan.key, since=window.start(), account_key=account_key
+                    ),
                     "official": official_row,
                     "external": await self._external_view(
-                        plan.key, window.key, window.start(), flux_times
+                        plan.key,
+                        window.key,
+                        window.start(),
+                        flux_times,
+                        account_key=account_key,
                     ),
                 }
             )
-        decision = await self._gate_for_plan(plan, rows)
+        decision = await self._gate_for_plan(plan, rows, account_key=account_key)
         return {
-            "key": plan.key,
-            "label": plan.label,
-            "vendor": plan.vendor,
-            "model_prefix": plan.model_prefix,
-            "model_prefixes": list(plan.model_prefixes),
-            "runtime_ids": list(plan.runtime_ids),
-            "official_source": plan.official_source,
-            "fallback_model": plan.fallback_model,
+            "key": account_key,
+            "label": account_label(account_key),
+            "is_current": is_current,
             "gate": decision.to_dict(),
             "windows": windows,
         }
@@ -361,6 +434,8 @@ class BillingService:
         window_key: str,
         since: datetime,
         flux_times: list[datetime],
+        *,
+        account_key: str = "",
     ) -> dict[str, Any]:
         """官方百分比差分：估算 Flux 之外的客户端消耗（如 Trae）。
 
@@ -370,7 +445,10 @@ class BillingService:
         窗口重置（resets_at 变化或百分比回落）时清空重算，不把重置当用量。
         """
         snaps = await self._repo.snapshots_since(
-            plan_key=plan_key, window_key=window_key, since=since
+            plan_key=plan_key,
+            window_key=window_key,
+            since=since,
+            account_key=account_key,
         )
         points = mixed = increase = 0.0
         if len(snaps) >= 2:
@@ -403,19 +481,35 @@ class BillingService:
         }
 
     async def _gate_for_plan(
-        self, plan: PlanDefinition, rows: list[dict[str, Any]]
+        self,
+        plan: PlanDefinition,
+        rows: list[dict[str, Any]],
+        *,
+        account_key: str = "",
     ) -> GateDecision:
         if not self.enabled:
-            return GateDecision(plan_key=plan.key, level=LEVEL_DISABLED, enforce=self.enforce)
-        percent, window_key = self._max_percent(rows)
+            return GateDecision(
+                plan_key=plan.key,
+                level=LEVEL_DISABLED,
+                enforce=self.enforce,
+                account_key=account_key,
+            )
+        # 只按本机账号判定：别的账号的额度与本机无关。账号识别不到时退回整套餐口径。
+        scoped = (
+            [row for row in rows if str(row.get("account_key") or "") == account_key]
+            if account_key
+            else rows
+        )
+        percent, window_key = self._max_percent(scoped)
         if percent is None:
-            percent, window_key = await self._local_percent(plan)
+            percent, window_key = await self._local_percent(plan, account_key=account_key)
         if percent is None:
             return GateDecision(
                 plan_key=plan.key,
                 level=LEVEL_UNKNOWN,
                 enforce=self.enforce,
                 fallback_model=plan.fallback_model,
+                account_key=account_key,
                 message=f"{plan.label} 没有可用的额度数据（官方采集失败且未配置总额）",
             )
         level = self._level_of(percent)
@@ -427,6 +521,7 @@ class BillingService:
                 window_key=window_key,
                 enforce=self.enforce,
                 fallback_model=plan.fallback_model,
+                account_key=account_key,
             )
         stage = "用尽" if level == LEVEL_EXCEEDED else "告警"
         message = f"{plan.label} 额度{stage}：{window_key} 已用 {percent:.1f}%"
@@ -440,6 +535,7 @@ class BillingService:
             message=message,
             enforce=self.enforce,
             fallback_model=plan.fallback_model,
+            account_key=account_key,
         )
 
     @staticmethod
@@ -463,7 +559,9 @@ class BillingService:
                 best_key = str(row.get("window_key") or "")
         return best, best_key
 
-    async def _local_percent(self, plan: PlanDefinition) -> tuple[float | None, str]:
+    async def _local_percent(
+        self, plan: PlanDefinition, *, account_key: str = ""
+    ) -> tuple[float | None, str]:
         """官方不可用时，用本地月度成本 ÷ 套餐总额兜底。"""
         quota = plan.quota_usd
         if plan.key == PLAN_OPENCODE_GO and self._settings.billing_go_monthly_usd:
@@ -473,7 +571,9 @@ class BillingService:
         window: WindowSpec | None = plan.window(WINDOW_MONTHLY) or plan.windows[-1]
         if window is None:
             return None, ""
-        totals = await self._repo.totals(plan_key=plan.key, since=window.start())
+        totals = await self._repo.totals(
+            plan_key=plan.key, since=window.start(), account_key=account_key or None
+        )
         return float(totals["cost"]) / quota * 100.0, window.key
 
     def _level_of(self, percent: float) -> str:
@@ -490,7 +590,8 @@ class BillingService:
             return []
         if refresh:
             rows, _ = await self._fetch_locked(plan)
-            return rows
+            # 采集只覆盖本机账号；视图仍需带上其它账号的最近快照
+            return self._cache.get(plan.key, rows)
         cached = self._cache.get(plan.key)
         if cached is None:
             stored = await self._repo.latest_snapshots(plan.key)
@@ -521,12 +622,20 @@ class BillingService:
     ) -> tuple[list[dict[str, Any]], str | None]:
         """采集一次官方额度并落快照；失败时按窗口各写一条 error 快照。"""
         source = self._sources.get(plan.key)
+        account_key = self._accounts.get(plan.key, "")
         now = _utcnow()
         if source is None:
             error = f"未配置采集器：{plan.key}"
             rows: list[dict[str, Any]] = []
             for window in plan.windows:
-                await self._store_snapshot(plan, window.key, source="", error=error, fetched_at=now)
+                await self._store_snapshot(
+                    plan,
+                    window.key,
+                    account_key=account_key,
+                    source="",
+                    error=error,
+                    fetched_at=now,
+                )
             self._cache[plan.key] = rows
             self._cache_at[plan.key] = now
             return rows, error
@@ -542,7 +651,12 @@ class BillingService:
             detail = error or "官方未返回任何窗口数据"
             for window in plan.windows:
                 await self._store_snapshot(
-                    plan, window.key, source=plan.official_source, error=detail, fetched_at=now
+                    plan,
+                    window.key,
+                    account_key=account_key,
+                    source=plan.official_source,
+                    error=detail,
+                    fetched_at=now,
                 )
             # 失败不覆盖旧的成功缓存，闸门继续用上一次的官方数据
             self._cache_at[plan.key] = now
@@ -552,6 +666,7 @@ class BillingService:
             await self._store_snapshot(
                 plan,
                 row.window_key,
+                account_key=account_key,
                 source=result.source,
                 used=row.used,
                 quota=row.quota,
@@ -564,6 +679,7 @@ class BillingService:
             rows.append(
                 {
                     "plan_key": plan.key,
+                    "account_key": account_key,
                     "window_key": row.window_key,
                     "used": row.used,
                     "quota": row.quota,
@@ -576,15 +692,38 @@ class BillingService:
                     "error": None,
                 }
             )
-        self._cache[plan.key] = rows
+        self._cache[plan.key] = await self._merge_snapshot_rows(plan, rows, account_key)
         self._cache_at[plan.key] = now
         return rows, None
+
+    async def _merge_snapshot_rows(
+        self, plan: PlanDefinition, rows: list[dict[str, Any]], account_key: str
+    ) -> list[dict[str, Any]]:
+        """本次采集只覆盖本机账号，其它账号沿用库里最近一条快照。
+
+        同一套餐可能有多个订阅账号（换过 key、或以后云端下发别的机器采到的数据），
+        采集本机账号时不能把别人的窗口从视图里抹掉。
+        """
+        if not rows:
+            return rows
+        merged = list(rows)
+        try:
+            stored = await self._repo.latest_snapshots(plan.key)
+        except Exception:  # 读库失败不影响本次采集结果
+            logger.warning("额度快照合并失败 plan=%s", plan.key, exc_info=True)
+            return merged
+        for row in stored:
+            if str(row.get("account_key") or "") == account_key:
+                continue
+            merged.append(row)
+        return merged
 
     async def _store_snapshot(
         self,
         plan: PlanDefinition,
         window_key: str,
         *,
+        account_key: str = "",
         source: str,
         used: float | None = None,
         quota: float | None = None,
@@ -598,6 +737,7 @@ class BillingService:
         try:
             await self._repo.add_snapshot(
                 plan_key=plan.key,
+                account_key=account_key,
                 window_key=window_key,
                 used=used,
                 quota=quota,

@@ -74,6 +74,9 @@ def settings(tmp_path) -> Settings:
         billing_plans_file="",
         # 同理：价目表用内置条目，不读开发机覆盖文件
         billing_prices_file="",
+        # 采集器与账号指纹不能读开发机的真实凭据：否则账本账号随机器漂移
+        opencode_config_file="",
+        codex_account_home=str(tmp_path / "codex-account"),
         # 附件默认落到临时目录：测试绝不能往真实 /opt/flux/uploads 写文件
         uploads_dir=str(tmp_path / "uploads"),
         cloud_secret_key=None,

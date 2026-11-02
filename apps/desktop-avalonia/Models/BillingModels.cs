@@ -20,7 +20,9 @@ public sealed record BillingOfficial(
     string? ResetsAt,
     string? FetchedAt,
     string? Source,
-    string? Error);
+    string? Error,
+    // 快照归属账号指纹（空 = 本机未识别账号）。
+    string? AccountKey = null);
 
 /// <summary>一个额度窗口：本地账本 + 官方快照。</summary>
 public sealed record BillingWindow(
@@ -39,7 +41,18 @@ public sealed record BillingGate(
     string? Message,
     bool Enforce,
     string? FallbackModel,
-    bool Blocked);
+    bool Blocked,
+    // 判定所依据的账号指纹（空 = 本机未识别账号）。
+    string? AccountKey = null);
+
+/// <summary>套餐下的单个账号视图（同一套餐换过 key 时会有多份）。</summary>
+public sealed record BillingAccount(
+    string Key,
+    string Label,
+    // 是否本机当前凭据对应的账号。
+    bool IsCurrent,
+    BillingGate Gate,
+    BillingWindow[] Windows);
 
 /// <summary>套餐视图（模型前缀 / runtime 归因 + 各窗口）。</summary>
 public sealed record BillingPlan(
@@ -52,7 +65,11 @@ public sealed record BillingPlan(
     string? OfficialSource,
     string? FallbackModel,
     BillingGate Gate,
-    BillingWindow[] Windows);
+    BillingWindow[] Windows,
+    // 本机当前账号指纹（Gate / Windows 都是它的口径）。
+    string? AccountKey = null,
+    // 该套餐出现过的所有账号（当前账号排第一）。
+    BillingAccount[]? Accounts = null);
 
 /// <summary>GET /api/v1/billing/plans 的 data。</summary>
 public sealed record BillingOverview(
@@ -61,7 +78,9 @@ public sealed record BillingOverview(
     double AlertPercent,
     double BlockPercent,
     string? PlansFile,
-    BillingPlan[] Plans);
+    BillingPlan[] Plans,
+    // 官方快照刷新周期（秒）；超过两个周期前端可标记「可能过期」。
+    int? RefreshSeconds = null);
 
 /// <summary>一条官方价目（每 100 万 token；Currency 可能是 CNY）。</summary>
 public sealed record BillingPrice(
@@ -105,7 +124,9 @@ public sealed record BillingRefreshItem(
     string? Source,
     bool Refreshed,
     int Rows,
-    string? Error);
+    string? Error,
+    // 本次采集归属的本机账号指纹。
+    string? AccountKey = null);
 
 /// <summary>POST /api/v1/billing/refresh 的 data。</summary>
 public sealed record BillingRefreshResult(BillingRefreshItem[] Results);

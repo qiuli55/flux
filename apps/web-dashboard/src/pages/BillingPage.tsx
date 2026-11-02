@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { BillingGate, BillingLevel, BillingOfficialWindow, BillingOverview, BillingPlan, BillingPrice, BillingPrices, BillingRunUsage, BillingWindow } from "../api/types";
 import { Icon } from "../shell/Icon";
-import { Badge, Button, Card, Empty, Input, PageHead, Progress, SectionTitle, Stat } from "../shell/ui";
+import { Badge, Button, Card, Empty, Input, PageHead, Progress, SectionTitle, Segmented, Stat } from "../shell/ui";
 
 type Tone = "brand" | "green" | "orange" | "red" | "blue" | "default";
 
@@ -59,7 +59,7 @@ function fmtSince(value: string): string {
 }
 
 /** 官方窗口：有快照就显示百分比与重置时间，没有就明确写"无官方快照"，不要让空格子看起来像 0%。 */
-function OfficialLine({ official }: { official: BillingOfficialWindow | null }) {
+function OfficialLine({ official, refreshSeconds }: { official: BillingOfficialWindow | null; refreshSeconds?: number }) {
   if (!official) return <span className="fx-dim">暂无官方快照</span>;
   if (official.error) return (
     <span className="fx-row fx-gap-2 fx-wrap" style={{ maxWidth: "60%" }}>
@@ -67,16 +67,28 @@ function OfficialLine({ official }: { official: BillingOfficialWindow | null }) 
       <span className="fx-dim fx-ellipsis" style={{ fontSize: 11 }} title={official.error}>{official.error}</span>
     </span>
   );
+  const stale = isStale(official.fetched_at, refreshSeconds);
   return (
-    <span className="fx-row fx-gap-2">
+    <span className="fx-row fx-gap-2 fx-wrap">
       <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmtPct(official.percent)}</span>
       {official.quota !== null ? <span className="fx-dim">配额 {fmtNum(official.quota)} {official.unit === "percent" ? "" : official.unit}</span> : null}
       {official.resets_at ? <span className="fx-dim">重置 {fmtTime(official.resets_at)}</span> : null}
+      {official.source ? <Badge tone="default">{SOURCE_LABEL[official.source] ?? official.source}</Badge> : null}
+      {stale ? <Badge tone="orange">可能过期</Badge> : null}
+      {official.fetched_at ? <span className="fx-dim" style={{ fontSize: 11 }}>采集 {fmtTime(official.fetched_at)}</span> : null}
     </span>
   );
 }
 
-function WindowRow({ window }: { window: BillingWindow }) {
+/** 快照超过两个刷新周期就认为可能过期（一个周期内属正常缓存）。 */
+function isStale(fetchedAt: string | null | undefined, refreshSeconds?: number): boolean {
+  if (!fetchedAt || !refreshSeconds || refreshSeconds <= 0) return false;
+  const at = new Date(fetchedAt).getTime();
+  if (Number.isNaN(at)) return false;
+  return Date.now() - at > refreshSeconds * 2 * 1000;
+}
+
+function WindowRow({ window, refreshSeconds }: { window: BillingWindow; refreshSeconds?: number }) {
   const percent = window.official?.percent ?? 0;
   return (
     <div style={{ padding: "10px 0", borderTop: "1px solid var(--fx-line-soft)" }}>
@@ -85,7 +97,7 @@ function WindowRow({ window }: { window: BillingWindow }) {
           {window.label}
           <span className="fx-dim" style={{ marginLeft: 8, fontSize: 11 }}>自 {fmtSince(window.since)}</span>
         </span>
-        <OfficialLine official={window.official} />
+        <OfficialLine official={window.official} refreshSeconds={refreshSeconds} />
       </div>
       {window.official ? <div style={{ marginTop: 8 }}><Progress value={percent} thin /></div> : null}
       <div className="fx-row fx-wrap fx-gap-3" style={{ marginTop: 6, fontSize: 11 }}>
@@ -99,18 +111,28 @@ function WindowRow({ window }: { window: BillingWindow }) {
   );
 }
 
-function GateLine({ gate }: { gate: BillingGate }) {
+function GateLine({ gate, accountLabel }: { gate: BillingGate; accountLabel?: string }) {
   return (
     <div className="fx-row fx-wrap fx-gap-2" style={{ marginTop: 4 }}>
       <Badge tone={LEVEL_TONE[gate.level]} dot>{LEVEL_LABEL[gate.level]}</Badge>
       <Badge tone={gate.enforce ? "orange" : "default"}>{gate.enforce ? "闸门开启" : "仅告警"}</Badge>
+      {accountLabel ? <Badge tone="blue">{accountLabel}</Badge> : null}
       {gate.percent !== null ? <span className="fx-dim" style={{ fontSize: 11 }}>关键窗口 {fmtPct(gate.percent)}</span> : null}
       <span className="fx-dim fx-grow fx-ellipsis" style={{ fontSize: 11 }}>{gate.message}</span>
     </div>
   );
 }
 
-function PlanCard({ plan }: { plan: BillingPlan }) {
+function PlanCard({ plan, refreshSeconds, accountKey, onAccountChange }: {
+  plan: BillingPlan;
+  refreshSeconds?: number;
+  accountKey?: string;
+  onAccountChange: (key: string) => void;
+}) {
+  const accounts = plan.accounts ?? [];
+  const active = accounts.find((item) => item.key === accountKey) ?? accounts[0];
+  const windows = active?.windows ?? plan.windows;
+  const gate = active?.gate ?? plan.gate;
   return (
     <Card pad>
       <div className="fx-between">
@@ -127,16 +149,26 @@ function PlanCard({ plan }: { plan: BillingPlan }) {
           </div>
         </div>
         <div className="fx-ctl fx-row fx-gap-2">
-          <Badge tone={LEVEL_TONE[plan.gate.level]} dot>{plan.gate.level}</Badge>
-          {plan.gate.blocked ? <Badge tone="red">已拦截</Badge> : null}
+          <Badge tone={LEVEL_TONE[gate.level]} dot>{gate.level}</Badge>
+          {gate.blocked ? <Badge tone="red">已拦截</Badge> : null}
         </div>
       </div>
-      <GateLine gate={plan.gate} />
-      {plan.gate.percent !== null && plan.gate.percent >= 0 ? (
-        <div style={{ marginTop: 8 }}><Progress value={plan.gate.percent} /></div>
+      {accounts.length > 1 ? (
+        <div className="fx-row fx-gap-2 fx-wrap" style={{ marginTop: 10 }}>
+          <span className="fx-dim" style={{ fontSize: 11 }}>账号</span>
+          <Segmented
+            value={active?.key ?? ""}
+            options={accounts.map((item) => ({ value: item.key, label: item.is_current ? `${item.label}（本机）` : item.label }))}
+            onChange={onAccountChange}
+          />
+        </div>
+      ) : null}
+      <GateLine gate={gate} accountLabel={accounts.length > 1 ? active?.label : undefined} />
+      {gate.percent !== null && gate.percent >= 0 ? (
+        <div style={{ marginTop: 8 }}><Progress value={gate.percent} /></div>
       ) : null}
       <div style={{ marginTop: 6 }}>
-        {plan.windows.map((window) => <WindowRow key={window.key} window={window} />)}
+        {windows.map((window) => <WindowRow key={window.key} window={window} refreshSeconds={refreshSeconds} />)}
       </div>
       <div className="fx-dim" style={{ fontSize: 11, marginTop: 6 }}>超额回退模型 {plan.fallback_model || "未配置"}</div>
     </Card>
@@ -171,7 +203,7 @@ function RunUsage({ run }: { run: BillingRunUsage }) {
         <div className="fx-set-row" key={record.id}>
           <div className="fx-info">
             <div className="fx-t">{record.model} <span className="fx-dim">· {record.provider}</span></div>
-            <div className="fx-d">{fmtTime(record.occurred_at)}{record.plan_key ? ` · ${record.plan_key}` : ""}</div>
+            <div className="fx-d">{fmtTime(record.occurred_at)}{record.plan_key ? ` · ${record.plan_key}` : ""}{record.account_key ? ` · 账号 ${record.account_key}` : ""}</div>
           </div>
           <div className="fx-ctl fx-dim" style={{ fontSize: 11 }}>
             入 {fmtNum(record.input_tokens)} · 出 {fmtNum(record.output_tokens)} · 缓存 {fmtNum(record.cache_read_tokens)}
@@ -238,6 +270,8 @@ export function BillingPage() {
   const [run, setRun] = useState<BillingRunUsage | null>(null);
   const [runBusy, setRunBusy] = useState(false);
   const [prices, setPrices] = useState<BillingPrices | null>(null);
+  //: 套餐 → 当前查看的账号指纹（默认本机当前账号）
+  const [accountSel, setAccountSel] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -263,8 +297,9 @@ export function BillingPage() {
       const result = await api.billingRefresh();
       const lines = result.results.map((item) => {
         const source = SOURCE_LABEL[item.source] ?? item.source;
-        if (item.error) return `${item.plan_key}（${source}）失败：${item.error}`;
-        return item.refreshed ? `${item.plan_key}（${source}）已更新 ${item.rows} 个窗口` : `${item.plan_key}（${source}）无新数据`;
+        const account = item.account_key ? ` · 账号 ${item.account_key}` : "";
+        if (item.error) return `${item.plan_key}（${source}${account}）失败：${item.error}`;
+        return item.refreshed ? `${item.plan_key}（${source}${account}）已更新 ${item.rows} 个窗口` : `${item.plan_key}（${source}${account}）无新数据`;
       });
       setNotice(lines.join("；") || "没有可对账的套餐");
       setOverview(await api.billingPlans());
@@ -315,7 +350,15 @@ export function BillingPage() {
       {overview !== null && overview.plans.length === 0 ? <Empty icon="credit" title="还没有配置任何套餐" /> : null}
 
       <div className="fx-grid fx-auto">
-        {(overview?.plans ?? []).map((plan) => <PlanCard key={plan.key} plan={plan} />)}
+        {(overview?.plans ?? []).map((plan) => (
+          <PlanCard
+            key={plan.key}
+            plan={plan}
+            refreshSeconds={overview?.refresh_seconds}
+            accountKey={accountSel[plan.key] ?? plan.account_key}
+            onAccountChange={(key) => setAccountSel((prev) => ({ ...prev, [plan.key]: key }))}
+          />
+        ))}
       </div>
 
       {prices !== null ? <PriceBookCard data={prices} /> : null}

@@ -42,6 +42,7 @@ class BillingRepository:
         provider: str,
         model: str,
         plan_key: str | None,
+        account_key: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
@@ -57,6 +58,7 @@ class BillingRepository:
             provider=provider[:32],
             model=model[:128],
             plan_key=plan_key,
+            account_key=(account_key or "")[:16],
             input_tokens=int(input_tokens),
             output_tokens=int(output_tokens),
             cache_read_tokens=int(cache_read_tokens),
@@ -72,8 +74,17 @@ class BillingRepository:
             session.add(row)
             await session.commit()
 
-    async def totals(self, *, plan_key: str | None, since: datetime) -> dict[str, float]:
-        """某套餐自 `since` 起的本地用量合计。"""
+    async def totals(
+        self,
+        *,
+        plan_key: str | None,
+        since: datetime,
+        account_key: str | None = None,
+    ) -> dict[str, float]:
+        """某套餐（可选某账号）自 `since` 起的本地用量合计。
+
+        `account_key=None` 表示不按账号过滤（整套餐合计）。
+        """
         statement = select(
             func.count(UsageRecord.id),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0),
@@ -85,6 +96,8 @@ class BillingRepository:
         ).where(UsageRecord.occurred_at >= since)
         if plan_key:
             statement = statement.where(UsageRecord.plan_key == plan_key)
+        if account_key is not None:
+            statement = statement.where(UsageRecord.account_key == account_key)
         async with self._session_factory() as session:
             row = (await session.execute(statement)).one()
         return {
@@ -97,14 +110,38 @@ class BillingRepository:
             "cost": round(float(row[6] or 0.0), 6),
         }
 
-    async def record_times(self, *, plan_key: str | None, since: datetime) -> list[datetime]:
+    async def record_times(
+        self,
+        *,
+        plan_key: str | None,
+        since: datetime,
+        account_key: str | None = None,
+    ) -> list[datetime]:
         """某套餐自 `since` 起的调用时刻（只取时间，用于判断区间内 Flux 是否在跑）。"""
         statement = select(UsageRecord.occurred_at).where(UsageRecord.occurred_at >= since)
         if plan_key:
             statement = statement.where(UsageRecord.plan_key == plan_key)
+        if account_key is not None:
+            statement = statement.where(UsageRecord.account_key == account_key)
         statement = statement.order_by(UsageRecord.occurred_at)
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    async def record_accounts(
+        self, *, plan_key: str, since: datetime
+    ) -> list[str]:
+        """某套餐自 `since` 起出现过的账号指纹（账本口径）。"""
+        statement = (
+            select(UsageRecord.account_key)
+            .where(
+                UsageRecord.plan_key == plan_key,
+                UsageRecord.occurred_at >= since,
+                UsageRecord.account_key != "",
+            )
+            .distinct()
+        )
+        async with self._session_factory() as session:
+            return [str(value) for value in await session.scalars(statement)]
 
     async def records_by_run(self, run_id: str, *, limit: int = 200) -> list[UsageRecord]:
         statement = (
@@ -122,6 +159,7 @@ class BillingRepository:
         self,
         *,
         plan_key: str,
+        account_key: str = "",
         window_key: str,
         used: float | None = None,
         quota: float | None = None,
@@ -135,6 +173,7 @@ class BillingRepository:
     ) -> None:
         row = UsageSnapshot(
             plan_key=plan_key,
+            account_key=(account_key or "")[:16],
             window_key=window_key,
             used=used,
             quota=quota,
@@ -151,24 +190,29 @@ class BillingRepository:
             await session.commit()
 
     async def snapshots_since(
-        self, *, plan_key: str, window_key: str, since: datetime
+        self,
+        *,
+        plan_key: str,
+        window_key: str,
+        since: datetime,
+        account_key: str | None = None,
     ) -> list[dict]:
         """某窗口自 `since` 起的成功快照（按采集时刻正序），用于外部消耗差分。"""
-        statement = (
-            select(UsageSnapshot)
-            .where(
-                UsageSnapshot.plan_key == plan_key,
-                UsageSnapshot.window_key == window_key,
-                UsageSnapshot.fetched_at >= since,
-                UsageSnapshot.percent.is_not(None),
-                UsageSnapshot.error.is_(None),
-            )
-            .order_by(UsageSnapshot.fetched_at)
+        statement = select(UsageSnapshot).where(
+            UsageSnapshot.plan_key == plan_key,
+            UsageSnapshot.window_key == window_key,
+            UsageSnapshot.fetched_at >= since,
+            UsageSnapshot.percent.is_not(None),
+            UsageSnapshot.error.is_(None),
         )
+        if account_key is not None:
+            statement = statement.where(UsageSnapshot.account_key == account_key)
+        statement = statement.order_by(UsageSnapshot.fetched_at)
         async with self._session_factory() as session:
             rows = list(await session.scalars(statement))
         return [
             {
+                "account_key": row.account_key,
                 "percent": float(row.percent or 0.0),
                 "fetched_at": row.fetched_at,
                 "resets_at": row.resets_at,
@@ -177,7 +221,7 @@ class BillingRepository:
         ]
 
     async def latest_snapshots(self, plan_key: str, *, lookback_days: int = 2) -> list[dict]:
-        """每个窗口取最新一条（按 fetched_at 倒序去重）。"""
+        """每个「账号 × 窗口」取最新一条（按 fetched_at 倒序去重）。"""
         since = _utcnow() - timedelta(days=max(lookback_days, 1))
         statement = (
             select(UsageSnapshot)
@@ -186,11 +230,12 @@ class BillingRepository:
         )
         async with self._session_factory() as session:
             rows = list(await session.scalars(statement))
-        latest: dict[str, dict] = {}
+        latest: dict[tuple[str, str], dict] = {}
         for row in rows:
-            if row.window_key in latest:
+            key = (row.account_key or "", row.window_key)
+            if key in latest:
                 continue
-            latest[row.window_key] = row.to_dict()
+            latest[key] = row.to_dict()
         return list(latest.values())
 
 

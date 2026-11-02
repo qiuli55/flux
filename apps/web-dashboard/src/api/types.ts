@@ -686,6 +686,8 @@ export interface BillingGate {
   enforce: boolean;
   fallback_model: string;
   blocked: boolean;
+  /** 判定所依据的账号指纹（空 = 本机未识别账号） */
+  account_key: string;
 }
 
 /** 本地账本在某个窗口内的合计 */
@@ -702,6 +704,8 @@ export interface BillingTotals {
 /** 官方额度快照（采集失败时 error 有值、其余字段可能为 null） */
 export interface BillingOfficialWindow {
   plan_key: string;
+  /** 快照归属账号（空 = 本机未识别账号） */
+  account_key?: string;
   window_key: string;
   used: number | null;
   quota: number | null;
@@ -723,6 +727,17 @@ export interface BillingWindow {
   official: BillingOfficialWindow | null;
 }
 
+/** 套餐下单个账号的视图（同一套餐换过 key 时会有多份） */
+export interface BillingAccount {
+  /** 账号指纹（sha256(凭据)[:8]；空 = 本机未识别账号） */
+  key: string;
+  label: string;
+  /** 是否本机当前凭据对应的账号 */
+  is_current: boolean;
+  gate: BillingGate;
+  windows: BillingWindow[];
+}
+
 /** 单套餐视图（对应后端 _plan_view 的返回） */
 export interface BillingPlan {
   key: string;
@@ -736,6 +751,10 @@ export interface BillingPlan {
   runtime_ids?: string[];
   official_source: string;
   fallback_model: string;
+  /** 本机当前账号指纹（顶层 gate / windows 都是它的口径） */
+  account_key?: string;
+  /** 该套餐出现过的所有账号（当前账号排第一） */
+  accounts?: BillingAccount[];
   gate: BillingGate;
   windows: BillingWindow[];
 }
@@ -746,6 +765,8 @@ export interface BillingOverview {
   enforce: boolean;
   alert_percent: number;
   block_percent: number;
+  /** 官方快照刷新周期（秒）；超过这个时长前端标记为「可能过期」 */
+  refresh_seconds?: number;
   /** 自定义套餐文件路径（~ 未展开）；空 = 只用内置套餐 */
   plans_file?: string;
   plans: BillingPlan[];
@@ -779,6 +800,8 @@ export interface BillingRecord {
   provider: string;
   model: string;
   plan_key: string | null;
+  /** 套餐账号指纹（空 = 未识别账号） */
+  account_key?: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -802,6 +825,8 @@ export interface BillingRunUsage {
 export interface BillingRefreshResult {
   results: Array<{
     plan_key: string;
+    /** 本次采集归属的本机账号指纹 */
+    account_key?: string;
     source: string;
     refreshed: boolean;
     rows: number;

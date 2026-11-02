@@ -347,6 +347,12 @@ def _codex_tokens(settings: Settings) -> tuple[dict[str, str] | None, str | None
     return {"access_token": access_token, "account_id": account_id}, None
 
 
+def codex_account_id(settings: Settings) -> str | None:
+    """当前 ChatGPT 账号的 account_id（只用于账号指纹，不暴露 token）。"""
+    tokens, _ = _codex_tokens(settings)
+    return tokens["account_id"] if tokens else None
+
+
 def _rows_from_chatgpt_usage(payload: Any, plan_key: str) -> list[SnapshotRow]:
     """把 official `rate_limit` 的两个窗口转成快照行。"""
     block = payload.get("rate_limit") if isinstance(payload, dict) else None
@@ -735,6 +741,7 @@ __all__ = [
     "SourceResult",
     "UsageSource",
     "build_sources",
+    "codex_account_id",
     "load_opencode_config",
     "opencode_default_model",
     "opencode_go_key",

@@ -23,6 +23,8 @@ data class BillingTotals(
 
 @Serializable
 data class BillingOfficialWindow(
+    // 快照归属账号指纹（空 = 本机未识别账号）。
+    @SerialName("account_key") val accountKey: String = "",
     val used: Double? = null,
     val quota: Double? = null,
     val percent: Double? = null,
@@ -65,6 +67,19 @@ data class BillingGate(
     val enforce: Boolean = false,
     @SerialName("fallback_model") val fallbackModel: String = "",
     val blocked: Boolean = false,
+    // 判定所依据的账号指纹（空 = 本机未识别账号）。
+    @SerialName("account_key") val accountKey: String = "",
+)
+
+/** 套餐下的单个账号视图（同一套餐换过 key 时会有多份）。 */
+@Serializable
+data class BillingAccount(
+    val key: String = "",
+    val label: String = "",
+    // 是否本机当前凭据对应的账号。
+    @SerialName("is_current") val isCurrent: Boolean = false,
+    val gate: BillingGate = BillingGate(),
+    val windows: List<BillingWindow> = emptyList(),
 )
 
 @Serializable
@@ -79,6 +94,10 @@ data class BillingPlan(
     @SerialName("runtime_ids") val runtimeIds: List<String> = emptyList(),
     @SerialName("official_source") val officialSource: String = "",
     @SerialName("fallback_model") val fallbackModel: String = "",
+    // 本机当前账号指纹（顶层 gate / windows 都是它的口径）。
+    @SerialName("account_key") val accountKey: String = "",
+    // 该套餐出现过的所有账号（当前账号排第一）。
+    val accounts: List<BillingAccount> = emptyList(),
     val gate: BillingGate = BillingGate(),
     val windows: List<BillingWindow> = emptyList(),
 )
@@ -111,6 +130,8 @@ data class BillingOverview(
     val enforce: Boolean = false,
     @SerialName("alert_percent") val alertPercent: Double = 0.0,
     @SerialName("block_percent") val blockPercent: Double = 0.0,
+    // 官方快照刷新周期（秒）；超过两个周期前端可标记「可能过期」。
+    @SerialName("refresh_seconds") val refreshSeconds: Int = 0,
     val plans: List<BillingPlan> = emptyList(),
 ) {
     /** 首页入口的一行摘要：优先报最紧张的那条官方额度，没有快照就报本月本地 token。 */

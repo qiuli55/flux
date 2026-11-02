@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flux.container import Container
+from flux.core.billing.accounts import account_fingerprint
 from flux.core.billing.plans import (
     PLAN_AGENT_PLAN,
     PLAN_CLAUDE,
@@ -304,6 +305,78 @@ async def test_record_step_aggregates_into_plan_windows(container: Container) ->
     run = await service.run_usage("run-1")
     assert run["totals"]["records"] == 2
     assert run["totals"]["total_tokens"] == 180
+
+
+async def test_plan_view_separates_accounts(container: Container, tmp_path) -> None:
+    """同一套餐换过账号：账本、官方快照、闸门都按账号隔离，互不覆盖。"""
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps({"provider": {"opencode-go": {"options": {"apiKey": "key-current"}}}}),
+        encoding="utf-8",
+    )
+    settings = container.settings.model_copy(
+        update={"opencode_config_file": str(config), "billing_refresh_seconds": 300}
+    )
+    service = BillingService(settings, container.session_factory)
+    current = service._accounts[PLAN_OPENCODE_GO]  # noqa: SLF001 - 断言账号解析结果
+    assert current and current == account_fingerprint("key-current")
+    other = account_fingerprint("key-previous")
+    assert other and other != current
+
+    service._sources = {  # noqa: SLF001 - 替身采集器，避免联网
+        PLAN_OPENCODE_GO: _FakeSource(_rows(PLAN_OPENCODE_GO, 10.0, ("rolling_5h",)))
+    }
+
+    async def seed() -> None:
+        await service._repo.add_record(  # noqa: SLF001 - 直接造两账号的账本
+            provider="opencode-go",
+            model="opencode-go/gemini-4-argon",
+            plan_key=PLAN_OPENCODE_GO,
+            account_key=current,
+            input_tokens=100,
+            cost=1.0,
+        )
+        await service._repo.add_record(
+            provider="opencode-go",
+            model="opencode-go/gemini-4-argon",
+            plan_key=PLAN_OPENCODE_GO,
+            account_key=other,
+            input_tokens=900,
+            cost=9.0,
+        )
+        # 旧账号的官方额度已打满；本机当前账号由替身采集到 10%
+        await service._repo.add_snapshot(
+            plan_key=PLAN_OPENCODE_GO,
+            account_key=other,
+            window_key="rolling_5h",
+            percent=99.0,
+            source="opencode_go",
+        )
+
+    await seed()
+
+    view = await service.plan_view(PLAN_OPENCODE_GO, refresh=True)
+    accounts = {item["key"]: item for item in view["accounts"]}
+    assert set(accounts) == {current, other}
+    assert accounts[current]["is_current"] is True
+    assert accounts[other]["is_current"] is False
+    assert view["account_key"] == current
+
+    # 顶层是本机当前账号口径：不掺旧账号的账本与额度
+    monthly = next(w for w in view["windows"] if w["key"] == "monthly")
+    assert monthly["local"]["cost"] == 1.0
+    rolling = next(w for w in view["windows"] if w["key"] == "rolling_5h")
+    assert rolling["official"]["percent"] == 10.0
+    assert view["gate"]["level"] == LEVEL_OK
+    assert view["gate"]["account_key"] == current
+
+    # 旧账号保留自己的账本与快照，闸门按它自己的额度判
+    other_monthly = next(w for w in accounts[other]["windows"] if w["key"] == "monthly")
+    assert other_monthly["local"]["cost"] == 9.0
+    other_rolling = next(w for w in accounts[other]["windows"] if w["key"] == "rolling_5h")
+    assert other_rolling["official"]["percent"] == 99.0
+    assert accounts[other]["gate"]["level"] == LEVEL_EXCEEDED
+    assert accounts[other]["gate"]["account_key"] == other
 
 
 async def test_gate_warns_then_blocks_only_when_enforced(container: Container) -> None:
