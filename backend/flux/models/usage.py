@@ -26,9 +26,7 @@ class UsageRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     #: 套餐标识（见 flux.core.billing.plans）；NULL 表示未识别，只记账不参与闸门
     plan_key: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
     #: 账号指纹（同一套餐可能有多个订阅账号，必须分开聚合；空 = 未识别）
-    account_key: Mapped[str] = mapped_column(
-        String(16), index=True, default="", server_default=""
-    )
+    account_key: Mapped[str] = mapped_column(String(16), index=True, default="", server_default="")
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -79,9 +77,7 @@ class UsageSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     plan_key: Mapped[str] = mapped_column(String(32), index=True)
     #: 账号指纹（同一套餐多账号必须分开存，否则窗口互相覆盖）
-    account_key: Mapped[str] = mapped_column(
-        String(16), index=True, default="", server_default=""
-    )
+    account_key: Mapped[str] = mapped_column(String(16), index=True, default="", server_default="")
     #: 官方窗口标识：rolling_5h / weekly / monthly / five_hour / daily
     window_key: Mapped[str] = mapped_column(String(24), index=True)
     used: Mapped[float | None] = mapped_column(Float, nullable=True)

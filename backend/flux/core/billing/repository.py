@@ -127,9 +127,7 @@ class BillingRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
-    async def record_accounts(
-        self, *, plan_key: str, since: datetime
-    ) -> list[str]:
+    async def record_accounts(self, *, plan_key: str, since: datetime) -> list[str]:
         """某套餐自 `since` 起出现过的账号指纹（账本口径）。"""
         statement = (
             select(UsageRecord.account_key)
@@ -153,9 +151,7 @@ class BillingRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
-    async def records_after(
-        self, since: datetime | None, *, limit: int = 200
-    ) -> list[UsageRecord]:
+    async def records_after(self, since: datetime | None, *, limit: int = 200) -> list[UsageRecord]:
         """增量同步用：按 `occurred_at` 升序取 `since` 之后（含）的已归因明细。
 
         只同步 `plan_key` 非空的记录——未归因的调用没有套餐意义，云端也不需要。
@@ -164,10 +160,7 @@ class BillingRepository:
         statement = select(UsageRecord).where(UsageRecord.plan_key.is_not(None))
         if since is not None:
             statement = statement.where(UsageRecord.occurred_at >= since)
-        statement = (
-            statement.order_by(UsageRecord.occurred_at, UsageRecord.id)
-            .limit(max(limit, 1))
-        )
+        statement = statement.order_by(UsageRecord.occurred_at, UsageRecord.id).limit(max(limit, 1))
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 

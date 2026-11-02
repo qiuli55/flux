@@ -148,9 +148,7 @@ class CloudBillingSync:
         self._last_error = ""
         return grouped
 
-    async def summary(
-        self, queries: list[dict[str, Any]]
-    ) -> dict[str, dict[str, Any]] | None:
+    async def summary(self, queries: list[dict[str, Any]]) -> dict[str, dict[str, Any]] | None:
         """按「套餐 × 账号 × 窗口起点」批量汇总账号下所有设备的用量。"""
         creds = self.credentials()
         if creds is None:

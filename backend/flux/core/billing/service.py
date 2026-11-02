@@ -369,9 +369,7 @@ class BillingService:
         if plan is None:
             return GateDecision(plan_key="", level=LEVEL_OK)
         rows = await self._snapshot_rows(plan, refresh=refresh)
-        return await self._gate_for_plan(
-            plan, rows, account_key=self._accounts.get(plan.key, "")
-        )
+        return await self._gate_for_plan(plan, rows, account_key=self._accounts.get(plan.key, ""))
 
     async def ensure_can_start(self, *, model: str, runtime_id: str) -> GateDecision:
         """Run 创建前的闸门：超额且开启拦截时抛 ConflictError。"""
@@ -498,9 +496,7 @@ class BillingService:
                     ),
                     "official": official_row,
                     #: 云端「全部设备」合计（未启用归集或还没同步时为 None）
-                    "cloud": self._cloud.get(
-                        self._cloud_key(plan.key, account_key, window.key)
-                    ),
+                    "cloud": self._cloud.get(self._cloud_key(plan.key, account_key, window.key)),
                     "external": await self._external_view(
                         plan.key,
                         window.key,

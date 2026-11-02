@@ -53,9 +53,7 @@ def plan_account_source(plan: PlanDefinition) -> str:
     return ""
 
 
-def resolve_plan_accounts(
-    settings: Settings, plans: dict[str, PlanDefinition]
-) -> dict[str, str]:
+def resolve_plan_accounts(settings: Settings, plans: dict[str, PlanDefinition]) -> dict[str, str]:
     """本机在各套餐上使用的账号指纹（按凭据能力解析；解析不到为空）。"""
     opencode_key = opencode_go_key(settings)
     opencode_fingerprint = account_fingerprint(opencode_key)
