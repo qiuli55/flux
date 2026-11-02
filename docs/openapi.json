@@ -1495,6 +1495,29 @@
         "title": "ScanRequest",
         "type": "object"
       },
+      "SecureInputRequest": {
+        "description": "在安全输入卡片里提交一个密钥（明文只出现在这一次请求里，落库即加密）。\n\n`message_id` 指向那张助手卡片：密钥的用途（provider / models / 名称）以卡片上的\n描述为准，客户端只需要回传用户填的值，不能借卡片之外的参数改写入库字段。",
+        "properties": {
+          "message_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Message Id",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "value"
+        ],
+        "title": "SecureInputRequest",
+        "type": "object"
+      },
       "TaskAgentRequest": {
         "description": "切换任务的执行 Agent：同一对话继续，后续 Run 交给新 Agent。",
         "properties": {
@@ -7923,6 +7946,66 @@
           }
         ],
         "summary": "Get Run Trace",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/secure-input": {
+      "post": {
+        "description": "安全输入卡片的提交入口：明文只在这里出现一次，落库即加密，接口只回掩码。\n\n用户填的密钥**不进 task_messages**：消息表只留一条「已安全存储」的回执，\n正文与 payload 都不含明文，因此后续上传云端上下文时也不会带出密钥。",
+        "operationId": "submit_secure_input_api_v1_tasks__task_id__secure_input_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecureInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Secure Input Api V1 Tasks  Task Id  Secure Input Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Secure Input",
         "tags": [
           "tasks"
         ]
