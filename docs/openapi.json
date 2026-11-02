@@ -6912,6 +6912,35 @@
         ]
       }
     },
+    "/api/v1/tasks/context-sync": {
+      "post": {
+        "description": "手动触发一次对话上下文上云（隐私输入以外的消息），返回本轮统计。",
+        "operationId": "sync_context_api_v1_tasks_context_sync_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Context Api V1 Tasks Context Sync Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Sync Context",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
     "/api/v1/tasks/{task_id}": {
       "delete": {
         "description": "彻底删除一段对话（任务）：消息与运行记录一并清除，不做软删除。\n\n正在执行（running / waiting_for_user_decision）的对话必须先停止：\n删掉一个 Agent 仍在改文件的任务是矛盾的。",
