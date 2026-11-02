@@ -8262,6 +8262,59 @@
         ]
       }
     },
+    "/api/v1/supervisor/watchdog": {
+      "post": {
+        "description": "手动跑一轮超时回收：卡住的在途派活被收尾并写 `timed_out` 报告。",
+        "operationId": "run_supervisor_watchdog_api_v1_supervisor_watchdog_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Supervisor Watchdog Api V1 Supervisor Watchdog Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run Supervisor Watchdog",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。",

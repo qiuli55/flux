@@ -159,6 +159,15 @@ class SupervisorDispatcher:
         handle = self._agent_for(ticket.role)
         if handle is None:
             reason = f"没有可执行角色 {ticket.role} 的 Agent；请先注册该角色的 Agent"
+            # 自动续派每轮都会重试这张工单：同一角色只写一条 blocked 报告，
+            # 否则 watchdog / auto_dispatch 会把看板刷成一堵重复报告墙。
+            latest = (await self._repo.latest_reports([ticket.id])).get(ticket.id)
+            if (
+                latest is not None
+                and latest.status == ReportStatus.BLOCKED.value
+                and (latest.payload or {}).get("role") == ticket.role
+            ):
+                return DispatchOutcome(ticket.id, False, reason)
             await self._repo.create_report(
                 ticket.id,
                 status=ReportStatus.BLOCKED,
@@ -301,6 +310,50 @@ class SupervisorDispatcher:
             "stopped_run": stopped_run,
             "report": ReportStatus.CANCELLED.value,
         }
+
+    async def expire_assignment(
+        self,
+        ticket: SupervisorTicket,
+        assignment: Any,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """超时回收一次卡住的派活：停 Run → 任务置取消 → 派活收尾 → 写超时报告。
+
+        只处理仍在途（dispatched / running）的记录；已收尾的直接跳过，
+        因此 watchdog 每轮扫同一批行也不会刷出重复报告。
+        """
+        if assignment.status not in {"dispatched", "running"}:
+            return {"ticket_id": str(ticket.id), "expired": False, "reason": "派活已结束"}
+        stopped_run = ""
+        if assignment.run_id and self._dsh is not None:
+            try:
+                result = await self._dsh.cancel(assignment.run_id)
+                stopped_run = str(getattr(result, "status", ""))
+            except Exception:  # noqa: BLE001 - Run 已不在 / 通道异常都不能阻断回收
+                logger.warning(
+                    "Supervisor 回收时停 Run 失败 assignment=%s run=%s",
+                    assignment.id,
+                    assignment.run_id,
+                    exc_info=True,
+                )
+        if assignment.task_id is not None:
+            try:
+                task = await self._tasks.get(assignment.task_id)
+                if task.status not in _TERMINAL_TASKS:
+                    await self._tasks.set_status(assignment.task_id, TaskStatus.CANCELLED)
+            except NotFoundError:
+                pass
+        await self._repo.update_assignment(assignment.id, status="finished", finished_at=_utcnow())
+        await self._repo.create_report(
+            ticket.id,
+            assignment_id=assignment.id,
+            status=ReportStatus.TIMED_OUT,
+            summary=reason,
+            payload={"stage": "watchdog", "stopped_run": stopped_run},
+        )
+        logger.warning("Supervisor 回收工单 %s：%s", ticket.id, reason)
+        return {"ticket_id": str(ticket.id), "expired": True, "reason": reason}
 
 
 def _utcnow() -> datetime:

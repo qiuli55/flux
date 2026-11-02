@@ -134,6 +134,16 @@ async def search_supervisor(
     return ok(items, metadata={"count": len(items), "query": q})
 
 
+@router.post("/watchdog")
+async def run_supervisor_watchdog(
+    limit: int = Query(default=50, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """手动跑一轮超时回收：卡住的在途派活被收尾并写 `timed_out` 报告。"""
+    result = await container.supervisor.watchdog(limit=limit)
+    return ok(result, metadata={"checked": result["checked"], "expired": result["expired"]})
+
+
 @router.get("/tickets")
 async def list_supervisor_tickets(
     thread_id: uuid.UUID | None = Query(default=None),

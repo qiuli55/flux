@@ -209,6 +209,14 @@ class SupervisorWorker:
             await self._orchestrator.reconcile(limit=self._batch_size)
         except Exception:  # noqa: BLE001 - 对账失败不影响 outbox 主流程
             logger.exception("Supervisor 对账失败")
+        try:
+            await self._orchestrator.watchdog()
+        except Exception:  # noqa: BLE001 - 回收失败不阻断续派
+            logger.exception("Supervisor 超时回收失败")
+        try:
+            await self._orchestrator.auto_dispatch()
+        except Exception:  # noqa: BLE001 - 续派失败下一轮再试
+            logger.exception("Supervisor 自动续派失败")
 
     async def _handle_row(self, row: SupervisorOutboxRow) -> None:
         if row.topic == REPORT_READY_TOPIC:

@@ -174,6 +174,10 @@ class SupervisorService:
     async def stop_ticket(self, ticket_id: uuid.UUID, *, reason: str = "") -> dict[str, Any]:
         return await self._require_orchestrator().stop_ticket(ticket_id, reason=reason)
 
+    async def watchdog(self, *, limit: int = 50) -> dict[str, Any]:
+        """手动触发一轮超时回收（与后台 worker 走同一条路径）。"""
+        return await self._require_orchestrator().watchdog(limit=limit)
+
     async def reports(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """最近的报告（时间倒序），助理看板与 MCP 只读工具共用。"""
         return await self._require_orchestrator().reports(limit=limit)

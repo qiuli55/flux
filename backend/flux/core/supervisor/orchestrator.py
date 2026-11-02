@@ -12,16 +12,24 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from flux.core.supervisor.digest import build_thread_digest, is_closed, render_progress
 from flux.core.supervisor.dispatcher import DispatchOutcome, SupervisorDispatcher, derive_stage
+from flux.core.supervisor.gate import select_policy
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.planner import SupervisorPlanner, TicketPlan
 from flux.core.supervisor.repository import SupervisorRepository
-from flux.enums import BrainSection, TicketStage
+from flux.enums import AcceptMode, BrainSection, TaskStatus, TicketStage
 from flux.logging import get_logger
-from flux.models.supervisor import SupervisorTicket, SupervisorTrigger
+from flux.models.supervisor import (
+    SupervisorAssignment,
+    SupervisorSettings,
+    SupervisorThread,
+    SupervisorTicket,
+    SupervisorTrigger,
+)
 
 logger = get_logger(__name__)
 
@@ -32,6 +40,11 @@ _ACTIVE_STAGE_VALUES = frozenset({TicketStage.RUNNING.value, TicketStage.WAITING
 
 #: 没有外部通道的来源：不需要（也无法）自动订阅回投
 _INTERNAL_SOURCES = frozenset({"flux_internal"})
+
+#: 任务已到终态：对账会物化报告，watchdog 不再重复回收
+_TERMINAL_TASK_VALUES = frozenset(
+    {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
+)
 
 
 class SupervisorOrchestrator:
@@ -45,6 +58,8 @@ class SupervisorOrchestrator:
         *,
         outbox: SupervisorOutbox | None = None,
         brain: Any | None = None,
+        dispatch_timeout_seconds: float = 120.0,
+        run_timeout_seconds: float = 0.0,
     ) -> None:
         self._repo = repo
         self._planner = planner
@@ -52,6 +67,10 @@ class SupervisorOrchestrator:
         self._outbox = outbox
         #: Project Brain（可选）：线程收尾后把摘要写进项目的 progress 分区
         self._brain = brain
+        #: watchdog 租约：派活后多久没进入执行就回收（秒）
+        self._dispatch_timeout_seconds = max(0.0, float(dispatch_timeout_seconds))
+        #: watchdog 租约：单次 Run 执行上限（秒），0 = 不限制
+        self._run_timeout_seconds = max(0.0, float(run_timeout_seconds))
 
     # --- 规划 ---
 
@@ -150,6 +169,110 @@ class SupervisorOrchestrator:
     async def stop_ticket(self, ticket_id: uuid.UUID, *, reason: str = "") -> dict[str, Any]:
         ticket = await self._repo.get_ticket(ticket_id)
         return await self._dispatcher.stop_ticket(ticket, reason=reason)
+
+    # --- 自动续派 / 超时回收 ---
+
+    async def auto_dispatch(self, *, limit: int = 200) -> dict[str, Any]:
+        """AUTO 模式下的续派：只推进已有工单树，绝不新建工单。
+
+        上游工单完成后，下游 planned 工单在下一轮被派出；同一线程里无依赖的
+        兄弟工单受并发位约束，可在同一轮并行派出（不额外等下一轮）。
+        observe / off 模式直接返回空结果 —— 授权收回后立即停止续派。
+        """
+        settings = await self._repo.get_settings()
+        tickets = await self._repo.list_tickets(limit=limit)
+        seen: set[uuid.UUID] = set()
+        thread_ids: list[uuid.UUID] = []
+        for ticket in tickets:
+            # 没有 task_id 的工单一定还没派出去过；其余线程无需再查策略。
+            if ticket.task_id is not None or ticket.thread_id in seen:
+                continue
+            seen.add(ticket.thread_id)
+            thread_ids.append(ticket.thread_id)
+
+        outcomes: list[dict[str, Any]] = []
+        threads = 0
+        for thread_id in thread_ids:
+            thread = await self._repo.get_thread(thread_id)
+            if not await self._thread_auto(thread, settings):
+                continue
+            threads += 1
+            dispatched = await self.dispatch_thread(
+                thread_id, max_concurrent_runs=settings.max_concurrent_runs
+            )
+            outcomes.extend(outcome.to_dict() for outcome in dispatched)
+        return {
+            "mode": str(settings.accept_mode),
+            "threads": threads,
+            "dispatched": sum(1 for item in outcomes if item["dispatched"]),
+            "outcomes": outcomes,
+        }
+
+    async def watchdog(self, *, limit: int = 50) -> dict[str, Any]:
+        """回收卡住的在途派活：租约超时、任务丢失、执行超时。
+
+        只处理 dispatched / running 的记录；任务已到终态的交给常规对账物化，
+        不在这里抢写报告。回收动作写 `timed_out` 报告，并释放并发位。
+        """
+        assignments = await self._repo.active_assignments(limit=limit)
+        if not assignments:
+            return {"checked": 0, "expired": 0, "items": []}
+        tickets = await self._repo.get_tickets([item.ticket_id for item in assignments])
+        now = datetime.now(timezone.utc)
+        items: list[dict[str, Any]] = []
+        for assignment in assignments:
+            ticket = tickets.get(assignment.ticket_id)
+            if ticket is None:
+                continue
+            reason = await self._stall_reason(assignment, now=now)
+            if reason is None:
+                continue
+            result = await self._dispatcher.expire_assignment(ticket, assignment, reason=reason)
+            if result.get("expired"):
+                items.append(result)
+        return {"checked": len(assignments), "expired": len(items), "items": items}
+
+    async def _stall_reason(
+        self,
+        assignment: SupervisorAssignment,
+        *,
+        now: datetime,
+    ) -> str | None:
+        """判定一次在途派活是否已经卡住；返回回收原因，None 表示健康。"""
+        if assignment.status == "dispatched":
+            age = _age_seconds(assignment.created_at, now)
+            if age is None or age < self._dispatch_timeout_seconds:
+                return None
+            return f"派活后 {int(age)}s 仍未进入执行，已回收"
+        if assignment.status != "running":
+            return None
+        if assignment.task_id is None:
+            return "派活记录缺少任务关联，已回收"
+        status = (await self._repo.task_statuses([assignment.task_id])).get(assignment.task_id)
+        if status is None:
+            return "任务记录已丢失，已回收"
+        if status in _TERMINAL_TASK_VALUES:
+            # 任务已结束但派活还没收尾：常规对账会物化真实结论
+            return None
+        if self._run_timeout_seconds <= 0:
+            return None
+        age = _age_seconds(assignment.started_at or assignment.created_at, now)
+        if age is None or age < self._run_timeout_seconds:
+            return None
+        return f"执行超过 {int(age)}s 未结束，已回收"
+
+    async def _thread_auto(
+        self,
+        thread: SupervisorThread,
+        settings: SupervisorSettings,
+    ) -> bool:
+        """线程级准入判定：策略覆盖全局设置，收回 AUTO 后不再自动续派。"""
+        policies = await self._repo.list_policies(
+            source_key=thread.source_key, project_id=thread.project_id
+        )
+        policy = select_policy(policies, source_key=thread.source_key, project_id=thread.project_id)
+        value = (policy.accept_mode if policy is not None else None) or settings.accept_mode
+        return str(value) == AcceptMode.AUTO.value
 
     # --- 对账 / 查询 ---
 
@@ -442,6 +565,14 @@ def _iso(value: Any) -> str:
     if callable(isoformat):
         return str(isoformat())
     return str(value)
+
+
+def _age_seconds(value: datetime | None, now: datetime) -> float | None:
+    """计算年龄（秒）；SQLite 读回的时间可能没有 tzinfo，按 UTC 补齐。"""
+    if value is None:
+        return None
+    moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return (now - moment).total_seconds()
 
 
 def _thread_key(trigger: SupervisorTrigger) -> str:

@@ -493,6 +493,14 @@ class SupervisorRepository:
                 )
             return ticket
 
+    async def get_tickets(self, ticket_ids: list[uuid.UUID]) -> dict[uuid.UUID, SupervisorTicket]:
+        """按 id 批量取工单（watchdog 一次读齐在途派活对应的工单）。"""
+        if not ticket_ids:
+            return {}
+        statement = select(SupervisorTicket).where(SupervisorTicket.id.in_(ticket_ids))
+        async with self._session_factory() as session:
+            return {ticket.id: ticket for ticket in await session.scalars(statement)}
+
     async def set_ticket_task(
         self, ticket_id: uuid.UUID, task_id: uuid.UUID | None
     ) -> SupervisorTicket:
@@ -566,6 +574,17 @@ class SupervisorRepository:
             select(SupervisorAssignment)
             .where(SupervisorAssignment.ticket_id == ticket_id)
             .order_by(SupervisorAssignment.created_at, SupervisorAssignment.id)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def active_assignments(self, *, limit: int = 200) -> list[SupervisorAssignment]:
+        """在途派活记录（dispatched / running），watchdog 按租约超时回收。"""
+        statement = (
+            select(SupervisorAssignment)
+            .where(SupervisorAssignment.status.in_(("dispatched", "running")))
+            .order_by(SupervisorAssignment.created_at, SupervisorAssignment.id)
+            .limit(max(1, min(limit, 500)))
         )
         async with self._session_factory() as session:
             return list(await session.scalars(statement))

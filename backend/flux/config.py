@@ -234,6 +234,10 @@ class Settings(BaseSettings):
     supervisor_max_plan_retries: int = 1
     # outbox 行失败重试上限；超过落 dead，保留错误信息供排查。
     supervisor_outbox_max_attempts: int = 5
+    # watchdog：派活后迟迟没进入执行的租约上限（秒），超时回收并写 timed_out 报告。
+    supervisor_dispatch_timeout_seconds: float = 120.0
+    # watchdog：单次 Run 执行时长上限（秒）；0 表示不限制，交给 DSH 自身超时。
+    supervisor_run_timeout_seconds: float = 0.0
 
     # --- Supervisor · 飞书接入 ---
     # 自建应用凭据：只用于主动发消息（报告直通回原会话）。留空 = 走空通道，
