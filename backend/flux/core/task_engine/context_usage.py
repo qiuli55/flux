@@ -23,9 +23,16 @@ from flux.core.context.budget import (
     history_message_limit,
 )
 
-#: 进入模型上下文的消息类型：正文消息与上一段对话的前情摘要。
+#: 进入模型上下文的消息类型：正文消息、上一段对话的前情摘要，以及安全输入的
+#: 卡片与「已安全存储」回执（两者的正文都是安全文案，真正的密钥从不落消息表）。
 #: 助手历史、上下文度量、摘要注入必须共用这一份清单，否则三处口径会漂移。
-CONTEXT_MESSAGE_KINDS: tuple[str, ...] = ("text", "summary", "handoff")
+CONTEXT_MESSAGE_KINDS: tuple[str, ...] = (
+    "text",
+    "summary",
+    "handoff",
+    "secure_input",
+    "secure_input_result",
+)
 
 #: 达到这个占用比例就提醒「上下文快满了，要不要新建对话」。
 CONTEXT_WARNING_RATIO = 0.8

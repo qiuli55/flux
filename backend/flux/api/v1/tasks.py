@@ -46,6 +46,7 @@ from flux.schemas.api import (
     DecisionCreateRequest,
     DecisionModeRequest,
     PermissionModeRequest,
+    SecureInputRequest,
     TaskAgentRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
@@ -451,6 +452,8 @@ async def create_task_message(
             [
                 MessageDraft(
                     role=TaskMessageRole.ASSISTANT.value,
+                    # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
+                    kind="secure_input" if turn.secure_input else "text",
                     content=turn.reply,
                     payload=turn.payload(),
                 )
@@ -475,6 +478,102 @@ async def create_task_message(
     return ok(
         {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
         metadata={"provider": turn.provider, "model": turn.model},
+    )
+
+
+@router.post("/{task_id}/secure-input")
+async def submit_secure_input(
+    task_id: str,
+    payload: SecureInputRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """安全输入卡片的提交入口：明文只在这里出现一次，落库即加密，接口只回掩码。
+
+    用户填的密钥**不进 task_messages**：消息表只留一条「已安全存储」的回执，
+    正文与 payload 都不含明文，因此后续上传云端上下文时也不会带出密钥。
+    """
+    task_uuid = _task_id(task_id)
+    task = await container.task_repo.get(task_uuid)
+    if task.status in _FINAL_STATUSES:
+        raise ConflictError(
+            f"任务 {task_id} 已处于终态 {task.status}，不能再提交密钥",
+            details={"task_id": task_id, "status": task.status},
+        )
+
+    card_uuid = _parse_uuid(payload.message_id, field="message_id")
+    card = await container.task_repo.get_message(task_uuid, card_uuid)
+    if card is None or card.kind != "secure_input":
+        raise NotFoundError(
+            "安全输入卡片不存在或不属于该任务",
+            details={"task_id": task_id, "message_id": payload.message_id},
+        )
+    spec = (card.payload or {}).get("secure_input")
+    if not isinstance(spec, dict) or not spec:
+        raise ValidationError(
+            "卡片缺少密钥描述，无法保存", details={"message_id": payload.message_id}
+        )
+
+    receipts = await container.task_repo.messages_of_kind(task_uuid, "secure_input_result")
+    if any((item.payload or {}).get("message_id") == str(card_uuid) for item in receipts):
+        raise ConflictError(
+            "这张卡片的密钥已保存过，不会再写入一次",
+            details={"message_id": payload.message_id},
+        )
+
+    secret = payload.value.strip()
+    if not secret:
+        raise ValidationError("密钥不能为空", details={"field": "value"})
+
+    name = str(spec.get("name") or spec.get("title") or "API key")[:128]
+    fields = {
+        "provider": str(spec.get("provider") or ""),
+        "base_url": str(spec.get("base_url") or ""),
+        "models": [str(item) for item in spec.get("models") or []],
+        "wire_api": str(spec.get("wire_api") or ""),
+    }
+    # 同名密钥视为「重新填一次」：覆盖凭据与用途，而不是报 409 让用户去密钥库手动合并。
+    existing = next(
+        (row for row in await container.key_vault.list_entries() if row.name == name), None
+    )
+    if existing is None:
+        key = await container.key_vault.create(name=name, api_key=secret, **fields)
+    else:
+        key = await container.key_vault.update(existing.id, api_key=secret, **fields)
+
+    stored = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.USER.value,
+                    kind="secure_input_result",
+                    content=f"已通过安全输入框保存密钥「{key.name}」，密钥不会出现在对话里。",
+                    payload={
+                        "message_id": str(card_uuid),
+                        "key_id": str(key.id),
+                        "name": key.name,
+                        "provider": key.provider,
+                        "key_hint": key.key_hint,
+                        "status": "stored",
+                    },
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(task_uuid, "user_message", {"message": stored.to_dict()})
+    logger.info(
+        "安全输入已保存 task=%s message=%s key=%s provider=%s",
+        task_uuid,
+        card_uuid,
+        key.id,
+        key.provider,
+    )
+    return ok(
+        {
+            "task": _task_dict(task),
+            "key": key.to_dict(),
+            "message": stored.to_dict(),
+        }
     )
 
 

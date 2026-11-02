@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from flux.core.agent_runtime.model_catalog import KEY_PROVIDERS, PROVIDER_OPENAI_COMPATIBLE
 from flux.core.model_gateway.base import ChatMessage, TokenUsage
 from flux.core.model_gateway.router import ModelRouter
 from flux.errors import ValidationError
@@ -54,6 +55,14 @@ SYSTEM_PROMPT = """你是 Flux，一个 AI 软件工程平台的执行助手，�
   "待确认"，不要编一个看起来合理的答案；
 - "steps"：数组，执行计划，每项是简短的中文步骤标题（3~6 项）；信息不足以给出计划时给空数组。
 
+当任务需要用户提供密钥类凭证（API key、token、密码）时，额外给一个 "secure_input" 字段，
+前端会把它渲染成安全输入框，用户填的值直接进密钥库、不进对话上下文：
+{{"title": "卡片主标题", "description": "一句话说明这个密钥从哪来",
+  "name": "密钥库里的名称", "provider": "deepseek|openai|openai_compatible|anthropic",
+  "models": ["模型名"], "base_url": "", "wire_api": "", "placeholder": "输入框占位符"}}
+此时在 "reply" 里明确告诉用户「密钥只会显示一次，填到下面的安全输入框里，别贴在聊天里」。
+不需要密钥时不要给这个字段（省略或给 null），也不要编造任何密钥值。
+
 不要编造事实：需求里没提到的技术细节一律进 "questions" 或把对应维度写成"待确认"。"""
 
 
@@ -65,6 +74,7 @@ class AssistantTurn:
     questions: list[str] = field(default_factory=list)
     confirmation: list[dict[str, str]] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)
+    secure_input: dict[str, Any] | None = None
     provider: str = ""
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
@@ -86,6 +96,8 @@ class AssistantTurn:
             data["confirmation"] = self.confirmation
         if self.steps:
             data["steps"] = self.steps
+        if self.secure_input:
+            data["secure_input"] = self.secure_input
         return data
 
 
@@ -122,6 +134,7 @@ class TaskAssistant:
         if on_delta is None:
             result = await self._router.chat(messages)
             reply, questions, confirmation, steps = parse_turn(result.content)
+            secure_input = parse_secure_input(result.content)
             logger.info(
                 "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d",
                 result.provider,
@@ -135,6 +148,7 @@ class TaskAssistant:
                 questions=questions,
                 confirmation=confirmation,
                 steps=steps,
+                secure_input=secure_input,
                 provider=str(result.provider),
                 model=result.model,
                 usage={
@@ -182,6 +196,7 @@ class TaskAssistant:
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         reply, questions, confirmation, steps = parse_turn(raw)
+        secure_input = parse_secure_input(raw)
         logger.info(
             "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d streaming=%s",
             provider_name,
@@ -196,6 +211,7 @@ class TaskAssistant:
             questions=questions,
             confirmation=confirmation,
             steps=steps,
+            secure_input=secure_input,
             provider=provider_name,
             model=model_name,
             usage={
@@ -297,6 +313,67 @@ def parse_turn(raw: str) -> tuple[str, list[str], list[dict[str, str]], list[str
             steps.append(item.strip())
 
     return reply.strip(), questions, confirmation, steps
+
+
+#: 安全输入卡片里各文本字段的长度上限（模型塞大段正文进卡片时截断，不落库）。
+_SECURE_INPUT_TEXT_LIMIT = 200
+#: 卡片最多携带的模型名数量（与密钥库的模型上限对齐）。
+_SECURE_INPUT_MODEL_LIMIT = 64
+
+
+def parse_secure_input(raw: str) -> dict[str, Any] | None:
+    """解析模型输出里的 `secure_input` 卡片描述；没有或不可用返回 None。
+
+    只放行能真正落库的卡片：provider 必须是密钥库支持的供应商，models 至少一个
+    （openai_compatible 还要有 base_url）。缺这些字段时宁可不出卡片，
+    也不让用户白填一遍再收到 422。
+    """
+    payload = _load_json_object((raw or "").strip())
+    if payload is None:
+        return None
+    data = payload.get("secure_input")
+    if not isinstance(data, dict):
+        return None
+
+    title = _secure_text(data.get("title"))
+    provider = _secure_text(data.get("provider")).lower()
+    if not title or provider not in KEY_PROVIDERS:
+        return None
+
+    models: list[str] = []
+    for item in data.get("models") or []:
+        model = _secure_text(item)[:128]
+        if model and model not in models:
+            models.append(model)
+        if len(models) >= _SECURE_INPUT_MODEL_LIMIT:
+            break
+    if not models:
+        return None
+
+    base_url = _secure_text(data.get("base_url"))
+    if provider == PROVIDER_OPENAI_COMPATIBLE and not base_url:
+        return None
+    wire_api = _secure_text(data.get("wire_api")).lower()
+    if wire_api not in {"", "chat", "responses"}:
+        wire_api = ""
+
+    return {
+        "title": title,
+        "description": _secure_text(data.get("description")),
+        "placeholder": _secure_text(data.get("placeholder")) or "粘贴密钥",
+        "name": _secure_text(data.get("name")) or title,
+        "provider": provider,
+        "models": models,
+        "base_url": base_url,
+        "wire_api": wire_api,
+    }
+
+
+def _secure_text(value: Any) -> str:
+    """卡片文本字段：非字符串按空处理，去空白并截断到上限。"""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:_SECURE_INPUT_TEXT_LIMIT]
 
 
 def normalize_confirmation(raw: Any) -> list[dict[str, str]]:

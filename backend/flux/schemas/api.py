@@ -79,6 +79,17 @@ class TaskMessageCreateRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
+class SecureInputRequest(BaseModel):
+    """在安全输入卡片里提交一个密钥（明文只出现在这一次请求里，落库即加密）。
+
+    `message_id` 指向那张助手卡片：密钥的用途（provider / models / 名称）以卡片上的
+    描述为准，客户端只需要回传用户填的值，不能借卡片之外的参数改写入库字段。
+    """
+
+    message_id: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=4096)
+
+
 class ConfirmationItem(BaseModel):
     """需求确认的一项：维度 + 结论（P0-06 六个固定维度，label 由服务端校验）。"""
 

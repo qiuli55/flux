@@ -349,6 +349,37 @@ class TaskRepository:
         window.reverse()
         return window, has_more
 
+    async def get_message(self, task_id: uuid.UUID, message_id: uuid.UUID) -> TaskMessage | None:
+        """按 id 取任务内的单条消息（不属于该任务时返回 None）。
+
+        安全输入卡要按消息定位：用户填完密钥后，服务端得先确认这张卡片确实属于
+        当前任务、且类型是 secure_input，才允许落库。
+        """
+        async with self._session_factory() as session:
+            if await session.get(Task, task_id) is None:
+                raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            return await session.scalar(
+                select(TaskMessage).where(
+                    TaskMessage.task_id == task_id, TaskMessage.id == message_id
+                )
+            )
+
+    async def messages_of_kind(self, task_id: uuid.UUID, kind: str) -> list[TaskMessage]:
+        """取任务里某一类型的全部消息（seq 升序）。
+
+        安全输入的去重靠它：每张卡片最多被提交一次，回执以 kind + payload.message_id
+        标定；这类消息数量极少，不设分页。
+        """
+        async with self._session_factory() as session:
+            if await session.get(Task, task_id) is None:
+                raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            rows = await session.scalars(
+                select(TaskMessage)
+                .where(TaskMessage.task_id == task_id, TaskMessage.kind == kind)
+                .order_by(TaskMessage.seq.asc())
+            )
+            return list(rows)
+
     async def context_snapshot(
         self, task_id: uuid.UUID, *, limit: int, kinds: Sequence[str]
     ) -> tuple[list[TaskMessage], int]:
