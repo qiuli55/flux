@@ -24,7 +24,7 @@ from flux.models.supervisor import SupervisorTrigger
 
 logger = get_logger(__name__)
 
-__all__ = ["Assessment", "SupervisorAssessor"]
+__all__ = ["Assessment", "SupervisorAssessor", "load_json_object"]
 
 #: 只有这三种结论属于"模型真的做了判断"；其余值一律按不可用处理。
 _JUDGEMENTS = frozenset(
@@ -126,7 +126,7 @@ class SupervisorAssessor:
                 continue
 
             latency_ms = int((time.perf_counter() - started) * 1000)
-            payload = _load_json_object(result.content)
+            payload = load_json_object(result.content)
             if payload is None:
                 last_error = "模型输出不是 JSON 对象"
                 continue
@@ -180,7 +180,7 @@ def _confidence(value: object) -> float | None:
     return max(0.0, min(1.0, float(value)))
 
 
-def _load_json_object(text: str) -> dict[str, Any] | None:
+def load_json_object(text: str) -> dict[str, Any] | None:
     """从模型输出里取出 JSON 对象：容忍 ``` 围栏与前后缀说明文字。"""
     candidate = text
     if candidate.startswith("```"):

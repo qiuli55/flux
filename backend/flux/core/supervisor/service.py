@@ -1,8 +1,9 @@
-"""Supervisor 服务层：事件入库、观察回放、手动推进。
+"""Supervisor 服务层：事件入库、观察回放、手动推进、编排动作。
 
 判断与派发由 worker / planner 负责，服务层只做参数校验与编排：
 - 事件入库幂等（P0）；
 - 观察回放（P1，人工重判只追加判断）；
+- 规划 / 派发 / 停止（P2，全部委托给 orchestrator）；
 - 手动推进 outbox（运维/测试用）。
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from flux.core.supervisor.orchestrator import SupervisorOrchestrator
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
 from flux.core.supervisor.worker import SupervisorWorker
@@ -24,10 +26,12 @@ class SupervisorService:
         outbox: SupervisorOutbox,
         *,
         worker: SupervisorWorker | None = None,
+        orchestrator: SupervisorOrchestrator | None = None,
     ) -> None:
         self._repo = repo
         self._outbox = outbox
         self._worker = worker
+        self._orchestrator = orchestrator
 
     # --- 事件 ---
 
@@ -114,6 +118,56 @@ class SupervisorService:
                 "Supervisor worker 未装配", details={"component": "supervisor_worker"}
             )
         return self._worker
+
+    # --- 编排 ---
+
+    async def plan_now(self, trigger_id: uuid.UUID, *, dispatch: bool = False) -> dict[str, Any]:
+        """对一条事件产出工单树；`dispatch=True` 时只派发可执行且未超并发的工单。"""
+        trigger = await self._repo.get_trigger(trigger_id)
+        evaluation = (await self._repo.latest_evals([trigger_id])).get(trigger_id)
+        title = ""
+        if evaluation is not None:
+            title = str((evaluation.model_meta or {}).get("title") or "")
+        return await self._require_orchestrator().plan_trigger(
+            trigger, title=title, dispatch=dispatch
+        )
+
+    async def overview(self, *, limit: int = 20) -> dict[str, Any]:
+        return await self._require_orchestrator().overview(limit=limit)
+
+    async def tickets(
+        self,
+        *,
+        thread_id: uuid.UUID | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        return await self._require_orchestrator().tickets(thread_id=thread_id, limit=limit)
+
+    async def ticket_detail(self, ticket_id: uuid.UUID) -> dict[str, Any]:
+        return await self._require_orchestrator().ticket_detail(ticket_id)
+
+    async def dispatch_thread(self, thread_id: uuid.UUID) -> dict[str, Any]:
+        outcomes = await self._require_orchestrator().dispatch_thread(thread_id)
+        return {
+            "dispatched": sum(1 for outcome in outcomes if outcome.dispatched),
+            "outcomes": [outcome.to_dict() for outcome in outcomes],
+        }
+
+    async def dispatch_ticket(self, ticket_id: uuid.UUID) -> dict[str, Any]:
+        return await self._require_orchestrator().dispatch_ticket(ticket_id)
+
+    async def retry_ticket(self, ticket_id: uuid.UUID) -> dict[str, Any]:
+        return await self._require_orchestrator().retry_ticket(ticket_id)
+
+    async def stop_ticket(self, ticket_id: uuid.UUID, *, reason: str = "") -> dict[str, Any]:
+        return await self._require_orchestrator().stop_ticket(ticket_id, reason=reason)
+
+    def _require_orchestrator(self) -> SupervisorOrchestrator:
+        if self._orchestrator is None:
+            raise ValidationError(
+                "Supervisor orchestrator 未装配", details={"component": "supervisor_orchestrator"}
+            )
+        return self._orchestrator
 
     # --- 设置 ---
 

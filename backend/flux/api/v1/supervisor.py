@@ -1,7 +1,7 @@
-"""Supervisor（助理）API：事件入口、观察回放、手动重判、设置。
+"""Supervisor（助理）API：事件入口、观察回放、手动重判、编排动作、设置。
 
 权限面与其它 v1 接口一致，统一由 `require_rest_auth` 把关（见 flux.main）。
-本组接口只写"事实"：事件入库、判断追加、设置调整；派活/停止等动作在 P2 起另开端点。
+本组接口只写"事实"：事件入库、判断追加、工单落库、派发记录；执行仍归 Task Engine。
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from fastapi import APIRouter, Depends, Query
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.schemas.api import SupervisorEventRequest, SupervisorSettingsRequest
+from flux.schemas.api import (
+    SupervisorActionRequest,
+    SupervisorEventRequest,
+    SupervisorSettingsRequest,
+)
 
 router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 
@@ -76,6 +80,93 @@ async def reassess_observation(
     data = await container.supervisor.assess_now(trigger_id)
     assessment = data.get("assessment") or {}
     return ok(data, metadata={"decision": assessment.get("decision")})
+
+
+@router.post("/observations/{trigger_id}/plan")
+async def plan_observation(
+    trigger_id: uuid.UUID,
+    dispatch: bool = Query(default=False, description="是否同时派发可执行工单"),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """为一条事件产出工单树；`dispatch=false` 时只落库不派活。"""
+    data = await container.supervisor.plan_now(trigger_id, dispatch=dispatch)
+    return ok(
+        data,
+        metadata={
+            "tickets": len(data["tickets"]),
+            "degraded": data["plan"]["degraded"],
+        },
+    )
+
+
+@router.get("/overview")
+async def supervisor_overview(
+    limit: int = Query(default=20, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """助理看板：设置快照、阶段计数、最近工单。"""
+    return ok(await container.supervisor.overview(limit=limit))
+
+
+@router.get("/tickets")
+async def list_supervisor_tickets(
+    thread_id: uuid.UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """工单列表；阶段由 task / assignment / report 事实派生，不读工单状态列。"""
+    items = await container.supervisor.tickets(thread_id=thread_id, limit=limit)
+    return ok(items, metadata={"count": len(items)})
+
+
+@router.get("/tickets/{ticket_id}")
+async def read_supervisor_ticket(
+    ticket_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """单张工单的详情：阶段、最近派活、全部报告。"""
+    return ok(await container.supervisor.ticket_detail(ticket_id))
+
+
+@router.post("/threads/{thread_id}/dispatch")
+async def dispatch_supervisor_thread(
+    thread_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """按依赖与并发位派发一个线程下所有可执行工单。"""
+    data = await container.supervisor.dispatch_thread(thread_id)
+    return ok(data, metadata={"dispatched": data["dispatched"]})
+
+
+@router.post("/tickets/{ticket_id}/dispatch")
+async def dispatch_supervisor_ticket(
+    ticket_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """手动派发单张工单；已有任务记录的工单不会被重复派活。"""
+    data = await container.supervisor.dispatch_ticket(ticket_id)
+    return ok(data, metadata={"dispatched": data["dispatched"]})
+
+
+@router.post("/tickets/{ticket_id}/retry")
+async def retry_supervisor_ticket(
+    ticket_id: uuid.UUID,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """重试：新建一个 Task 与派活记录，旧记录保留供回放。"""
+    data = await container.supervisor.retry_ticket(ticket_id)
+    return ok(data, metadata={"dispatched": data["dispatched"]})
+
+
+@router.post("/tickets/{ticket_id}/stop")
+async def stop_supervisor_ticket(
+    ticket_id: uuid.UUID,
+    payload: SupervisorActionRequest | None = None,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """停止工单：能停 Run 就停 Run，再按平台事实写一条 cancelled 报告。"""
+    note = payload.note if payload is not None else ""
+    return ok(await container.supervisor.stop_ticket(ticket_id, reason=note))
 
 
 @router.post("/process")

@@ -230,6 +230,8 @@ class Settings(BaseSettings):
     supervisor_assess_timeout_seconds: float = 120.0
     # 判断层瞬时失败的重试次数（不含首次）。
     supervisor_max_assess_retries: int = 2
+    # 规划层瞬时失败的重试次数（不含首次）；用尽后降级为平台兜底的单工单。
+    supervisor_max_plan_retries: int = 1
     # outbox 行失败重试上限；超过落 dead，保留错误信息供排查。
     supervisor_outbox_max_attempts: int = 5
 

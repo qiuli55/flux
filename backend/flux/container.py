@@ -62,7 +62,10 @@ from flux.core.project_files.explorer import WorkspaceFileExplorer
 from flux.core.project_scanner.scanner import ProjectScanner
 from flux.core.supervisor import (
     SupervisorAssessor,
+    SupervisorDispatcher,
+    SupervisorOrchestrator,
     SupervisorOutbox,
+    SupervisorPlanner,
     SupervisorRepository,
     SupervisorService,
     SupervisorWorker,
@@ -153,6 +156,9 @@ class Container:
     supervisor_repo: SupervisorRepository = field(init=False)
     supervisor_outbox: SupervisorOutbox = field(init=False)
     supervisor_assessor: SupervisorAssessor = field(init=False)
+    supervisor_planner: SupervisorPlanner = field(init=False)
+    supervisor_dispatcher: SupervisorDispatcher = field(init=False)
+    supervisor_orchestrator: SupervisorOrchestrator = field(init=False)
     supervisor_worker: SupervisorWorker = field(init=False)
     supervisor: SupervisorService = field(init=False)
 
@@ -402,14 +408,37 @@ class Container:
             timeout_seconds=self.settings.supervisor_assess_timeout_seconds,
             max_retries=self.settings.supervisor_max_assess_retries,
         )
+        # 规划层只产计划；派发层只把工单落到 Task Engine，执行仍归 task_run_service
+        self.supervisor_planner = SupervisorPlanner(
+            self.router,
+            timeout_seconds=self.settings.supervisor_assess_timeout_seconds,
+            max_retries=self.settings.supervisor_max_plan_retries,
+        )
+        self.supervisor_dispatcher = SupervisorDispatcher(
+            self.supervisor_repo,
+            self.task_repo,
+            self.task_run_service,
+            self.agents,
+            dsh=self.dsh,
+        )
+        self.supervisor_orchestrator = SupervisorOrchestrator(
+            self.supervisor_repo,
+            self.supervisor_planner,
+            self.supervisor_dispatcher,
+            outbox=self.supervisor_outbox,
+        )
         self.supervisor_worker = SupervisorWorker(
             self.supervisor_repo,
             self.supervisor_outbox,
             self.supervisor_assessor,
+            orchestrator=self.supervisor_orchestrator,
             poll_seconds=self.settings.supervisor_poll_seconds,
         )
         self.supervisor = SupervisorService(
-            self.supervisor_repo, self.supervisor_outbox, worker=self.supervisor_worker
+            self.supervisor_repo,
+            self.supervisor_outbox,
+            worker=self.supervisor_worker,
+            orchestrator=self.supervisor_orchestrator,
         )
 
     def set_workspace_root(self, root: str) -> str:

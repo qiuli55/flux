@@ -499,3 +499,9 @@ class SupervisorSettingsRequest(BaseModel):
     max_tickets_per_thread: int | None = Field(default=None, ge=1, le=20)
     max_ticket_depth: int | None = Field(default=None, ge=1, le=3)
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=8)
+
+
+class SupervisorActionRequest(BaseModel):
+    """工单动作（停止等）的附加说明；只做审计，不参与派发决策。"""
+
+    note: str = Field(default="", max_length=2000)

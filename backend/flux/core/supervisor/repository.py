@@ -15,27 +15,37 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import AcceptMode, SupervisorDecision
+from flux.enums import AcceptMode, ReportStatus, SupervisorDecision
 from flux.errors import BadRequestError, NotFoundError, ValidationError
 from flux.logging import get_logger
 from flux.models.project import Project
 from flux.models.supervisor import (
+    SupervisorAssignment,
     SupervisorEval,
     SupervisorOutbox,
     SupervisorPolicy,
+    SupervisorReport,
     SupervisorSettings,
     SupervisorSource,
     SupervisorThread,
+    SupervisorTicket,
     SupervisorTrigger,
 )
+from flux.models.task import Task
+
+if TYPE_CHECKING:
+    from flux.core.supervisor.planner import TicketPlan
 
 logger = get_logger(__name__)
+
+#: 工单 plan_key 落库长度上限（与 planner 的单键上限保持一致，前缀会挤占空间）
+_PLAN_KEY_LIMIT = 64
 
 #: 可在设置接口里修改的列（白名单，避免把 singleton / 时间戳交给调用方）
 _SETTINGS_FIELDS = frozenset(
@@ -348,6 +358,266 @@ class SupervisorRepository:
         )
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    # --- 线程 ---
+
+    async def ensure_thread(
+        self,
+        *,
+        thread_key: str,
+        source_key: str,
+        external_id: str = "",
+        project_id: uuid.UUID | None = None,
+    ) -> SupervisorThread:
+        """按 thread_key 取线程，不存在则登记；项目关联以后到的为准。"""
+        now = _utcnow()
+        async with self._session_factory() as session:
+            thread = await session.scalar(
+                select(SupervisorThread).where(SupervisorThread.thread_key == thread_key)
+            )
+            if thread is None:
+                thread = SupervisorThread(
+                    id=uuid.uuid4(),
+                    thread_key=thread_key,
+                    source_key=source_key,
+                    external_id=external_id,
+                    project_id=project_id,
+                    last_activity_at=now,
+                )
+                session.add(thread)
+            else:
+                thread.last_activity_at = now
+                if project_id is not None:
+                    thread.project_id = project_id
+            await self._commit(session, "Supervisor 线程")
+            await session.refresh(thread)
+            return thread
+
+    async def get_thread(self, thread_id: uuid.UUID) -> SupervisorThread:
+        async with self._session_factory() as session:
+            thread = await session.get(SupervisorThread, thread_id)
+            if thread is None:
+                raise NotFoundError(
+                    f"Supervisor 线程 {thread_id} 不存在", details={"thread_id": str(thread_id)}
+                )
+            return thread
+
+    async def get_thread_by_key(self, thread_key: str) -> SupervisorThread | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(SupervisorThread).where(SupervisorThread.thread_key == thread_key)
+            )
+
+    # --- 工单 ---
+
+    async def create_tickets(
+        self,
+        *,
+        thread_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+        plan: TicketPlan,
+        key_prefix: str,
+    ) -> list[SupervisorTicket]:
+        """落一份计划；同一前缀重复规划直接回读已有工单，不重复拆树。"""
+        prefix = (key_prefix or "").strip()
+        stored_keys = [f"{prefix}-{ticket.key}"[:_PLAN_KEY_LIMIT] for ticket in plan.tickets]
+
+        async with self._session_factory() as session:
+            existing = list(
+                await session.scalars(
+                    select(SupervisorTicket)
+                    .where(
+                        SupervisorTicket.thread_id == thread_id,
+                        SupervisorTicket.plan_key.in_(stored_keys),
+                    )
+                    .order_by(SupervisorTicket.sequence, SupervisorTicket.id)
+                )
+            )
+            if existing:
+                return existing
+
+            rows: list[SupervisorTicket] = []
+            for ticket, stored in zip(plan.tickets, stored_keys, strict=True):
+                row = SupervisorTicket(
+                    id=uuid.uuid4(),
+                    thread_id=thread_id,
+                    project_id=project_id,
+                    plan_key=stored,
+                    title=ticket.title,
+                    description=ticket.description,
+                    role=ticket.role,
+                    depends_on=[
+                        f"{prefix}-{dependency}"[:_PLAN_KEY_LIMIT]
+                        for dependency in ticket.depends_on
+                    ],
+                    degraded=bool(plan.degraded),
+                    sequence=ticket.sequence,
+                )
+                session.add(row)
+                rows.append(row)
+            await self._commit(session, "Supervisor 工单")
+            for row in rows:
+                await session.refresh(row)
+            return rows
+
+    async def list_tickets(
+        self,
+        *,
+        thread_id: uuid.UUID | None = None,
+        limit: int = 100,
+    ) -> list[SupervisorTicket]:
+        statement = select(SupervisorTicket).order_by(
+            SupervisorTicket.created_at.desc(), SupervisorTicket.sequence, SupervisorTicket.id
+        )
+        if thread_id is not None:
+            statement = statement.where(SupervisorTicket.thread_id == thread_id)
+        statement = statement.limit(max(1, min(limit, 200)))
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def get_ticket(self, ticket_id: uuid.UUID) -> SupervisorTicket:
+        async with self._session_factory() as session:
+            ticket = await session.get(SupervisorTicket, ticket_id)
+            if ticket is None:
+                raise NotFoundError(
+                    f"Supervisor 工单 {ticket_id} 不存在", details={"ticket_id": str(ticket_id)}
+                )
+            return ticket
+
+    async def set_ticket_task(
+        self, ticket_id: uuid.UUID, task_id: uuid.UUID | None
+    ) -> SupervisorTicket:
+        async with self._session_factory() as session:
+            ticket = await session.get(SupervisorTicket, ticket_id)
+            if ticket is None:
+                raise NotFoundError(
+                    f"Supervisor 工单 {ticket_id} 不存在", details={"ticket_id": str(ticket_id)}
+                )
+            ticket.task_id = task_id
+            await self._commit(session, "Supervisor 工单任务")
+            await session.refresh(ticket)
+            return ticket
+
+    # --- 派活记录 ---
+
+    async def create_assignment(
+        self,
+        ticket_id: uuid.UUID,
+        *,
+        agent_id: uuid.UUID | None = None,
+        task_id: uuid.UUID | None = None,
+        run_id: str | None = None,
+        status: str = "dispatched",
+    ) -> SupervisorAssignment:
+        assignment = SupervisorAssignment(
+            id=uuid.uuid4(),
+            ticket_id=ticket_id,
+            agent_id=agent_id,
+            task_id=task_id,
+            run_id=run_id,
+            status=status,
+        )
+        async with self._session_factory() as session:
+            session.add(assignment)
+            await self._commit(session, "Supervisor 派活")
+            await session.refresh(assignment)
+            return assignment
+
+    async def update_assignment(self, assignment_id: uuid.UUID, **fields: Any) -> None:
+        """只更新显式给出的列（status / run_id / started_at / finished_at）。"""
+        async with self._session_factory() as session:
+            assignment = await session.get(SupervisorAssignment, assignment_id)
+            if assignment is None:
+                raise NotFoundError(
+                    f"Supervisor 派活记录 {assignment_id} 不存在",
+                    details={"assignment_id": str(assignment_id)},
+                )
+            for key, value in fields.items():
+                setattr(assignment, key, value)
+            await self._commit(session, "Supervisor 派活状态")
+
+    async def latest_assignments(
+        self, ticket_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, SupervisorAssignment]:
+        if not ticket_ids:
+            return {}
+        statement = (
+            select(SupervisorAssignment)
+            .where(SupervisorAssignment.ticket_id.in_(ticket_ids))
+            .order_by(SupervisorAssignment.created_at, SupervisorAssignment.id)
+        )
+        latest: dict[uuid.UUID, SupervisorAssignment] = {}
+        async with self._session_factory() as session:
+            for assignment in await session.scalars(statement):
+                latest[assignment.ticket_id] = assignment
+        return latest
+
+    async def list_assignments(self, ticket_id: uuid.UUID) -> list[SupervisorAssignment]:
+        statement = (
+            select(SupervisorAssignment)
+            .where(SupervisorAssignment.ticket_id == ticket_id)
+            .order_by(SupervisorAssignment.created_at, SupervisorAssignment.id)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    # --- 报告（只追加）---
+
+    async def create_report(
+        self,
+        ticket_id: uuid.UUID,
+        *,
+        status: ReportStatus | str,
+        summary: str = "",
+        payload: dict | None = None,
+        assignment_id: uuid.UUID | None = None,
+    ) -> SupervisorReport:
+        report = SupervisorReport(
+            id=uuid.uuid4(),
+            ticket_id=ticket_id,
+            assignment_id=assignment_id,
+            status=str(status),
+            summary=summary,
+            payload=payload or {},
+        )
+        async with self._session_factory() as session:
+            session.add(report)
+            await self._commit(session, "Supervisor 报告")
+            await session.refresh(report)
+            return report
+
+    async def latest_reports(
+        self, ticket_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, SupervisorReport]:
+        if not ticket_ids:
+            return {}
+        statement = (
+            select(SupervisorReport)
+            .where(SupervisorReport.ticket_id.in_(ticket_ids))
+            .order_by(SupervisorReport.created_at, SupervisorReport.id)
+        )
+        latest: dict[uuid.UUID, SupervisorReport] = {}
+        async with self._session_factory() as session:
+            for report in await session.scalars(statement):
+                latest[report.ticket_id] = report
+        return latest
+
+    async def list_reports(self, ticket_id: uuid.UUID) -> list[SupervisorReport]:
+        statement = (
+            select(SupervisorReport)
+            .where(SupervisorReport.ticket_id == ticket_id)
+            .order_by(SupervisorReport.created_at, SupervisorReport.id)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def task_statuses(self, task_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """批量读任务状态（工单阶段派生只信 tasks 表）。"""
+        if not task_ids:
+            return {}
+        statement = select(Task.id, Task.status).where(Task.id.in_(task_ids))
+        async with self._session_factory() as session:
+            return {row[0]: str(row[1]) for row in await session.execute(statement)}
 
     # --- 内部 ---
 

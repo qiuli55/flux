@@ -1,8 +1,9 @@
 """Supervisor 的后台 worker：消费 outbox → Gate → Assessment → 落判断。
 
 P1 只做"观察"：判断结果写成可回放的 `supervisor_evals`，推进 trigger 状态，
-但不创建 ticket、不起 Run。派活（P2）会在 `_evaluate` 的 accept 分支之后追加，
-判断层与服务层不需要改。
+但不创建 ticket、不起 Run。P2 起在 `evaluate` 的 accept 分支之后追加编排：
+只有 AUTO 模式、判断为 accept、且模型明确建议派发时才规划并派发工单；
+人工重判（force）永远不派活。每轮结束顺手对账一次，把任务终态物化成报告。
 
 崩溃安全：outbox 行在领取后被标记 processing；进程被杀时由 `requeue_stale`
 在下一轮退回过期行，因此重启后不会丢事件，也不会重复判断（判断只追加）。
@@ -18,6 +19,7 @@ from typing import Any
 
 from flux.core.supervisor.assess import Assessment, SupervisorAssessor
 from flux.core.supervisor.gate import GateContext, evaluate, select_policy
+from flux.core.supervisor.orchestrator import SupervisorOrchestrator
 from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.repository import SupervisorRepository
 from flux.enums import AcceptMode, SupervisorDecision
@@ -40,12 +42,14 @@ class SupervisorWorker:
         outbox: SupervisorOutbox,
         assessor: SupervisorAssessor,
         *,
+        orchestrator: SupervisorOrchestrator | None = None,
         poll_seconds: float = 5.0,
         batch_size: int = 10,
     ) -> None:
         self._repo = repo
         self._outbox = outbox
         self._assessor = assessor
+        self._orchestrator = orchestrator
         self._poll_seconds = max(0.1, float(poll_seconds))
         self._batch_size = max(1, int(batch_size))
         self._task: asyncio.Task[None] | None = None
@@ -81,6 +85,7 @@ class SupervisorWorker:
             else:
                 await self._outbox.complete(row.id)
                 processed += 1
+        await self._reconcile()
         return processed
 
     async def assess_now(self, trigger_id: uuid.UUID) -> dict[str, Any]:
@@ -172,9 +177,38 @@ class SupervisorWorker:
             trigger.id,
             "ignored" if assessment.decision is SupervisorDecision.IGNORE else "assessed",
         )
+        if (
+            not force
+            and self._orchestrator is not None
+            and mode is AcceptMode.AUTO
+            and assessment.decision is SupervisorDecision.ACCEPT
+            and assessment.should_dispatch
+        ):
+            await self._dispatch(trigger, assessment)
         return assessment
 
     # --- 内部 ---
+
+    async def _dispatch(self, trigger: SupervisorTrigger, assessment: Assessment) -> None:
+        """AUTO 模式下的唯一派活入口；编排失败只影响本条事件，不抛出。"""
+        try:
+            result = await self._orchestrator.plan_trigger(  # type: ignore[union-attr]
+                trigger, title=assessment.title, dispatch=True
+            )
+        except Exception:  # noqa: BLE001 - 单条事件的编排失败不能拖垮 worker
+            logger.exception("Supervisor 编排失败 trigger=%s", trigger.id)
+            await self._repo.set_trigger_status(trigger.id, "failed")
+            return
+        if any(outcome.get("dispatched") for outcome in result.get("dispatch", [])):
+            await self._repo.set_trigger_status(trigger.id, "queued")
+
+    async def _reconcile(self) -> None:
+        if self._orchestrator is None:
+            return
+        try:
+            await self._orchestrator.reconcile(limit=self._batch_size)
+        except Exception:  # noqa: BLE001 - 对账失败不影响 outbox 主流程
+            logger.exception("Supervisor 对账失败")
 
     async def _handle_row(self, row: SupervisorOutboxRow) -> None:
         if row.topic != TRIGGER_TOPIC:

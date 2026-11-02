@@ -1528,6 +1528,19 @@
         "title": "SecureInputRequest",
         "type": "object"
       },
+      "SupervisorActionRequest": {
+        "description": "工单动作（停止等）的附加说明；只做审计，不参与派发决策。",
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "SupervisorActionRequest",
+        "type": "object"
+      },
       "SupervisorEventRequest": {
         "description": "一条外部事件（飞书 / 微信 / Flux 内部）。\n\n`external_id` 必须是平台侧稳定标识：重复投递靠 `(source_key, event_type,\nexternal_id)` 幂等，重投只会命中同一条 trigger，不会再排一次动作。",
         "properties": {
@@ -7182,6 +7195,122 @@
         ]
       }
     },
+    "/api/v1/supervisor/observations/{trigger_id}/plan": {
+      "post": {
+        "description": "为一条事件产出工单树；`dispatch=false` 时只落库不派活。",
+        "operationId": "plan_observation_api_v1_supervisor_observations__trigger_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trigger_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Trigger Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "是否同时派发可执行工单",
+            "in": "query",
+            "name": "dispatch",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "是否同时派发可执行工单",
+              "title": "Dispatch",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Plan Observation Api V1 Supervisor Observations  Trigger Id  Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan Observation",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/overview": {
+      "get": {
+        "description": "助理看板：设置快照、阶段计数、最近工单。",
+        "operationId": "supervisor_overview_api_v1_supervisor_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Supervisor Overview Api V1 Supervisor Overview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Supervisor Overview",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
     "/api/v1/supervisor/process": {
       "post": {
         "description": "手动推进一轮 outbox（与后台 worker 同一条路径，供运维与测试使用）。",
@@ -7306,6 +7435,348 @@
           }
         ],
         "summary": "Update Supervisor Settings",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/threads/{thread_id}/dispatch": {
+      "post": {
+        "description": "按依赖与并发位派发一个线程下所有可执行工单。",
+        "operationId": "dispatch_supervisor_thread_api_v1_supervisor_threads__thread_id__dispatch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dispatch Supervisor Thread Api V1 Supervisor Threads  Thread Id  Dispatch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Dispatch Supervisor Thread",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets": {
+      "get": {
+        "description": "工单列表；阶段由 task / assignment / report 事实派生，不读工单状态列。",
+        "operationId": "list_supervisor_tickets_api_v1_supervisor_tickets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Supervisor Tickets Api V1 Supervisor Tickets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Supervisor Tickets",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets/{ticket_id}": {
+      "get": {
+        "description": "单张工单的详情：阶段、最近派活、全部报告。",
+        "operationId": "read_supervisor_ticket_api_v1_supervisor_tickets__ticket_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Supervisor Ticket Api V1 Supervisor Tickets  Ticket Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Supervisor Ticket",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets/{ticket_id}/dispatch": {
+      "post": {
+        "description": "手动派发单张工单；已有任务记录的工单不会被重复派活。",
+        "operationId": "dispatch_supervisor_ticket_api_v1_supervisor_tickets__ticket_id__dispatch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dispatch Supervisor Ticket Api V1 Supervisor Tickets  Ticket Id  Dispatch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Dispatch Supervisor Ticket",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets/{ticket_id}/retry": {
+      "post": {
+        "description": "重试：新建一个 Task 与派活记录，旧记录保留供回放。",
+        "operationId": "retry_supervisor_ticket_api_v1_supervisor_tickets__ticket_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retry Supervisor Ticket Api V1 Supervisor Tickets  Ticket Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Retry Supervisor Ticket",
+        "tags": [
+          "supervisor"
+        ]
+      }
+    },
+    "/api/v1/supervisor/tickets/{ticket_id}/stop": {
+      "post": {
+        "description": "停止工单：能停 Run 就停 Run，再按平台事实写一条 cancelled 报告。",
+        "operationId": "stop_supervisor_ticket_api_v1_supervisor_tickets__ticket_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SupervisorActionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Supervisor Ticket Api V1 Supervisor Tickets  Ticket Id  Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Stop Supervisor Ticket",
         "tags": [
           "supervisor"
         ]
