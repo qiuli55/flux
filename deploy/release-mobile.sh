@@ -30,16 +30,16 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; th
   exit 1
 fi
 
-echo "==> 远程构建 debug APK（remote-build：grokbot-build）"
+echo "==> 远程构建 release APK（remote-build：grokbot-build）"
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 "$RB" -C "$APP_DIR" -t 3600 \
   -x './app/build' \
-  -c "chmod +x gradlew && ./gradlew :app:assembleDebug --console=plain" \
-  -a "app/build/outputs/apk/debug/*.apk" \
+  -c "chmod +x gradlew && ./gradlew :app:assembleRelease --console=plain" \
+  -a "app/build/outputs/apk/release/*.apk" \
   -o "$OUT_DIR"
 
-APK="$OUT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+APK="$OUT_DIR/app/build/outputs/apk/release/app-release.apk"
 [[ -f "$APK" ]] || { echo "远程构建产物缺失：$APK" >&2; exit 1; }
 
 REMOTE_APK="flux-mobile-${VERSION_NAME}-vc${VERSION_CODE}.apk"
