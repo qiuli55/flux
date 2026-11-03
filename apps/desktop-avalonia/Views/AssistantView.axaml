@@ -1,0 +1,431 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.AssistantView"
+             x:DataType="vm:AssistantViewModel">
+
+    <UserControl.Resources>
+        <!-- 统计瓦片 -->
+        <DataTemplate x:Key="StatTemplate" DataType="vm:SupervisorStatView">
+            <Border Classes="card pad" Margin="0,0,16,0">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="{Binding Label}" Classes="caps" />
+                    <TextBlock Text="{Binding Value}" FontSize="24" FontWeight="SemiBold"
+                               Foreground="{Binding Tone}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 观察事件行 -->
+        <DataTemplate x:Key="ObservationTemplate" DataType="vm:ObservationRowView">
+            <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1" Padding="0,12">
+                <StackPanel Spacing="6">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                            <Border Classes="badge" BorderBrush="{DynamicResource TnInfo}">
+                                <TextBlock Text="{Binding Source}" FontSize="11"
+                                           Foreground="{DynamicResource TnInfo}" />
+                            </Border>
+                            <Border Classes="badge">
+                                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                           Foreground="{DynamicResource TnText3}" />
+                            </Border>
+                            <Border Classes="badge" BorderBrush="{Binding DecisionTone}">
+                                <TextBlock Text="{Binding DecisionText}" FontSize="11"
+                                           Foreground="{Binding DecisionTone}" />
+                            </Border>
+                            <TextBlock Text="{Binding Meta}" FontSize="11" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="{Binding Id}" Classes="mono" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </Grid>
+                    <TextBlock Text="{Binding Content}" FontSize="12.5" TextWrapping="Wrap"
+                               MaxLines="2" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding Reason}" FontSize="11.5" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding HasReason}" />
+                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,0">
+                        <Button Classes="btn subtle" Content="重判" Command="{Binding Assess}" />
+                        <Button Classes="btn subtle" Content="规划" Command="{Binding Plan}" />
+                        <Button Classes="btn primary" Content="规划并派发" Command="{Binding PlanDispatch}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 工单卡 -->
+        <DataTemplate x:Key="TicketCardTemplate" DataType="vm:TicketCardView">
+            <Border Classes="card pad" Margin="0,0,0,10">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="{Binding Title}" FontSize="12.5" FontWeight="SemiBold"
+                               TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Border Classes="badge" BorderBrush="{Binding Tone}">
+                            <TextBlock Text="{Binding StageLabel}" FontSize="11"
+                                       Foreground="{Binding Tone}" />
+                        </Border>
+                        <Border Classes="kb-tag">
+                            <TextBlock Text="{Binding RoleText}" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}" />
+                        </Border>
+                        <Border Classes="kb-tag" IsVisible="{Binding Degraded}">
+                            <TextBlock Text="降级" FontSize="11"
+                                       Foreground="{DynamicResource TnWarn}" />
+                        </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding ReportText}" FontSize="11.5" TextWrapping="Wrap"
+                               MaxLines="2" TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TnText3}"
+                               IsVisible="{Binding HasReport}" />
+                    <WrapPanel>
+                        <Button Classes="btn subtle" Content="派发" Margin="0,0,6,6"
+                                Command="{Binding Dispatch}" IsVisible="{Binding CanDispatch}" />
+                        <Button Classes="btn subtle" Content="重试" Margin="0,0,6,6"
+                                Command="{Binding Retry}" IsVisible="{Binding CanRetry}" />
+                        <Button Classes="btn quiet" Content="停止" Margin="0,0,6,6"
+                                Command="{Binding Stop}" IsVisible="{Binding CanStop}" />
+                        <Button Classes="btn quiet" Content="详情" Margin="0,0,6,6"
+                                Command="{Binding Open}" />
+                    </WrapPanel>
+                    <TextBlock Text="{Binding FootText}" FontSize="11" Classes="mono"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 看板列 -->
+        <DataTemplate x:Key="ColumnTemplate" DataType="vm:TicketColumnView">
+            <Border Classes="kb-col" Margin="0,0,16,0">
+                <StackPanel>
+                    <Grid ColumnDefinitions="Auto,*" Margin="12,14,12,10">
+                        <TextBlock Grid.Column="0" Classes="caps" Text="{Binding Title}" />
+                        <TextBlock Grid.Column="1" Text="{Binding CountText}" FontSize="11"
+                                   HorizontalAlignment="Right"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </Grid>
+                    <Rectangle Classes="rule" Margin="12,0" />
+                    <ItemsControl ItemsSource="{Binding Items}" Margin="12,12,12,0"
+                                  ItemTemplate="{StaticResource TicketCardTemplate}" />
+                    <TextBlock Text="暂无" FontSize="12" Margin="12,8,12,0"
+                               Foreground="{DynamicResource TnText4}"
+                               IsVisible="{Binding IsEmpty}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 报告行 -->
+        <DataTemplate x:Key="ReportTemplate" DataType="vm:ReportRowView">
+            <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1" Padding="0,10">
+                <StackPanel Spacing="5">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Border Classes="badge" BorderBrush="{Binding Tone}">
+                            <TextBlock Text="{Binding StatusLabel}" FontSize="11"
+                                       Foreground="{Binding Tone}" />
+                        </Border>
+                        <TextBlock Text="{Binding MetaText}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding Summary}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TnText2}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 时间线行 -->
+        <DataTemplate x:Key="TimelineTemplate" DataType="vm:TimelineRowView">
+            <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1" Padding="0,10">
+                <StackPanel Spacing="5">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Border Classes="badge" BorderBrush="{Binding Tone}">
+                            <TextBlock Text="{Binding KindLabel}" FontSize="11"
+                                       Foreground="{Binding Tone}" />
+                        </Border>
+                        <TextBlock Text="{Binding StatusText}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TnText4}" />
+                        <TextBlock Text="{Binding TimeText}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Summary}" FontSize="11.5" TextWrapping="Wrap"
+                               MaxLines="2" TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TnText3}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 派活记录行 -->
+        <DataTemplate x:Key="AssignmentTemplate" DataType="vm:DetailAssignmentView">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*" Margin="0,0,0,8">
+                <TextBlock Grid.Column="0" Text="{Binding AgentText}" FontSize="11.5" />
+                <Border Grid.Column="1" Classes="badge" Margin="8,0">
+                    <TextBlock Text="{Binding StatusText}" FontSize="11"
+                               Foreground="{DynamicResource TnText3}" />
+                </Border>
+                <TextBlock Grid.Column="2" Text="{Binding TaskText}" Classes="mono" FontSize="11"
+                           Margin="0,0,8,0" Foreground="{DynamicResource TnText4}" />
+                <TextBlock Grid.Column="3" Text="{Binding RunText}" Classes="mono" FontSize="11"
+                           Margin="0,0,8,0" Foreground="{DynamicResource TnText4}" />
+                <TextBlock Grid.Column="4" Text="{Binding TimeText}" FontSize="11"
+                           HorizontalAlignment="Right"
+                           Foreground="{DynamicResource TnText4}" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Panel>
+        <ScrollViewer>
+            <StackPanel Margin="32,32,40,32">
+
+                <!-- 页头 -->
+                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Classes="page-title" Text="助理" Margin="0,0,0,5" />
+                        <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                                   Text="顶层编排者：接收外部事件、判断是否接活、拆成工单树派给子 Agent，并回收结构化报告。" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                VerticalAlignment="Bottom">
+                        <TextBlock Text="{Binding StatusText}" FontSize="12" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TnAccent}" />
+                        <Button Classes="btn subtle" Content="推进队列"
+                                Command="{Binding ProcessOutboxCommand}" IsEnabled="{Binding !IsBusy}" />
+                        <Button Classes="btn subtle" Content="超时回收"
+                                Command="{Binding RunWatchdogCommand}" IsEnabled="{Binding !IsBusy}" />
+                        <Button Classes="btn primary" Content="刷新"
+                                Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- 运行设置 -->
+                <Border Classes="card pad" Margin="0,0,0,16">
+                    <StackPanel Spacing="14">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10"
+                                        VerticalAlignment="Center">
+                                <TextBlock Classes="section-title" Text="运行设置" VerticalAlignment="Center" />
+                                <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
+                                        CornerRadius="6" Padding="2">
+                                    <StackPanel Orientation="Horizontal" Spacing="2">
+                                        <Button Classes="seg" Classes.active="{Binding IsOff}" Content="关闭"
+                                                Command="{Binding SelectModeCommand}" CommandParameter="off" />
+                                        <Button Classes="seg" Classes.active="{Binding IsObserve}" Content="观察"
+                                                Command="{Binding SelectModeCommand}" CommandParameter="observe" />
+                                        <Button Classes="seg" Classes.active="{Binding IsAuto}" Content="自动"
+                                                Command="{Binding SelectModeCommand}" CommandParameter="auto" />
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Text="观察模式只判断不派活；自动模式判断通过后自动规划派发"
+                                           FontSize="11" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TnText4}" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Classes="btn primary" Content="保存设置"
+                                    Command="{Binding SaveSettingsCommand}" IsEnabled="{Binding !IsBusy}" />
+                        </Grid>
+
+                        <WrapPanel>
+                            <StackPanel Spacing="4" Margin="0,0,16,0">
+                                <TextBlock Classes="caps" Text="模型 Provider" />
+                                <TextBox Classes="input" Width="180" Height="32"
+                                         Text="{Binding ModelProvider, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Spacing="4" Margin="0,0,16,0">
+                                <TextBlock Classes="caps" Text="模型名称" />
+                                <TextBox Classes="input" Width="200" Height="32"
+                                         Text="{Binding ModelName, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Spacing="4" Margin="0,0,16,0">
+                                <TextBlock Classes="caps" Text="单线程工单上限" />
+                                <TextBox Classes="input" Width="120" Height="32"
+                                         Text="{Binding PerThreadText, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Spacing="4" Margin="0,0,16,0">
+                                <TextBlock Classes="caps" Text="工单树深度" />
+                                <TextBox Classes="input" Width="120" Height="32"
+                                         Text="{Binding DepthText, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Spacing="4">
+                                <TextBlock Classes="caps" Text="并发执行位" />
+                                <TextBox Classes="input" Width="120" Height="32"
+                                         Text="{Binding ConcurrentText, Mode=TwoWay}" />
+                            </StackPanel>
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 统计 -->
+                <ItemsControl ItemsSource="{Binding Stats}" ItemTemplate="{StaticResource StatTemplate}"
+                              Margin="0,0,0,16">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Columns="4" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+
+                <!-- 观察事件 -->
+                <Border Classes="card pad" Margin="0,0,0,16">
+                    <StackPanel Spacing="8">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Classes="section-title" Text="观察事件" />
+                            <TextBlock Grid.Column="1" Text="最新 50 条 · 倒序" FontSize="11"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </Grid>
+                        <ScrollViewer MaxHeight="380">
+                            <ItemsControl ItemsSource="{Binding Observations}"
+                                          ItemTemplate="{StaticResource ObservationTemplate}" />
+                        </ScrollViewer>
+                        <StackPanel IsVisible="{Binding HasNoObservations}"
+                                    HorizontalAlignment="Center" Spacing="6" Margin="24,32">
+                            <Border Classes="badge" HorizontalAlignment="Center">
+                                <TextBlock Text="还没有事件" FontSize="11"
+                                           Foreground="{DynamicResource TnText4}" />
+                            </Border>
+                            <TextBlock Text="外部消息或内部指令进入后会出现在这里" FontSize="12"
+                                       TextAlignment="Center"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 工单看板 -->
+                <TextBlock Classes="section-title" Text="工单" Margin="0,0,0,10" />
+                <Border Classes="card" IsVisible="{Binding HasNoTickets}">
+                    <StackPanel HorizontalAlignment="Center" Spacing="8" Margin="24,48">
+                        <Border Classes="badge" HorizontalAlignment="Center">
+                            <TextBlock Text="还没有工单" FontSize="11"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </Border>
+                        <TextBlock Text="对观察事件执行「规划」后，工单会出现在这里" FontSize="12"
+                                   TextAlignment="Center"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                </Border>
+                <ItemsControl ItemsSource="{Binding Columns}" ItemTemplate="{StaticResource ColumnTemplate}"
+                              IsVisible="{Binding HasTickets}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Columns="4" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+
+                <!-- 报告 / 时间线 -->
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="16" Margin="0,16,0,0">
+                    <Border Grid.Column="0" Classes="card pad">
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="section-title" Text="最近报告" />
+                            <ItemsControl ItemsSource="{Binding Reports}"
+                                          ItemTemplate="{StaticResource ReportTemplate}" />
+                            <TextBlock Text="暂无报告" FontSize="12" Margin="0,8"
+                                       Foreground="{DynamicResource TnText4}"
+                                       IsVisible="{Binding HasNoReports}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Grid.Column="1" Classes="card pad">
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="section-title" Text="时间线" />
+                            <ItemsControl ItemsSource="{Binding Timeline}"
+                                          ItemTemplate="{StaticResource TimelineTemplate}" />
+                            <TextBlock Text="暂无动态" FontSize="12" Margin="0,8"
+                                       Foreground="{DynamicResource TnText4}"
+                                       IsVisible="{Binding HasNoTimeline}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 工单详情浮层 -->
+        <Border IsVisible="{Binding IsDetailOpen}">
+            <Panel>
+                <Border Background="{DynamicResource TnScrim}" />
+                <Border Width="780" MaxHeight="640" VerticalAlignment="Center"
+                        HorizontalAlignment="Center"
+                        Background="{DynamicResource TnPanel}"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="1" CornerRadius="10">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <Border Grid.Row="0" Padding="16"
+                                BorderBrush="{DynamicResource TnLine}" BorderThickness="0,0,0,1">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="{Binding DetailTitle}" FontSize="14"
+                                               FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Border Classes="badge">
+                                            <TextBlock Text="{Binding DetailStage}" FontSize="11"
+                                                       Foreground="{DynamicResource TnAccent}" />
+                                        </Border>
+                                        <Border Classes="kb-tag">
+                                            <TextBlock Text="{Binding DetailRole}" FontSize="11"
+                                                       Foreground="{DynamicResource TnText3}" />
+                                        </Border>
+                                        <TextBlock Text="{Binding DetailMeta}" FontSize="11"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <Button Grid.Column="1" Classes="iconbtn" Content="✕"
+                                        Command="{Binding CloseDetailCommand}" />
+                            </Grid>
+                        </Border>
+
+                        <ScrollViewer Grid.Row="1" Padding="16">
+                            <StackPanel Spacing="14">
+                                <TextBlock Text="{Binding DetailDescription}" FontSize="12.5"
+                                           TextWrapping="Wrap" Foreground="{DynamicResource TnText2}" />
+                                <StackPanel Orientation="Horizontal" Spacing="16">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Classes="caps" Text="计划键" />
+                                        <TextBlock Text="{Binding DetailPlanKey}" Classes="mono"
+                                                   FontSize="11.5" />
+                                    </StackPanel>
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Classes="caps" Text="依赖" />
+                                        <TextBlock Text="{Binding DetailDeps}" Classes="mono"
+                                                   FontSize="11.5" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <StackPanel Spacing="8">
+                                    <TextBlock Classes="caps" Text="派活记录" />
+                                    <ItemsControl ItemsSource="{Binding DetailAssignments}"
+                                                  ItemTemplate="{StaticResource AssignmentTemplate}" />
+                                </StackPanel>
+
+                                <StackPanel Spacing="8">
+                                    <TextBlock Classes="caps" Text="报告" />
+                                    <ItemsControl ItemsSource="{Binding DetailReports}"
+                                                  ItemTemplate="{StaticResource ReportTemplate}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                                    Spacing="12" Margin="16">
+                            <Button Classes="btn primary" Content="派发"
+                                    IsVisible="{Binding CanDetailDispatch}"
+                                    Command="{Binding DispatchTicketCommand}"
+                                    CommandParameter="{Binding DetailId}" />
+                            <Button Classes="btn subtle" Content="重试"
+                                    IsVisible="{Binding CanDetailRetry}"
+                                    Command="{Binding RetryTicketCommand}"
+                                    CommandParameter="{Binding DetailId}" />
+                            <Button Classes="btn danger" Content="停止"
+                                    IsVisible="{Binding CanDetailStop}"
+                                    Command="{Binding StopTicketCommand}"
+                                    CommandParameter="{Binding DetailId}" />
+                            <Button Classes="btn" Content="关闭"
+                                    Command="{Binding CloseDetailCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Panel>
+        </Border>
+    </Panel>
+</UserControl>

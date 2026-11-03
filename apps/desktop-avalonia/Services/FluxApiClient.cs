@@ -136,6 +136,146 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<List<FluxTask>>?> ListTasksAsync(int limit = 50, CancellationToken ct = default)
         => GetAsync<List<FluxTask>>($"/api/v1/tasks?limit={limit}", ct);
 
+    // --- 助理（Supervisor） ---
+
+    public Task<ApiEnvelope<SupervisorOverview>?> SupervisorOverviewAsync(
+        int limit = 20,
+        CancellationToken ct = default)
+        => GetAsync<SupervisorOverview>($"/api/v1/supervisor/overview?limit={limit}", ct);
+
+    public Task<ApiEnvelope<List<SupervisorTrigger>>?> SupervisorObservationsAsync(
+        int limit = 50,
+        string? status = null,
+        CancellationToken ct = default)
+    {
+        var suffix = string.IsNullOrWhiteSpace(status)
+            ? ""
+            : $"&status={Uri.EscapeDataString(status)}";
+        return GetAsync<List<SupervisorTrigger>>(
+            $"/api/v1/supervisor/observations?limit={limit}{suffix}",
+            ct);
+    }
+
+    public Task<ApiEnvelope<SupervisorTrigger>?> SupervisorObservationAsync(
+        string triggerId,
+        CancellationToken ct = default)
+        => GetAsync<SupervisorTrigger>(
+            $"/api/v1/supervisor/observations/{Uri.EscapeDataString(triggerId)}",
+            ct);
+
+    public Task<ApiEnvelope<SupervisorAssessResult>?> SupervisorAssessAsync(
+        string triggerId,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorAssessResult>(
+            $"/api/v1/supervisor/observations/{Uri.EscapeDataString(triggerId)}/assess",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorPlanResult>?> SupervisorPlanAsync(
+        string triggerId,
+        bool dispatch = false,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorPlanResult>(
+            $"/api/v1/supervisor/observations/{Uri.EscapeDataString(triggerId)}/plan?dispatch={(dispatch ? "true" : "false")}",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<List<SupervisorTicket>>?> SupervisorTicketsAsync(
+        int limit = 100,
+        CancellationToken ct = default)
+        => GetAsync<List<SupervisorTicket>>($"/api/v1/supervisor/tickets?limit={limit}", ct);
+
+    public Task<ApiEnvelope<SupervisorTicket>?> SupervisorTicketAsync(
+        string ticketId,
+        CancellationToken ct = default)
+        => GetAsync<SupervisorTicket>(
+            $"/api/v1/supervisor/tickets/{Uri.EscapeDataString(ticketId)}",
+            ct);
+
+    public Task<ApiEnvelope<List<SupervisorReport>>?> SupervisorReportsAsync(
+        int limit = 50,
+        CancellationToken ct = default)
+        => GetAsync<List<SupervisorReport>>($"/api/v1/supervisor/reports?limit={limit}", ct);
+
+    public Task<ApiEnvelope<List<SupervisorTimelineItem>>?> SupervisorTimelineAsync(
+        int limit = 50,
+        CancellationToken ct = default)
+        => GetAsync<List<SupervisorTimelineItem>>($"/api/v1/supervisor/timeline?limit={limit}", ct);
+
+    public Task<ApiEnvelope<SupervisorDispatchThreadResult>?> SupervisorDispatchThreadAsync(
+        string threadId,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorDispatchThreadResult>(
+            $"/api/v1/supervisor/threads/{Uri.EscapeDataString(threadId)}/dispatch",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorDispatchOutcome>?> SupervisorDispatchTicketAsync(
+        string ticketId,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorDispatchOutcome>(
+            $"/api/v1/supervisor/tickets/{Uri.EscapeDataString(ticketId)}/dispatch",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorDispatchOutcome>?> SupervisorRetryTicketAsync(
+        string ticketId,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorDispatchOutcome>(
+            $"/api/v1/supervisor/tickets/{Uri.EscapeDataString(ticketId)}/retry",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorStopResult>?> SupervisorStopTicketAsync(
+        string ticketId,
+        string? note = null,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorStopResult>(
+            $"/api/v1/supervisor/tickets/{Uri.EscapeDataString(ticketId)}/stop",
+            new { note },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorWatchdogResult>?> SupervisorWatchdogAsync(
+        int limit = 50,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorWatchdogResult>(
+            $"/api/v1/supervisor/watchdog?limit={limit}",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorProcessResult>?> SupervisorProcessAsync(
+        int limit = 10,
+        CancellationToken ct = default)
+        => PostAsync<SupervisorProcessResult>(
+            $"/api/v1/supervisor/process?limit={limit}",
+            new { },
+            ct);
+
+    public Task<ApiEnvelope<SupervisorSettings>?> SupervisorSettingsAsync(CancellationToken ct = default)
+        => GetAsync<SupervisorSettings>("/api/v1/supervisor/settings", ct);
+
+    public Task<ApiEnvelope<SupervisorSettings>?> UpdateSupervisorSettingsAsync(
+        string acceptMode,
+        string modelProvider,
+        string modelName,
+        int maxTicketsPerThread,
+        int maxTicketDepth,
+        int maxConcurrentRuns,
+        CancellationToken ct = default)
+        => SendAsync<SupervisorSettings>(
+            HttpMethod.Put,
+            "/api/v1/supervisor/settings",
+            new
+            {
+                accept_mode = acceptMode,
+                model_provider = modelProvider,
+                model_name = modelName,
+                max_tickets_per_thread = maxTicketsPerThread,
+                max_ticket_depth = maxTicketDepth,
+                max_concurrent_runs = maxConcurrentRuns,
+            },
+            ct);
+
     // --- M3 Solo 任务台 / Agent / Terminal ---
 
     public Task<ApiEnvelope<TaskDetail>?> GetTaskAsync(string taskId, CancellationToken ct = default)
