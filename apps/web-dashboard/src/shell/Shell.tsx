@@ -13,6 +13,7 @@ import { queueSoloIntent } from "../app/soloIntent";
 import { openTerminalWindow } from "../app/terminalWindow";
 import { IdePage } from "../pages/IdePage";
 import { SoloPage } from "../pages/SoloPage";
+import { AssistantPage } from "../pages/AssistantPage";
 import { BillingPage } from "../pages/BillingPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
 import { OverviewPage } from "../pages/OverviewPage";
@@ -183,6 +184,7 @@ function Content({ view, navigate }: { view: View; navigate: (v: View) => void }
     <div className={["fx-content", embed ? "fx-nopad" : "fx-pad"].join(" ")}>
       <div className="fx-view-enter" key={view}>
         {view === "overview" ? <OverviewPage navigate={navigate} /> : null}
+        {view === "assistant" ? <AssistantPage /> : null}
         {view === "tasks" ? <TasksPage navigate={navigate} /> : null}
         {view === "skills" ? <SkillsPage /> : null}
         {view === "billing" ? <BillingPage /> : null}

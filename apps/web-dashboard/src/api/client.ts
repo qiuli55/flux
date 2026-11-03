@@ -18,7 +18,11 @@ import type {
   CapabilityScanReport, Change, ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
-  ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit, Task,
+  ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit,
+  SupervisorAssessResult, SupervisorDispatchOutcome, SupervisorDispatchThreadResult,
+  SupervisorOverview, SupervisorPlanResult, SupervisorProcessResult, SupervisorProjectOverview,
+  SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
+  SupervisorTicket, SupervisorTimelineItem, SupervisorTrigger, SupervisorWatchdogResult, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
   TerminalEvent, TerminalSession,
 } from "./types";
@@ -275,5 +279,92 @@ export const api = {
     getData<{ server: string; stopped: boolean }>(
       "POST",
       `/ide/sessions/stop${query({ server, workspace_root: workspaceRoot })}`,
+    ),
+  /** 助理（Supervisor）：观察回放、人工重判、规划派发、工单、报告、时间线、设置 */
+  supervisorOverview: (limit = 20) =>
+    getData<SupervisorOverview>("GET", `/supervisor/overview${query({ limit: limit.toString() })}`),
+  supervisorObservations: (options?: { limit?: number; status?: string }) =>
+    getData<SupervisorTrigger[]>(
+      "GET",
+      `/supervisor/observations${query({ limit: options?.limit?.toString(), status: options?.status })}`,
+    ),
+  supervisorObservation: (id: string) =>
+    getData<SupervisorTrigger>("GET", `/supervisor/observations/${encodeURIComponent(id)}`),
+  supervisorAssess: (id: string) =>
+    getData<SupervisorAssessResult>("POST", `/supervisor/observations/${encodeURIComponent(id)}/assess`),
+  supervisorPlan: (id: string, dispatch = false) =>
+    getData<SupervisorPlanResult>(
+      "POST",
+      `/supervisor/observations/${encodeURIComponent(id)}/plan${query({ dispatch: dispatch ? "true" : undefined })}`,
+    ),
+  supervisorTickets: (options?: { threadId?: string; limit?: number }) =>
+    getData<SupervisorTicket[]>(
+      "GET",
+      `/supervisor/tickets${query({ thread_id: options?.threadId, limit: options?.limit?.toString() })}`,
+    ),
+  supervisorTicket: (id: string) =>
+    getData<SupervisorTicket>("GET", `/supervisor/tickets/${encodeURIComponent(id)}`),
+  supervisorReports: (limit = 50) =>
+    getData<SupervisorReport[]>("GET", `/supervisor/reports${query({ limit: limit.toString() })}`),
+  supervisorTimeline: (options?: { threadId?: string; projectId?: string; limit?: number }) =>
+    getData<SupervisorTimelineItem[]>(
+      "GET",
+      `/supervisor/timeline${query({
+        thread_id: options?.threadId,
+        project_id: options?.projectId,
+        limit: options?.limit?.toString(),
+      })}`,
+    ),
+  supervisorProject: (projectId: string, limit = 50) =>
+    getData<SupervisorProjectOverview>(
+      "GET",
+      `/supervisor/projects/${encodeURIComponent(projectId)}${query({ limit: limit.toString() })}`,
+    ),
+  supervisorSearch: (q: string, limit = 20) =>
+    getData<SupervisorSearchHit[]>("GET", `/supervisor/search${query({ q, limit: limit.toString() })}`),
+  supervisorWatchdog: (limit = 50) =>
+    getData<SupervisorWatchdogResult>(
+      "POST",
+      `/supervisor/watchdog${query({ limit: limit.toString() })}`,
+    ),
+  supervisorProcess: (limit = 10) =>
+    getData<SupervisorProcessResult>(
+      "POST",
+      `/supervisor/process${query({ limit: limit.toString() })}`,
+    ),
+  supervisorSettings: () => getData<SupervisorSettings>("GET", "/supervisor/settings"),
+  updateSupervisorSettings: (
+    body: Partial<
+      Pick<
+        SupervisorSettings,
+        | "accept_mode"
+        | "model_provider"
+        | "model_name"
+        | "max_tickets_per_thread"
+        | "max_ticket_depth"
+        | "max_concurrent_runs"
+      >
+    >,
+  ) => getData<SupervisorSettings>("PUT", "/supervisor/settings", body),
+  supervisorDispatchThread: (threadId: string) =>
+    getData<SupervisorDispatchThreadResult>(
+      "POST",
+      `/supervisor/threads/${encodeURIComponent(threadId)}/dispatch`,
+    ),
+  supervisorDispatchTicket: (ticketId: string) =>
+    getData<SupervisorDispatchOutcome>(
+      "POST",
+      `/supervisor/tickets/${encodeURIComponent(ticketId)}/dispatch`,
+    ),
+  supervisorRetryTicket: (ticketId: string) =>
+    getData<SupervisorDispatchOutcome>(
+      "POST",
+      `/supervisor/tickets/${encodeURIComponent(ticketId)}/retry`,
+    ),
+  supervisorStopTicket: (ticketId: string, note = "") =>
+    getData<SupervisorStopResult>(
+      "POST",
+      `/supervisor/tickets/${encodeURIComponent(ticketId)}/stop`,
+      { note },
     ),
 };

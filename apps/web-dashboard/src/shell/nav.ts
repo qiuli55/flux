@@ -20,6 +20,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "平台",
     items: [
       { id: "overview", label: "概览", icon: "home" },
+      { id: "assistant", label: "助理", icon: "bot" },
       { id: "tasks", label: "任务", icon: "layers" },
       { id: "skills", label: "Skills", icon: "puzzle" },
       { id: "billing", label: "成本中心", icon: "credit" },
@@ -32,6 +33,7 @@ export const NAV_GROUPS: NavGroup[] = [
 /** 视图 → 中文名（面包屑、命令面板页脚用）。 */
 export const VIEW_LABEL: Record<View, string> = {
   overview: "概览",
+  assistant: "助理",
   tasks: "任务",
   solo: "Solo 执行",
   ide: "IDE 工作台",
@@ -44,6 +46,7 @@ export const VIEW_LABEL: Record<View, string> = {
 /** 视图 → 所属分组名（面包屑前一段）。 */
 export const VIEW_GROUP: Record<View, string> = {
   overview: "平台",
+  assistant: "平台",
   tasks: "平台",
   solo: "核心",
   ide: "核心",

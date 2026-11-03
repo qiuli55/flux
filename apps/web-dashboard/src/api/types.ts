@@ -917,3 +917,274 @@ export interface IdeInstallResult {
   output: string;
   available: boolean;
 }
+
+/* ---------------- 助理（Supervisor） ---------------- */
+
+/** 准入模式：off 只落库；observe 只判断不派活；auto 判断通过后自动规划派发。 */
+export type AcceptMode = "off" | "observe" | "auto";
+
+/** 一次判断的结论；unavailable 表示判断层没跑成（与 ignore 不同）。 */
+export type SupervisorDecision = "accept" | "stop" | "ignore" | "unavailable";
+
+/** 事件处理状态。 */
+export type TriggerStatus = "received" | "gated" | "assessed" | "queued" | "planned" | "ignored";
+
+/** 工单阶段（由 task / assignment / report 事实派生，不落库）。 */
+export type TicketStage = "intake" | "planned" | "running" | "waiting" | "reviewing" | "done" | "stopped";
+
+/** 子 Agent 交回的六态结论。 */
+export type ReportStatus = "completed" | "failed" | "blocked" | "needs_input" | "cancelled" | "timed_out";
+
+/** 一次派活的状态。 */
+export type AssignmentStatus = "dispatched" | "running" | "finished" | "failed";
+
+/** 报告直通投递策略。 */
+export type SubscriptionMode = "all" | "terminal" | "needs_input";
+
+/** GET/PUT /api/v1/supervisor/settings */
+export interface SupervisorSettings {
+  accept_mode: AcceptMode;
+  model_provider: string;
+  model_name: string;
+  max_tickets_per_thread: number;
+  max_ticket_depth: number;
+  max_concurrent_runs: number;
+  updated_at: string | null;
+}
+
+/** 一次判断结论（只追加，不更新）。 */
+export interface SupervisorEval {
+  id: string;
+  trigger_id: string;
+  decision: SupervisorDecision;
+  confidence: number | null;
+  reason: string;
+  risk: Record<string, unknown>;
+  /** 模型调用元信息（provider / model / usage） */
+  model: Record<string, unknown>;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+/** 一条外部事件（消息 / webhook / 内部指令）。 */
+export interface SupervisorTrigger {
+  id: string;
+  source_key: string;
+  external_id: string;
+  event_type: string;
+  actor_id: string;
+  actor_platform: string;
+  thread_key: string;
+  project_id: string | null;
+  content: string;
+  status: TriggerStatus;
+  received_at: string | null;
+  created_at: string;
+  /** 最近一次判断（列表与详情都带） */
+  eval: SupervisorEval | null;
+  /** 全部判断历史（仅详情接口） */
+  evals?: SupervisorEval[];
+}
+
+/** 一段持续对话（授权边界）。 */
+export interface SupervisorThread {
+  id: string;
+  thread_key: string;
+  source_key: string;
+  project_id: string | null;
+  title: string;
+  summary: string | null;
+  last_activity_at: string | null;
+}
+
+/** 一次派活记录：工单 → Agent / Task / DSH Run。 */
+export interface SupervisorAssignment {
+  id: string;
+  ticket_id: string;
+  agent_id: string | null;
+  task_id: string | null;
+  run_id: string | null;
+  status: AssignmentStatus;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** 子 Agent 交回的结构化结论。 */
+export interface SupervisorReport {
+  id: string;
+  ticket_id: string;
+  assignment_id: string | null;
+  status: ReportStatus;
+  summary: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+/** 报告直通投递的订阅目标。 */
+export interface SupervisorSubscription {
+  id: string;
+  ticket_id: string;
+  source_key: string;
+  external_id: string;
+  mode: SubscriptionMode;
+}
+
+/** 一张可派活的工单。 */
+export interface SupervisorTicket {
+  id: string;
+  thread_id: string;
+  parent_ticket_id: string | null;
+  project_id: string | null;
+  task_id: string | null;
+  plan_key: string;
+  title: string;
+  description: string;
+  role: string;
+  depends_on: string[];
+  degraded: boolean;
+  sequence: number;
+  stage: TicketStage;
+  created_at: string;
+  updated_at: string;
+  /** 最近一次派活（列表附带） */
+  assignment: SupervisorAssignment | null;
+  /** 最近一份报告（列表附带） */
+  report: SupervisorReport | null;
+  /** 以下仅详情接口返回 */
+  assignments?: SupervisorAssignment[];
+  reports?: SupervisorReport[];
+  subscriptions?: SupervisorSubscription[];
+}
+
+/** 规划产出的工单树结构（未落库前的建议）。 */
+export interface SupervisorPlan {
+  degraded: boolean;
+  reason: string;
+  latency_ms: number | null;
+  model_meta: Record<string, unknown>;
+  tickets: Array<{
+    key: string;
+    title: string;
+    role: string;
+    depends_on: string[];
+    sequence: number;
+  }>;
+}
+
+/** 一次派发的结论。 */
+export interface SupervisorDispatchOutcome {
+  ticket_id: string;
+  dispatched: boolean;
+  reason: string;
+  task_id: string | null;
+  run_id: string;
+  agent_id: string | null;
+}
+
+/** POST /api/v1/supervisor/observations/{id}/plan 的 data */
+export interface SupervisorPlanResult {
+  thread: SupervisorThread;
+  plan: SupervisorPlan;
+  tickets: SupervisorTicket[];
+  dispatch: SupervisorDispatchOutcome[];
+}
+
+/** GET /api/v1/supervisor/overview 的 data */
+export interface SupervisorOverview {
+  settings: SupervisorSettings;
+  counts: Partial<Record<TicketStage, number>>;
+  tickets: SupervisorTicket[];
+  pending_outbox: number;
+}
+
+/** 时间线条目：事件 / 工单 / 报告三合一。 */
+export interface SupervisorTimelineItem {
+  at: string;
+  kind: "trigger" | "ticket" | "report";
+  id: string;
+  title: string;
+  status: string;
+  source_key?: string;
+  actor_id?: string;
+  thread_id?: string;
+  summary?: string;
+  ticket_id?: string;
+}
+
+/** GET /api/v1/supervisor/search 的一项。 */
+export interface SupervisorSearchHit {
+  kind: "ticket" | "report" | "digest";
+  id: string;
+  title: string;
+  snippet: string;
+  thread_id: string | null;
+  project_id: string | null;
+  status: string;
+  at: string;
+}
+
+/** 线程收尾摘要。 */
+export interface SupervisorDigest {
+  id: string;
+  thread_id: string | null;
+  project_id: string | null;
+  summary: string;
+  decisions: unknown[];
+  ticket_ids: string[];
+  created_at: string;
+}
+
+/** GET /api/v1/supervisor/projects/{project_id} 的 data */
+export interface SupervisorProjectOverview {
+  project: Project;
+  settings: SupervisorSettings;
+  counts: Partial<Record<TicketStage, number>>;
+  tickets: SupervisorTicket[];
+  reports: SupervisorReport[];
+  digests: SupervisorDigest[];
+  timeline: SupervisorTimelineItem[];
+}
+
+/** POST /api/v1/supervisor/watchdog 的 data */
+export interface SupervisorWatchdogResult {
+  checked: number;
+  expired: number;
+  items: Array<{ ticket_id: string; expired: boolean; reason?: string }>;
+}
+
+/** POST /api/v1/supervisor/process 的 data */
+export interface SupervisorProcessResult {
+  processed: number;
+  pending_outbox: number;
+}
+
+/** 判断层输出（人工重判接口返回）。 */
+export interface SupervisorAssessment {
+  decision: SupervisorDecision;
+  reason: string;
+  confidence: number | null;
+  risk: Record<string, unknown>;
+  should_dispatch: boolean;
+  title: string;
+  model_meta: Record<string, unknown>;
+  latency_ms: number | null;
+}
+
+/** POST /api/v1/supervisor/observations/{id}/assess 的 data */
+export interface SupervisorAssessResult {
+  trigger: SupervisorTrigger;
+  assessment: SupervisorAssessment | null;
+}
+
+/** POST /api/v1/supervisor/tickets/{id}/stop 的 data */
+export interface SupervisorStopResult {
+  ticket_id: string;
+  stopped_run: string;
+  report: ReportStatus;
+}
+
+/** POST /api/v1/supervisor/threads/{id}/dispatch 的 data */
+export interface SupervisorDispatchThreadResult {
+  dispatched: number;
+  outcomes: SupervisorDispatchOutcome[];
+}

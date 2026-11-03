@@ -83,6 +83,7 @@ export function CommandPalette({
     };
     return [
       { id: "go-overview", cat: "导航", name: "切换到 概览", run: () => navigate("overview") },
+      { id: "go-assistant", cat: "导航", name: "切换到 助理 · 顶层编排", run: () => navigate("assistant") },
       { id: "go-tasks", cat: "导航", name: "切换到 任务看板", run: () => navigate("tasks") },
       { id: "go-solo", cat: "导航", name: "切换到 Solo · AI 任务执行中心", run: () => navigate("solo") },
       { id: "go-ide", cat: "导航", name: "切换到 IDE · 工作台", run: () => navigate("ide") },
