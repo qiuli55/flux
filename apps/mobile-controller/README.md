@@ -16,7 +16,7 @@ adb install -r flux-mobile-0.9.0-vc57.apk
 # 或者把 APK 复制到手机文件管理器里点开安装
 ```
 
-应用版本 `0.9.0`（versionCode 57），最低 Android 8.0（API 26），target API 34。
+应用版本 `0.9.3`（versionCode 60），最低 Android 8.0（API 26），target API 34。
 
 ## 首次配置
 
