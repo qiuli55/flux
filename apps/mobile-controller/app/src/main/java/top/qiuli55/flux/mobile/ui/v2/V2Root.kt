@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Publish
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ShowChart
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -71,6 +72,7 @@ private sealed interface V2Route {
     data object Home : V2Route
     data object Decisions : V2Route
     data object Queue : V2Route
+    data object Assistant : V2Route
     data object Designs : V2Route
     data object DesignCanvas : V2Route
 
@@ -100,7 +102,7 @@ private sealed interface V2Route {
 }
 
 /** 平板左侧主导航的入口。 */
-private enum class V2RailItem { CHATS, DECISIONS, QUEUE }
+private enum class V2RailItem { CHATS, ASSISTANT, DECISIONS, QUEUE }
 
 private val clockFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
@@ -120,6 +122,8 @@ fun FluxV2Root() {
     val app by vm.state.collectAsState()
     val designVm: DesignStudioViewModel = viewModel()
     val designState by designVm.state.collectAsState()
+    val assistantVm: V2AssistantViewModel = viewModel()
+    val assistantState by assistantVm.state.collectAsState()
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
@@ -193,6 +197,7 @@ fun FluxV2Root() {
         if (app.boot == V2Boot.READY) {
             when (route) {
                 V2Route.Home, V2Route.Decisions, V2Route.Queue -> vm.refresh(quiet = true)
+                V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 else -> Unit
             }
@@ -477,6 +482,7 @@ fun FluxV2Root() {
                                 vm.loadBilling()
                             },
                             onOpenDesigns = { route = V2Route.Designs },
+                            onOpenAssistant = { route = V2Route.Assistant },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
                             onDeleteConversation = {
                                 deleteConversationError = null
@@ -525,6 +531,27 @@ fun FluxV2Root() {
                                 deleteConversationError = null
                                 deleteConversationId = task.id
                             },
+                        )
+
+                        V2Route.Assistant -> V2AssistantScreen(
+                            state = assistantState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Home },
+                            onRefresh = { assistantVm.load() },
+                            onSaveSettings = { mode, provider, model, maxTickets, maxDepth, maxRuns ->
+                                assistantVm.saveSettings(mode, provider, model, maxTickets, maxDepth, maxRuns)
+                            },
+                            onAssess = { assistantVm.assess(it) },
+                            onPlan = { id, dispatch -> assistantVm.plan(id, dispatch) },
+                            onProcess = { assistantVm.processOutbox() },
+                            onWatchdog = { assistantVm.runWatchdog() },
+                            onDispatch = { assistantVm.dispatchTicket(it) },
+                            onRetry = { assistantVm.retryTicket(it) },
+                            onStop = { assistantVm.stopTicket(it) },
+                            onOpenDetail = { assistantVm.openDetail(it) },
+                            onCloseDetail = { assistantVm.closeDetail() },
+                            onDismissMessages = { assistantVm.clearMessages() },
                         )
 
                         V2Route.Designs -> DesignStudioListScreen(
@@ -805,6 +832,7 @@ fun FluxV2Root() {
                         Row(Modifier.fillMaxSize().then(insets)) {
                             V2NavRail(
                                 selected = when (route) {
+                                    V2Route.Assistant -> V2RailItem.ASSISTANT
                                     V2Route.Decisions -> V2RailItem.DECISIONS
                                     V2Route.Queue -> V2RailItem.QUEUE
                                     else -> V2RailItem.CHATS
@@ -815,6 +843,7 @@ fun FluxV2Root() {
                                     if (item == V2RailItem.QUEUE) queueFilter = QueueFilter.ALL
                                     route = when (item) {
                                         V2RailItem.CHATS -> V2Route.Home
+                                        V2RailItem.ASSISTANT -> V2Route.Assistant
                                         V2RailItem.DECISIONS -> V2Route.Decisions
                                         V2RailItem.QUEUE -> V2Route.Queue
                                     }
@@ -1172,6 +1201,12 @@ private fun V2NavRail(
         }
         Spacer(Modifier.height(4.dp))
         RailButton(
+            icon = Icons.Outlined.SmartToy,
+            label = "助理",
+            selected = selected == V2RailItem.ASSISTANT,
+        ) { onSelect(V2RailItem.ASSISTANT) }
+        Spacer(Modifier.height(4.dp))
+        RailButton(
             icon = Icons.Outlined.Schedule,
             label = "决策",
             selected = selected == V2RailItem.DECISIONS,
@@ -1283,7 +1318,7 @@ private fun RailButton(
 /** 页面层级：用于判断转场方向（前进 / 返回）。 */
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home -> 0
-    V2Route.Decisions, V2Route.Queue, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
+    V2Route.Decisions, V2Route.Queue, V2Route.Assistant, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2
     V2Route.DesignCanvas -> 2

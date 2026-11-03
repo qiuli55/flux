@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -103,6 +104,7 @@ fun V2HomeScreen(
     onOpenQueue: () -> Unit,
     onOpenBilling: () -> Unit,
     onOpenDesigns: () -> Unit,
+    onOpenAssistant: () -> Unit,
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
     onOpenGroup: (V2Group) -> Unit,
@@ -183,6 +185,13 @@ fun V2HomeScreen(
             }
 
             Column(Modifier.padding(top = if (searchOpen) 8.dp else 16.dp)) {
+                EntryRow(
+                    icon = Icons.Outlined.SmartToy,
+                    title = "助理",
+                    meta = "观察 · 判定 · 派活",
+                    metaColor = V2Colors.violet,
+                    onClick = onOpenAssistant,
+                )
                 EntryRow(
                     icon = Icons.Outlined.Schedule,
                     title = "决策中心",

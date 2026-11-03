@@ -607,6 +607,78 @@ class FluxApi(
     suspend fun logoutCodexAccount(): CodexLogoutResult =
         post("api/v1/codex-account/logout", buildJsonObject {})
 
+    // ---------------------------------------------------------- 助理（Supervisor）
+
+    suspend fun supervisorOverview(limit: Int = 50): SupervisorOverview =
+        get("api/v1/supervisor/overview?limit=$limit")
+
+    suspend fun supervisorObservations(limit: Int = 50): List<SupervisorTrigger> =
+        get("api/v1/supervisor/observations?limit=$limit")
+
+    suspend fun supervisorObservation(triggerId: String): SupervisorTrigger =
+        get("api/v1/supervisor/observations/${Uri.encode(triggerId)}")
+
+    /** 重新跑一次判定；只观察不落工单。 */
+    suspend fun supervisorAssess(triggerId: String): SupervisorAssessResult =
+        post("api/v1/supervisor/observations/${Uri.encode(triggerId)}/assess", buildJsonObject {})
+
+    /** 让助理拆解工单；dispatch=true 时拆完立即派发可执行的。 */
+    suspend fun supervisorPlan(triggerId: String, dispatch: Boolean = false): SupervisorPlanResult =
+        post(
+            "api/v1/supervisor/observations/${Uri.encode(triggerId)}/plan?dispatch=$dispatch",
+            buildJsonObject {},
+        )
+
+    suspend fun supervisorTickets(limit: Int = 100): List<SupervisorTicket> =
+        get("api/v1/supervisor/tickets?limit=$limit")
+
+    suspend fun supervisorTicket(ticketId: String): SupervisorTicket =
+        get("api/v1/supervisor/tickets/${Uri.encode(ticketId)}")
+
+    suspend fun supervisorReports(limit: Int = 30): List<SupervisorReport> =
+        get("api/v1/supervisor/reports?limit=$limit")
+
+    suspend fun supervisorTimeline(limit: Int = 30): List<SupervisorTimelineItem> =
+        get("api/v1/supervisor/timeline?limit=$limit")
+
+    /** 把某个线程里排队中的工单一口气派发出去。 */
+    suspend fun supervisorDispatchThread(threadId: String): SupervisorDispatchThreadResult =
+        post("api/v1/supervisor/threads/${Uri.encode(threadId)}/dispatch", buildJsonObject {})
+
+    suspend fun supervisorDispatchTicket(ticketId: String): SupervisorDispatchOutcome =
+        post("api/v1/supervisor/tickets/${Uri.encode(ticketId)}/dispatch", buildJsonObject {})
+
+    suspend fun supervisorRetryTicket(ticketId: String): SupervisorDispatchOutcome =
+        post("api/v1/supervisor/tickets/${Uri.encode(ticketId)}/retry", buildJsonObject {})
+
+    suspend fun supervisorStopTicket(ticketId: String, note: String? = null): SupervisorStopResult =
+        post(
+            "api/v1/supervisor/tickets/${Uri.encode(ticketId)}/stop",
+            buildJsonObject { if (!note.isNullOrBlank()) put("note", note) },
+        )
+
+    suspend fun supervisorWatchdog(limit: Int = 50): SupervisorWatchdogResult =
+        post("api/v1/supervisor/watchdog?limit=$limit", buildJsonObject {})
+
+    /** 推进待处理事件队列（拉取 outbox / 派发）。 */
+    suspend fun supervisorProcess(limit: Int = 20): SupervisorProcessResult =
+        post("api/v1/supervisor/process?limit=$limit", buildJsonObject {})
+
+    suspend fun supervisorSettings(): SupervisorSettings = get("api/v1/supervisor/settings")
+
+    suspend fun updateSupervisorSettings(settings: SupervisorSettings): SupervisorSettings =
+        putRequest(
+            "api/v1/supervisor/settings",
+            buildJsonObject {
+                put("accept_mode", settings.acceptMode)
+                put("model_provider", settings.modelProvider)
+                put("model_name", settings.modelName)
+                put("max_tickets_per_thread", settings.maxTicketsPerThread)
+                put("max_ticket_depth", settings.maxTicketDepth)
+                put("max_concurrent_runs", settings.maxConcurrentRuns)
+            },
+        )
+
     private suspend inline fun <reified T> get(path: String): T = request("GET", path, null)
 
     private suspend inline fun <reified T> post(path: String, body: JsonObject): T = request("POST", path, body)
