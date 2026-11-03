@@ -1790,6 +1790,10 @@
             ],
             "title": "Model"
           },
+          "origin": {
+            "$ref": "#/components/schemas/TaskOrigin",
+            "default": "chat"
+          },
           "permission_mode": {
             "$ref": "#/components/schemas/PermissionMode",
             "default": "normal"
@@ -1889,6 +1893,15 @@
         ],
         "title": "TaskModelRequest",
         "type": "object"
+      },
+      "TaskOrigin": {
+        "description": "对话来源（2026-11-03）：首页的普通对话，或助理页的助理对话。\n\n助理对话同样是一条真实任务（能跑 Agent、选模型），只是不进首页对话列表，\n避免助理的工作会话把用户自己的对话挤下去。读取全部对话时默认也会排除它。",
+        "enum": [
+          "chat",
+          "assistant"
+        ],
+        "title": "TaskOrigin",
+        "type": "string"
       },
       "TaskStartRequest": {
         "description": "开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。",
@@ -8350,6 +8363,22 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Origin"
             }
           },
           {
