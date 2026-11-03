@@ -83,19 +83,23 @@ data class V2AppState(
     val billingLoading: Boolean = false,
     val billingError: String? = null,
 ) {
-    val conversations: List<V2Conversation> get() = tasks.map { it.toV2Conversation(deviceLabel) }
+    /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
+    private val chatTasks: List<Task> get() = tasks.filterNot { it.origin == "assistant" }
+    val conversations: List<V2Conversation>
+        get() = chatTasks.map { it.toV2Conversation(deviceLabel) }
     val queueTasks: List<V2Task>
-        get() = tasks
+        get() = chatTasks
             .filterNot { hideFinished && it.isFinished }
             .map { it.toV2Task() }
             // 稳定分区：执行中永远在最前，其次等待，其余保持后端原序。
             // sortedBy 是稳定排序，同级顺序不会每 3 秒轮询乱跳。
             .sortedBy { it.status.queueRank }
-    val decisions: List<V2Decision> get() = tasks.mapNotNull { it.toV2Decision() }
-    val pendingCount: Int get() = tasks.count { it.pendingDecision != null }
-    val runningCount: Int get() = tasks.count { it.status.toV2TaskStatus() == V2TaskStatus.RUNNING }
-    val finishedCount: Int get() = tasks.count { it.isFinished }
-    val groups: List<V2Group> get() = tasks.toV2Groups(deviceLabel)
+    val decisions: List<V2Decision> get() = chatTasks.mapNotNull { it.toV2Decision() }
+    val pendingCount: Int get() = chatTasks.count { it.pendingDecision != null }
+    val runningCount: Int
+        get() = chatTasks.count { it.status.toV2TaskStatus() == V2TaskStatus.RUNNING }
+    val finishedCount: Int get() = chatTasks.count { it.isFinished }
+    val groups: List<V2Group> get() = chatTasks.toV2Groups(deviceLabel)
 }
 
 class V2AppViewModel : FluxViewModel() {
@@ -378,6 +382,7 @@ class V2AppViewModel : FluxViewModel() {
         summary: String? = null,
         summaryFrom: String? = null,
         attachmentIds: List<String> = emptyList(),
+        origin: String = "chat",
         onCreated: (String) -> Unit,
     ) {
         val text = description.trim()
@@ -399,6 +404,7 @@ class V2AppViewModel : FluxViewModel() {
                     summary = summary?.takeIf { it.isNotBlank() },
                     summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
                     attachmentIds = attachmentIds,
+                    origin = origin,
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)

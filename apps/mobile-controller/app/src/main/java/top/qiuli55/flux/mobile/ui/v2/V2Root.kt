@@ -235,7 +235,7 @@ fun FluxV2Root() {
         route = V2Route.Browser(url, route)
     }
 
-    fun createChat(option: V2AgentOption) {
+    fun createChat(option: V2AgentOption, assistant: Boolean = false) {
         val chatDevice = if (device == ALL_DEVICES) {
             V2Registry.devices.firstOrNull()?.name ?: "本机"
         } else {
@@ -244,11 +244,12 @@ fun FluxV2Root() {
         val firstModel = option.models.firstOrNull()
         chat = V2ChatState(
             conversationId = null,
-            title = "新的对话",
+            title = if (assistant) "助理" else "新的对话",
             device = chatDevice,
             agentId = option.agent.id,
             model = firstModel?.model ?: V2Registry.models.firstOrNull() ?: "",
             modelKeyId = firstModel?.keyId,
+            isAssistant = assistant,
         )
         chatMessages.clear()
         draftAttachments.clear()
@@ -256,12 +257,31 @@ fun FluxV2Root() {
         chatMessages.add(
             V2Message(
                 V2MessageRole.SYSTEM,
-                "描述你的需求，发送后会创建一个任务并交给 Agent 执行",
+                if (assistant) {
+                    "描述你想梳理的事，助理会读取你的全部对话并汇总项目进度"
+                } else {
+                    "描述你的需求，发送后会创建一个任务并交给 Agent 执行"
+                },
                 nowMinute(),
             ),
         )
         newChatOpen = false
         route = V2Route.Chat
+    }
+
+    /** 首页/侧栏的助理入口：优先回到最近一段助理对话，没有就新开一段。 */
+    fun openAssistant() {
+        val recent = app.tasks.firstOrNull { it.origin == "assistant" }
+        if (recent != null) {
+            openChat(recent.id, V2Route.Home)
+            return
+        }
+        val chatDevice = if (device == ALL_DEVICES) {
+            V2Registry.devices.firstOrNull()?.name ?: "本机"
+        } else {
+            device
+        }
+        createChat(agentsForDevice(chatDevice).first(), assistant = true)
     }
 
     fun sendDraftMessage(text: String) {
@@ -295,6 +315,7 @@ fun FluxV2Root() {
             summary = current.pendingSummary,
             summaryFrom = current.summaryFrom,
             attachmentIds = attachmentIds,
+            origin = if (current.isAssistant) "assistant" else "chat",
         ) { taskId ->
             // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
             draftAttachments.clear()
@@ -464,7 +485,7 @@ fun FluxV2Root() {
                                 vm.loadBilling()
                             },
                             onOpenDesigns = { route = V2Route.Designs },
-                            onOpenAssistant = { route = V2Route.Assistant },
+                            onOpenAssistant = { openAssistant() },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
                             onDeleteConversation = {
                                 deleteConversationError = null
@@ -677,6 +698,11 @@ fun FluxV2Root() {
                                     onPermissionModeChange = { mode -> chat = chat?.copy(permissionMode = mode) },
                                     onOpenUrl = { openInternalBrowser(it) },
                                     onOpenDesign = { openDesignFromChat(it) },
+                                    onOpenAssistantBoard = if (active.isAssistant) {
+                                        ({ route = V2Route.Assistant })
+                                    } else {
+                                        null
+                                    },
                                 )
                             }
                         }
@@ -716,6 +742,8 @@ fun FluxV2Root() {
                             designOptions = designState.designs,
                             designsLoading = designState.loading,
                             onRequestDesigns = { designVm.loadDesigns(quiet = true) },
+                            // 助理对话右上角可回到进度看板；普通对话不给这个入口
+                            onOpenAssistantBoard = { route = V2Route.Assistant },
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
@@ -773,14 +801,27 @@ fun FluxV2Root() {
                     if (tablet) {
                         Row(Modifier.fillMaxSize().then(insets)) {
                             V2NavRail(
-                                selected = when (route) {
+                                selected = when (val current = route) {
                                     V2Route.Assistant -> V2RailItem.ASSISTANT
+                                    // 助理对话（真实任务或还没落成任务的草稿）也算在助理入口下
+                                    is V2Route.TaskChat -> if (
+                                        app.tasks.firstOrNull { it.id == current.taskId }?.origin == "assistant"
+                                    ) {
+                                        V2RailItem.ASSISTANT
+                                    } else {
+                                        V2RailItem.CHATS
+                                    }
+                                    V2Route.Chat -> if (chat?.isAssistant == true) {
+                                        V2RailItem.ASSISTANT
+                                    } else {
+                                        V2RailItem.CHATS
+                                    }
                                     else -> V2RailItem.CHATS
                                 },
                                 onSelect = { item ->
-                                    route = when (item) {
-                                        V2RailItem.CHATS -> V2Route.Home
-                                        V2RailItem.ASSISTANT -> V2Route.Assistant
+                                    when (item) {
+                                        V2RailItem.CHATS -> route = V2Route.Home
+                                        V2RailItem.ASSISTANT -> openAssistant()
                                     }
                                 },
                                 onOpenLogs = { logsOpen = true },

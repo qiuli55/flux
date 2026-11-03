@@ -160,6 +160,8 @@ data class Task(
     @SerialName("api_key_id") val apiKeyId: String? = null,
     /** 执行中切换 Agent 的排队目标：非空表示本轮结束后自动换人。 */
     @SerialName("pending_agent_id") val pendingAgentId: String? = null,
+    /** 对话来源：chat = 首页普通对话；assistant = 助理页的助理对话（不进首页列表）。 */
+    val origin: String = "chat",
 )
 
 /** 安全输入提交的返回：任务 + 落库后的密钥（只有掩码）+「已存储」回执消息。 */

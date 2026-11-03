@@ -527,6 +527,8 @@ fun V2TaskChatScreen(
     designsLoading: Boolean = false,
     /** 打开设计稿选择面板前刷新一次列表。 */
     onRequestDesigns: () -> Unit = {},
+    /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
+    onOpenAssistantBoard: (() -> Unit)? = null,
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -563,6 +565,7 @@ fun V2TaskChatScreen(
         model = selectedModel?.model ?: "默认模型",
         modelKeyId = selectedModel?.keyId,
         permissionMode = task?.permissionMode ?: "normal",
+        isAssistant = task?.origin == "assistant",
     )
     val messages = remember(state.messages, task?.id, task?.decisions) {
         // 审批记录的唯一真源是 task.decisions：对话里的 decision 消息只保留发起时的文案，
@@ -713,6 +716,7 @@ fun V2TaskChatScreen(
             secureInputBusy = state.busyAction == "secure-input",
             // 下拉刷新：重新拉任务与历史消息（真实数据，不是假骨架）
             onRefresh = { vm.refresh(quiet = true) },
+            onOpenAssistantBoard = onOpenAssistantBoard?.takeIf { task?.origin == "assistant" },
         )
         // 执行详情弹层：概览 → 思考过程 → 命令与输出（与内容平级叠放，避免拿不到高度）
         val traceRunId = state.traceRunId

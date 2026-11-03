@@ -54,6 +54,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.DesignServices
 import androidx.compose.material.icons.outlined.Devices
@@ -140,6 +141,8 @@ data class V2ChatState(
     val pendingSummary: String? = null,
     /** 摘要来源任务 id，随新对话首条消息一起带给后端（仅溯源）。 */
     val summaryFrom: String? = null,
+    /** 助理对话：首页列表不显示，标题栏提供「助理进度」入口。 */
+    val isAssistant: Boolean = false,
 )
 
 @Composable
@@ -233,6 +236,8 @@ fun V2ChatScreen(
     onSubmitSecureInput: (messageId: String, value: String) -> Unit = { _, _ -> },
     /** 安全输入正在提交：保存按钮临时禁用。 */
     secureInputBusy: Boolean = false,
+    /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
+    onOpenAssistantBoard: (() -> Unit)? = null,
 ) {
     val agent = demoAgent(chat.agentId)
     val currentModelOption = modelOptions.firstOrNull {
@@ -506,6 +511,17 @@ fun V2ChatScreen(
                 }
             }
             Spacer(Modifier.width(6.dp))
+            if (onOpenAssistantBoard != null) {
+                RoundIconButton(
+                    icon = Icons.Outlined.Dashboard,
+                    onClick = onOpenAssistantBoard,
+                    size = 32.dp,
+                    iconSize = 14.dp,
+                    background = V2Colors.surface(.55f),
+                    tint = V2Colors.cyan700.copy(alpha = .8f),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
             RoundIconButton(
                 icon = Icons.Outlined.ShowChart,
                 onClick = onOpenLogs,

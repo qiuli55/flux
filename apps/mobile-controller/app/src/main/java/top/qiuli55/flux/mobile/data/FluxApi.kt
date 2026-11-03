@@ -91,6 +91,8 @@ class FluxApi(
         summaryFrom: String? = null,
         /** 先上传、再随首条消息一起交给后端的附件 id（最多 5 个）。 */
         attachmentIds: List<String> = emptyList(),
+        /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
+        origin: String = "chat",
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -103,6 +105,7 @@ class FluxApi(
                 put("summary", summary.trim())
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
             }
+            put("origin", origin)
             putAttachmentIds(attachmentIds)
         }
         return post("api/v1/tasks", body)
