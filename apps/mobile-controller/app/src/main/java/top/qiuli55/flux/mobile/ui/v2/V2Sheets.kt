@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -674,7 +673,7 @@ fun NewChatSheet(
 // ================================================================== 多 Agent 详情
 
 @Composable
-fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Unit) {
+fun MultiGroupSheet(group: V2Group, onDismiss: () -> Unit) {
     val statusColor = groupStatusColor(group.status)
     val stage = group.stages.getOrNull(group.stage)
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
@@ -867,20 +866,6 @@ fun MultiGroupSheet(group: V2Group, onOpenQueue: () -> Unit, onDismiss: () -> Un
                 }
             }
             Spacer(Modifier.height(20.dp))
-        }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(V2Colors.shellTop)
-                .border(1.dp, V2Colors.ink(.04f))
-                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 16.dp),
-        ) {
-            PrimaryButton(
-                text = "在任务队列中查看",
-                onClick = onOpenQueue,
-                modifier = Modifier.fillMaxWidth(),
-                icon = Icons.Outlined.ArrowForward,
-            )
         }
     }
 }

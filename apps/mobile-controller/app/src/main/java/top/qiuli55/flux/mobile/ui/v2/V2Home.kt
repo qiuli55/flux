@@ -47,9 +47,7 @@ import androidx.compose.material.icons.outlined.DesignServices
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Laptop
-import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.SmartToy
@@ -89,19 +87,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
-/** 首页：设备筛选 + 决策/队列入口 + 单一/多 Agent 两个分区。 */
+/** 首页：设备筛选 + 助理/额度/设计入口 + 单一/多 Agent 两个分区。 */
 @Composable
 fun V2HomeScreen(
     device: String,
     onDeviceChange: (String) -> Unit,
     conversations: List<V2Conversation>,
     groups: List<V2Group>,
-    pendingCount: Int,
-    runningCount: Int,
     billingHeadline: String,
     extraTop: androidx.compose.ui.unit.Dp,
-    onOpenDecisions: () -> Unit,
-    onOpenQueue: () -> Unit,
     onOpenBilling: () -> Unit,
     onOpenDesigns: () -> Unit,
     onOpenAssistant: () -> Unit,
@@ -191,22 +185,6 @@ fun V2HomeScreen(
                     meta = "观察 · 判定 · 派活",
                     metaColor = V2Colors.violet,
                     onClick = onOpenAssistant,
-                )
-                EntryRow(
-                    icon = Icons.Outlined.Schedule,
-                    title = "决策中心",
-                    count = pendingCount,
-                    unit = "项待确认",
-                    metaColor = V2Colors.amber,
-                    onClick = onOpenDecisions,
-                )
-                EntryRow(
-                    icon = Icons.Outlined.List,
-                    title = "任务队列",
-                    count = runningCount,
-                    unit = "个执行中",
-                    metaColor = V2Colors.cyan700,
-                    onClick = onOpenQueue,
                 )
                 EntryRow(
                     icon = Icons.Outlined.DataUsage,
@@ -336,7 +314,7 @@ fun V2HomeScreen(
                         quickOpen = true
                         quickHover = -1
                         haptics?.play(V2HapticLevel.TICK)
-                        // 快捷动作栈自下而上排列：最近的是「任务队列」，最远的是「新建对话」
+                        // 快捷动作栈自下而上排列：最近的是「设计工作室」，最远的是「新建对话」
                         val slotSize = 52.dp.toPx()
                         val startOffset = 16.dp.toPx()
                         while (true) {
@@ -347,8 +325,8 @@ fun V2HomeScreen(
                             quickHover = if (travel < startOffset) {
                                 -1
                             } else {
-                                val slot = ((travel - startOffset) / slotSize).toInt().coerceIn(0, 2)
-                                2 - slot
+                                val slot = ((travel - startOffset) / slotSize).toInt().coerceIn(0, 1)
+                                1 - slot
                             }
                             change.consume()
                         }
@@ -360,7 +338,6 @@ fun V2HomeScreen(
                             when (chosen) {
                                 0 -> onNewChat()
                                 1 -> onOpenDesigns()
-                                2 -> onOpenQueue()
                             }
                         }
                     }
@@ -527,8 +504,6 @@ private fun EntryRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     meta: String = "",
-    count: Int? = null,
-    unit: String = "",
     metaColor: Color,
     onClick: () -> Unit,
 ) {
@@ -542,15 +517,7 @@ private fun EntryRow(
         Icon(icon, null, tint = V2Colors.ink(.70f), modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(14.dp))
         Label(title, 15f, V2Colors.ink(.90f), modifier = Modifier.weight(1f), maxLines = 1)
-        if (count != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                V2RollingNumber(count, 10.5f, metaColor)
-                Spacer(Modifier.width(3.dp))
-                Label(unit, 10.5f, metaColor, maxLines = 1)
-            }
-        } else {
-            Label(meta, 10.5f, metaColor, maxLines = 1)
-        }
+        Label(meta, 10.5f, metaColor, maxLines = 1)
     }
 }
 
@@ -666,7 +633,6 @@ private fun QuickActionStack(visible: Boolean, hover: Int, modifier: Modifier = 
     val actions = listOf(
         Triple(Icons.Outlined.AddComment, "新建对话", "直接开一段新对话"),
         Triple(Icons.Outlined.DesignServices, "设计工作室", "画布与 AI 改稿"),
-        Triple(Icons.Outlined.List, "任务队列", "查看执行中任务"),
     )
     Column(
         modifier,

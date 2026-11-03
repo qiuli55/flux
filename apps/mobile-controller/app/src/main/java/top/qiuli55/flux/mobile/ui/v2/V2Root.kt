@@ -25,10 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddComment
-import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Publish
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,8 +68,6 @@ import java.time.format.DateTimeFormatter
 
 private sealed interface V2Route {
     data object Home : V2Route
-    data object Decisions : V2Route
-    data object Queue : V2Route
     data object Assistant : V2Route
     data object Designs : V2Route
     data object DesignCanvas : V2Route
@@ -102,7 +98,7 @@ private sealed interface V2Route {
 }
 
 /** 平板左侧主导航的入口。 */
-private enum class V2RailItem { CHATS, ASSISTANT, DECISIONS, QUEUE }
+private enum class V2RailItem { CHATS, ASSISTANT }
 
 private val clockFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
@@ -127,8 +123,6 @@ fun FluxV2Root() {
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
-    // 队列筛选上提到根：角标 / 统计行可以直接带着筛选进入队列页。
-    var queueFilter by remember { mutableStateOf(QueueFilter.ALL) }
     var taskOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var chatOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var device by remember { mutableStateOf(ALL_DEVICES) }
@@ -153,7 +147,6 @@ fun FluxV2Root() {
     var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
     var groupDetail by remember { mutableStateOf<V2Group?>(null) }
-    var confirmDecision by remember { mutableStateOf<V2Decision?>(null) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
     // 画布有未保存改动时，返回先问一句：保存并退出 / 放弃 / 继续编辑
@@ -192,11 +185,11 @@ fun FluxV2Root() {
         }
     }
 
-    // 首页 / 决策 / 队列 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
+    // 首页 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
     LaunchedEffect(route) {
         if (app.boot == V2Boot.READY) {
             when (route) {
-                V2Route.Home, V2Route.Decisions, V2Route.Queue -> vm.refresh(quiet = true)
+                V2Route.Home -> vm.refresh(quiet = true)
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 else -> Unit
@@ -368,7 +361,7 @@ fun FluxV2Root() {
     }
 
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
-        confirmDecision != null || settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
+        settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
         groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
         designExitOpen || memoryOpen
 
@@ -381,7 +374,6 @@ fun FluxV2Root() {
                 deleteConversationError = null
             }
             manualConnectOpen -> manualConnectOpen = false
-            confirmDecision != null -> confirmDecision = null
             agentPickerOpen -> agentPickerOpen = false
             groupDetail != null -> groupDetail = null
             newChatOpen -> newChatOpen = false
@@ -457,9 +449,6 @@ fun FluxV2Root() {
             V2Boot.READY -> BoxWithConstraints(Modifier.fillMaxSize().shellBackground()) {
                 val tablet = maxWidth >= 600.dp
                 val insets = Modifier.statusBarsPadding().navigationBarsPadding()
-                val processedCount = app.tasks.sumOf { task ->
-                    task.decisions.count { it.status != null && it.status != "pending" }
-                }
 
                 val renderContent: @Composable (V2Route, Dp, Boolean) -> Unit = { pageRoute, extraTop, showBack ->
                     when (val current = pageRoute) {
@@ -468,15 +457,8 @@ fun FluxV2Root() {
                             onDeviceChange = { device = it },
                             conversations = app.conversations,
                             groups = app.groups,
-                            pendingCount = app.pendingCount,
-                            runningCount = app.runningCount,
                             billingHeadline = app.billing?.headline ?: "暂无额度数据",
                             extraTop = extraTop,
-                            onOpenDecisions = { route = V2Route.Decisions },
-                            onOpenQueue = {
-                                queueFilter = QueueFilter.ALL
-                                route = V2Route.Queue
-                            },
                             onOpenBilling = {
                                 billingOpen = true
                                 vm.loadBilling()
@@ -492,45 +474,6 @@ fun FluxV2Root() {
                             onOpenSettings = { settingsOpen = true },
                             onNewChat = { newChatOpen = true },
                             onRefresh = { vm.refresh(quiet = true) },
-                        )
-
-                        V2Route.Decisions -> V2DecisionScreen(
-                            decisions = app.decisions,
-                            runningCount = app.runningCount,
-                            processedCount = processedCount,
-                            showBack = showBack,
-                            onBack = { route = V2Route.Home },
-                            onOpenLogs = { logsOpen = true },
-                            onRequestApprove = { decision ->
-                                if (decision.risk == V2Risk.HIGH) {
-                                    confirmDecision = decision
-                                } else {
-                                    vm.approveDecision(decision.taskId, decision.id)
-                                }
-                            },
-                            onReject = { decision ->
-                                vm.rejectDecision(decision.taskId, decision.id)
-                            },
-                        )
-
-                        V2Route.Queue -> V2QueueScreen(
-                            tasks = app.queueTasks,
-                            showBack = showBack,
-                            filter = queueFilter,
-                            onFilterChange = { queueFilter = it },
-                            onBack = { route = V2Route.Home },
-                            onOpenLogs = { logsOpen = true },
-                            onClearDone = { vm.dismissFinished() },
-                            onCancel = { vm.cancelTask(it.id) },
-                            onRetry = { vm.startTask(it.id) },
-                            onOpenTask = { task ->
-                                taskOrigin = V2Route.Queue
-                                route = V2Route.TaskDetail(task.id)
-                            },
-                            onRequestDelete = { task ->
-                                deleteConversationError = null
-                                deleteConversationId = task.id
-                            },
                         )
 
                         V2Route.Assistant -> V2AssistantScreen(
@@ -780,7 +723,6 @@ fun FluxV2Root() {
                             extraTop = extraTop,
                             showBack = showBack,
                             onBack = { route = V2Route.TaskDetail(current.taskId) },
-                            onOpenDecisionCenter = { route = V2Route.Decisions },
                         )
 
                         is V2Route.Changes -> V2ChangesScreen(
@@ -833,25 +775,13 @@ fun FluxV2Root() {
                             V2NavRail(
                                 selected = when (route) {
                                     V2Route.Assistant -> V2RailItem.ASSISTANT
-                                    V2Route.Decisions -> V2RailItem.DECISIONS
-                                    V2Route.Queue -> V2RailItem.QUEUE
                                     else -> V2RailItem.CHATS
                                 },
-                                pendingCount = app.pendingCount,
-                                runningCount = app.runningCount,
                                 onSelect = { item ->
-                                    if (item == V2RailItem.QUEUE) queueFilter = QueueFilter.ALL
                                     route = when (item) {
                                         V2RailItem.CHATS -> V2Route.Home
                                         V2RailItem.ASSISTANT -> V2Route.Assistant
-                                        V2RailItem.DECISIONS -> V2Route.Decisions
-                                        V2RailItem.QUEUE -> V2Route.Queue
                                     }
-                                },
-                                // 点任务角标：直接进队列并选中「执行中」。
-                                onOpenRunning = {
-                                    queueFilter = QueueFilter.RUNNING
-                                    route = V2Route.Queue
                                 },
                                 onOpenLogs = { logsOpen = true },
                                 onOpenSettings = { settingsOpen = true },
@@ -1042,24 +972,7 @@ fun FluxV2Root() {
                     groupDetail?.let { group ->
                         MultiGroupSheet(
                             group = group,
-                            onOpenQueue = {
-                                groupDetail = null
-                                queueFilter = QueueFilter.ALL
-                                route = V2Route.Queue
-                            },
                             onDismiss = { groupDetail = null },
-                        )
-                    }
-
-                    confirmDecision?.let { decision ->
-                        ConfirmSheet(
-                            decision = decision,
-                            strict = strict,
-                            onConfirm = {
-                                vm.approveDecision(decision.taskId, decision.id)
-                                confirmDecision = null
-                            },
-                            onDismiss = { confirmDecision = null },
                         )
                     }
 
@@ -1165,10 +1078,7 @@ fun FluxV2Root() {
 @Composable
 private fun V2NavRail(
     selected: V2RailItem,
-    pendingCount: Int,
-    runningCount: Int,
     onSelect: (V2RailItem) -> Unit,
-    onOpenRunning: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -1205,23 +1115,6 @@ private fun V2NavRail(
             label = "助理",
             selected = selected == V2RailItem.ASSISTANT,
         ) { onSelect(V2RailItem.ASSISTANT) }
-        Spacer(Modifier.height(4.dp))
-        RailButton(
-            icon = Icons.Outlined.Schedule,
-            label = "决策",
-            selected = selected == V2RailItem.DECISIONS,
-            badge = pendingCount,
-            badgeColor = V2Colors.amber,
-        ) { onSelect(V2RailItem.DECISIONS) }
-        Spacer(Modifier.height(4.dp))
-        RailButton(
-            icon = Icons.Outlined.List,
-            label = "任务",
-            selected = selected == V2RailItem.QUEUE,
-            badge = runningCount,
-            badgeColor = V2Colors.cyan500,
-            onBadgeClick = onOpenRunning,
-        ) { onSelect(V2RailItem.QUEUE) }
 
         Spacer(Modifier.weight(1f))
 
@@ -1318,7 +1211,7 @@ private fun RailButton(
 /** 页面层级：用于判断转场方向（前进 / 返回）。 */
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home -> 0
-    V2Route.Decisions, V2Route.Queue, V2Route.Assistant, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
+    V2Route.Assistant, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2
     V2Route.DesignCanvas -> 2

@@ -932,7 +932,6 @@ fun V2ConfirmationScreen(
     extraTop: Dp,
     showBack: Boolean = true,
     onBack: () -> Unit,
-    onOpenDecisionCenter: () -> Unit,
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -943,7 +942,7 @@ fun V2ConfirmationScreen(
     Column(Modifier.fillMaxSize()) {
         DetailHeader(
             title = "需求确认",
-            subtitle = "只读 · 审批请到决策中心",
+            subtitle = "只读",
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
@@ -1000,14 +999,6 @@ fun V2ConfirmationScreen(
             val pending = task.pendingDecision
             if (pending != null) {
                 item { PendingDecisionCard(pending) }
-                item {
-                    GhostButton(
-                        text = "去决策中心处理",
-                        onClick = onOpenDecisionCenter,
-                        modifier = Modifier.fillMaxWidth(),
-                        contentColor = V2Colors.cyan700,
-                    )
-                }
             } else {
                 item {
                     V2Banner("当前没有待处理的决策，Agent 会按已确认的需求继续执行。", V2Colors.cyan700)
