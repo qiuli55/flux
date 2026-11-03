@@ -16,6 +16,7 @@ from flux.enums import (
     DecisionMode,
     ModelProvider,
     PermissionMode,
+    TaskOrigin,
 )
 
 
@@ -67,6 +68,8 @@ class TaskCreateRequest(BaseModel):
     summary_from: str | None = Field(default=None, max_length=64)
     # 随首条消息一起发来的附件（先 POST /uploads 换 id，再在发送时带上）
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    # 对话来源（2026-11-03）：助理页建的任务传 assistant，首页普通对话保持默认 chat。
+    origin: TaskOrigin = TaskOrigin.CHAT
 
 
 class TaskMessageCreateRequest(BaseModel):

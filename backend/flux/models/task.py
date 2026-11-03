@@ -60,6 +60,12 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # 排队切换的目标 Agent（2026-10-27）：任务执行中切换 Agent 时只记在这里，
     # 等本轮 Run 真正收尾后再应用，避免中途换人把当前进度交给另一个 Agent。
     pending_agent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    # 对话来源（2026-11-03）：chat = 首页普通对话；assistant = 助理页的助理对话。
+    # 助理对话是真实任务（能跑 Agent、选模型），但不进首页对话列表。
+    # 取值见 flux.enums.TaskOrigin；旧数据由 server_default 补成 chat。
+    origin: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="chat", server_default="chat", index=True
+    )
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -94,6 +100,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "pending_agent_id": (
                 str(self.pending_agent_id) if self.pending_agent_id is not None else None
             ),
+            "origin": self.origin or "chat",
         }
 
 

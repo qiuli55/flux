@@ -39,6 +39,17 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class TaskOrigin(StrEnum):
+    """对话来源（2026-11-03）：首页的普通对话，或助理页的助理对话。
+
+    助理对话同样是一条真实任务（能跑 Agent、选模型），只是不进首页对话列表，
+    避免助理的工作会话把用户自己的对话挤下去。读取全部对话时默认也会排除它。
+    """
+
+    CHAT = "chat"
+    ASSISTANT = "assistant"
+
+
 class DecisionMode(StrEnum):
     """任务级决策策略（文档 §5）：Agent 遇到可选方案时是自己拍板还是停下来问用户。"""
 

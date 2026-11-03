@@ -36,7 +36,14 @@ from flux.core.task_engine.context_usage import (
 )
 from flux.core.task_engine.decisions import build_decision, reject_decision, resolve_decision
 from flux.core.task_engine.repository import MessageDraft
-from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
+from flux.enums import (
+    DecisionMode,
+    DecisionStatus,
+    DshRunStatus,
+    TaskMessageRole,
+    TaskOrigin,
+    TaskStatus,
+)
 from flux.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
 from flux.logging import get_logger
 from flux.models.task import Task
@@ -171,6 +178,7 @@ async def create_task(
         permission_mode=payload.permission_mode,
         model=model,
         api_key_id=key_id,
+        origin=payload.origin,
     )
     # 从旧对话接手：摘要落成一条 kind=summary 的助手消息。它同时进入助手历史
     # 与 Agent 执行指令（TaskRunService._latest_summary），新对话因此不是"从零开始"，
@@ -215,6 +223,7 @@ async def create_task(
 async def list_tasks(
     project_id: str | None = None,
     status: str | None = None,
+    origin: str | None = None,
     limit: int = 50,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
@@ -229,9 +238,20 @@ async def list_tasks(
                 f"status 不是合法的任务状态：{status}",
                 details={"status": status, "allowed": [s.value for s in TaskStatus]},
             ) from exc
+    origin_filter: TaskOrigin | None = None
+    if origin:
+        try:
+            origin_filter = TaskOrigin(origin)
+        except ValueError as exc:
+            raise BadRequestError(
+                f"origin 不是合法的对话来源：{origin}",
+                details={"origin": origin, "allowed": [o.value for o in TaskOrigin]},
+            ) from exc
     if limit < 1 or limit > 200:
         raise BadRequestError("limit 必须在 1~200 之间", details={"limit": limit})
-    tasks = await container.task_repo.list(project_id=project_uuid, status=wanted, limit=limit)
+    tasks = await container.task_repo.list(
+        project_id=project_uuid, status=wanted, origin=origin_filter, limit=limit
+    )
     return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
 
 

@@ -396,3 +396,56 @@ def test_mcp_assistant_tools_replay_facts(mcp_client: TestClient) -> None:
         {"name": "assistant.ticket", "arguments": {"ticket_id": ticket_id, "status": "done"}},
     ).json()["result"]
     assert denied["isError"] is True
+
+
+def _create_task(client: TestClient, description: str, *, origin: str = "chat", **extra) -> dict:
+    response = client.post(
+        "/api/v1/tasks", json={"description": description, "origin": origin, **extra}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def test_mcp_assistant_reads_all_conversations(mcp_client: TestClient) -> None:
+    """助理能通读普通对话：列表默认排除助理自己的对话，展开单条能拿到消息与全文。"""
+    chat = _create_task(
+        mcp_client, "把登录页拆成三个组件", summary="前情：已完成设计稿", summary_from=None
+    )
+    other = _create_task(mcp_client, "给支付页加埋点")
+    own = _create_task(mcp_client, "梳理一下项目进度", origin="assistant")
+
+    token = issue_token(mcp_client)
+
+    listing = _mcp_call(mcp_client, token, "assistant.conversations", {"limit": 20})
+    ids = {item["id"] for item in listing["conversations"]}
+    assert ids == {chat["id"], other["id"]}
+    assert own["id"] not in ids
+    assert all(item["origin"] == "chat" for item in listing["conversations"])
+
+    with_own = _mcp_call(
+        mcp_client, token, "assistant.conversations", {"include_assistant": True, "limit": 20}
+    )
+    assert own["id"] in {item["id"] for item in with_own["conversations"]}
+
+    keyword = _mcp_call(mcp_client, token, "assistant.conversations", {"keyword": "登录页"})
+    assert [item["id"] for item in keyword["conversations"]] == [chat["id"]]
+
+    detail = _mcp_call(mcp_client, token, "assistant.conversation", {"task_id": chat["id"]})
+    assert detail["task"]["origin"] == "chat"
+    assert [message["kind"] for message in detail["messages"]] == ["summary"]
+    assert detail["has_more"] is False
+
+    # 未知状态值在契约层就被拒绝，不会把整表当成无过滤条件读出
+    invalid = _rpc(
+        mcp_client,
+        token,
+        "tools/call",
+        {"name": "assistant.conversations", "arguments": {"status": "done"}},
+    ).json()["result"]
+    assert invalid["isError"] is True
+
+    # 列表接口的 origin 过滤与工具保持同一语义
+    chats = mcp_client.get("/api/v1/tasks", params={"origin": "chat"}).json()["data"]
+    assert {item["id"] for item in chats} >= {chat["id"], other["id"]}
+    assistant_only = mcp_client.get("/api/v1/tasks", params={"origin": "assistant"}).json()["data"]
+    assert [item["id"] for item in assistant_only] == [own["id"]]

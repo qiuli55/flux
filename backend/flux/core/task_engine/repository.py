@@ -12,11 +12,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
-from flux.enums import DecisionMode, DecisionStatus, PermissionMode, TaskStatus
+from flux.enums import (
+    DecisionMode,
+    DecisionStatus,
+    PermissionMode,
+    TaskOrigin,
+    TaskStatus,
+)
 from flux.errors import BadRequestError, NotFoundError
 from flux.logging import get_logger
 from flux.models.agent_run import AgentRun
@@ -35,6 +42,20 @@ class MessageDraft:
     content: str
     kind: str = "text"
     payload: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ConversationSummary:
+    """一条对话的列表项：任务本身 + 消息条数 + 最后一条消息的时间与摘录。
+
+    助理需要「一眼看完全部对话」：逐条再查消息会退化成 N+1，所以在仓储里
+    用一次分组聚合 + 一次回连把统计一次取齐。
+    """
+
+    task: Task
+    message_count: int
+    last_message_at: datetime | None
+    last_message: str | None
 
 
 class TaskRepository:
@@ -58,6 +79,7 @@ class TaskRepository:
         permission_mode: PermissionMode = PermissionMode.NORMAL,
         model: str | None = None,
         api_key_id: uuid.UUID | None = None,
+        origin: TaskOrigin = TaskOrigin.CHAT,
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
@@ -84,6 +106,7 @@ class TaskRepository:
                 permission_mode=str(permission_mode),
                 model=(model or "").strip() or None,
                 api_key_id=api_key_id,
+                origin=str(origin),
             )
             session.add(task)
             await self._commit(session)
@@ -104,16 +127,75 @@ class TaskRepository:
         *,
         project_id: uuid.UUID | None = None,
         status: TaskStatus | None = None,
+        origin: TaskOrigin | None = None,
         limit: int = 50,
     ) -> list[Task]:
-        """按创建时间倒序列出任务；project_id / status 为可选过滤条件（列表页用）。"""
+        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。"""
         statement = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
         if project_id is not None:
             statement = statement.where(Task.project_id == project_id)
         if status is not None:
             statement = statement.where(Task.status == status.value)
+        if origin is not None:
+            statement = statement.where(Task.origin == origin.value)
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    async def list_conversations(
+        self,
+        *,
+        project_id: uuid.UUID | None = None,
+        status: TaskStatus | None = None,
+        origin: TaskOrigin | None = None,
+        keyword: str | None = None,
+        limit: int = 50,
+    ) -> list[ConversationSummary]:
+        """对话列表 + 每条的消息条数 / 最后消息时间与摘录（助理通读全部对话用）。
+
+        统计走「分组聚合子查询 + 回连最后一条消息」，整页一次查询取齐，不做 N+1；
+        排序按「最后一条消息时间优先、没有消息时用创建时间」。
+        """
+        stats = (
+            select(
+                TaskMessage.task_id.label("task_id"),
+                func.count(TaskMessage.id).label("message_count"),
+                func.max(TaskMessage.seq).label("last_seq"),
+            )
+            .group_by(TaskMessage.task_id)
+            .subquery()
+        )
+        last = aliased(TaskMessage)
+        statement = (
+            select(
+                Task,
+                func.coalesce(stats.c.message_count, 0),
+                last.created_at,
+                last.content,
+            )
+            .outerjoin(stats, stats.c.task_id == Task.id)
+            .outerjoin(last, and_(last.task_id == Task.id, last.seq == stats.c.last_seq))
+            .order_by(func.coalesce(last.created_at, Task.created_at).desc(), Task.id.desc())
+            .limit(limit)
+        )
+        if project_id is not None:
+            statement = statement.where(Task.project_id == project_id)
+        if status is not None:
+            statement = statement.where(Task.status == status.value)
+        if origin is not None:
+            statement = statement.where(Task.origin == origin.value)
+        if keyword:
+            statement = statement.where(Task.description.ilike(f"%{keyword.strip()}%"))
+        async with self._session_factory() as session:
+            rows = await session.execute(statement)
+            return [
+                ConversationSummary(
+                    task=task,
+                    message_count=int(count or 0),
+                    last_message_at=last_at,
+                    last_message=content,
+                )
+                for task, count, last_at, content in rows.all()
+            ]
 
     async def set_status(self, task_id: uuid.UUID, status: TaskStatus) -> Task:
         """不存在时抛 NotFoundError。"""
