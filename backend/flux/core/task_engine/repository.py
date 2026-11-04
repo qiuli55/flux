@@ -80,6 +80,9 @@ class TaskRepository:
         model: str | None = None,
         api_key_id: uuid.UUID | None = None,
         origin: TaskOrigin = TaskOrigin.CHAT,
+        bot_name: str | None = None,
+        avatar_shape: str = "circle",
+        avatar_color: str = "violet",
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
@@ -107,6 +110,9 @@ class TaskRepository:
                 model=(model or "").strip() or None,
                 api_key_id=api_key_id,
                 origin=str(origin),
+                bot_name=(bot_name or "").strip()[:64] or None,
+                avatar_shape=avatar_shape,
+                avatar_color=avatar_color,
             )
             session.add(task)
             await self._commit(session)

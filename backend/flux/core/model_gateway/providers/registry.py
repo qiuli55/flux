@@ -15,12 +15,68 @@ Flux 也不允许为任何 agent 形态新增 provider（目标架构 §1 / §3.
 from __future__ import annotations
 
 from flux.config import Settings
+from flux.core.agent_runtime.runtimes.base import ModelChannel
 from flux.core.model_gateway.base import ModelProviderBase
 from flux.core.model_gateway.providers.anthropic import AnthropicProvider
 from flux.core.model_gateway.providers.deepseek import DeepSeekProvider
 from flux.core.model_gateway.providers.echo import EchoProvider
 from flux.core.model_gateway.providers.openai import OpenAIProvider
+from flux.core.model_gateway.providers.openai_compatible import OpenAICompatibleProvider
 from flux.enums import ModelProvider
+
+
+class _OpenAICompatibleChannel(OpenAICompatibleProvider):
+    """`openai_compatible` 在 `ModelProvider` 枚举里没有对应值，这里用字符串占位。
+
+    只有错误文案与日志会用到它（`str(self.provider)`），不参与路由。
+    """
+
+    provider = "openai_compatible"  # type: ignore[assignment]
+
+
+def build_channel_provider(
+    channel: ModelChannel,
+    *,
+    model: str,
+    timeout: float = 60.0,
+    max_retries: int = 2,
+) -> OpenAICompatibleProvider | AnthropicProvider:
+    """把一条密钥库解析出的通道装配成临时 provider。
+
+    群聊里每个 bot 可以带自己的 key（`tasks.api_key_id`），这时绕过全局路由器，
+    直接用该 key 的端点与模型发起对话。
+    """
+    if channel.provider == "anthropic":
+        return AnthropicProvider(
+            model,
+            api_key=channel.api_key,
+            base_url=channel.base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    if channel.provider == "openai":
+        return OpenAIProvider(
+            model,
+            api_key=channel.api_key,
+            base_url=channel.base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    if channel.provider == "deepseek":
+        return DeepSeekProvider(
+            model,
+            api_key=channel.api_key,
+            base_url=channel.base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    return _OpenAICompatibleChannel(
+        model,
+        api_key=channel.api_key,
+        base_url=channel.base_url,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
 
 
 def build_providers(settings: Settings) -> dict[ModelProvider, ModelProviderBase]:

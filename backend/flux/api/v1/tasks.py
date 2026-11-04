@@ -27,6 +27,7 @@ from flux.core.agent_runtime.trace import summarize_trace
 from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
+from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
 from flux.core.task_engine.assistant import validate_confirmation_items
 from flux.core.task_engine.context_usage import (
@@ -165,6 +166,7 @@ async def create_task(
     model, key_id = await container.key_vault.resolve_selection(
         runtime=runtime, model=payload.model or "", key_id=payload.key_id
     )
+    avatar_shape, avatar_color = normalize_avatar(payload.avatar_shape, payload.avatar_color)
 
     # 附件先校验：不合格就别把任务建出来，免得留下一条空对话
     files = resolve_uploads(container.settings, payload.attachment_ids)
@@ -179,6 +181,9 @@ async def create_task(
         model=model,
         api_key_id=key_id,
         origin=payload.origin,
+        bot_name=payload.bot_name,
+        avatar_shape=avatar_shape,
+        avatar_color=avatar_color,
     )
     # 从旧对话接手：摘要落成一条 kind=summary 的助手消息。它同时进入助手历史
     # 与 Agent 执行指令（TaskRunService._latest_summary），新对话因此不是"从零开始"，
@@ -208,12 +213,14 @@ async def create_task(
             len(summary),
         )
     await _record_attachments(container, task.id, files)
-    container.scheduler.submit(
-        str(task.id),
-        task.description,
-        priority=task.priority,
-        agent_id=str(agent_id) if agent_id is not None else None,
-    )
+    # 建 bot 时只落对话、不启动执行：否则会拿 bot 名字当需求直接跑 Agent。
+    if payload.start:
+        container.scheduler.submit(
+            str(task.id),
+            task.description,
+            priority=task.priority,
+            agent_id=str(agent_id) if agent_id is not None else None,
+        )
     result = _task_dict(task)
     await container.bus.publish(Events.TASK_CREATED, result)
     return ok(result)

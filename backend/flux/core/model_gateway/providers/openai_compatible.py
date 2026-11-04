@@ -25,6 +25,7 @@ from flux.core.model_gateway.base import (
     ModelPricing,
     ModelProviderBase,
     TokenUsage,
+    resolve_model_name,
 )
 from flux.core.model_gateway.http import post_json
 from flux.enums import ModelProvider
@@ -109,7 +110,7 @@ class OpenAICompatibleProvider(ModelProviderBase):
         return ChatResult(
             content=content,
             provider=self.provider,
-            model=self.model_name,
+            model=resolve_model_name(kwargs, self.model_name),
             usage=usage,
             latency_ms=latency_ms,
             cost=self.calculate_cost(usage),
@@ -162,7 +163,7 @@ class OpenAICompatibleProvider(ModelProviderBase):
         self, messages: list[ChatMessage], *, stream: bool, **kwargs: Any
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self.model_name,
+            "model": resolve_model_name(kwargs, self.model_name),
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": stream,
         }

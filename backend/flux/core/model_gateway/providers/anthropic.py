@@ -36,6 +36,7 @@ from flux.core.model_gateway.base import (
     ModelPricing,
     ModelProviderBase,
     TokenUsage,
+    resolve_model_name,
 )
 from flux.core.model_gateway.http import post_json
 from flux.enums import ModelProvider
@@ -138,7 +139,7 @@ class AnthropicProvider(ModelProviderBase):
         return ChatResult(
             content=content,
             provider=self.provider,
-            model=self.model_name,
+            model=resolve_model_name(kwargs, self.model_name),
             usage=usage,
             latency_ms=latency_ms,
             cost=self.calculate_cost(usage),
@@ -189,7 +190,7 @@ class AnthropicProvider(ModelProviderBase):
         dialog = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
 
         payload: dict[str, Any] = {
-            "model": self.model_name,
+            "model": resolve_model_name(kwargs, self.model_name),
             "max_tokens": kwargs.get("max_tokens") or self.default_max_tokens,
             "messages": dialog,
             "stream": stream,

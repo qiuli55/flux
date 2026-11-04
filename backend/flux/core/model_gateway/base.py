@@ -22,6 +22,12 @@ class ChatMessage:
     content: str
 
 
+def resolve_model_name(kwargs: dict[str, Any], default: str) -> str:
+    """单次调用可临时覆盖模型（群聊里每个 bot 有自己的模型）。"""
+    override = kwargs.get("model")
+    return str(override).strip() if override else default
+
+
 @dataclass(frozen=True)
 class TokenUsage:
     input_tokens: int = 0

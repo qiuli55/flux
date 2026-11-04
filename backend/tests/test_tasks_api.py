@@ -40,6 +40,10 @@ _RESPONSE_KEYS = {
     "pending_agent_id",
     # 对话来源（chat = 首页普通对话 / assistant = 助理对话）
     "origin",
+    # Bot 档案（对话即 bot：名称 + 形状 × 颜色头像）
+    "bot_name",
+    "avatar_shape",
+    "avatar_color",
 }
 
 

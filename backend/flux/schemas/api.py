@@ -70,6 +70,13 @@ class TaskCreateRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     # 对话来源（2026-11-03）：助理页建的任务传 assistant，首页普通对话保持默认 chat。
     origin: TaskOrigin = TaskOrigin.CHAT
+    # Bot 档案（2026-11-04）：每条对话都是一个 bot，群聊里用名称 + 头像区分。
+    # 头像只接受「形状 × 颜色」组合，取值见 flux.core.group.avatar。
+    bot_name: str | None = Field(default=None, max_length=64)
+    avatar_shape: str | None = Field(default=None, max_length=32)
+    avatar_color: str | None = Field(default=None, max_length=32)
+    # 建 bot 时先落一条空对话、不把它当成需求去跑 Agent；第一条消息再走正常对话链路。
+    start: bool = True
 
 
 class TaskMessageCreateRequest(BaseModel):
@@ -516,3 +523,42 @@ class SupervisorSubscriptionRequest(BaseModel):
     source_key: str = Field(min_length=1, max_length=64)
     external_id: str = Field(min_length=1, max_length=255)
     mode: str = Field(default="terminal", max_length=32)
+
+
+class GroupCreateRequest(BaseModel):
+    """创建一个内部多 bot 群聊；成员是已有的 bot 对话（tasks.id）。"""
+
+    name: str = Field(min_length=1, max_length=128)
+    project_id: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    #: 每个 epoch 的最大轮数（结构性闸门，不是预算）
+    max_rounds: int = Field(default=2, ge=1, le=5)
+    member_ids: list[str] = Field(default_factory=list, max_length=20)
+    #: 指定群主（成员之一）；不指定则建群后由用户手动设置
+    admin_task_id: str | None = None
+
+
+class GroupMemberAddRequest(BaseModel):
+    """把一条 bot 对话拉进群。"""
+
+    task_id: str = Field(min_length=1)
+    role: Literal["admin", "member"] = "member"
+
+
+class GroupMemberUpdateRequest(BaseModel):
+    """调整群成员的角色 / 模型 / 权限预设。
+
+    只能由人通过 API 修改：bot 在群里的发言不会改自己的角色或权限。
+    字段留空表示保持不变。
+    """
+
+    role: Literal["admin", "member"] | None = None
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+    permission_mode: PermissionMode | None = None
+
+
+class GroupMessageCreateRequest(BaseModel):
+    """在群里发一条消息；会打断正在进行的 epoch 并开启新一轮。"""
+
+    content: str = Field(min_length=1, max_length=8000)

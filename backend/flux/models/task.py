@@ -66,6 +66,15 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     origin: Mapped[str] = mapped_column(
         String(16), nullable=False, default="chat", server_default="chat", index=True
     )
+    # Bot 档案（2026-11-04）：每条对话都视为一个 bot，群聊里用它展示身份。
+    # 头像不允许上传图片，只由「形状 × 颜色」组合而成（取值见 flux.core.group.avatar）。
+    bot_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    avatar_shape: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="circle", server_default="circle"
+    )
+    avatar_color: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="violet", server_default="violet"
+    )
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -101,6 +110,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
                 str(self.pending_agent_id) if self.pending_agent_id is not None else None
             ),
             "origin": self.origin or "chat",
+            "bot_name": self.bot_name,
+            "avatar_shape": self.avatar_shape or "circle",
+            "avatar_color": self.avatar_color or "violet",
         }
 
 
