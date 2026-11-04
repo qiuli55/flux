@@ -1,6 +1,6 @@
 """内部多 bot 群聊 API。
 
-与微信/飞书那种「外部群」无关：这里的群成员是本平台的 bot 对话（tasks）。
+与微信/飞书那种「外部群」无关：这里的群成员是本平台的常驻 Bot（bots）。
 用户发言后服务端起一个后台 epoch，按入群顺序给每个 bot 一次发言机会；
 前端只按 seq 轮询拉取整条消息，不做流式（群聊里逐字渲染太拥挤）。
 """
@@ -16,12 +16,11 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.group.repository import GroupMessageDraft
 from flux.errors import BadRequestError
 from flux.logging import get_logger
+from flux.models.bot import Bot
 from flux.models.group import ChatGroup, ChatGroupMember, ChatGroupMessage
-from flux.models.task import Task
 from flux.schemas.api import (
     GroupCreateRequest,
     GroupMemberAddRequest,
@@ -48,14 +47,14 @@ def _group_id(value: str) -> uuid.UUID:
     return _parse_uuid(value, field="group_id")
 
 
-def _bot_name(bot: Task) -> str:
-    name = (bot.bot_name or "").strip()
+def _bot_name(bot: Bot) -> str:
+    name = (bot.name or "").strip()
     return name or "未命名 Bot"
 
 
-def _member_dict(member: ChatGroupMember, bot: Task) -> dict[str, Any]:
+def _member_dict(member: ChatGroupMember, bot: Bot) -> dict[str, Any]:
     return {
-        "task_id": str(bot.id),
+        "bot_id": str(bot.id),
         "name": _bot_name(bot),
         "description": bot.description,
         "avatar_shape": bot.avatar_shape or "circle",
@@ -69,7 +68,7 @@ def _member_dict(member: ChatGroupMember, bot: Task) -> dict[str, Any]:
 
 
 def _group_dict(
-    group: ChatGroup, members: list[tuple[ChatGroupMember, Task]], count: int | None = None
+    group: ChatGroup, members: list[tuple[ChatGroupMember, Bot]], count: int | None = None
 ) -> dict[str, Any]:
     data = group.to_dict()
     data["member_count"] = len(members) if members else int(count or 0)
@@ -81,7 +80,7 @@ def _message_dict(message: ChatGroupMessage) -> dict[str, Any]:
     return message.to_dict()
 
 
-def _detect_mentions(content: str, members: list[Task]) -> set[uuid.UUID]:
+def _detect_mentions(content: str, members: list[Bot]) -> set[uuid.UUID]:
     """按 bot 名字匹配 @ 提及（支持 `@名字`，名字允许带空格时取最长匹配）。"""
     mentioned: set[uuid.UUID] = set()
     for bot in members:
@@ -107,14 +106,14 @@ async def create_group(
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     project_id = _parse_uuid(payload.project_id, field="project_id") if payload.project_id else None
-    member_ids = [_parse_uuid(raw, field="member_ids") for raw in payload.member_ids]
+    bot_ids = [_parse_uuid(raw, field="bot_ids") for raw in payload.bot_ids]
     admin_id = (
-        _parse_uuid(payload.admin_task_id, field="admin_task_id") if payload.admin_task_id else None
+        _parse_uuid(payload.admin_bot_id, field="admin_bot_id") if payload.admin_bot_id else None
     )
-    if admin_id is not None and admin_id not in member_ids:
+    if admin_id is not None and admin_id not in bot_ids:
         raise BadRequestError(
-            "admin_task_id 必须是 member_ids 中的成员",
-            details={"admin_task_id": str(admin_id)},
+            "admin_bot_id 必须是 bot_ids 中的成员",
+            details={"admin_bot_id": str(admin_id)},
         )
     group = await container.group_repo.create(
         name=payload.name,
@@ -122,9 +121,9 @@ async def create_group(
         project_id=project_id,
         max_rounds=payload.max_rounds,
     )
-    for task_id in member_ids:
+    for bot_id in bot_ids:
         await container.group_repo.add_member(
-            group.id, task_id, role="admin" if task_id == admin_id else "member"
+            group.id, bot_id, role="admin" if bot_id == admin_id else "member"
         )
     members = await container.group_repo.list_members(group.id)
     return ok(_group_dict(group, members))
@@ -173,60 +172,50 @@ async def add_member(
 ) -> dict[str, object]:
     group_uuid = _group_id(group_id)
     await container.group_repo.add_member(
-        group_uuid, _parse_uuid(payload.task_id, field="task_id"), role=payload.role
+        group_uuid, _parse_uuid(payload.bot_id, field="bot_id"), role=payload.role
     )
     members = await container.group_repo.list_members(group_uuid)
     return ok([_member_dict(member, bot) for member, bot in members])
 
 
-@router.patch("/{group_id}/members/{task_id}")
+@router.patch("/{group_id}/members/{bot_id}")
 async def update_member(
     group_id: str,
-    task_id: str,
+    bot_id: str,
     payload: GroupMemberUpdateRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     """调整成员角色 / 模型 / 权限预设；只有人能改，bot 不能自改。"""
     group_uuid = _group_id(group_id)
-    task_uuid = _parse_uuid(task_id, field="task_id")
+    bot_uuid = _parse_uuid(bot_id, field="bot_id")
     await container.group_repo.get(group_uuid)
 
     if payload.role is not None:
-        await container.group_repo.set_member_role(group_uuid, task_uuid, payload.role)
+        await container.group_repo.set_member_role(group_uuid, bot_uuid, payload.role)
 
+    changes: dict[str, object] = {}
     if payload.model is not None:
-        task = await container.task_repo.get(task_uuid)
-        runtime = DEFAULT_RUNTIME
-        if task.agent_id is not None:
-            agent = container.agents.get(str(task.agent_id))
-            runtime = getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME)
-        model, key_id = await container.key_vault.resolve_selection(
-            runtime=runtime, model=payload.model, key_id=payload.key_id
-        )
-        await container.task_repo.set_model(task_uuid, model, key_id)
-
+        changes["model"] = payload.model
+        if payload.key_id is not None:
+            changes["key_id"] = payload.key_id
     if payload.permission_mode is not None:
-        task = await container.task_repo.set_permission_mode(task_uuid, payload.permission_mode)
-        await container.task_stream.publish(
-            task_uuid,
-            "permission_mode_changed",
-            {"permission_mode": str(payload.permission_mode)},
-        )
+        changes["permission_mode"] = str(payload.permission_mode)
+    if changes:
+        await container.bots.update(bot_uuid, changes)
 
     members = await container.group_repo.list_members(group_uuid)
     return ok([_member_dict(member, bot) for member, bot in members])
 
 
-@router.delete("/{group_id}/members/{task_id}")
+@router.delete("/{group_id}/members/{bot_id}")
 async def remove_member(
     group_id: str,
-    task_id: str,
+    bot_id: str,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
     group_uuid = _group_id(group_id)
-    removed = await container.group_repo.remove_member(
-        group_uuid, _parse_uuid(task_id, field="task_id")
-    )
+    bot_uuid = _parse_uuid(bot_id, field="bot_id")
+    removed = await container.group_repo.remove_member(group_uuid, bot_uuid)
     members = await container.group_repo.list_members(group_uuid)
     return ok(
         {

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from flux.errors import BadRequestError, NotFoundError
 from flux.logging import get_logger
+from flux.models.bot import Bot
 from flux.models.group import (
     ChatGroup,
     ChatGroupEpoch,
@@ -26,7 +27,6 @@ from flux.models.group import (
     ChatGroupMemory,
     ChatGroupMessage,
 )
-from flux.models.task import Task
 
 logger = get_logger(__name__)
 
@@ -53,7 +53,7 @@ class GroupMessageDraft:
     role: str
     content: str
     author_name: str = ""
-    task_id: uuid.UUID | None = None
+    bot_id: uuid.UUID | None = None
     kind: str = "text"
     payload: dict[str, Any] | None = None
     epoch_id: uuid.UUID | None = None
@@ -137,7 +137,7 @@ class GroupRepository:
     # --- 成员 ---
 
     async def add_member(
-        self, group_id: uuid.UUID, task_id: uuid.UUID, *, role: str = "member"
+        self, group_id: uuid.UUID, bot_id: uuid.UUID, *, role: str = "member"
     ) -> ChatGroupMember:
         if role not in MEMBER_ROLES:
             raise BadRequestError(
@@ -145,14 +145,14 @@ class GroupRepository:
             )
         async with self._session_factory() as session:
             await self._require(session, group_id)
-            if await session.get(Task, task_id) is None:
-                raise NotFoundError(f"Bot 对话 {task_id} 不存在", details={"task_id": str(task_id)})
+            if await session.get(Bot, bot_id) is None:
+                raise NotFoundError(f"Bot {bot_id} 不存在", details={"bot_id": str(bot_id)})
             if role == "admin":
                 await self._clear_admins(session, group_id)
             existing = await session.scalar(
                 select(ChatGroupMember).where(
                     ChatGroupMember.group_id == group_id,
-                    ChatGroupMember.task_id == task_id,
+                    ChatGroupMember.bot_id == bot_id,
                 )
             )
             if existing is not None:
@@ -160,14 +160,14 @@ class GroupRepository:
                 await self._commit(session)
                 await session.refresh(existing)
                 return existing
-            member = ChatGroupMember(id=uuid.uuid4(), group_id=group_id, task_id=task_id, role=role)
+            member = ChatGroupMember(id=uuid.uuid4(), group_id=group_id, bot_id=bot_id, role=role)
             session.add(member)
             await self._commit(session)
             await session.refresh(member)
             return member
 
     async def set_member_role(
-        self, group_id: uuid.UUID, task_id: uuid.UUID, role: str
+        self, group_id: uuid.UUID, bot_id: uuid.UUID, role: str
     ) -> ChatGroupMember:
         """设置成员角色；一个群最多一个 admin（设新 admin 会撤销旧的）。"""
         if role not in MEMBER_ROLES:
@@ -179,13 +179,13 @@ class GroupRepository:
             member = await session.scalar(
                 select(ChatGroupMember).where(
                     ChatGroupMember.group_id == group_id,
-                    ChatGroupMember.task_id == task_id,
+                    ChatGroupMember.bot_id == bot_id,
                 )
             )
             if member is None:
                 raise NotFoundError(
-                    f"群 {group_id} 里没有成员 {task_id}",
-                    details={"group_id": str(group_id), "task_id": str(task_id)},
+                    f"群 {group_id} 里没有成员 {bot_id}",
+                    details={"group_id": str(group_id), "bot_id": str(bot_id)},
                 )
             if role == "admin":
                 await self._clear_admins(session, group_id)
@@ -204,29 +204,29 @@ class GroupRepository:
         for member in admins:
             member.role = "member"
 
-    async def remove_member(self, group_id: uuid.UUID, task_id: uuid.UUID) -> bool:
+    async def remove_member(self, group_id: uuid.UUID, bot_id: uuid.UUID) -> bool:
         async with self._session_factory() as session:
             await self._require(session, group_id)
             result = await session.execute(
                 delete(ChatGroupMember).where(
                     ChatGroupMember.group_id == group_id,
-                    ChatGroupMember.task_id == task_id,
+                    ChatGroupMember.bot_id == bot_id,
                 )
             )
             await self._commit(session)
             return bool(result.rowcount)
 
-    async def list_members(self, group_id: uuid.UUID) -> list[tuple[ChatGroupMember, Task]]:
-        """成员 + 对应的 bot 对话（按入群顺序）。"""
+    async def list_members(self, group_id: uuid.UUID) -> list[tuple[ChatGroupMember, Bot]]:
+        """成员 + 对应的 Bot（按入群顺序）。"""
         async with self._session_factory() as session:
             await self._require(session, group_id)
             rows = await session.execute(
-                select(ChatGroupMember, Task)
-                .join(Task, Task.id == ChatGroupMember.task_id)
+                select(ChatGroupMember, Bot)
+                .join(Bot, Bot.id == ChatGroupMember.bot_id)
                 .where(ChatGroupMember.group_id == group_id)
                 .order_by(ChatGroupMember.created_at.asc(), ChatGroupMember.id.asc())
             )
-            return [(member, task) for member, task in rows.all()]
+            return [(member, bot) for member, bot in rows.all()]
 
     async def member_count_map(self, group_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
         if not group_ids:
@@ -241,41 +241,41 @@ class GroupRepository:
 
     async def list_members_map(
         self, group_ids: Sequence[uuid.UUID]
-    ) -> dict[uuid.UUID, list[tuple[ChatGroupMember, Task]]]:
+    ) -> dict[uuid.UUID, list[tuple[ChatGroupMember, Bot]]]:
         """批量取多个群的成员（按入群顺序），供列表页一次取齐头像。"""
         if not group_ids:
             return {}
         async with self._session_factory() as session:
             rows = await session.execute(
-                select(ChatGroupMember, Task)
-                .join(Task, Task.id == ChatGroupMember.task_id)
+                select(ChatGroupMember, Bot)
+                .join(Bot, Bot.id == ChatGroupMember.bot_id)
                 .where(ChatGroupMember.group_id.in_(tuple(group_ids)))
                 .order_by(ChatGroupMember.created_at.asc(), ChatGroupMember.id.asc())
             )
-            result: dict[uuid.UUID, list[tuple[ChatGroupMember, Task]]] = {
+            result: dict[uuid.UUID, list[tuple[ChatGroupMember, Bot]]] = {
                 group_id: [] for group_id in group_ids
             }
-            for member, task in rows.all():
-                result.setdefault(member.group_id, []).append((member, task))
+            for member, bot in rows.all():
+                result.setdefault(member.group_id, []).append((member, bot))
             return result
 
     # --- 成员状态（每成员 × 每群） ---
 
     async def get_member_state(
-        self, group_id: uuid.UUID, task_id: uuid.UUID
+        self, group_id: uuid.UUID, bot_id: uuid.UUID
     ) -> ChatGroupMemberState | None:
         async with self._session_factory() as session:
             return await session.scalar(
                 select(ChatGroupMemberState).where(
                     ChatGroupMemberState.group_id == group_id,
-                    ChatGroupMemberState.task_id == task_id,
+                    ChatGroupMemberState.bot_id == bot_id,
                 )
             )
 
     async def record_member_turn(
         self,
         group_id: uuid.UUID,
-        task_id: uuid.UUID,
+        bot_id: uuid.UUID,
         *,
         seq: int,
         note: str = "",
@@ -285,14 +285,14 @@ class GroupRepository:
             state = await session.scalar(
                 select(ChatGroupMemberState).where(
                     ChatGroupMemberState.group_id == group_id,
-                    ChatGroupMemberState.task_id == task_id,
+                    ChatGroupMemberState.bot_id == bot_id,
                 )
             )
             if state is None:
                 state = ChatGroupMemberState(
                     id=uuid.uuid4(),
                     group_id=group_id,
-                    task_id=task_id,
+                    bot_id=bot_id,
                     last_seen_seq=0,
                     turns=0,
                 )
@@ -371,7 +371,7 @@ class GroupRepository:
                     id=uuid.uuid4(),
                     group_id=group_id,
                     seq=seq,
-                    task_id=draft.task_id,
+                    bot_id=draft.bot_id,
                     author_name=draft.author_name[:64],
                     role=draft.role,
                     kind=draft.kind,

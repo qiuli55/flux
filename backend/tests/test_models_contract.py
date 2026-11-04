@@ -107,8 +107,10 @@ SPEC_TABLES = {
     # 微信接入（OpenClaw / 微信 ClawBot 只做传输层）：微信私聊 ↔ Flux 助理对话的映射，
     # 兼作入站消息幂等（last_message_id）。消息本身仍落 task_messages。
     "wechat_sessions",
+    # 常驻 Bot（迁移 c6b3f8a1d027）：每次开工落一条带 bot_id 的任务。
+    "bots",
     # 内部多 bot 群聊（2026-11-04）：群 / 成员 / epoch / 消息四张表同属一个迁移
-    # （f6b2c9d4a81e）。成员是已有的 bot 对话（tasks.id），群消息按群内 seq 单调递增。
+    # （f6b2c9d4a81e）。成员是常驻 Bot（bots.id），群消息按群内 seq 单调递增。
     "chat_groups",
     "chat_group_members",
     "chat_group_epochs",

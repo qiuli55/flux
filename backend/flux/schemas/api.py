@@ -577,22 +577,22 @@ class SupervisorSubscriptionRequest(BaseModel):
 
 
 class GroupCreateRequest(BaseModel):
-    """创建一个内部多 bot 群聊；成员是已有的 bot 对话（tasks.id）。"""
+    """创建一个内部多 bot 群聊；成员是已有的常驻 Bot（bots.id）。"""
 
     name: str = Field(min_length=1, max_length=128)
     project_id: str | None = None
     description: str | None = Field(default=None, max_length=2000)
     #: 每个 epoch 的最大轮数（结构性闸门，不是预算）
     max_rounds: int = Field(default=2, ge=1, le=5)
-    member_ids: list[str] = Field(default_factory=list, max_length=20)
+    bot_ids: list[str] = Field(default_factory=list, max_length=20)
     #: 指定群主（成员之一）；不指定则建群后由用户手动设置
-    admin_task_id: str | None = None
+    admin_bot_id: str | None = None
 
 
 class GroupMemberAddRequest(BaseModel):
-    """把一条 bot 对话拉进群。"""
+    """把一个 Bot 拉进群。"""
 
-    task_id: str = Field(min_length=1)
+    bot_id: str = Field(min_length=1)
     role: Literal["admin", "member"] = "member"
 
 

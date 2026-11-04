@@ -1,7 +1,7 @@
 """内部多 bot 群聊的持久化模型。
 
-一个群只负责「谁在一起聊、聊了什么」；每个 bot 本身就是一条 `tasks` 记录
-（bot 名称与头像落在 tasks 上）。群聊消息单独存表，不复用 task_messages：
+一个群只负责「谁在一起聊、聊了什么」；成员是一个常驻 Bot（`bots.id`），
+名称、头像、模型都落在 bots 上。群聊消息单独存表，不复用 task_messages：
 同一句话要出现在群里、又不能让别的 bot 顺着它读到你与某个 bot 的私聊。
 
 `seq` 是同一群内的单调序号（从 1 起），前端轮询用它做游标——
@@ -68,12 +68,12 @@ class ChatGroup(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class ChatGroupMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """群成员：成员 = 一条 bot 对话（tasks.id）。"""
+    """群成员：成员 = 一个常驻 Bot（bots.id）。"""
 
     __tablename__ = "chat_group_members"
     __table_args__ = (
-        UniqueConstraint("group_id", "task_id", name="uq_chat_group_members_group_task"),
-        Index("ix_chat_group_members_task", "task_id"),
+        UniqueConstraint("group_id", "bot_id", name="uq_chat_group_members_group_bot"),
+        Index("ix_chat_group_members_bot", "bot_id"),
     )
 
     group_id: Mapped[uuid.UUID] = mapped_column(
@@ -82,9 +82,9 @@ class ChatGroupMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
         nullable=False,
     )
-    task_id: Mapped[uuid.UUID] = mapped_column(
+    bot_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
+        ForeignKey("bots.id", ondelete="CASCADE"),
         nullable=False,
     )
     role: Mapped[str] = mapped_column(
@@ -95,7 +95,7 @@ class ChatGroupMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         return {
             "id": str(self.id),
             "group_id": str(self.group_id),
-            "task_id": str(self.task_id),
+            "bot_id": str(self.bot_id),
             "role": self.role,
             "created_at": self.created_at.isoformat() if self.created_at is not None else None,
         }
@@ -111,8 +111,8 @@ class ChatGroupMemberState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "chat_group_member_states"
     __table_args__ = (
-        UniqueConstraint("group_id", "task_id", name="uq_chat_group_member_states_group_task"),
-        Index("ix_chat_group_member_states_task", "task_id"),
+        UniqueConstraint("group_id", "bot_id", name="uq_chat_group_member_states_group_bot"),
+        Index("ix_chat_group_member_states_bot", "bot_id"),
     )
 
     group_id: Mapped[uuid.UUID] = mapped_column(
@@ -121,9 +121,9 @@ class ChatGroupMemberState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
         nullable=False,
     )
-    task_id: Mapped[uuid.UUID] = mapped_column(
+    bot_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
+        ForeignKey("bots.id", ondelete="CASCADE"),
         nullable=False,
     )
     last_seen_seq: Mapped[int] = mapped_column(
@@ -137,7 +137,7 @@ class ChatGroupMemberState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     def to_dict(self) -> dict[str, Any]:
         return {
             "group_id": str(self.group_id),
-            "task_id": str(self.task_id),
+            "bot_id": str(self.bot_id),
             "last_seen_seq": self.last_seen_seq,
             "memory": self.memory,
             "turns": self.turns,
@@ -237,10 +237,10 @@ class ChatGroupMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     #: 群内单调序号（从 1 起），前端增量轮询的游标
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    #: 说话者对应的 bot 对话；用户消息与已删除 bot 的消息为 NULL
-    task_id: Mapped[uuid.UUID | None] = mapped_column(
+    #: 说话者对应的 Bot；用户消息与已删除 Bot 的消息为 NULL
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="SET NULL"),
+        ForeignKey("bots.id", ondelete="SET NULL"),
         nullable=True,
     )
     #: 说话者名字快照：bot 被删除或改名后，历史消息仍能显示当时的名字
@@ -262,7 +262,7 @@ class ChatGroupMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "id": str(self.id),
             "group_id": str(self.group_id),
             "seq": self.seq,
-            "task_id": str(self.task_id) if self.task_id is not None else None,
+            "bot_id": str(self.bot_id) if self.bot_id is not None else None,
             "author_name": self.author_name,
             "role": self.role,
             "kind": self.kind,

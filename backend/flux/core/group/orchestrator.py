@@ -34,8 +34,9 @@ from flux.core.model_gateway.router import ModelRouter
 from flux.core.task_engine.conversation_summary import ConversationSummarizer
 from flux.core.task_engine.repository import TaskRepository
 from flux.logging import get_logger
+from flux.models.bot import Bot
 from flux.models.group import ChatGroup, ChatGroupMember, ChatGroupMessage
-from flux.models.task import Task
+from flux.models.task import TaskMessage
 
 logger = get_logger(__name__)
 
@@ -149,7 +150,7 @@ class GroupOrchestrator:
         self,
         group: ChatGroup,
         epoch_id: uuid.UUID,
-        members: list[tuple[ChatGroupMember, Task]],
+        members: list[tuple[ChatGroupMember, Bot]],
         mentioned: set[uuid.UUID],
         memory_block: str,
         max_rounds: int,
@@ -186,10 +187,10 @@ class GroupOrchestrator:
         self,
         group: ChatGroup,
         epoch_id: uuid.UUID,
-        members: list[tuple[ChatGroupMember, Task]],
+        members: list[tuple[ChatGroupMember, Bot]],
         mentioned: set[uuid.UUID],
         memory_block: str,
-        admin: Task,
+        admin: Bot,
         max_rounds: int,
     ) -> int | None:
         """有群主：按发言权推进，`@成员` 把发言权交给下一个/下一波。"""
@@ -239,7 +240,7 @@ class GroupOrchestrator:
         self,
         group: ChatGroup,
         epoch_id: uuid.UUID,
-        bot: Task,
+        bot: Bot,
         reply: str,
         round_no: int,
     ) -> None:
@@ -250,7 +251,7 @@ class GroupOrchestrator:
                     role="bot",
                     content=reply,
                     author_name=_bot_name(bot),
-                    task_id=bot.id,
+                    bot_id=bot.id,
                     epoch_id=epoch_id,
                     payload={"round": round_no},
                 )
@@ -270,9 +271,9 @@ class GroupOrchestrator:
 
     async def _ask(
         self,
-        bot: Task,
+        bot: Bot,
         group: ChatGroup,
-        members: list[tuple[ChatGroupMember, Task]],
+        members: list[tuple[ChatGroupMember, Bot]],
         *,
         memory_block: str,
         addressed: bool,
@@ -282,7 +283,7 @@ class GroupOrchestrator:
         """让一个 bot 决定是否发言；返回要发到群里的文本，或 None 表示沉默。"""
         try:
             transcript = await self._repo.recent_messages(group.id, limit=TRANSCRIPT_LIMIT)
-            private, _ = await self._tasks.list_messages(bot.id, limit=PRIVATE_HISTORY_LIMIT)
+            private = await self._private_history(bot)
             state = await self._repo.get_member_state(group.id, bot.id)
         except Exception:  # noqa: BLE001 - 单个 bot 读上下文失败只影响它自己
             logger.warning("拼装群聊上下文失败 bot_id=%s", bot.id, exc_info=True)
@@ -297,7 +298,7 @@ class GroupOrchestrator:
         description = (bot.description or "").strip()
         description_line = f"你的定位：{description}\n" if description else ""
         project_line = ""
-        if bot.project_id is not None:
+        if group.project_id is not None:
             project_line = "本群关联了一个项目，讨论时以项目实际情况为准。\n"
         is_admin = any(
             member.role == "admin" and member_bot.id == bot.id for member, member_bot in members
@@ -380,10 +381,18 @@ class GroupOrchestrator:
             return None
         return reply
 
-    async def _chat(self, bot: Task, messages: list[ChatMessage]) -> ChatResult:
+    async def _private_history(self, bot: Bot) -> list[TaskMessage]:
+        """该 Bot 最近一次开工的私聊记录（没有开工过则为空）。"""
+        tasks = await self._tasks.list(bot_id=bot.id, limit=1)
+        if not tasks:
+            return []
+        messages, _ = await self._tasks.list_messages(tasks[0].id, limit=PRIVATE_HISTORY_LIMIT)
+        return messages
+
+    async def _chat(self, bot: Bot, messages: list[ChatMessage]) -> ChatResult:
         """按 bot 自己的模型发言：有独立密钥时直连该通道，否则走平台路由器。"""
         if self._key_vault is not None and bot.api_key_id is not None:
-            channel = await self._key_vault.channel_for_task(bot)
+            channel = await self._key_vault.channel_for_bot(bot)
             if channel is not None and (bot.model or "").strip():
                 provider = build_channel_provider(channel, model=(bot.model or "").strip())
                 return await provider.chat(messages)
@@ -484,8 +493,8 @@ class GroupOrchestrator:
         await self._repo.upsert_memory(None, scope="team", content=merged)
 
 
-def _bot_name(bot: Task) -> str:
-    name = (bot.bot_name or "").strip()
+def _bot_name(bot: Bot) -> str:
+    name = (bot.name or "").strip()
     return name or "未命名 Bot"
 
 
@@ -511,7 +520,7 @@ def _render_transcript(messages: list[ChatGroupMessage]) -> str:
     return prefix + "\n" + "\n".join(lines)
 
 
-def _detect_mentions(content: str, members: list[tuple[ChatGroupMember, Task]]) -> set[uuid.UUID]:
+def _detect_mentions(content: str, members: list[tuple[ChatGroupMember, Bot]]) -> set[uuid.UUID]:
     """按 bot 名字匹配 `@名字`。"""
     mentioned: set[uuid.UUID] = set()
     for _member, bot in members:

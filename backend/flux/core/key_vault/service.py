@@ -36,6 +36,7 @@ from flux.core.context.secretbox import SecretBox
 from flux.errors import BadRequestError, ConfigurationError, ConflictError, NotFoundError
 from flux.logging import get_logger
 from flux.models.api_key import ApiKey
+from flux.models.bot import Bot
 from flux.models.task import Task
 
 logger = get_logger(__name__)
@@ -253,15 +254,24 @@ class KeyVaultService:
 
     async def channel_for_task(self, task: Task) -> ModelChannel | None:
         """解析任务的模型通道；任务没有 key 覆盖时返回 None（runtime 用原生配置）。"""
-        if task.api_key_id is None:
+        return await self._resolve_channel(task.api_key_id, task.model)
+
+    async def channel_for_bot(self, bot: Bot) -> ModelChannel | None:
+        """解析 Bot 的模型通道；Bot 没有 key 覆盖时返回 None（走平台默认）。"""
+        return await self._resolve_channel(bot.api_key_id, bot.model)
+
+    async def _resolve_channel(
+        self, api_key_id: uuid.UUID | None, model: str | None
+    ) -> ModelChannel | None:
+        if api_key_id is None:
             return None
-        row = await self.get(task.api_key_id)
+        row = await self.get(api_key_id)
         if not row.enabled:
             raise ConfigurationError(
                 f"密钥 {row.name!r} 已停用，无法启动 Run",
                 details={"key_id": str(row.id), "hint": "在密钥库中启用它，或切换到其他模型"},
             )
-        model = (task.model or "").strip()
+        model = (model or "").strip()
         if not model:
             models = [str(item) for item in (row.models or []) if str(item).strip()]
             if not models:

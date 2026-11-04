@@ -45,16 +45,12 @@ class _FakeRouter:
 
 
 async def _make_bot(container: Container, name: str, *, model: str | None = None) -> uuid.UUID:
-    task = await container.task_repo.create(
-        task_id=uuid.uuid4(),
+    bot = await container.bots.create(
+        name=name,
         description=f"{name} 的对话",
-        priority=0,
-        project_id=None,
-        agent_id=None,
         model=model,
-        bot_name=name,
     )
-    return task.id
+    return bot.id
 
 
 async def _make_group(
@@ -66,9 +62,9 @@ async def _make_group(
     max_rounds: int = 2,
 ) -> uuid.UUID:
     group = await container.group_repo.create(name=name, max_rounds=max_rounds)
-    for task_id in members:
+    for bot_id in members:
         await container.group_repo.add_member(
-            group.id, task_id, role="admin" if task_id == admin else "member"
+            group.id, bot_id, role="admin" if bot_id == admin else "member"
         )
     return group.id
 
@@ -92,7 +88,7 @@ def test_parse_decision_treats_pass_as_silence() -> None:
 
 async def test_admin_wave_hands_off_by_mention(container: Container) -> None:
     """有群主时：没点名 → 群主先说；群主 @ 同伴 → 同伴接棒；没人再接就结束。"""
-    admin = await _make_bot(container, "群主", model="deepseek-v4-pro")
+    admin = await _make_bot(container, "群主", model="deepseek-v4-flash")
     helper = await _make_bot(container, "发布")
     group_id = await _make_group(container, "运营群", [admin, helper], admin=admin)
     epoch_id = await _start_epoch(container, group_id, "今天的数据怎么样？")
@@ -108,7 +104,7 @@ async def test_admin_wave_hands_off_by_mention(container: Container) -> None:
 
     assert router.called == ["群主", "发布"]
     # per-bot 模型：群主的 model 覆盖透传给路由器
-    assert router.kwargs[0]["model"] == "deepseek-v4-pro"
+    assert router.kwargs[0]["model"] == "deepseek-v4-flash"
     assert "model" not in router.kwargs[1]
 
     messages, _ = await container.group_repo.list_messages(group_id)
