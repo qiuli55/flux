@@ -12,6 +12,10 @@ on:
       - "apps/mobile-controller/**"
       - ".github/workflows/mobile-android.yml"
 
+# tag 构建完成后要把 APK 挂到 GitHub Release，作为发版下载源。
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -59,19 +63,47 @@ jobs:
         run: ./gradlew testDebugUnitTest --no-daemon
 
       - name: Assemble debug APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: ./gradlew assembleDebug --no-daemon
         env:
           FLUX_KEYSTORE_PASSWORD: ${{ secrets.FLUX_KEYSTORE_PASSWORD }}
           FLUX_KEY_PASSWORD: ${{ secrets.FLUX_KEY_PASSWORD }}
           FLUX_KEY_ALIAS: ${{ secrets.FLUX_KEY_ALIAS }}
 
-      # 只在 push / tag 上传产物，PR 不传；发布时可直接从 run 页面下载 APK，
-      # 不必再走远程机构建。
+      # tag 走 release 构建：与历史发版包同一 buildType，签名由上面的 keystore 还原步骤保证。
+      - name: Assemble release APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: ./gradlew assembleRelease --no-daemon
+        env:
+          FLUX_KEYSTORE_PASSWORD: ${{ secrets.FLUX_KEYSTORE_PASSWORD }}
+          FLUX_KEY_PASSWORD: ${{ secrets.FLUX_KEY_PASSWORD }}
+          FLUX_KEY_ALIAS: ${{ secrets.FLUX_KEY_ALIAS }}
+
+      # 只上传分支构建的 debug 包，供手动检查；tag 的产物在下一步挂到 Release。
       - name: Upload debug APK
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: flux-mobile-debug-${{ github.ref_name }}
           path: apps/mobile-controller/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Release 资产走 objects.githubusercontent.com，下载速度远高于 Actions artifact，
+      # deploy/release-mobile.sh 就从这里取包再转发给 B 机。
+      - name: Publish APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VC=$(sed -nE 's/.*versionCode = ([0-9]+).*/\1/p' app/build.gradle.kts | head -1)
+          VN=$(sed -nE 's/.*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts | head -1)
+          OUT="flux-mobile-${VN}-vc${VC}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$OUT"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$OUT" --repo "$GITHUB_REPOSITORY" \
+              --title "Flux 移动端 ${VN} (vc${VC})" \
+              --notes "Flux 移动端 ${VN}（versionCode ${VC}）"
+          fi
