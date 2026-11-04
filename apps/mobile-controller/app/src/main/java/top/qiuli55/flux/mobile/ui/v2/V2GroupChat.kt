@@ -55,11 +55,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import top.qiuli55.flux.mobile.data.Bot
 import top.qiuli55.flux.mobile.data.ChatGroup
 import top.qiuli55.flux.mobile.data.ChatGroupMember
 import top.qiuli55.flux.mobile.data.ChatGroupMemoryState
 import top.qiuli55.flux.mobile.data.ChatGroupMessage
-import top.qiuli55.flux.mobile.data.Task
 
 /**
  * 内部多 Bot 群聊页。
@@ -70,7 +70,7 @@ import top.qiuli55.flux.mobile.data.Task
 @Composable
 fun GroupChatScreen(
     state: V2GroupChatState,
-    botCandidates: List<Task>,
+    botCandidates: List<Bot>,
     extraTop: Dp,
     showBack: Boolean = true,
     onBack: () -> Unit,
@@ -293,9 +293,9 @@ fun GroupChatScreen(
             loadingMemory = state.loadingMemory,
             onAdd = { onAddMember(it) },
             onRemove = { onRemoveMember(it) },
-            onSetRole = { taskId, role -> onSetRole(taskId, role) },
-            onSetPermission = { taskId, mode -> onSetPermission(taskId, mode) },
-            onSetModel = { taskId, model, keyId -> onSetModel(taskId, model, keyId) },
+            onSetRole = { botId, role -> onSetRole(botId, role) },
+            onSetPermission = { botId, mode -> onSetPermission(botId, mode) },
+            onSetModel = { botId, model, keyId -> onSetModel(botId, model, keyId) },
             onLoadMemory = onLoadMemory,
             onCreateBot = {
                 membersOpen = false
@@ -333,7 +333,7 @@ private fun GroupMessageRow(message: ChatGroupMessage, members: List<ChatGroupMe
         }
 
         else -> {
-            val member = members.firstOrNull { it.taskId == message.taskId }
+            val member = members.firstOrNull { it.botId == message.botId }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 BotAvatar(
                     shape = member?.avatarShape ?: V2DefaultAvatarShape,
@@ -371,7 +371,7 @@ private fun GroupMessageRow(message: ChatGroupMessage, members: List<ChatGroupMe
 @Composable
 private fun GroupMembersSheet(
     group: ChatGroup,
-    candidates: List<Task>,
+    candidates: List<Bot>,
     memory: ChatGroupMemoryState?,
     loadingMemory: Boolean,
     onAdd: (String) -> Unit,
@@ -384,7 +384,7 @@ private fun GroupMembersSheet(
     onDeleteGroup: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val memberIds = group.members.map { it.taskId }.toSet()
+    val memberIds = group.members.map { it.botId }.toSet()
     val addable = candidates.filterNot { it.id in memberIds }
     val candidatesById = remember(candidates) { candidates.associateBy { it.id } }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -413,7 +413,7 @@ private fun GroupMembersSheet(
             Label("群成员", 11f, V2Colors.ink(.45f), FontWeight.Medium)
             Spacer(Modifier.height(8.dp))
             group.members.forEach { member ->
-                val expanded = expandedId == member.taskId
+                val expanded = expandedId == member.botId
                 val cardShape = RoundedCornerShape(14.dp)
                 Column(
                     Modifier
@@ -426,7 +426,7 @@ private fun GroupMembersSheet(
                         Modifier
                             .fillMaxWidth()
                             .v2Pressable(pressScale = .98f) {
-                                expandedId = if (expanded) null else member.taskId
+                                expandedId = if (expanded) null else member.botId
                             }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -461,7 +461,7 @@ private fun GroupMembersSheet(
                             V2Colors.rose,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(999.dp))
-                                .v2Pressable(pressScale = .94f) { onRemove(member.taskId) }
+                                .v2Pressable(pressScale = .94f) { onRemove(member.botId) }
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
@@ -477,14 +477,14 @@ private fun GroupMembersSheet(
                                     text = "群主",
                                     color = if (member.isAdmin) V2Colors.accent else V2Colors.ink(.45f),
                                     modifier = Modifier.v2Pressable(pressScale = .94f) {
-                                        onSetRole(member.taskId, "admin")
+                                        onSetRole(member.botId, "admin")
                                     },
                                 )
                                 V2Chip(
                                     text = "普通成员",
                                     color = if (member.isAdmin) V2Colors.ink(.45f) else V2Colors.accent,
                                     modifier = Modifier.v2Pressable(pressScale = .94f) {
-                                        onSetRole(member.taskId, "member")
+                                        onSetRole(member.botId, "member")
                                     },
                                 )
                             }
@@ -500,7 +500,7 @@ private fun GroupMembersSheet(
                                             text = title,
                                             color = if (active) V2Colors.accent else V2Colors.ink(.45f),
                                             modifier = Modifier.v2Pressable(pressScale = .94f) {
-                                                onSetPermission(member.taskId, mode)
+                                                onSetPermission(member.botId, mode)
                                             },
                                         )
                                     }
@@ -509,7 +509,7 @@ private fun GroupMembersSheet(
                             Spacer(Modifier.height(12.dp))
                             Label("模型", 10.5f, V2Colors.ink(.45f), FontWeight.Medium)
                             Spacer(Modifier.height(6.dp))
-                            val options = modelOptionsFor(member.taskId, candidatesById)
+                            val options = modelOptionsFor(member.botId, candidatesById)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 item {
                                     val active = member.model.isNullOrBlank()
@@ -517,7 +517,7 @@ private fun GroupMembersSheet(
                                         text = "默认",
                                         color = if (active) V2Colors.accent else V2Colors.ink(.45f),
                                         modifier = Modifier.v2Pressable(pressScale = .94f) {
-                                            onSetModel(member.taskId, "", null)
+                                            onSetModel(member.botId, "", null)
                                         },
                                     )
                                 }
@@ -528,7 +528,7 @@ private fun GroupMembersSheet(
                                         text = option.label,
                                         color = if (active) V2Colors.accent else V2Colors.ink(.45f),
                                         modifier = Modifier.v2Pressable(pressScale = .94f) {
-                                            onSetModel(member.taskId, option.model, option.keyId)
+                                            onSetModel(member.botId, option.model, option.keyId)
                                         },
                                     )
                                 }
@@ -559,19 +559,19 @@ private fun GroupMembersSheet(
             if (addable.isEmpty()) {
                 Label("没有可添加的 Bot，先新建一个吧", 10.5f, V2Colors.ink(.32f))
             } else {
-                addable.take(30).forEach { task ->
+                addable.take(30).forEach { bot ->
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
-                            .v2Pressable(pressScale = .98f) { onAdd(task.id) }
+                            .v2Pressable(pressScale = .98f) { onAdd(bot.id) }
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        BotAvatar(task.avatarShape, task.avatarColor, size = 26.dp)
+                        BotAvatar(bot.avatarShape, bot.avatarColor, size = 26.dp)
                         Spacer(Modifier.width(10.dp))
                         Label(
-                            task.displayName,
+                            bot.name,
                             12f,
                             V2Colors.ink(.75f),
                             modifier = Modifier.weight(1f),
@@ -642,14 +642,14 @@ private fun GroupMembersSheet(
 
 @Composable
 fun CreateGroupSheet(
-    candidates: List<Task>,
+    candidates: List<Bot>,
     onCreateBot: () -> Unit,
     onCreate: (
         name: String,
         description: String,
         maxRounds: Int,
-        memberIds: List<String>,
-        adminTaskId: String?,
+        botIds: List<String>,
+        adminBotId: String?,
     ) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -731,8 +731,8 @@ fun CreateGroupSheet(
             if (candidates.isEmpty()) {
                 Label("还没有可用的 Bot，先新建一个", 10.5f, V2Colors.ink(.32f))
             } else {
-                candidates.forEach { task ->
-                    val picked = task.id in selected
+                candidates.forEach { bot ->
+                    val picked = bot.id in selected
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -744,18 +744,18 @@ fun CreateGroupSheet(
                                 RoundedCornerShape(14.dp),
                             )
                             .v2Pressable(pressScale = .98f) {
-                                selected = if (picked) selected - task.id else selected + task.id
+                                selected = if (picked) selected - bot.id else selected + bot.id
                             }
                             .padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        BotAvatar(task.avatarShape, task.avatarColor, size = 28.dp)
+                        BotAvatar(bot.avatarShape, bot.avatarColor, size = 28.dp)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Label(task.displayName, 12.5f, V2Colors.ink(.88f), FontWeight.Medium, maxLines = 1)
-                            if (task.description.isNotBlank()) {
+                            Label(bot.name, 12.5f, V2Colors.ink(.88f), FontWeight.Medium, maxLines = 1)
+                            if (bot.description.isNotBlank()) {
                                 Spacer(Modifier.height(2.dp))
-                                Label(task.description, 10f, V2Colors.ink(.36f), maxLines = 1)
+                                Label(bot.description, 10f, V2Colors.ink(.36f), maxLines = 1)
                             }
                         }
                         Box(
@@ -788,12 +788,12 @@ fun CreateGroupSheet(
                         modifier = Modifier.v2Pressable(pressScale = .94f) { adminId = null },
                     )
                 }
-                items(candidates.filter { it.id in selected }) { task ->
-                    val active = adminId == task.id
+                items(candidates.filter { it.id in selected }) { bot ->
+                    val active = adminId == bot.id
                     V2Chip(
-                        text = task.displayName,
+                        text = bot.name,
                         color = if (active) V2Colors.accent else V2Colors.ink(.45f),
-                        modifier = Modifier.v2Pressable(pressScale = .94f) { adminId = task.id },
+                        modifier = Modifier.v2Pressable(pressScale = .94f) { adminId = bot.id },
                     )
                 }
             }
@@ -994,8 +994,8 @@ private fun permissionTitle(mode: String): String = when (mode) {
 }
 
 /** 成员可选模型 = 所属 Agent 的模型（原生 + 密钥库），缺失时退回全局模型。 */
-private fun modelOptionsFor(taskId: String, candidates: Map<String, Task>): List<V2ModelOption> {
-    val agentId = candidates[taskId]?.agentId.orEmpty()
+private fun modelOptionsFor(botId: String, candidates: Map<String, Bot>): List<V2ModelOption> {
+    val agentId = candidates[botId]?.agentId.orEmpty()
     return V2Registry.agentModels[agentId]?.takeIf { it.isNotEmpty() }
         ?: V2Registry.models.map { V2ModelOption(it, it) }
 }

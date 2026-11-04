@@ -538,24 +538,24 @@ fun FluxV2Root() {
                                 onInterrupt = { vm.interruptGroupChat(current.groupId) },
                                 onAddMember = { vm.addGroupMember(current.groupId, it) },
                                 onRemoveMember = { vm.removeGroupMember(current.groupId, it) },
-                                onSetRole = { taskId, role ->
+                                onSetRole = { botId, role ->
                                     vm.updateGroupMember(
                                         current.groupId,
-                                        taskId,
+                                        botId,
                                         role = role,
                                     )
                                 },
-                                onSetPermission = { taskId, mode ->
+                                onSetPermission = { botId, mode ->
                                     vm.updateGroupMember(
                                         current.groupId,
-                                        taskId,
+                                        botId,
                                         permissionMode = mode,
                                     )
                                 },
-                                onSetModel = { taskId, model, keyId ->
+                                onSetModel = { botId, model, keyId ->
                                     vm.updateGroupMember(
                                         current.groupId,
-                                        taskId,
+                                        botId,
                                         model = model,
                                         keyId = keyId,
                                     )
@@ -1088,7 +1088,7 @@ fun FluxV2Root() {
                             agentOptions = agentsForDevice(device),
                             subtitle = "名称与头像自定义 · 创建后直接进入它的聊天",
                             onCreate = { name, shape, color, agentId, done ->
-                                vm.createBot(name, shape, color, agentId) { error, taskId ->
+                                vm.createConversation(name, shape, color, agentId) { error, taskId ->
                                     done(error)
                                     if (error.isEmpty()) {
                                         newChatOpen = false
@@ -1108,13 +1108,13 @@ fun FluxV2Root() {
                                 createBotReturnToGroup = true
                                 createBotOpen = true
                             },
-                            onCreate = { name, description, rounds, memberIds, adminTaskId ->
+                            onCreate = { name, description, rounds, botIds, adminBotId ->
                                 vm.createGroup(
                                     name,
                                     description,
                                     rounds,
-                                    memberIds,
-                                    adminTaskId,
+                                    botIds,
+                                    adminBotId,
                                 ) { group ->
                                     if (group != null) {
                                         createGroupOpen = false

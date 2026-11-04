@@ -72,6 +72,30 @@ class FluxApi(
     suspend fun listAgents(): List<Agent> = get("api/v1/agents")
     suspend fun listTasks(): List<Task> = get("api/v1/tasks")
 
+    /* ---------------- 常驻 Bot（/api/v1/bots） ---------------- */
+
+    suspend fun listBots(): List<Bot> = get("api/v1/bots?limit=200")
+
+    /** 建一个常驻 Bot（群聊成员）。 */
+    suspend fun createBot(
+        name: String,
+        shape: String? = null,
+        color: String? = null,
+        agentId: String? = null,
+        description: String = "",
+        permissionMode: String = "unattended",
+    ): Bot = post(
+        "api/v1/bots",
+        buildJsonObject {
+            put("name", name.trim())
+            if (description.isNotBlank()) put("description", description.trim())
+            if (!shape.isNullOrBlank()) put("avatar_shape", shape)
+            if (!color.isNullOrBlank()) put("avatar_color", color)
+            if (!agentId.isNullOrBlank()) put("agent_id", agentId)
+            put("permission_mode", permissionMode)
+        },
+    )
+
     /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")
 
@@ -130,11 +154,11 @@ class FluxApi(
 
     suspend fun createGroup(
         name: String,
-        memberIds: List<String>,
+        botIds: List<String>,
         description: String? = null,
         projectId: String? = null,
         maxRounds: Int = 2,
-        adminTaskId: String? = null,
+        adminBotId: String? = null,
     ): ChatGroup = post(
         "api/v1/groups",
         buildJsonObject {
@@ -142,8 +166,8 @@ class FluxApi(
             if (!description.isNullOrBlank()) put("description", description.trim())
             if (!projectId.isNullOrBlank()) put("project_id", projectId)
             put("max_rounds", maxRounds)
-            if (!adminTaskId.isNullOrBlank()) put("admin_task_id", adminTaskId)
-            putJsonArray("member_ids") { memberIds.forEach { add(JsonPrimitive(it)) } }
+            if (!adminBotId.isNullOrBlank()) put("admin_bot_id", adminBotId)
+            putJsonArray("bot_ids") { botIds.forEach { add(JsonPrimitive(it)) } }
         },
     )
 
@@ -152,13 +176,13 @@ class FluxApi(
     suspend fun deleteGroup(groupId: String): JsonElement = delete("api/v1/groups/$groupId")
 
     /** 加成员返回更新后的成员列表。 */
-    suspend fun addGroupMember(groupId: String, taskId: String): List<ChatGroupMember> = post(
+    suspend fun addGroupMember(groupId: String, botId: String): List<ChatGroupMember> = post(
         "api/v1/groups/$groupId/members",
-        buildJsonObject { put("task_id", taskId) },
+        buildJsonObject { put("bot_id", botId) },
     )
 
-    suspend fun removeGroupMember(groupId: String, taskId: String): JsonElement =
-        delete("api/v1/groups/$groupId/members/$taskId")
+    suspend fun removeGroupMember(groupId: String, botId: String): JsonElement =
+        delete("api/v1/groups/$groupId/members/$botId")
 
     /**
      * 调整成员：角色（admin/member）、模型、权限预设。只传要改的项，返回最新成员列表。
@@ -166,13 +190,13 @@ class FluxApi(
      */
     suspend fun updateGroupMember(
         groupId: String,
-        taskId: String,
+        botId: String,
         role: String? = null,
         model: String? = null,
         keyId: String? = null,
         permissionMode: String? = null,
     ): List<ChatGroupMember> = patch(
-        "api/v1/groups/$groupId/members/$taskId",
+        "api/v1/groups/$groupId/members/$botId",
         buildJsonObject {
             if (role != null) put("role", role)
             if (model != null) put("model", model)

@@ -19,6 +19,7 @@ import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
+import top.qiuli55.flux.mobile.data.Bot
 import top.qiuli55.flux.mobile.data.ChatGroup
 import top.qiuli55.flux.mobile.data.ChatGroupMember
 import top.qiuli55.flux.mobile.data.ChatGroupMemoryState
@@ -75,6 +76,8 @@ data class V2AppState(
     val account: AccountSession? = null,
     val devices: List<DeviceInfo> = emptyList(),
     val tasks: List<Task> = emptyList(),
+    /** 常驻 Bot 列表；群聊的成员与候选都来自这里。 */
+    val bots: List<Bot> = emptyList(),
     val agents: List<V2Agent> = emptyList(),
     val models: List<String> = emptyList(),
     val deviceLabel: String = "本机",
@@ -111,8 +114,8 @@ data class V2AppState(
     /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
     private val chatTasks: List<Task> get() = tasks.filterNot { it.origin == "assistant" }
 
-    /** 建群 / 加成员时的 bot 候选：所有普通对话。 */
-    val botCandidates: List<Task> get() = chatTasks
+    /** 建群 / 加成员时的候选：全部常驻 Bot。 */
+    val botCandidates: List<Bot> get() = bots
     val conversations: List<V2Conversation>
         get() = chatTasks.map { it.toV2Conversation(deviceLabel) }
     val queueTasks: List<V2Task>
@@ -312,6 +315,7 @@ class V2AppViewModel : FluxViewModel() {
                 val api = api()
                 // 串行请求：并发失败时会整组取消（真机踩过坑）。
                 val tasks = api.listTasks()
+                val bots = runCatching { api.listBots() }.getOrDefault(emptyList())
                 val groups = runCatching { api.listGroups() }.getOrNull()
                 val agents = runCatching { api.listAgents() }.getOrDefault(emptyList())
                 val models = runCatching { api.dshStatus() }.getOrNull()
@@ -341,6 +345,7 @@ class V2AppViewModel : FluxViewModel() {
                 )
                 _state.value = _state.value.copy(
                     tasks = tasks,
+                    bots = bots,
                     agents = mapped,
                     models = models,
                     refreshing = false,
@@ -1031,8 +1036,8 @@ class V2AppViewModel : FluxViewModel() {
         name: String,
         description: String,
         maxRounds: Int,
-        memberIds: List<String>,
-        adminTaskId: String? = null,
+        botIds: List<String>,
+        adminBotId: String? = null,
         onResult: (ChatGroup?) -> Unit,
     ) {
         val title = name.trim()
@@ -1047,10 +1052,10 @@ class V2AppViewModel : FluxViewModel() {
             try {
                 val group = api().createGroup(
                     name = title,
-                    memberIds = memberIds,
+                    botIds = botIds,
                     description = description.trim().takeIf { it.isNotEmpty() },
                     maxRounds = maxRounds,
-                    adminTaskId = adminTaskId?.takeIf { it in memberIds },
+                    adminBotId = adminBotId?.takeIf { it in botIds },
                 )
                 _state.value = _state.value.copy(
                     groupChat = _state.value.groupChat.copy(
@@ -1086,10 +1091,10 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    fun addGroupMember(groupId: String, taskId: String) {
+    fun addGroupMember(groupId: String, botId: String) {
         viewModelScope.launch {
             try {
-                val members = api().addGroupMember(groupId, taskId)
+                val members = api().addGroupMember(groupId, botId)
                 applyGroupMembers(groupId, members)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
@@ -1099,11 +1104,11 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    fun removeGroupMember(groupId: String, taskId: String) {
+    fun removeGroupMember(groupId: String, botId: String) {
         viewModelScope.launch {
             try {
                 val api = api()
-                api.removeGroupMember(groupId, taskId)
+                api.removeGroupMember(groupId, botId)
                 val group = api.getGroup(groupId)
                 if (openGroupId == groupId) {
                     _state.value = _state.value.copy(
@@ -1124,7 +1129,7 @@ class V2AppViewModel : FluxViewModel() {
      */
     fun updateGroupMember(
         groupId: String,
-        taskId: String,
+        botId: String,
         role: String? = null,
         model: String? = null,
         keyId: String? = null,
@@ -1134,7 +1139,7 @@ class V2AppViewModel : FluxViewModel() {
             try {
                 val members = api().updateGroupMember(
                     groupId = groupId,
-                    taskId = taskId,
+                    botId = botId,
                     role = role,
                     model = model,
                     keyId = keyId,
@@ -1174,8 +1179,8 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    /** 新建一个 bot（本质是一条不立即执行的对话）：名称 + 头像，可选执行 Agent。 */
-    fun createBot(
+    /** 新建一个对话（本质是一条不立即执行的 tasks 记录）：名称 + 头像，可选执行 Agent。 */
+    fun createConversation(
         name: String,
         shape: String,
         color: String,
@@ -1205,6 +1210,44 @@ class V2AppViewModel : FluxViewModel() {
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
+                onResult("", created.id)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(busyAction = null)
+                onResult(readable(e), "")
+            }
+        }
+    }
+
+    /** 新建一个常驻 Bot（群聊成员）：落到 /bots，返回 botId。 */
+    fun createBot(
+        name: String,
+        shape: String,
+        color: String,
+        agentId: String? = null,
+        onResult: (error: String, botId: String) -> Unit,
+    ) {
+        val title = name.trim()
+        if (title.isEmpty()) {
+            onResult("名称不能为空", "")
+            return
+        }
+        if (_state.value.busyAction != null) {
+            onResult("有操作正在进行，稍后再试", "")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busyAction = "create-bot", error = null, notice = null)
+            try {
+                val created = api().createBot(
+                    name = title,
+                    shape = shape,
+                    color = color,
+                    agentId = agentId,
+                )
+                _state.value = _state.value.copy(
+                    busyAction = null,
+                    bots = listOf(created) + _state.value.bots,
+                )
                 onResult("", created.id)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null)

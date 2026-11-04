@@ -175,12 +175,29 @@ data class Task(
             ?: description.take(24).ifBlank { "未命名 Bot" }
 }
 
+/* ---------------- 常驻 Bot（/api/v1/bots） ---------------- */
+
+/** Bot 模式里的常驻执行者；群聊成员就是它（bots.id）。 */
+@Serializable
+data class Bot(
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    @SerialName("avatar_shape") val avatarShape: String = "circle",
+    @SerialName("avatar_color") val avatarColor: String = "violet",
+    @SerialName("agent_id") val agentId: String? = null,
+    val model: String? = null,
+    @SerialName("permission_mode") val permissionMode: String = "unattended",
+    val status: String = "active",
+    val schedule: String? = null,
+)
+
 /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
 
-/** 群成员 = 一个对话（bot）的公开档案。 */
+/** 群成员 = 一个常驻 Bot 的公开档案。 */
 @Serializable
 data class ChatGroupMember(
-    @SerialName("task_id") val taskId: String = "",
+    @SerialName("bot_id") val botId: String = "",
     val name: String = "",
     val description: String = "",
     @SerialName("avatar_shape") val avatarShape: String = "circle",
@@ -238,8 +255,8 @@ data class ChatGroupMessage(
     @SerialName("group_id") val groupId: String = "",
     /** 群内自增游标，轮询用 after_seq。 */
     val seq: Int = 0,
-    /** 发言的 bot；用户 / 系统消息为 null。 */
-    @SerialName("task_id") val taskId: String? = null,
+    /** 发言的 bot（bots.id）；用户 / 系统消息为 null。 */
+    @SerialName("bot_id") val botId: String? = null,
     @SerialName("author_name") val authorName: String = "",
     /** user / assistant / system。 */
     val role: String = "",
