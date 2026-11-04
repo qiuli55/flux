@@ -9,6 +9,8 @@ build/
 *.dex
 captures/
 .cxx/
+# remote-build skill 的产物暂存目录（APK 与分片，体积大，不入库）
+remote-artifacts/
 # 签名材料：本仓库不存放任何签名密钥（红线：密钥不入库）
 *.jks
 *.keystore
