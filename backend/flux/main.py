@@ -83,6 +83,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 默认每 5 分钟一轮；测试与本地零配置可用 knowledge_enabled / worker 开关关掉。
         if app_settings.knowledge_enabled and app_settings.knowledge_worker_enabled:
             await container.knowledge_worker.start()
+        # Bot 模式：定时轮询 bots.next_run_at（落库），到期且空闲就开一条新任务。
+        # 关掉时 Bot 仍可手动 /run，只是不再自动触发。
+        if app_settings.bot_scheduler_enabled:
+            await container.bots.start()
         yield
         if log_upload_task is not None and not log_upload_task.done():
             log_upload_task.cancel()
@@ -96,6 +100,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await container.supervisor_worker.stop()
         # 知识库索引同样先停：索引事务不能在引擎 dispose 之后还在写。
         await container.knowledge_worker.stop()
+        # Bot 调度循环先停：定时开工要写 tasks / bots，必须在 dispose 之前收尾。
+        await container.bots.stop()
         # Container.dispose() owns service shutdown ordering, including Human PTY.
         await container.dispose()
         # 内部旁路的上游连接池随应用一起关闭

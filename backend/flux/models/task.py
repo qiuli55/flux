@@ -75,6 +75,14 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     avatar_color: Mapped[str] = mapped_column(
         String(32), nullable=False, default="violet", server_default="violet"
     )
+    # Bot 模式（2026-11-05）：这条任务由哪个常驻 Bot 开工。为空 = 普通对话/助理任务，
+    # 也因此不进首页对话列表（见 TaskRepository.list 的 exclude_bot_tasks）。
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bots.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    # 本轮执行的工作目录快照。Bot 每次开工时把它的独立目录写进来，
+    # CLI runtime 据此把子进程 cwd 放到 bots/<id>/workspace，而不是全局工作区。
+    workspace: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""
@@ -113,6 +121,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "bot_name": self.bot_name,
             "avatar_shape": self.avatar_shape or "circle",
             "avatar_color": self.avatar_color or "violet",
+            "bot_id": str(self.bot_id) if self.bot_id is not None else None,
         }
 
 

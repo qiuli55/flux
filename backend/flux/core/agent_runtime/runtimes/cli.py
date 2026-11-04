@@ -592,7 +592,10 @@ class CliRuntime:
         # （opencode 是 opencode.json 顶层 model，codex 是 FLUX_CODEX_MODEL），
         # 它决定消耗哪个套餐的额度。
         effective_model = model_override or resolve_default_model(self._settings, self.runtime_id)
-        workspace = self._settings.workspace_root or self._settings.dsh_workspace
+        # Bot 任务的执行目录来自 tasks.workspace 快照（每个 Bot 一个独立目录）；
+        # 普通对话没有该字段，仍用全局工作区。
+        task_workspace = str(getattr(task, "workspace", "") or "").strip()
+        workspace = task_workspace or self._settings.workspace_root or self._settings.dsh_workspace
         run_dir = Path(self._settings.dsh_home).expanduser() / "runs" / run_id
         task_key = str(getattr(task, "id", "") or "")
         #: 生效执行时限：runtime 能力表默认值 + Settings 通用覆盖（见 config.agent_limits）
@@ -644,6 +647,9 @@ class CliRuntime:
             run_dir.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(OSError):
                 os.chmod(run_dir, 0o700)
+            if task_workspace:
+                # Bot 的独立工作目录首次开工时创建（之后由 Agent 自己往里写）
+                Path(task_workspace).mkdir(parents=True, exist_ok=True)
             if config_dir != run_dir:
                 config_dir.mkdir(parents=True, exist_ok=True)
                 with contextlib.suppress(OSError):

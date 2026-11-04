@@ -83,6 +83,8 @@ class TaskRepository:
         bot_name: str | None = None,
         avatar_shape: str = "circle",
         avatar_color: str = "violet",
+        bot_id: uuid.UUID | None = None,
+        workspace: str | None = None,
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
@@ -90,6 +92,7 @@ class TaskRepository:
         而不是留给数据库外键去抛约束错误（那会退化成 400，同一类问题两种错误码）。
 
         `model` / `api_key_id` 是任务级模型选择；`api_key_id=None` 表示原生模型。
+        `bot_id` 标记这条任务由哪个常驻 Bot 发起；`workspace` 是本轮执行目录的快照。
         """
         async with self._session_factory() as session:
             if project_id is not None:
@@ -113,6 +116,8 @@ class TaskRepository:
                 bot_name=(bot_name or "").strip()[:64] or None,
                 avatar_shape=avatar_shape,
                 avatar_color=avatar_color,
+                bot_id=bot_id,
+                workspace=(workspace or "").strip() or None,
             )
             session.add(task)
             await self._commit(session)
@@ -134,9 +139,15 @@ class TaskRepository:
         project_id: uuid.UUID | None = None,
         status: TaskStatus | None = None,
         origin: TaskOrigin | None = None,
+        bot_id: uuid.UUID | None = None,
+        exclude_bot_tasks: bool = False,
         limit: int = 50,
     ) -> list[Task]:
-        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。"""
+        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。
+
+        `bot_id` 只看某个 Bot 的开工记录；`exclude_bot_tasks` 用于首页对话列表，
+        把常驻 Bot 的每一轮开工挡在「对话」之外。
+        """
         statement = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
         if project_id is not None:
             statement = statement.where(Task.project_id == project_id)
@@ -144,6 +155,10 @@ class TaskRepository:
             statement = statement.where(Task.status == status.value)
         if origin is not None:
             statement = statement.where(Task.origin == origin.value)
+        if bot_id is not None:
+            statement = statement.where(Task.bot_id == bot_id)
+        if exclude_bot_tasks:
+            statement = statement.where(Task.bot_id.is_(None))
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
 
@@ -154,12 +169,15 @@ class TaskRepository:
         status: TaskStatus | None = None,
         origin: TaskOrigin | None = None,
         keyword: str | None = None,
+        include_bot_tasks: bool = False,
         limit: int = 50,
     ) -> list[ConversationSummary]:
         """对话列表 + 每条的消息条数 / 最后消息时间与摘录（助理通读全部对话用）。
 
         统计走「分组聚合子查询 + 回连最后一条消息」，整页一次查询取齐，不做 N+1；
         排序按「最后一条消息时间优先、没有消息时用创建时间」。
+
+        默认排除常驻 Bot 的开工任务：它们有独立入口，混进对话列表会淹没人工对话。
         """
         stats = (
             select(
@@ -191,6 +209,8 @@ class TaskRepository:
             statement = statement.where(Task.origin == origin.value)
         if keyword:
             statement = statement.where(Task.description.ilike(f"%{keyword.strip()}%"))
+        if not include_bot_tasks:
+            statement = statement.where(Task.bot_id.is_(None))
         async with self._session_factory() as session:
             rows = await session.execute(statement)
             return [

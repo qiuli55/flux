@@ -27,6 +27,7 @@ from flux.core.agent_runtime.session_repository import TaskRuntimeSessionReposit
 from flux.core.agent_runtime.trace import RunTraceRecorder
 from flux.core.agent_runtime.trace_repository import RunTraceRepository
 from flux.core.billing.service import BillingService
+from flux.core.bot.service import BotService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
@@ -160,6 +161,8 @@ class Container:
     #: 因为 CliRuntime 每个 Run 新建实例，实例内缓存跨 run 不共享。
     billing: BillingService = field(init=False)
     task_run_service: TaskRunService = field(init=False)
+    #: Bot 模式：常驻 Bot 的生命周期编排与定时触发（对话模式不经过它）
+    bots: BotService = field(init=False)
     # IDE 行内补全（AI_COMPLETION_SPEC）：偏好/当前 Agent 落盘 + 模型解析 + 流式生成
     completion_prefs: CompletionPrefsStore = field(init=False)
     completion_resolver: CompletionModelResolver = field(init=False)
@@ -418,6 +421,12 @@ class Container:
         # ChatGPT 账号登录成功时自动采集一次 Codex 额度（plan + 窗口百分比）
         self.codex_account.set_billing(self.billing)
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
+        # Bot 模式：每次开工都落一条带 bot_id / workspace 快照的任务，再交给同一个
+        # TaskRunService；调度器由 main.py lifespan 起停（bot_scheduler_enabled）。
+        self.bots = BotService(
+            self,
+            interval_seconds=self.settings.bot_scheduler_interval_seconds,  # type: ignore[attr-defined]
+        )
         # 上游瞬时故障（429 / ReadTimeout）自动续跑一轮：事件桥只做判定与冷却，
         # 真正重新起 Run 交给 TaskRunService（沿用任务自己的 Agent / 模型 / 权限模式）。
         self.task_runs.set_retry_handler(self._auto_retry_task)

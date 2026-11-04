@@ -50,6 +50,16 @@ class TaskOrigin(StrEnum):
     ASSISTANT = "assistant"
 
 
+class BotStatus(StrEnum):
+    """常驻 Bot 的生命周期（bots.status）。
+
+    ACTIVE 才会被定时调度；PAUSED 保留配置与历史，但不再自动开工。
+    """
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+
+
 class DecisionMode(StrEnum):
     """任务级决策策略（文档 §5）：Agent 遇到可选方案时是自己拍板还是停下来问用户。"""
 

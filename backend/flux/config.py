@@ -240,6 +240,12 @@ class Settings(BaseSettings):
     # watchdog：单次 Run 执行时长上限（秒）；0 表示不限制，交给 DSH 自身超时。
     supervisor_run_timeout_seconds: float = 0.0
 
+    # --- Bot 模式（常驻 Bot）---
+    # 后台调度 worker：按 next_run_at 扫到期 Bot 并开工。测试里关掉，避免与用例抢时序。
+    bot_scheduler_enabled: bool = True
+    # 轮询间隔（秒）：cron 的最小粒度是分钟，30 秒足够且不会压垮 SQLite。
+    bot_scheduler_interval_seconds: float = 30.0
+
     # --- 助理知识库（RAG / wiki）---
     # 给助理建一份覆盖「全部对话 + docs + 项目记忆」的检索层（见 flux.core.knowledge）。
     # 关闭后不做任何索引，assistant.search 直接返回空——测试里关掉，避免后台索引抢时序。

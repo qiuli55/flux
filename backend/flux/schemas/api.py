@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from flux.enums import (
     AcceptMode,
     AgentRole,
+    BotStatus,
     BrainSection,
     Capability,
     CapabilityKind,
@@ -77,6 +78,56 @@ class TaskCreateRequest(BaseModel):
     avatar_color: str | None = Field(default=None, max_length=32)
     # 建 bot 时先落一条空对话、不把它当成需求去跑 Agent；第一条消息再走正常对话链路。
     start: bool = True
+
+
+class BotCreateRequest(BaseModel):
+    """创建一个常驻 Bot（Bot 模式）。
+
+    与对话不同，Bot 有自己的工作目录和固定的 Agent / 权限模式，可以按 cron 定时开工。
+    `description` 是它的固定作业内容：定时触发时就是本轮的执行指令。
+    `schedule` 为 5 段 cron（分 时 日 月 周），留空表示只手动触发。
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=8000)
+    avatar_shape: str | None = Field(default=None, max_length=32)
+    avatar_color: str | None = Field(default=None, max_length=32)
+    agent_id: str | None = None
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+    #: 无人值守是 Bot 的常态；需要人工把关时显式改成 normal / plan / full
+    permission_mode: PermissionMode = PermissionMode.UNATTENDED
+    decision_mode: DecisionMode = DecisionMode.AUTO
+    #: 独立工作目录（绝对路径）；留空 = <dsh_home>/bots/<id>/workspace
+    workspace: str | None = Field(default=None, max_length=512)
+    schedule: str | None = Field(default=None, max_length=64)
+
+
+class BotUpdateRequest(BaseModel):
+    """部分更新：只改请求里出现的字段。
+
+    用 `model_fields_set` 区分「没传」与「显式传 null 清空」——否则前端只想改名，
+    却会把 schedule / workspace 一起清掉。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    description: str | None = Field(default=None, max_length=8000)
+    avatar_shape: str | None = Field(default=None, max_length=32)
+    avatar_color: str | None = Field(default=None, max_length=32)
+    agent_id: str | None = None
+    model: str | None = Field(default=None, max_length=128)
+    key_id: str | None = Field(default=None, max_length=64)
+    permission_mode: PermissionMode | None = None
+    decision_mode: DecisionMode | None = None
+    workspace: str | None = Field(default=None, max_length=512)
+    schedule: str | None = Field(default=None, max_length=64)
+    status: BotStatus | None = None
+
+
+class BotRunRequest(BaseModel):
+    """手动触发一次开工；`instruction` 留空则用 Bot 自己的 description。"""
+
+    instruction: str | None = Field(default=None, max_length=8000)
 
 
 class TaskMessageCreateRequest(BaseModel):

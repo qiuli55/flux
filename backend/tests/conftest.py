@@ -64,6 +64,8 @@ def settings(tmp_path) -> Settings:
         # 知识库同理：后台索引会读写对话/docs，用例自己按需显式触发 run_once
         knowledge_enabled=False,
         knowledge_worker_enabled=False,
+        # Bot 调度循环同理：后台按 next_run_at 自动开工会让任务状态随用例时序漂移
+        bot_scheduler_enabled=False,
         knowledge_embedding_api_key=None,
         memory_prefs_file=str(tmp_path / "memory-prefs.json"),
         # 补全偏好同样落临时目录：不能读写开发机 ~/.flux/completion-prefs.json

@@ -44,6 +44,8 @@ _RESPONSE_KEYS = {
     "bot_name",
     "avatar_shape",
     "avatar_color",
+    # Bot 模式：这条任务由哪个常驻 Bot 开工（为空 = 普通对话）
+    "bot_id",
 }
 
 

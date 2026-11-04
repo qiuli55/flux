@@ -231,11 +231,18 @@ async def list_tasks(
     project_id: str | None = None,
     status: str | None = None,
     origin: str | None = None,
+    bot_id: str | None = None,
+    include_bot_tasks: bool = False,
     limit: int = 50,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """列出任务（任务执行中心的任务列表）。默认按创建时间倒序。"""
+    """列出任务（任务执行中心的任务列表）。默认按创建时间倒序。
+
+    `bot_id` 只看某个 Bot 的开工记录；不传时默认把 Bot 任务挡在对话列表之外，
+    需要连同 Bot 任务一起看时显式传 `include_bot_tasks=true`。
+    """
     project_uuid = _parse_uuid(project_id, field="project_id") if project_id else None
+    bot_uuid = _parse_uuid(bot_id, field="bot_id") if bot_id else None
     wanted: TaskStatus | None = None
     if status:
         try:
@@ -257,7 +264,12 @@ async def list_tasks(
     if limit < 1 or limit > 200:
         raise BadRequestError("limit 必须在 1~200 之间", details={"limit": limit})
     tasks = await container.task_repo.list(
-        project_id=project_uuid, status=wanted, origin=origin_filter, limit=limit
+        project_id=project_uuid,
+        status=wanted,
+        origin=origin_filter,
+        bot_id=bot_uuid,
+        exclude_bot_tasks=bot_uuid is None and not include_bot_tasks,
+        limit=limit,
     )
     return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
 
