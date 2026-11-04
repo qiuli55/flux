@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -433,10 +434,10 @@ internal fun ApprovalCardMessage(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF0F172A))
+                    .background(Color(0xFF101012))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Label(card.command, 9.5f, Color(0xFFE2E8F0), mono = true)
+                Label(card.command, 9.5f, Color(0xFFE4E4E7), mono = true)
             }
         }
         if (card.reason.isNotBlank()) {
@@ -503,11 +504,11 @@ internal fun ApprovalDock(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(9.dp))
-                    .background(Color(0xFF0F172A))
+                    .background(Color(0xFF101012))
                     .clickable { showFull = !showFull }
                     .padding(horizontal = 9.dp, vertical = 6.dp),
             ) {
-                Label(card.command, 9f, Color(0xFFE2E8F0), mono = true, maxLines = if (showFull) 14 else 2)
+                Label(card.command, 9f, Color(0xFFE4E4E7), mono = true, maxLines = if (showFull) 14 else 2)
             }
             if (!showFull && card.command.length > 90) {
                 Spacer(Modifier.height(3.dp))
@@ -554,7 +555,7 @@ private fun DockAction(
             .padding(horizontal = 12.dp, vertical = 7.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Label(text, 9.5f, if (primary) Color.White else V2Colors.ink(.62f), weight = FontWeight.Medium)
+        Label(text, 9.5f, if (primary) tint.foreground() else V2Colors.ink(.62f), weight = FontWeight.Medium)
     }
 }
 
@@ -605,8 +606,12 @@ private fun SheetAction(
         Label(
             text,
             10f,
-            if (primary) Color.White else V2Colors.ink(.62f),
+            if (primary) tint.foreground() else V2Colors.ink(.62f),
             weight = FontWeight.Medium,
         )
     }
 }
+
+/** 主色底上的前景：亮底(深色模式的白主色/琥珀)配墨色，暗底配白字。 */
+private fun Color.foreground(): Color =
+    if (luminance() > .55f) V2Colors.ink else Color.White

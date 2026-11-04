@@ -306,7 +306,7 @@ private fun MemoryField(
     Box(
         Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = .62f), RoundedCornerShape(12.dp))
+            .background(V2Colors.surface(.62f), RoundedCornerShape(12.dp))
             .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
@@ -339,7 +339,7 @@ private fun MemoryPill(
         !enabled -> V2Colors.ink(.06f)
         primary -> V2Colors.cyan400
         danger -> V2Colors.rose.copy(alpha = .10f)
-        else -> Color.White.copy(alpha = .7f)
+        else -> V2Colors.surface(.7f)
     }
     val content = when {
         !enabled -> V2Colors.ink(.30f)

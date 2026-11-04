@@ -220,7 +220,7 @@ fun DesignStudioListScreen(
                         size = 34.dp,
                         iconSize = 17.dp,
                         background = V2Colors.accent,
-                        tint = Color.White,
+                        tint = V2Colors.actionInk,
                     )
                 },
             )
@@ -865,7 +865,7 @@ fun DesignCanvasScreen(
                             } else {
                                 V2Colors.surface(.55f)
                             },
-                            tint = if (state.dirty) Color.White else V2Colors.ink(.35f),
+                            tint = if (state.dirty) V2Colors.actionInk else V2Colors.ink(.35f),
                             contentDescription = "保存",
                         )
                     }
@@ -1785,9 +1785,9 @@ private fun DockButton(
             .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = if (accent) Color.White else V2Colors.ink(.55f), modifier = Modifier.size(13.dp))
+        Icon(icon, null, tint = if (accent) V2Colors.actionInk else V2Colors.ink(.55f), modifier = Modifier.size(13.dp))
         Spacer(Modifier.width(4.dp))
-        Label(text, 10f, if (accent) Color.White else V2Colors.ink(.62f), FontWeight.Medium, maxLines = 1)
+        Label(text, 10f, if (accent) V2Colors.actionInk else V2Colors.ink(.62f), FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -2503,7 +2503,7 @@ private fun DesignAction(
             11f,
             when {
                 !enabled -> V2Colors.ink(.32f)
-                filled -> Color.White
+                filled -> V2Colors.actionInk
                 else -> V2Colors.ink(.62f)
             },
             FontWeight.Medium,

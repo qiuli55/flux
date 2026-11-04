@@ -90,19 +90,12 @@ import kotlinx.coroutines.launch
 // ------------------------------------------------------------------ 背景
 
 fun Modifier.outerBackground(): Modifier = drawBehind {
-    drawRect(Color(0xFFE9EDF3))
+    drawRect(V2Colors.bg)
     drawRect(
         brush = Brush.radialGradient(
-            listOf(V2Colors.accent.copy(alpha = .10f), Color.Transparent),
+            listOf(V2Colors.ink(.06f), Color.Transparent),
             center = Offset(size.width * .5f, 0f),
             radius = size.height * .62f,
-        ),
-    )
-    drawRect(
-        brush = Brush.radialGradient(
-            listOf(Color(0xFF6366F1).copy(alpha = .08f), Color.Transparent),
-            center = Offset(size.width, size.height * 1.1f),
-            radius = size.width * .8f,
         ),
     )
 }
@@ -146,10 +139,10 @@ fun Modifier.innerGlow(
         ),
         blendMode = blend,
     )
-    // 右下补一层紫，冷暖对冲后更像「内部发光的玻璃」
+    // 右下补一层同样单色的光，冷暖对冲改成明暗对冲，保持「内部发光的玻璃」
     drawRect(
         brush = Brush.radialGradient(
-            colors = listOf(Color(0xFF8B5CF6).copy(alpha = strength * .7f), Color.Transparent),
+            colors = listOf(color.copy(alpha = strength * .7f), Color.Transparent),
             center = Offset(w, h),
             radius = maxOf(w, h) * 1.05f,
         ),
@@ -312,7 +305,7 @@ internal val V2TaskStatus.tint: Color
     get() = when (this) {
         V2TaskStatus.RUNNING -> V2Colors.cyan500
         V2TaskStatus.WAITING -> V2Colors.amber500
-        V2TaskStatus.QUEUED -> Color(0xFF64748B)
+        V2TaskStatus.QUEUED -> V2Colors.ink(.45f)
         V2TaskStatus.FAILED -> V2Colors.rose500
         V2TaskStatus.DONE -> V2Colors.emerald
         V2TaskStatus.CANCELED -> V2Colors.ink(.30f)
@@ -885,7 +878,7 @@ fun HoldToConfirm(
             Canvas(Modifier.fillMaxSize()) {
                 val stroke = 3.dp.toPx()
                 drawArc(
-                    color = Color(0xFF0F172A).copy(alpha = .07f),
+                    color = V2Colors.ink(.07f),
                     startAngle = -90f,
                     sweepAngle = 360f,
                     useCenter = false,

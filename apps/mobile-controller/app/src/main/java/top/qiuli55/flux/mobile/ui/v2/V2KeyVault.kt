@@ -211,7 +211,7 @@ fun KeyVaultSheet(
                                             .weight(1f)
                                             .height(30.dp)
                                             .background(
-                                                if (active) V2Colors.cyan500.copy(alpha = .14f) else Color.White.copy(alpha = .6f),
+                                                if (active) V2Colors.cyan500.copy(alpha = .14f) else V2Colors.surface(.6f),
                                                 RoundedCornerShape(9.dp),
                                             )
                                             .border(
@@ -386,7 +386,7 @@ private fun SmallPill(
         primary -> V2Colors.cyan400
         active -> V2Colors.cyan500.copy(alpha = .14f)
         danger -> V2Colors.rose.copy(alpha = .10f)
-        else -> Color.White.copy(alpha = .65f)
+        else -> V2Colors.surface(.65f)
     }
     val color = when {
         !enabled -> V2Colors.ink(.30f)

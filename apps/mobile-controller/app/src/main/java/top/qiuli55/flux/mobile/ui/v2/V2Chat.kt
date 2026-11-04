@@ -1103,7 +1103,7 @@ private fun PromptAction(
         Label(
             text,
             9.5f,
-            if (primary) Color.White else V2Colors.ink(.55f),
+            if (primary) V2Colors.actionInk else V2Colors.ink(.55f),
             weight = FontWeight.Medium,
         )
     }
@@ -1370,17 +1370,17 @@ private fun MessageRow(
                         .widthIn(max = 344.dp)
                         .clip(shape)
                         .background(V2Colors.accent)
-                        .innerGlow(shape, color = Color.White, alpha = .34f)
+                        .innerGlow(shape, color = V2Colors.actionInk, alpha = .34f)
                         .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
                         .v2CombinedPressable(pressScale = .98f, onLongClick = { onLongPress(message, bubbleBounds) }) {}
                         .padding(horizontal = 14.dp, vertical = 11.dp),
                 ) {
-                    Label(message.text, 15f, Color.White)
+                    Label(message.text, 15f, V2Colors.actionInk)
                     Spacer(Modifier.height(4.dp))
                     Label(
                         message.time,
                         8.5f,
-                        Color.White.copy(alpha = .55f),
+                        V2Colors.actionInk.copy(alpha = .55f),
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.End,
                     )
@@ -1552,7 +1552,7 @@ private fun SecureInputCardBody(
                     Label(
                         if (busy) "保存中…" else "保存",
                         10.5f,
-                        if (enabled) Color.White else V2Colors.ink(.38f),
+                        if (enabled) V2Colors.actionInk else V2Colors.ink(.38f),
                         weight = FontWeight.Medium,
                     )
                 }
@@ -1614,7 +1614,7 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label("点开预览", 9f, Color.White, FontWeight.SemiBold)
+                Label("点开预览", 9f, V2Colors.actionInk, FontWeight.SemiBold)
             }
         }
         Spacer(Modifier.height(9.dp))

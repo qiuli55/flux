@@ -593,7 +593,7 @@ private fun CodeCard(lang: String, code: String) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(11.dp))
-            .background(Color(0xFF101826))
+            .background(Color(0xFF101012))
             .padding(vertical = 8.dp),
     ) {
         Row(
