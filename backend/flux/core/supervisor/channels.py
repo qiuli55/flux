@@ -21,7 +21,7 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["FeishuChannel", "NullChannel", "SupervisorChannel"]
+__all__ = ["FeishuChannel", "NullChannel", "SupervisorChannel", "WechatChannel"]
 
 #: 平台单条文本上限的安全值（飞书文本消息上限远大于此，留足余量）
 MAX_TEXT_CHARS = 4000
@@ -133,6 +133,46 @@ class FeishuChannel:
             self._client = client
             self._owns_client = True
         return await client.request(method, f"{self._api_base}{path}", **kwargs)
+
+
+class WechatChannel:
+    """微信主动出站：把文本回推给 OpenClaw 网关（入站被动回复不走这里）。"""
+
+    name = "wechat"
+
+    def __init__(
+        self,
+        *,
+        send_url: str,
+        token: str,
+        timeout_seconds: float = 15.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._send_url = send_url
+        self._token = token
+        self._timeout = max(1.0, float(timeout_seconds))
+        self._client = client
+        self._owns_client = client is None
+
+    async def send_text(self, external_id: str, text: str) -> None:
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self._timeout)
+            self._client = client
+            self._owns_client = True
+        response = await client.post(
+            self._send_url,
+            headers={"Authorization": f"Bearer {self._token}"},
+            json={"session_key": external_id, "text": (text or "")[:MAX_TEXT_CHARS]},
+        )
+        if response.status_code >= 400:
+            detail = response.text[:300]
+            raise RuntimeError(f"发送微信消息失败：HTTP {response.status_code} {detail}")
+
+    async def aclose(self) -> None:
+        if self._client is not None and self._owns_client:
+            await self._client.aclose()
+        self._client = None
 
 
 def _payload(response: httpx.Response, label: str) -> dict[str, Any]:

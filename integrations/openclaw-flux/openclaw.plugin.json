@@ -1,0 +1,34 @@
+{
+  "id": "flux-wechat",
+  "name": "Flux WeChat",
+  "description": "把微信消息转给 Flux 助理处理，用 Flux 的 RAG 与项目记忆回复，OpenClaw 只做传输层。",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "fluxUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8000/api/v1/supervisor/channels/wechat",
+        "description": "Flux 微信入站地址"
+      },
+      "bridgeToken": {
+        "type": "string",
+        "default": "",
+        "description": "与 FLUX_SUPERVISOR_WECHAT_BRIDGE_TOKEN 一致；留空时读取同名环境变量"
+      },
+      "channel": {
+        "type": "string",
+        "default": "wechat",
+        "description": "只接管该 OpenClaw 通道；留空表示不按通道过滤"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 180000,
+        "description": "等待 Flux 回复的超时时间（毫秒）"
+      }
+    }
+  }
+}

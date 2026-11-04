@@ -9,7 +9,12 @@
 """
 
 from flux.core.supervisor.assess import SupervisorAssessor
-from flux.core.supervisor.channels import FeishuChannel, NullChannel, SupervisorChannel
+from flux.core.supervisor.channels import (
+    FeishuChannel,
+    NullChannel,
+    SupervisorChannel,
+    WechatChannel,
+)
 from flux.core.supervisor.delivery import SupervisorNotifier
 from flux.core.supervisor.dispatcher import DispatchOutcome, SupervisorDispatcher, derive_stage
 from flux.core.supervisor.feishu import FeishuWebhook, WebhookResult
@@ -18,6 +23,9 @@ from flux.core.supervisor.outbox import SupervisorOutbox
 from flux.core.supervisor.planner import PlannedTicket, SupervisorPlanner, TicketPlan
 from flux.core.supervisor.repository import SupervisorRepository
 from flux.core.supervisor.service import SupervisorService
+from flux.core.supervisor.wechat import WechatBridge, WechatResult
+from flux.core.supervisor.wechat_assistant import WechatAssistant, WechatReply
+from flux.core.supervisor.wechat_repository import WechatSessionRepository
 from flux.core.supervisor.worker import SupervisorWorker
 
 __all__ = [
@@ -38,5 +46,11 @@ __all__ = [
     "SupervisorWorker",
     "TicketPlan",
     "WebhookResult",
+    "WechatAssistant",
+    "WechatBridge",
+    "WechatChannel",
+    "WechatReply",
+    "WechatResult",
+    "WechatSessionRepository",
     "derive_stage",
 ]
