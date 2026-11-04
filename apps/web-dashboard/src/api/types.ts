@@ -1201,9 +1201,9 @@ export interface SupervisorDispatchThreadResult {
 
 /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
 
-/** 群成员 = 一个对话（bot）的公开档案 */
+/** 群成员 = 一个常驻 Bot 的公开档案 */
 export interface ChatGroupMember {
-  task_id: string;
+  bot_id: string;
   name: string;
   description: string;
   avatar_shape: string;
@@ -1234,7 +1234,7 @@ export interface ChatGroupMessage {
   /** 群内自增游标，轮询用 after_seq */
   seq: number;
   /** 发言的 bot；用户 / 系统消息为 null */
-  task_id: string | null;
+  bot_id: string | null;
   author_name: string;
   role: "user" | "assistant" | "system";
   kind: string;
@@ -1254,7 +1254,7 @@ export interface ChatGroupMessagePage {
 export interface ChatGroupSendOutcome {
   message: ChatGroupMessage;
   epoch_id: string;
-  /** 这条消息里 @ 到的成员 task_id */
+  /** 这条消息里 @ 到的成员 bot_id */
   mentioned: string[];
 }
 

@@ -1,5 +1,5 @@
 /**
- * 内部群聊：把多个对话（bot）拉进一个群，用户发言后它们依次决定要不要说话。
+ * 内部群聊：把多个常驻 Bot 拉进一个群，用户发言后它们依次决定要不要说话。
  *
  * 前端刻意不做 SSE 流式：群聊里多条消息同时逐字输出太拥挤，
  * 这里按 seq 轮询拉整条消息（2s 一拍），新增的消息整块出现。
@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import type { ChatGroup, ChatGroupMember, ChatGroupMessage, Task } from "../api/types";
+import type { View } from "../app/router";
+import type { Bot, ChatGroup, ChatGroupMember, ChatGroupMessage } from "../api/types";
 import { BotAvatar } from "../components/group/BotAvatar";
 import { CreateBotDialog } from "../components/group/CreateBotDialog";
 import { Modal } from "../shell/Overlay";
@@ -39,9 +40,8 @@ function mergeMessages(prev: ChatGroupMessage[], incoming: ChatGroupMessage[]): 
   return next;
 }
 
-function botLabel(task: Task): string {
-  const name = (task.bot_name ?? "").trim();
-  return name || task.description.trim().slice(0, 24) || "未命名 Bot";
+function botLabel(bot: Bot): string {
+  return (bot.name ?? "").trim() || "未命名 Bot";
 }
 
 /* ---------------- 消息行 ---------------- */
@@ -128,7 +128,7 @@ function CreateGroupDialog({ open, onClose, onCreated }: CreateGroupDialogProps)
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [rounds, setRounds] = useState("2");
-  const [bots, setBots] = useState<Task[]>([]);
+  const [bots, setBots] = useState<Bot[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -155,9 +155,9 @@ function CreateGroupDialog({ open, onClose, onCreated }: CreateGroupDialogProps)
     };
   }, [open]);
 
-  const toggle = (taskId: string) =>
+  const toggle = (botId: string) =>
     setPicked((prev) =>
-      prev.includes(taskId) ? prev.filter((item) => item !== taskId) : [...prev, taskId],
+      prev.includes(botId) ? prev.filter((item) => item !== botId) : [...prev, botId],
     );
 
   const submit = async () => {
@@ -170,7 +170,7 @@ function CreateGroupDialog({ open, onClose, onCreated }: CreateGroupDialogProps)
         name: trimmed,
         description: description.trim() || null,
         max_rounds: Number(rounds),
-        member_ids: picked,
+        bot_ids: picked,
       });
       onCreated(group);
       onClose();
@@ -292,7 +292,7 @@ function CreateGroupDialog({ open, onClose, onCreated }: CreateGroupDialogProps)
 
 /* ---------------- 页面 ---------------- */
 
-export function GroupsPage() {
+export function GroupsPage({ navigate }: { navigate: (v: View) => void }) {
   const [groups, setGroups] = useState<ChatGroup[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ChatGroup | null>(null);
@@ -305,7 +305,7 @@ export function GroupsPage() {
   const [now, setNow] = useState(() => Date.now());
   const [createOpen, setCreateOpen] = useState(false);
   const [memberOpen, setMemberOpen] = useState(false);
-  const [candidates, setCandidates] = useState<Task[]>([]);
+  const [candidates, setCandidates] = useState<Bot[]>([]);
   const [createBotOpen, setCreateBotOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -413,7 +413,7 @@ export function GroupsPage() {
   }, [pendingUntil]);
 
   const memberMap = useMemo(
-    () => new Map((detail?.members ?? []).map((member) => [member.task_id, member])),
+    () => new Map((detail?.members ?? []).map((member) => [member.bot_id, member])),
     [detail],
   );
 
@@ -458,10 +458,10 @@ export function GroupsPage() {
     }
   };
 
-  const addMember = async (taskId: string) => {
+  const addMember = async (botId: string) => {
     if (!selectedId) return;
     try {
-      const members = await api.addGroupMember(selectedId, taskId);
+      const members = await api.addGroupMember(selectedId, botId);
       setDetail((prev) => (prev ? { ...prev, members, member_count: members.length } : prev));
       setGroups((prev) =>
         prev.map((group) =>
@@ -473,10 +473,10 @@ export function GroupsPage() {
     }
   };
 
-  const removeMember = async (taskId: string) => {
+  const removeMember = async (botId: string) => {
     if (!selectedId) return;
     try {
-      const outcome = await api.removeGroupMember(selectedId, taskId);
+      const outcome = await api.removeGroupMember(selectedId, botId);
       setDetail((prev) =>
         prev ? { ...prev, members: outcome.members, member_count: outcome.members.length } : prev,
       );
@@ -508,12 +508,15 @@ export function GroupsPage() {
     }
   };
 
-  const memberIds = new Set((detail?.members ?? []).map((member) => member.task_id));
+  const memberIds = new Set((detail?.members ?? []).map((member) => member.bot_id));
   const available = candidates.filter((bot) => !memberIds.has(bot.id));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
       <PageHead title="群聊" desc="每个 Bot 都是一个独立成员；群里它们依次决定要不要开口，不会无限接话。">
+        <Button variant="quiet" icon="cpu" onClick={() => navigate("bots")}>
+          返回 Bot
+        </Button>
         <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>
           新建群聊
         </Button>
@@ -660,7 +663,7 @@ export function GroupsPage() {
                     <MessageRow
                       key={message.id}
                       message={message}
-                      member={message.task_id ? memberMap.get(message.task_id) : undefined}
+                      member={message.bot_id ? memberMap.get(message.bot_id) : undefined}
                     />
                   ))
                 )}
@@ -726,7 +729,7 @@ export function GroupsPage() {
           <div style={{ flex: 1, overflowY: "auto", padding: 8, display: "flex", flexDirection: "column", gap: 4 }}>
             {(detail?.members ?? []).map((member) => (
               <div
-                key={member.task_id}
+                key={member.bot_id}
                 style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px" }}
               >
                 <BotAvatar
@@ -746,7 +749,7 @@ export function GroupsPage() {
                 <button
                   type="button"
                   title="移出群聊"
-                  onClick={() => void removeMember(member.task_id)}
+                  onClick={() => void removeMember(member.bot_id)}
                   style={{
                     width: 22,
                     height: 22,
@@ -832,8 +835,8 @@ export function GroupsPage() {
       <CreateBotDialog
         open={createBotOpen}
         onClose={() => setCreateBotOpen(false)}
-        onCreated={(task) => {
-          setCandidates((prev) => [task, ...prev]);
+        onCreated={(bot) => {
+          setCandidates((prev) => [bot, ...prev]);
         }}
       />
     </div>

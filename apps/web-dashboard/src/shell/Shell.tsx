@@ -188,8 +188,8 @@ function Content({ view, navigate }: { view: View; navigate: (v: View) => void }
         {view === "overview" ? <OverviewPage navigate={navigate} /> : null}
         {view === "assistant" ? <AssistantPage /> : null}
         {view === "tasks" ? <TasksPage navigate={navigate} /> : null}
-        {view === "groups" ? <GroupsPage /> : null}
-        {view === "bots" ? <BotsPage /> : null}
+        {view === "groups" ? <GroupsPage navigate={navigate} /> : null}
+        {view === "bots" ? <BotsPage navigate={navigate} /> : null}
         {view === "skills" ? <SkillsPage /> : null}
         {view === "billing" ? <BillingPage /> : null}
         {view === "diagnostics" ? <DiagnosticsPage /> : null}

@@ -1,9 +1,9 @@
 /**
- * 创建 Bot：一段对话就是一个 bot，创建时给它起名并挑一组形状 × 颜色作为头像。
+ * 创建 Bot：Bot 是常驻成员，创建时给它起名并挑一组形状 × 颜色作为头像。
  * 头像不可上传图片，避免引入资源存储；同一组合即唯一视觉标识。
  */
 import { useCallback, useEffect, useState } from "react";
-import type { DecisionMode, Task } from "../../api/types";
+import type { Bot, DecisionMode } from "../../api/types";
 import { api } from "../../api/client";
 import { Modal } from "../../shell/Overlay";
 import { Button, Field, Input } from "../../shell/ui";
@@ -19,11 +19,10 @@ import {
 interface CreateBotDialogProps {
   open: boolean;
   onClose: () => void;
-  onCreated: (task: Task) => void;
+  onCreated: (bot: Bot) => void;
   /** 预填名称：从「写下第一条需求即创建」进来时用需求首行做默认名 */
   initialName?: string;
-  /** 所属项目 / 决策策略 / 执行 Agent：沿用当前页面的选择 */
-  projectId?: string | null;
+  /** 决策策略 / 执行 Agent：沿用当前页面的选择 */
   decisionMode?: DecisionMode;
   agentId?: string | null;
 }
@@ -41,7 +40,6 @@ export function CreateBotDialog({
   onClose,
   onCreated,
   initialName,
-  projectId = null,
   decisionMode,
   agentId = null,
 }: CreateBotDialogProps) {
@@ -70,23 +68,20 @@ export function CreateBotDialog({
     setBusy(true);
     setError(null);
     try {
-      const task = await api.createTask({
-        description: trimmed,
-        project_id: projectId,
-        decision_mode: decisionMode,
-        agent_id: agentId,
-        bot_name: trimmed,
+      const bot = await api.createBot({
+        name: trimmed,
         avatar_shape: shape,
         avatar_color: color,
-        start: false,
+        decision_mode: decisionMode,
+        agent_id: agentId,
       });
-      onCreated(task);
+      onCreated(bot);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
       setBusy(false);
     }
-  }, [trimmed, busy, shape, color, projectId, decisionMode, agentId, onCreated, onClose]);
+  }, [trimmed, busy, shape, color, decisionMode, agentId, onCreated, onClose]);
 
   return (
     <Modal

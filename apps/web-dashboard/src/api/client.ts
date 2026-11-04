@@ -391,17 +391,18 @@ export const api = {
     project_id?: string | null;
     description?: string | null;
     max_rounds?: number;
-    member_ids?: string[];
+    bot_ids?: string[];
+    admin_bot_id?: string | null;
   }) => getData<ChatGroup>("POST", "/groups", body),
   getGroup: (groupId: string) => getData<ChatGroup>("GET", `/groups/${groupId}`),
   deleteGroup: (groupId: string) =>
     getData<{ deleted: boolean }>("DELETE", `/groups/${groupId}`),
-  addGroupMember: (groupId: string, taskId: string) =>
-    getData<ChatGroupMember[]>("POST", `/groups/${groupId}/members`, { task_id: taskId }),
-  removeGroupMember: (groupId: string, taskId: string) =>
+  addGroupMember: (groupId: string, botId: string) =>
+    getData<ChatGroupMember[]>("POST", `/groups/${groupId}/members`, { bot_id: botId }),
+  removeGroupMember: (groupId: string, botId: string) =>
     getData<{ removed: boolean; members: ChatGroupMember[] }>(
       "DELETE",
-      `/groups/${groupId}/members/${taskId}`,
+      `/groups/${groupId}/members/${botId}`,
     ),
   listGroupMessages: (groupId: string, options?: { afterSeq?: number; limit?: number }) =>
     getData<ChatGroupMessagePage>(
@@ -415,8 +416,8 @@ export const api = {
     getData<ChatGroupSendOutcome>("POST", `/groups/${groupId}/messages`, { content }),
   interruptGroup: (groupId: string) =>
     getData<ChatGroupInterruptOutcome>("POST", `/groups/${groupId}/interrupt`),
-  /** 群成员候选：全部对话（bot） */
-  listBotCandidates: () => getData<Task[]>("GET", "/tasks?limit=200"),
+  /** 群成员候选：全部常驻 Bot */
+  listBotCandidates: () => getData<Bot[]>("GET", "/bots?limit=200"),
   /**
    * Bot 模式：常驻 Bot 的配置面。
    * 开工仍是普通任务（`tasks.bot_id` 指回 Bot），执行 / 消息 / 计费都复用任务接口。

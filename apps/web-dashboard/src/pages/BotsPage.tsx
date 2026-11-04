@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
+import type { View } from "../app/router";
 import type {
   AgentHandle,
   Bot,
@@ -491,7 +492,7 @@ function BotCard({ bot, busy, onRun, onRuns, onEdit, onToggle, onDelete }: BotCa
 
 type StatusFilter = "all" | "active" | "paused";
 
-export function BotsPage() {
+export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
   const [bots, setBots] = useState<Bot[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
@@ -578,6 +579,9 @@ export function BotsPage() {
         title="Bot 模式"
         desc="常驻在机器上的执行者：独立工作目录、按 cron 定时开工，也可以随时手动跑一次。"
       >
+        <Button variant="quiet" icon="users" onClick={() => navigate("groups")}>
+          群聊
+        </Button>
         <Button
           variant="primary"
           icon="plus"
