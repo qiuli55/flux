@@ -385,6 +385,10 @@ export interface Task {
   avatar_shape?: string;
   /** bot 头像颜色（见 AVATAR_COLORS） */
   avatar_color?: string;
+  /** 属于哪个常驻 Bot（Bot 模式下每次开工的 tasks.bot_id）；对话任务为 null */
+  bot_id?: string | null;
+  /** 开工时快照的工作目录；对话任务为 null */
+  workspace?: string | null;
 }
 
 /** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
@@ -1258,4 +1262,62 @@ export interface ChatGroupSendOutcome {
 export interface ChatGroupInterruptOutcome {
   interrupted: boolean;
   epoch_id: string | null;
+}
+
+/* ---------------- Bot 模式（/api/v1/bots） ---------------- */
+
+/** Bot 生命周期：active 参与定时调度，paused 保留配置与历史但不再自动开工 */
+export type BotStatus = "active" | "paused";
+
+/** Bot 的权限模式（与后端 PermissionMode 一致） */
+export type PermissionMode = "plan" | "normal" | "full" | "unattended";
+
+/** 一个常驻 Bot（Bot.to_dict + 后端附加的 workspace_path） */
+export interface Bot {
+  id: string;
+  name: string;
+  /** 固定作业内容：定时触发时就是本轮的执行指令 */
+  description: string;
+  avatar_shape: string;
+  avatar_color: string;
+  agent_id: string | null;
+  model: string | null;
+  permission_mode: PermissionMode;
+  decision_mode: DecisionMode;
+  /** 显式配置的工作目录；null = 用 workspace_path 的派生默认值 */
+  workspace: string | null;
+  /** 实际生效的绝对路径（后端派生，只读） */
+  workspace_path: string;
+  status: BotStatus;
+  /** 5 段 cron（分 时 日 月 周）；null = 仅手动触发 */
+  schedule: string | null;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_task_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** POST /api/v1/bots 的请求体 */
+export interface BotCreateInput {
+  name: string;
+  description?: string;
+  avatar_shape?: string;
+  avatar_color?: string;
+  agent_id?: string | null;
+  model?: string | null;
+  key_id?: string | null;
+  permission_mode?: PermissionMode;
+  decision_mode?: DecisionMode;
+  workspace?: string | null;
+  schedule?: string | null;
+}
+
+/** PATCH /api/v1/bots/{id} 的请求体（只发要改的字段，显式 null 表示清空） */
+export type BotUpdateInput = Partial<BotCreateInput> & { status?: BotStatus };
+
+/** POST /api/v1/bots/{id}/run 的 data */
+export interface BotRunOutcome {
+  bot: Bot;
+  task: Task;
 }

@@ -14,6 +14,7 @@ import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
   ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
+  Bot, BotCreateInput, BotRunOutcome, BotStatus, BotUpdateInput,
   CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change, ChatGroup, ChatGroupInterruptOutcome, ChatGroupMember,
   ChatGroupMessagePage, ChatGroupSendOutcome,
@@ -231,6 +232,9 @@ export const api = {
   },
   sendTaskMessage: (taskId: string, content: string) =>
     getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  /** 终态对话续跑：新消息作为新一轮 Agent 指令，历史消息保留 */
+  continueTask: (taskId: string, content: string) =>
+    getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/continue`, { content }),
   startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
     getData<TaskStartOutcome>(
       "POST",
@@ -413,4 +417,31 @@ export const api = {
     getData<ChatGroupInterruptOutcome>("POST", `/groups/${groupId}/interrupt`),
   /** 群成员候选：全部对话（bot） */
   listBotCandidates: () => getData<Task[]>("GET", "/tasks?limit=200"),
+  /**
+   * Bot 模式：常驻 Bot 的配置面。
+   * 开工仍是普通任务（`tasks.bot_id` 指回 Bot），执行 / 消息 / 计费都复用任务接口。
+   */
+  listBots: (options?: { status?: BotStatus; limit?: number }) =>
+    getData<Bot[]>(
+      "GET",
+      `/bots${query({ status: options?.status, limit: options?.limit?.toString() })}`,
+    ),
+  getBot: (botId: string) => getData<Bot>("GET", `/bots/${botId}`),
+  createBot: (body: BotCreateInput) => getData<Bot>("POST", "/bots", body),
+  updateBot: (botId: string, body: BotUpdateInput) =>
+    getData<Bot>("PATCH", `/bots/${botId}`, body),
+  deleteBot: (botId: string) => getData<{ deleted: string }>("DELETE", `/bots/${botId}`),
+  /** 手动开工一次；instruction 留空则用 Bot 的 description */
+  runBot: (botId: string, instruction?: string) =>
+    getData<BotRunOutcome>("POST", `/bots/${botId}/run`, {
+      instruction: instruction?.trim() || null,
+    }),
+  listBotTasks: (botId: string, options?: { status?: string; limit?: number }) =>
+    getData<Task[]>(
+      "GET",
+      `/bots/${botId}/tasks${query({
+        status: options?.status,
+        limit: options?.limit?.toString(),
+      })}`,
+    ),
 };

@@ -15,6 +15,7 @@ import { IdePage } from "../pages/IdePage";
 import { SoloPage } from "../pages/SoloPage";
 import { AssistantPage } from "../pages/AssistantPage";
 import { BillingPage } from "../pages/BillingPage";
+import { BotsPage } from "../pages/BotsPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
 import { GroupsPage } from "../pages/GroupsPage";
 import { OverviewPage } from "../pages/OverviewPage";
@@ -188,6 +189,7 @@ function Content({ view, navigate }: { view: View; navigate: (v: View) => void }
         {view === "assistant" ? <AssistantPage /> : null}
         {view === "tasks" ? <TasksPage navigate={navigate} /> : null}
         {view === "groups" ? <GroupsPage /> : null}
+        {view === "bots" ? <BotsPage /> : null}
         {view === "skills" ? <SkillsPage /> : null}
         {view === "billing" ? <BillingPage /> : null}
         {view === "diagnostics" ? <DiagnosticsPage /> : null}

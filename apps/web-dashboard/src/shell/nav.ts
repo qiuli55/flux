@@ -21,6 +21,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "overview", label: "概览", icon: "home" },
       { id: "assistant", label: "助理", icon: "bot" },
+      { id: "bots", label: "Bot", icon: "cpu" },
       { id: "tasks", label: "任务", icon: "layers" },
       { id: "groups", label: "群聊", icon: "users" },
       { id: "skills", label: "Skills", icon: "puzzle" },
@@ -35,6 +36,7 @@ export const NAV_GROUPS: NavGroup[] = [
 export const VIEW_LABEL: Record<View, string> = {
   overview: "概览",
   assistant: "助理",
+  bots: "Bot 模式",
   tasks: "任务",
   groups: "群聊",
   solo: "Solo 执行",
@@ -49,6 +51,7 @@ export const VIEW_LABEL: Record<View, string> = {
 export const VIEW_GROUP: Record<View, string> = {
   overview: "平台",
   assistant: "平台",
+  bots: "平台",
   tasks: "平台",
   groups: "平台",
   solo: "核心",
