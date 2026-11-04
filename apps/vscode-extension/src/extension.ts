@@ -27,6 +27,39 @@ let tasksView: vscode.TreeView<TaskNode>;
 let healthTimer: NodeJS.Timeout | undefined;
 let connected = false;
 
+/** Bot 头像契约：形状与颜色取值必须与后端、桌面端保持一致。 */
+const BOT_SHAPES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "circle", label: "圆形" },
+  { id: "squircle", label: "圆角矩形" },
+  { id: "hexagon", label: "六边形" },
+  { id: "triangle", label: "三角形" },
+  { id: "diamond", label: "菱形" },
+  { id: "star", label: "星形" },
+  { id: "flower", label: "花朵" },
+  { id: "burst", label: "爆裂" },
+  { id: "shield", label: "盾牌" },
+  { id: "drop", label: "水滴" },
+  { id: "cloud", label: "云朵" },
+  { id: "gear", label: "齿轮" },
+  { id: "egg", label: "蛋形" },
+  { id: "blob", label: "不规则形" },
+];
+
+const BOT_COLORS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "violet", label: "紫罗兰" },
+  { id: "indigo", label: "靛蓝" },
+  { id: "sky", label: "天蓝" },
+  { id: "teal", label: "青绿" },
+  { id: "emerald", label: "翠绿" },
+  { id: "lime", label: "青柠" },
+  { id: "amber", label: "琥珀" },
+  { id: "orange", label: "橙色" },
+  { id: "rose", label: "玫瑰" },
+  { id: "fuchsia", label: "品红" },
+  { id: "slate", label: "石板灰" },
+  { id: "cyan", label: "青色" },
+];
+
 function selectedChanges(arg?: ChangeNode | ChangeNode[]): ChangeNode[] {
   if (Array.isArray(arg)) {
     return arg;
@@ -175,21 +208,21 @@ async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
   if (!taskId) {
     const tasks = await tasksProvider.tasks();
     if (!tasks.length) {
-      void vscode.window.showInformationMessage("当前项目还没有任务，先新建一个。");
+      void vscode.window.showInformationMessage("当前项目还没有 Bot，先新建一个。");
       return;
     }
     const picked = await vscode.window.showQuickPick(
       tasks.map((task) => {
         const meta = statusMeta(task.status);
         return {
-          label: `$(${meta.icon}) ${task.title || task.description?.slice(0, 60) || task.id}`,
+          label: `$(${meta.icon}) ${task.bot_name || task.title || task.description?.slice(0, 60) || task.id}`,
           description: [meta.label, relativeTime(task.updated_at ?? task.created_at)]
             .filter(Boolean)
             .join(" · "),
           id: task.id,
         };
       }),
-      { placeHolder: "选择要打开的任务", matchOnDescription: true }
+      { placeHolder: "选择要打开的 Bot", matchOnDescription: true }
     );
     if (!picked) {
       return;
@@ -202,12 +235,12 @@ async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
 async function quickMenu(): Promise<void> {
   const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
     {
-      label: "$(add) 新建任务",
+      label: "$(add) 新建 Bot",
       description: "Ctrl+Alt+N",
       run: () => vscode.commands.executeCommand("flux.newTask"),
     },
     {
-      label: "$(comment-discussion) 打开任务面板…",
+      label: "$(comment-discussion) 打开 Bot 面板…",
       description: "Ctrl+Alt+T",
       run: () => vscode.commands.executeCommand("flux.openTaskPanel"),
     },
@@ -424,34 +457,42 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         target = picked.id;
       }
-      const description = await vscode.window.showInputBox({
-        prompt: "描述这个任务要做什么",
-        placeHolder: "例如：修复登录接口 401 后不刷新的问题",
+      const name = await vscode.window.showInputBox({
+        prompt: "这个 Bot 叫什么名字？",
+        placeHolder: "例如：数据统计、前端搭子",
         ignoreFocusOut: true,
+        validateInput: (input) => (input.trim() ? undefined : "Bot 名称不能为空"),
       });
-      if (!description?.trim()) {
+      if (!name?.trim()) {
         return;
       }
-      // 先问是否立即开始，再建任务：取消这一步不会留下一条没人管的任务
-      const startNow = await vscode.window.showQuickPick(
-        [
-          { label: "$(play) 创建并立即开始", value: true },
-          { label: "$(clock) 仅创建，稍后手动开始", value: false },
-        ],
-        { placeHolder: "是否立即启动任务？" }
+      const shape = await vscode.window.showQuickPick(
+        BOT_SHAPES.map((item) => ({ label: item.id, description: item.label })),
+        { placeHolder: "选择 Bot 头像形状" }
       );
-      if (!startNow) {
+      if (!shape) {
+        return;
+      }
+      const color = await vscode.window.showQuickPick(
+        BOT_COLORS.map((item) => ({ label: item.id, description: item.label })),
+        { placeHolder: "选择 Bot 头像颜色" }
+      );
+      if (!color) {
         return;
       }
       try {
-        const task = await client.createTask({ description: description.trim(), project_id: target || undefined });
-        if (startNow.value) {
-          await client.startTask(task.id);
-        }
+        const task = await client.createTask({
+          description: name.trim(),
+          project_id: target || undefined,
+          bot_name: name.trim(),
+          avatar_shape: shape.label,
+          avatar_color: color.label,
+          start: false,
+        });
         tasksProvider.refresh();
         TaskPanel.show(context, client, task.id);
       } catch (err) {
-        void vscode.window.showErrorMessage(`创建任务失败：${(err as Error).message}`);
+        void vscode.window.showErrorMessage(`创建 Bot 失败：${(err as Error).message}`);
       }
     }),
     vscode.commands.registerCommand("flux.spec.draft", async () => {

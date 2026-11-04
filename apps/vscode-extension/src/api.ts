@@ -19,6 +19,9 @@ export interface FluxTask {
   status?: string;
   project_id?: string;
   agent_id?: string;
+  bot_name?: string | null;
+  avatar_shape?: string | null;
+  avatar_color?: string | null;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -292,7 +295,16 @@ export class FluxClient {
     return this.request<FluxTask>("GET", `/tasks/${encodeURIComponent(taskId)}`);
   }
 
-  async createTask(input: { description: string; project_id?: string; priority?: number; summary?: string }): Promise<FluxTask> {
+  async createTask(input: {
+    description: string;
+    project_id?: string;
+    priority?: number;
+    summary?: string;
+    bot_name?: string;
+    avatar_shape?: string;
+    avatar_color?: string;
+    start?: boolean;
+  }): Promise<FluxTask> {
     return this.request<FluxTask>("POST", "/tasks", input);
   }
 

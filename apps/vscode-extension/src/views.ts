@@ -118,7 +118,12 @@ export class ProjectNode extends vscode.TreeItem {
 
 export class TaskNode extends vscode.TreeItem {
   constructor(public readonly task: FluxTask) {
-    super(task.title || task.description?.slice(0, 60) || task.id, vscode.TreeItemCollapsibleState.None);
+    const name =
+      task.bot_name ||
+      task.title ||
+      task.description?.split("\n")[0]?.slice(0, 60) ||
+      task.id;
+    super(name, vscode.TreeItemCollapsibleState.None);
     const meta = statusMeta(task.status);
     const time = relativeTime(task.updated_at ?? task.created_at);
     const settled = ["completed", "done", "cancelled", "canceled"].includes((task.status ?? "").toLowerCase());
@@ -126,14 +131,14 @@ export class TaskNode extends vscode.TreeItem {
     this.description = settled ? time : [meta.label, time].filter(Boolean).join(" · ");
     this.iconPath = new vscode.ThemeIcon(meta.icon, new vscode.ThemeColor(meta.color));
     this.tooltip = markdown([
-      `**${meta.icon ? `$(${meta.icon.replace("~spin", "")}) ` : ""}${task.title || task.id}**`,
+      `**${meta.icon ? `$(${meta.icon.replace("~spin", "")}) ` : ""}${name}**`,
       task.description ? task.description.slice(0, 800) : "",
       `状态：${meta.label}${relativeTime(task.updated_at ?? task.created_at) ? ` · 更新于${relativeTime(task.updated_at ?? task.created_at)}` : ""}`,
       `ID: \`${task.id}\``,
     ].filter(Boolean));
     this.command = {
       command: "flux.openTask",
-      title: "打开任务",
+      title: "打开 Bot",
       arguments: [task.id],
     };
   }
@@ -206,7 +211,7 @@ export class TasksProvider extends StatefulProvider<TaskNode> {
       });
       return tasks.map((t) => new TaskNode(t));
     } catch (err) {
-      this.setState({ count: 0, description: undefined, message: `无法读取任务：${(err as Error).message}` });
+      this.setState({ count: 0, description: undefined, message: `无法读取 Bot：${(err as Error).message}` });
       return [];
     }
   }

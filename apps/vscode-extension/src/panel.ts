@@ -23,7 +23,7 @@ export class TaskPanel {
     }
     const panel = vscode.window.createWebviewPanel(
       "fluxTask",
-      `Flux 任务 ${taskId.slice(0, 8)}`,
+      `Flux Bot ${taskId.slice(0, 8)}`,
       vscode.ViewColumn.One,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
     );
@@ -113,8 +113,8 @@ export class TaskPanel {
     } catch (err) {
       this.post({ type: "error", text: (err as Error).message });
     }
-    if (task?.title || task?.description) {
-      this.panel.title = `Flux · ${truncate(task.title || task.description || "", 40)}`;
+    if (task?.bot_name || task?.title || task?.description) {
+      this.panel.title = `Flux · ${truncate(task.bot_name || task.title || task.description || "", 40)}`;
     }
     let projectName: string | undefined;
     if (task?.project_id) {
@@ -382,7 +382,7 @@ export class TaskPanel {
 <body>
 <header>
   <div class="head-row">
-    <h1 id="title">Flux 任务</h1>
+    <h1 id="title">Flux Bot</h1>
     <span class="pill" id="pill">加载中</span>
   </div>
   <div class="meta">
@@ -411,7 +411,7 @@ export class TaskPanel {
 </main>
 <footer>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="给这个任务发消息，或补充上下文…"></textarea>
+    <textarea id="input" rows="1" placeholder="给这个 Bot 发消息，或补充上下文…"></textarea>
     <button id="send" class="primary">发送</button>
   </div>
   <div class="foot-row">
@@ -519,7 +519,7 @@ export class TaskPanel {
 
   function renderMessages(items) {
     if (!items || !items.length) {
-      threadEl.innerHTML = '<div class="empty">还没有对话。<br/>点「开始」让 Agent 动手，或在下方补充需求。</div>';
+      threadEl.innerHTML = '<div class="empty">还没有消息。<br/>点「开始」让 Agent 动手，或在下方补充需求。</div>';
       $('msgCount').textContent = '0';
       return;
     }
@@ -552,10 +552,10 @@ export class TaskPanel {
     pillEl.textContent = label;
     pillEl.className = 'pill ' + status;
     $('start').disabled = status === 'running' || TERMINAL.has(status);
-    $('start').title = TERMINAL.has(status) ? '该任务已结束，无法再次开始' : '';
+    $('start').title = TERMINAL.has(status) ? '该 Bot 已结束，无法再次开始' : '';
     $('cancel').disabled = !(status === 'running' || status === 'pending' || status === 'queued' || status === 'planning');
     const ended = TERMINAL.has(status);
-    inputEl.placeholder = ended ? '任务已结束，发送会续跑这个对话…' : '给这个任务发消息，或补充上下文…';
+    inputEl.placeholder = ended ? '这个 Bot 已结束，发送会续跑这个对话…' : '给这个 Bot 发消息，或补充上下文…';
     sendBtn.title = ended ? '发送后会把这条消息当作新一轮指令，续跑同一个对话' : '';
     const thinking = document.getElementById('thinking');
     if (thinking) { thinking.classList.toggle('show', status === 'running'); }
@@ -584,7 +584,8 @@ export class TaskPanel {
     const msg = ev.data || {};
     if (msg.type === 'task') {
       const t = msg.task || {};
-      titleEl.textContent = t.title || (t.description ? String(t.description).slice(0, 60) : 'Flux 任务');
+      titleEl.textContent = t.bot_name || t.title || (t.description ? String(t.description).slice(0, 60) : 'Flux Bot');
+      document.title = titleEl.textContent;
       $('taskId').textContent = shortId(t.id);
       $('taskId').title = t.id || '';
       if (t.project_id) { $('projectWrap').hidden = false; $('project').textContent = msg.projectName || shortId(t.project_id); }
