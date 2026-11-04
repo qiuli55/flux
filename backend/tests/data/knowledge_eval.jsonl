@@ -1,0 +1,6 @@
+{"id": "deploy-rollback", "query": "生产部署失败怎么回滚", "source_type": "doc", "expect_any": ["回滚", "rollback"], "notes": "docs 里的部署与回滚流程"}
+{"id": "context-handoff", "query": "上下文快满时怎么交接", "source_type": "doc", "expect_any": ["摘要", "交接", "handoff"], "notes": "CONTEXT_DESIGN 的交接摘要约定"}
+{"id": "mcp-tool-registration", "query": "MCP 工具怎么注册", "source_type": "doc", "expect_any": ["ToolSpec", "ALL_TOOLS"], "notes": "模块与接口约定"}
+{"id": "project-decision", "query": "为什么选 FastAPI 而不是 Flask", "source_type": "brain", "expect_any": ["FastAPI"], "notes": "项目决策记忆"}
+{"id": "chat-e500", "query": "上次那个 E500 是怎么解决的", "source_type": "conversation", "expect_any": ["E500"], "notes": "历史对话里的排查过程"}
+{"id": "cross-source", "query": "知识库如何做混合检索", "source_type": null, "expect_any": ["BM25", "MMR", "向量"], "notes": "跨 docs 与对话的开放问题"}

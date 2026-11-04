@@ -23,6 +23,8 @@ artifacts/
 !apps/web-dashboard/src/data/
 # 例外：Android 源码里的 data 包是代码而不是运行期数据
 !apps/mobile-controller/app/src/main/java/top/qiuli55/flux/mobile/data/
+# 例外：后端测试的评测金标集是测试数据，必须入库
+!backend/tests/data/
 # Apply Engine 的备份目录（落在被改项目根目录下，见 §7.6）
 .flux/
 
