@@ -380,7 +380,7 @@ fun V2TaskDetailScreen(
                 val last = chatMessages.lastOrNull()?.content?.replace('\n', ' ')?.take(40)
                 EntryRow(
                     icon = Icons.Outlined.ChatBubbleOutline,
-                    title = "对话",
+                    title = "Bot",
                     subtitle = if (chatMessages.isEmpty()) "还没有消息" else last.orEmpty(),
                     badge = if (chatMessages.isEmpty()) null else "${chatMessages.size}",
                     onClick = onOpenChat,
@@ -559,13 +559,15 @@ fun V2TaskChatScreen(
     } ?: models.firstOrNull()
     val chat = V2ChatState(
         conversationId = taskId,
-        title = task?.firstLine(40) ?: "任务对话",
+        title = task?.botName?.takeIf { it.isNotBlank() } ?: task?.firstLine(40) ?: "Bot",
         device = device,
         agentId = agentId,
         model = selectedModel?.model ?: "默认模型",
         modelKeyId = selectedModel?.keyId,
         permissionMode = task?.permissionMode ?: "normal",
         isAssistant = task?.origin == "assistant",
+        avatarShape = task?.avatarShape.orEmpty(),
+        avatarColor = task?.avatarColor.orEmpty(),
     )
     val messages = remember(state.messages, task?.id, task?.decisions) {
         // 审批记录的唯一真源是 task.decisions：对话里的 decision 消息只保留发起时的文案，
@@ -613,7 +615,11 @@ fun V2TaskChatScreen(
                 message
             }
         }
-        if (secured.isEmpty() && task != null && task.description.isNotBlank()) {
+        // 新建 bot 时 description 就是 bot 名称，别把它当成一条重复的用户消息。
+        val descriptionIsOwnMessage =
+            task != null && task.description.isNotBlank() &&
+                task.description.trim() != task.botName?.trim()
+        if (secured.isEmpty() && descriptionIsOwnMessage) {
             // 任务描述本身就是用户的第一条需求：还没有消息时先把它当成首条用户消息展示。
             listOf(V2Message(V2MessageRole.USER, task.description.trim(), clockLabel(task.createdAt)))
         } else {

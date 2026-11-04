@@ -1770,7 +1770,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       >
         <nav className="s-nav">
           <div className="s-nav-head">
-            <b>任务对话</b>
+            <b>我的 Bot</b>
             <span>{tasks.length}</span>
           </div>
           <button
@@ -1782,7 +1782,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             新建 Bot
           </button>
           {tasks.length === 0 ? (
-            <div className="s-task-empty">还没有对话：点上方新建一个 Bot，或直接在下方写下需求</div>
+            <div className="s-task-empty">还没有 Bot：点上方新建一个，或直接在下方写下需求</div>
           ) : (
             <ul className="s-tasks">
               {tasks.map((item) => (
@@ -1826,7 +1826,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             <span className="c-sep">/</span>
             <span>{task ? "任务详情" : "新任务"}</span>
             {!isMobile ? (
-              <div className="s-mode" role="tablist" aria-label="对话模式">
+              <div className="s-mode" role="tablist" aria-label="Bot 模式">
                 <button
                   type="button"
                   role="tab"
@@ -2505,11 +2505,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               </button>
             </div>
             <div className="rv-sub">
-              共 {tasks.length} 个任务（按创建时间倒序）· 选中即可查看它的完整对话与改动
+              共 {tasks.length} 个 Bot（按创建时间倒序）· 选中即可查看它的完整记录与改动
             </div>
             <div className="dialog-body">
               {tasks.length === 0 ? (
-                <div className="empty-note wide">还没有对话：点下方「新建 Bot」创建一个。</div>
+                <div className="empty-note wide">还没有 Bot：点下方「新建 Bot」创建一个。</div>
               ) : (
                 <ul className="tasks">
                   {tasks.map((item) => (

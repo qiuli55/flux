@@ -855,7 +855,7 @@ class V2AppViewModel : FluxViewModel() {
                 // 先本地摘掉再刷新：正在进行的轮询可能带着旧列表晚到，避免对话短暂复活。
                 _state.value = _state.value.copy(
                     busyAction = null,
-                    notice = "对话已删除",
+                    notice = "Bot 已删除",
                     tasks = _state.value.tasks.filterNot { it.id == taskId },
                 )
                 refresh(quiet = true)
@@ -1174,28 +1174,29 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    /** 新建一个 bot（本质是一条不立即执行的对话）：名称 + 头像。 */
+    /** 新建一个 bot（本质是一条不立即执行的对话）：名称 + 头像，可选执行 Agent。 */
     fun createBot(
         name: String,
         shape: String,
         color: String,
-        onResult: (String) -> Unit,
+        agentId: String? = null,
+        onResult: (error: String, taskId: String) -> Unit,
     ) {
         val title = name.trim()
         if (title.isEmpty()) {
-            onResult("名称不能为空")
+            onResult("名称不能为空", "")
             return
         }
         if (_state.value.busyAction != null) {
-            onResult("有操作正在进行，稍后再试")
+            onResult("有操作正在进行，稍后再试", "")
             return
         }
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "create-bot", error = null, notice = null)
             try {
-                api().createTask(
+                val created = api().createTask(
                     description = title,
-                    agentId = null,
+                    agentId = agentId,
                     decisionMode = "auto",
                     botName = title,
                     avatarShape = shape,
@@ -1204,10 +1205,10 @@ class V2AppViewModel : FluxViewModel() {
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
-                onResult("")
+                onResult("", created.id)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null)
-                onResult(readable(e))
+                onResult(readable(e), "")
             }
         }
     }
@@ -1389,12 +1390,15 @@ internal fun List<Agent>.toV2Agents(tasks: List<Task>): List<V2Agent> =
 internal fun Task.toV2Conversation(device: String): V2Conversation = V2Conversation(
     id = id,
     agentId = agentId.orEmpty(),
-    title = firstLine(40),
+    title = botName?.takeIf { it.isNotBlank() } ?: firstLine(40),
     device = device,
     source = "desktop",
     updated = relativeTime(createdAt),
     unread = if (pendingDecision != null) 1 else 0,
     messages = emptyList(),
+    botName = botName.orEmpty(),
+    avatarShape = avatarShape,
+    avatarColor = avatarColor,
 )
 
 internal fun Task.toV2Task(): V2Task {

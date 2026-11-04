@@ -142,7 +142,7 @@ fun MemorySheet(
                         Label("自动记录", 13.5f, V2Colors.ink(.90f))
                         Spacer(Modifier.height(2.dp))
                         Label(
-                            "每轮对话结束后自动提炼稳定的偏好与禁忌，最多 3 条",
+                            "每轮结束后自动提炼稳定的偏好与禁忌，最多 3 条",
                             10f,
                             V2Colors.ink(.38f),
                         )

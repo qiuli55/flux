@@ -143,6 +143,9 @@ data class V2ChatState(
     val summaryFrom: String? = null,
     /** 助理对话：首页列表不显示，标题栏提供「助理进度」入口。 */
     val isAssistant: Boolean = false,
+    /** bot 头像形状 / 颜色；空串表示草稿，标题栏退回 Agent 色调头像。 */
+    val avatarShape: String = "",
+    val avatarColor: String = "",
 )
 
 @Composable
@@ -336,11 +339,15 @@ fun V2ChatScreen(
                         },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Avatar(tint = agent.tint, size = 36.dp, icon = Icons.Outlined.SmartToy)
+                    if (chat.avatarShape.isNotBlank()) {
+                        BotAvatar(shape = chat.avatarShape, color = chat.avatarColor, size = 36.dp)
+                    } else {
+                        Avatar(tint = agent.tint, size = 36.dp, icon = Icons.Outlined.SmartToy)
+                    }
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Label(agent.name, 15f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
+                            Label(chat.title, 15f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
                             if (!agent.nativeStreaming) {
                                 Spacer(Modifier.width(5.dp))
                                 NonStreamingBadge()
@@ -359,7 +366,7 @@ fun V2ChatScreen(
                             Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
                             Spacer(Modifier.width(4.dp))
                             Label(
-                                "${chat.title} · ${chat.device}",
+                                "${agent.name} · ${chat.device}",
                                 10.5f,
                                 V2Colors.ink(.40f),
                                 maxLines = 1,
@@ -590,7 +597,7 @@ fun V2ChatScreen(
             ) {
                 if (!chat.pendingSummary.isNullOrBlank()) {
                     // 新对话开篇：只带上一段对话的摘要，不搬旧消息
-                    item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一段对话接手") }
+                    item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一个 Bot 接手") }
                 }
                 itemsIndexed(messages) { index, message ->
                     // 不做入场动画：像微信一样，消息直接出现。
@@ -783,7 +790,7 @@ fun V2ChatScreen(
             Box(Modifier.weight(1f)) {
                 if (input.isEmpty()) {
                     Label(
-                        if (locked) "正在加载对话…"
+                        if (locked) "正在加载 Bot…"
                         else if (uploading) "附件上传中…"
                         else if (sending) "等待 ${agent.name} 回复…"
                         else if (chat.permissionMode == "plan") "让 Agent 先出计划，不动手…"
@@ -1061,9 +1068,9 @@ private fun ContextPromptCard(
         Spacer(Modifier.height(4.dp))
         Label(
             if (usage.level == "full") {
-                "再聊下去，最早的消息就会被挤出模型视野。新建一段对话，这段的摘要会一起带过去。"
+                "再聊下去，最早的消息就会被挤出模型视野。新建一个 Bot，这段的摘要会一起带过去。"
             } else {
-                "再聊几轮，最早的消息就会被挤出模型视野。要新建一段对话吗？"
+                "再聊几轮，最早的消息就会被挤出模型视野。要新建一个 Bot 吗？"
             },
             9.5f,
             V2Colors.ink(.55f),
@@ -1183,7 +1190,7 @@ private fun HandoffCard(message: V2Message) {
 }
 
 @Composable
-private fun SummaryCard(text: String, time: String, note: String = "来自上一段对话") {
+private fun SummaryCard(text: String, time: String, note: String = "来自上一个 Bot") {
     var expanded by remember(text) { mutableStateOf(false) }
     Column(
         Modifier
@@ -1558,7 +1565,7 @@ private fun SecureInputCardBody(
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Label("密钥只进密钥库，不写入对话上下文", 8.5f, V2Colors.ink(.30f), mono = true)
+            Label("密钥只进密钥库，不写入 Bot 的上下文", 8.5f, V2Colors.ink(.30f), mono = true)
         }
     }
 }

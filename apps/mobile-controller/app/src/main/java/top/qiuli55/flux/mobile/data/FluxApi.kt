@@ -674,7 +674,7 @@ class FluxApi(
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
                 val status = response?.code?.let { "HTTP $it" }
-                onFailure(t?.message?.takeIf { it.isNotBlank() } ?: status ?: "对话实时流连接失败")
+                onFailure(t?.message?.takeIf { it.isNotBlank() } ?: status ?: "Bot 实时流连接失败")
             }
         })
     }

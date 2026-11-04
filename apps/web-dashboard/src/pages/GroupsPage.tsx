@@ -513,7 +513,7 @@ export function GroupsPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
-      <PageHead title="群聊" desc="每个对话都是一个 bot；群里它们依次决定要不要开口，不会无限接话。">
+      <PageHead title="群聊" desc="每个 Bot 都是一个独立成员；群里它们依次决定要不要开口，不会无限接话。">
         <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>
           新建群聊
         </Button>

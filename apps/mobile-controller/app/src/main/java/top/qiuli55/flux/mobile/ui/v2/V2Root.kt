@@ -254,7 +254,7 @@ fun FluxV2Root() {
         val firstModel = option.models.firstOrNull()
         chat = V2ChatState(
             conversationId = null,
-            title = if (assistant) "助理" else "新的对话",
+            title = if (assistant) "助理" else "新的 Bot",
             device = chatDevice,
             agentId = option.agent.id,
             model = firstModel?.model ?: V2Registry.models.firstOrNull() ?: "",
@@ -268,7 +268,7 @@ fun FluxV2Root() {
             V2Message(
                 V2MessageRole.SYSTEM,
                 if (assistant) {
-                    "描述你想梳理的事，助理会读取你的全部对话并汇总项目进度"
+                    "描述你想梳理的事，助理会读取你的全部 Bot 并汇总项目进度"
                 } else {
                     "描述你的需求，发送后会创建一个任务并交给 Agent 执行"
                 },
@@ -334,7 +334,7 @@ fun FluxV2Root() {
             vm.startTask(taskId)
             chat = current.copy(
                 conversationId = taskId,
-                title = text.take(40).ifBlank { "附件对话" },
+                title = text.take(40).ifBlank { "附件 Bot" },
                 pendingSummary = null,
                 summaryFrom = null,
             )
@@ -358,7 +358,7 @@ fun FluxV2Root() {
         }
         chat = V2ChatState(
             conversationId = null,
-            title = "延续 · " + (source?.firstLine(30) ?: "上一段对话"),
+            title = "延续 · " + (source?.displayName ?: "上一个 Bot"),
             device = chatDevice,
             agentId = source?.agentId.orEmpty(),
             model = source?.model.orEmpty(),
@@ -374,7 +374,7 @@ fun FluxV2Root() {
         chatMessages.add(
             V2Message(
                 V2MessageRole.SYSTEM,
-                "已带上上一段对话的摘要，接着说你想做的事",
+                "已带上上一个 Bot 的摘要，接着说你想做的事",
                 nowMinute(),
             ),
         )
@@ -1084,10 +1084,18 @@ fun FluxV2Root() {
                     }
 
                     if (newChatOpen) {
-                        NewChatSheet(
-                            device = device,
-                            options = agentsForDevice(device),
-                            onPick = { createChat(it) },
+                        CreateBotSheet(
+                            agentOptions = agentsForDevice(device),
+                            subtitle = "名称与头像自定义 · 创建后直接进入它的聊天",
+                            onCreate = { name, shape, color, agentId, done ->
+                                vm.createBot(name, shape, color, agentId) { error, taskId ->
+                                    done(error)
+                                    if (error.isEmpty()) {
+                                        newChatOpen = false
+                                        openChat(taskId, V2Route.Home)
+                                    }
+                                }
+                            },
                             onDismiss = { newChatOpen = false },
                         )
                     }
@@ -1120,8 +1128,8 @@ fun FluxV2Root() {
 
                     if (createBotOpen) {
                         CreateBotSheet(
-                            onCreate = { name, shape, color, done ->
-                                vm.createBot(name, shape, color) { error ->
+                            onCreate = { name, shape, color, _, done ->
+                                vm.createBot(name, shape, color) { error, _ ->
                                     done(error)
                                     if (error.isEmpty()) {
                                         createBotOpen = false
@@ -1159,8 +1167,9 @@ fun FluxV2Root() {
                     deleteConversationId?.let { deleteId ->
                         val target = app.tasks.firstOrNull { it.id == deleteId }
                         ConversationDeleteSheet(
-                            title = target?.description?.lineSequence()?.firstOrNull()?.take(40)
-                                ?.takeIf { it.isNotBlank() } ?: "这段对话",
+                            title = target?.botName?.takeIf { it.isNotBlank() }
+                                ?: target?.description?.lineSequence()?.firstOrNull()?.take(40)
+                                    ?.takeIf { it.isNotBlank() } ?: "这个 Bot",
                             running = target?.status?.toV2TaskStatus()?.isActive == true,
                             deleting = app.busyAction == "delete:$deleteId",
                             stopping = app.busyAction == "cancel:$deleteId",
@@ -1269,7 +1278,7 @@ private fun V2NavRail(
         }
         Spacer(Modifier.height(18.dp))
 
-        RailButton(Icons.Outlined.AddComment, "对话", selected == V2RailItem.CHATS) {
+        RailButton(Icons.Outlined.AddComment, "Bot", selected == V2RailItem.CHATS) {
             onSelect(V2RailItem.CHATS)
         }
         Spacer(Modifier.height(4.dp))

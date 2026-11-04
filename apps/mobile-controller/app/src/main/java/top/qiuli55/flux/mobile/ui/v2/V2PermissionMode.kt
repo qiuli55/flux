@@ -168,7 +168,7 @@ internal fun PermissionModeSheet(
 ) {
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .88f) {
         SheetHeader(
-            title = "对话模式",
+            title = "Bot 模式",
             subtitle = "切换只影响后续消息，正在跑的一轮按原模式跑完",
             onClose = onDismiss,
         )

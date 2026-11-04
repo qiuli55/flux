@@ -111,7 +111,7 @@ export function CreateBotDialog({
           <BotAvatar shape={shape} color={color} size={88} name={trimmed || "新 Bot"} />
         </div>
 
-        <Field label="名称" required hint="这个名字同时是这个对话的身份，群聊里别人也这样称呼它。">
+        <Field label="名称" required hint="这个名字就是它的身份，群聊里别人也这样称呼它。">
           <Input
             autoFocus
             value={name}

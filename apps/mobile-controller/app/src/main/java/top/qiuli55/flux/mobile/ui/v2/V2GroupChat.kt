@@ -831,19 +831,29 @@ fun CreateGroupSheet(
 
 @Composable
 fun CreateBotSheet(
-    onCreate: (name: String, shape: String, color: String, onResult: (String) -> Unit) -> Unit,
+    onCreate: (
+        name: String,
+        shape: String,
+        color: String,
+        agentId: String?,
+        onResult: (String) -> Unit,
+    ) -> Unit,
     onDismiss: () -> Unit,
+    agentOptions: List<V2AgentOption> = emptyList(),
+    title: String = "新建 Bot",
+    subtitle: String = "名称自定义 · 头像由形状与颜色组成",
 ) {
     var name by remember { mutableStateOf("") }
     var shape by remember { mutableStateOf(V2AvatarShapes.random()) }
     var color by remember { mutableStateOf(V2AvatarColors.random()) }
+    var agentId by remember(agentOptions) { mutableStateOf(agentOptions.firstOrNull()?.agent?.id) }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .86f) {
         SheetHeader(
-            title = "新建 Bot",
-            subtitle = "名称自定义 · 头像由形状与颜色组成",
+            title = title,
+            subtitle = subtitle,
             onClose = onDismiss,
         )
         Column(
@@ -867,6 +877,44 @@ fun CreateBotSheet(
                     )
                     Spacer(Modifier.height(6.dp))
                     Label("之后它的每条发言都会显示这个头像", 9.5f, V2Colors.ink(.30f))
+                }
+            }
+
+            if (agentOptions.isNotEmpty()) {
+                Spacer(Modifier.height(20.dp))
+                Label("执行 Agent", 11f, V2Colors.ink(.45f), FontWeight.Medium)
+                Spacer(Modifier.height(10.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(agentOptions) { option ->
+                        val active = option.agent.id == agentId
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (active) V2Colors.ink(.06f) else Color.Transparent)
+                                .border(
+                                    1.dp,
+                                    if (active) V2Colors.ink(.28f) else V2Colors.ink(.08f),
+                                    RoundedCornerShape(999.dp),
+                                )
+                                .v2Pressable(pressScale = .95f) { agentId = option.agent.id }
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(8.dp)
+                                    .background(option.agent.tint, CircleShape),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Label(
+                                option.agent.name,
+                                11.5f,
+                                V2Colors.ink(if (active) .88f else .50f),
+                                FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -924,7 +972,7 @@ fun CreateBotSheet(
                 onClick = {
                     if (!canSubmit) return@PrimaryButton
                     submitting = true
-                    onCreate(name.trim(), shape, color) { result ->
+                    onCreate(name.trim(), shape, color, agentId) { result ->
                         submitting = false
                         if (result.isNotEmpty()) error = result
                     }

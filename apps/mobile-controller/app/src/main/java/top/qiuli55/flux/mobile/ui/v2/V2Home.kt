@@ -359,7 +359,7 @@ fun V2HomeScreen(
         ) {
             Icon(
                 Icons.Outlined.AddComment,
-                contentDescription = "新建对话，按住可拖动选择快捷动作",
+                contentDescription = "新建 Bot，按住可拖动选择快捷动作",
                 tint = V2Colors.actionInk,
                 modifier = Modifier.size(24.dp),
             )
@@ -448,7 +448,7 @@ private fun HomeHeader(
             ) {
                 Icon(
                     if (searchOpen) Icons.Outlined.Close else Icons.Outlined.Search,
-                    contentDescription = if (searchOpen) "关闭搜索" else "搜索对话",
+                    contentDescription = if (searchOpen) "关闭搜索" else "搜索 Bot",
                     tint = V2Colors.ink(.6f),
                     modifier = Modifier.size(17.dp),
                 )
@@ -498,7 +498,7 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
             if (query.isEmpty()) {
-                Label("搜索对话或 Agent", 12.5f, V2Colors.ink(.28f))
+                Label("搜索 Bot 或 Agent", 12.5f, V2Colors.ink(.28f))
             }
             BasicTextField(
                 value = query,
@@ -562,7 +562,7 @@ private fun SectionTabs(multiMode: Boolean, onSelect: (Boolean) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             SectionTab(
-                text = "单一 Agent 对话",
+                text = "我的 Bot",
                 selected = !multiMode,
                 modifier = Modifier.onGloballyPositioned {
                     firstX = it.positionInParent().x
@@ -644,7 +644,7 @@ private fun SwipeDeleteAction(onClick: () -> Unit) {
 @Composable
 private fun QuickActionStack(visible: Boolean, hover: Int, modifier: Modifier = Modifier) {
     val actions = listOf(
-        Triple(Icons.Outlined.AddComment, "新建对话", "直接开一段新对话"),
+        Triple(Icons.Outlined.AddComment, "新建 Bot", "创建一只自己的 Bot"),
         Triple(Icons.Outlined.DesignServices, "设计工作室", "画布与 AI 改稿"),
     )
     Column(
@@ -729,7 +729,26 @@ private fun ConversationRow(
                 .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Avatar(tint = agent.tint, online = online)
+            if (conversation.avatarShape.isNotBlank()) {
+                Box(Modifier.size(46.dp)) {
+                    BotAvatar(
+                        shape = conversation.avatarShape,
+                        color = conversation.avatarColor,
+                        size = 46.dp,
+                    )
+                    if (online) {
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .size(10.dp)
+                                .background(V2Colors.cyan500, CircleShape)
+                                .border(2.dp, V2Colors.shellTop, CircleShape),
+                        )
+                    }
+                }
+            } else {
+                Avatar(tint = agent.tint, online = online)
+            }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Label(
@@ -771,7 +790,7 @@ private fun ConversationRow(
         }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
-                text = { Label("删除对话", 12f, V2Colors.rose) },
+                text = { Label("删除 Bot", 12f, V2Colors.rose) },
                 leadingIcon = {
                     Icon(
                         Icons.Outlined.Delete,
