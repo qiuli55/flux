@@ -359,6 +359,7 @@ public partial class MainWindowViewModel : ViewModelBase
         NavItems.Add(new NavItem("overview", "概览", GroupPlatform, new OverviewViewModel(() => _api, NavigateTo), "home") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("tasks", "任务", GroupPlatform, new TasksViewModel(() => _api, NavigateTo), "layers") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("assistant", "助理", GroupPlatform, new AssistantViewModel(() => _api), "bot") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("bots", "Bot", GroupPlatform, new BotsViewModel(() => _api), "cpu") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, new SkillsViewModel(() => _api), "puzzle") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("designs", "设计", GroupPlatform, new DesignsViewModel(() => _api), "design") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("browser", "浏览器", GroupPlatform, new BrowserViewModel(), "globe") { ActivateCommand = ActivateCommand });
@@ -429,6 +430,9 @@ public partial class MainWindowViewModel : ViewModelBase
                 break;
             case AssistantViewModel assistant:
                 _ = assistant.RefreshAsync();
+                break;
+            case BotsViewModel bots:
+                _ = bots.RefreshAsync();
                 break;
             case SkillsViewModel skills:
                 _ = skills.RefreshAsync();

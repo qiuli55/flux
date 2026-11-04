@@ -1,0 +1,281 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:views="using:Flux.Desktop.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="900"
+             x:Class="Flux.Desktop.Views.BotsView"
+             x:DataType="vm:BotsViewModel">
+
+    <UserControl.Resources>
+        <!-- Bot 卡片（web 端 BotCard） -->
+        <DataTemplate x:Key="BotCardTemplate" DataType="vm:BotCardView">
+            <Border Classes="card pad" Width="340" Margin="0,0,16,16">
+                <StackPanel Spacing="12">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <views:BotAvatar Grid.Column="0" Width="36" Height="36"
+                                         VerticalAlignment="Center"
+                                         AvatarShape="{Binding AvatarShape}"
+                                         AvatarColor="{Binding AvatarColor}" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding ScheduleText}" FontSize="11"
+                                       Foreground="{DynamicResource TnText4}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Border Grid.Column="2" Classes="badge" VerticalAlignment="Center"
+                                BorderBrush="{Binding StatusTone}">
+                            <TextBlock Text="{Binding StatusLabel}" FontSize="10"
+                                       Foreground="{Binding StatusTone}" />
+                        </Border>
+                    </Grid>
+
+                    <TextBlock Text="{Binding Description}" FontSize="12" Height="36"
+                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TnText3}" />
+
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="{Binding WorkspaceText}" Classes="mono" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding LastRunText}" FontSize="11"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Classes="btn primary" Content="立即开工" Command="{Binding Run}" />
+                        <Button Classes="btn subtle" Content="记录" Command="{Binding OpenRuns}" />
+                        <Button Classes="btn quiet" Content="编辑" Command="{Binding Edit}" />
+                        <Button Classes="btn quiet" Content="{Binding ToggleLabel}" Command="{Binding Toggle}" />
+                        <Button Classes="btn danger" Content="{Binding DeleteLabel}" Command="{Binding Delete}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- 开工记录行（web 端 RunsModal） -->
+        <DataTemplate x:Key="BotRunTemplate" DataType="vm:BotRunView">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="0,0,0,12">
+                <Border Grid.Column="0" Classes="badge" VerticalAlignment="Top"
+                        BorderBrush="{Binding Tone}">
+                    <TextBlock Text="{Binding StatusLabel}" FontSize="10"
+                               Foreground="{Binding Tone}" />
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="3">
+                    <TextBlock Text="{Binding Description}" FontSize="12" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding ResultText}" IsVisible="{Binding HasResult}"
+                               FontSize="11" MaxHeight="48" TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TnText3}" />
+                </StackPanel>
+                <TextBlock Grid.Column="2" Text="{Binding TimeText}" FontSize="11"
+                           VerticalAlignment="Top" Foreground="{DynamicResource TnText4}" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Panel>
+        <ScrollViewer>
+            <StackPanel Margin="32,32,40,32">
+
+                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Classes="page-title" Text="Bot 模式" Margin="0,0,0,5" />
+                        <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
+                                   Text="常驻在机器上的执行者：独立工作目录、固定 Agent 与权限，可按 cron 定时开工，也可以随时手动跑一轮。" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12"
+                                VerticalAlignment="Bottom">
+                        <Button Classes="btn subtle" Content="刷新"
+                                Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+                        <Button Classes="btn primary" Content="新建 Bot"
+                                Command="{Binding NewBotCommand}" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- 工具条：筛选 + 计数 + 操作反馈 -->
+                <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,16">
+                    <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="1" CornerRadius="6"
+                            Padding="2">
+                        <StackPanel Orientation="Horizontal" Spacing="2">
+                            <Button Classes="seg" Classes.active="{Binding IsAll}" Content="全部"
+                                    Command="{Binding SelectFilterCommand}" CommandParameter="all" />
+                            <Button Classes="seg" Classes.active="{Binding IsActiveFilter}" Content="运行中"
+                                    Command="{Binding SelectFilterCommand}" CommandParameter="active" />
+                            <Button Classes="seg" Classes.active="{Binding IsPausedFilter}" Content="已暂停"
+                                    Command="{Binding SelectFilterCommand}" CommandParameter="paused" />
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="{Binding CountText}" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TnText4}" />
+                    <TextBlock Text="{Binding Notice}" IsVisible="{Binding HasNotice}"
+                               Foreground="{Binding NoticeTone}" FontSize="12" VerticalAlignment="Center"
+                               MaxWidth="560" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <!-- 空态 -->
+                <Border Classes="card" IsVisible="{Binding HasNoBots}">
+                    <StackPanel HorizontalAlignment="Center" Spacing="8" Margin="24,48">
+                        <Border Classes="badge" HorizontalAlignment="Center">
+                            <TextBlock Text="还没有 Bot" FontSize="11"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </Border>
+                        <TextBlock Text="新建一个 Bot，让它在常开的机器上按定时或按需远程执行任务"
+                                   FontSize="12" TextAlignment="Center"
+                                   Foreground="{DynamicResource TnText4}" />
+                    </StackPanel>
+                </Border>
+
+                <ItemsControl ItemsSource="{Binding Bots}"
+                              ItemTemplate="{StaticResource BotCardTemplate}"
+                              IsVisible="{Binding HasBots}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 新建 / 编辑弹窗（web 端 BotFormDialog） -->
+        <Border IsVisible="{Binding IsEditorOpen}">
+            <Panel>
+                <Border Background="{DynamicResource TnScrim}" />
+                <Border Width="580" MaxHeight="680" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Background="{DynamicResource TnPanel}"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="1" CornerRadius="10">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <Border Grid.Row="0" Padding="16" Classes="hairline-b">
+                            <TextBlock Text="{Binding EditorTitle}" FontSize="14" FontWeight="SemiBold" />
+                        </Border>
+
+                        <ScrollViewer Grid.Row="1" Padding="16">
+                            <StackPanel Spacing="14">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="名称" FontSize="12"
+                                               Foreground="{DynamicResource TnText3}" />
+                                    <TextBox Classes="input" Text="{Binding EditorName, Mode=TwoWay}"
+                                             Watermark="例如：每日巡检" />
+                                </StackPanel>
+
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="职责 / 定时执行指令" FontSize="12"
+                                               Foreground="{DynamicResource TnText3}" />
+                                    <TextBox Classes="input" Height="84" AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             Text="{Binding EditorDescription, Mode=TwoWay}"
+                                             Watermark="这个 Bot 每次都做什么？定时触发时它就是本轮的执行指令。" />
+                                </StackPanel>
+
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                                    <StackPanel Grid.Column="0" Spacing="6">
+                                        <TextBlock Text="定时（5 段 cron）" FontSize="12"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Classes="input" Text="{Binding EditorSchedule, Mode=TwoWay}"
+                                                 Watermark="留空 = 仅手动，如 0 9 * * *" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Text="工作目录" FontSize="12"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                        <TextBox Classes="input" Text="{Binding EditorWorkspace, Mode=TwoWay}"
+                                                 Watermark="留空 = 平台默认 bots 目录" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                                    <StackPanel Grid.Column="0" Spacing="6">
+                                        <TextBlock Text="权限模式" FontSize="12"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                        <ComboBox Classes="select" HorizontalAlignment="Stretch"
+                                                  ItemsSource="{Binding PermissionOptions}"
+                                                  SelectedItem="{Binding EditorPermission, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:PermissionOption">
+                                                    <TextBlock Text="{Binding Label}" FontSize="11" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Text="执行 Agent" FontSize="12"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                        <ComboBox Classes="select" HorizontalAlignment="Stretch"
+                                                  ItemsSource="{Binding AgentOptions}"
+                                                  SelectedItem="{Binding EditorAgent, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:BotAgentOption">
+                                                    <TextBlock Text="{Binding Label}" FontSize="11" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </StackPanel>
+                                </Grid>
+
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="头像" FontSize="12"
+                                               Foreground="{DynamicResource TnText3}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <views:BotAvatar Width="40" Height="40" VerticalAlignment="Center"
+                                                         AvatarShape="{Binding EditorShape}"
+                                                         AvatarColor="{Binding EditorColor}" />
+                                        <ComboBox Classes="select" Width="170"
+                                                  ItemsSource="{Binding Shapes}"
+                                                  SelectedItem="{Binding EditorShape, Mode=TwoWay}" />
+                                        <ComboBox Classes="select" Width="170"
+                                                  ItemsSource="{Binding Colors}"
+                                                  SelectedItem="{Binding EditorColor, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <TextBlock Text="{Binding EditorError}" IsVisible="{Binding HasEditorError}"
+                                           FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TnDanger}" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                                    Spacing="12" Margin="16">
+                            <Button Classes="btn" Content="取消" Command="{Binding CloseEditorCommand}" />
+                            <Button Classes="btn primary" Content="保存"
+                                    Command="{Binding SaveCommand}" IsEnabled="{Binding !IsSaving}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Panel>
+        </Border>
+
+        <!-- 开工记录浮层 -->
+        <Border IsVisible="{Binding IsRunsOpen}">
+            <Panel>
+                <Border Background="{DynamicResource TnScrim}" />
+                <Border Width="680" MaxHeight="600" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Background="{DynamicResource TnPanel}"
+                        BorderBrush="{DynamicResource TnLine}" BorderThickness="1" CornerRadius="10">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <Border Grid.Row="0" Padding="16" Classes="hairline-b">
+                            <TextBlock Text="{Binding RunsTitle}" FontSize="14" FontWeight="SemiBold" />
+                        </Border>
+
+                        <ScrollViewer Grid.Row="1" Padding="16">
+                            <StackPanel>
+                                <ItemsControl ItemsSource="{Binding Runs}"
+                                              ItemTemplate="{StaticResource BotRunTemplate}" />
+                                <TextBlock Text="还没有开工记录" FontSize="12" Margin="0,16"
+                                           Foreground="{DynamicResource TnText4}"
+                                           IsVisible="{Binding HasNoRuns}" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                                    Spacing="12" Margin="16">
+                            <Button Classes="btn" Content="关闭" Command="{Binding CloseRunsCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Panel>
+        </Border>
+    </Panel>
+</UserControl>
