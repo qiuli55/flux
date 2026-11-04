@@ -40,6 +40,8 @@ from flux.core.context.trust import VerificationLedger
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
+from flux.core.group.orchestrator import GroupOrchestrator
+from flux.core.group.repository import GroupRepository
 from flux.core.ide_completion import (
     CompletionContextBuilder,
     CompletionModelResolver,
@@ -48,6 +50,13 @@ from flux.core.ide_completion import (
     CompletionStatsStore,
 )
 from flux.core.key_vault.service import KeyVaultService
+from flux.core.knowledge import (
+    EmbeddingClient,
+    KnowledgeIndexer,
+    KnowledgeRepository,
+    KnowledgeRetriever,
+    KnowledgeWorker,
+)
 from flux.core.mcp.auth import AgentTokenService
 from flux.core.memory.prefs import MemoryPrefsStore
 from flux.core.memory.repository import MemoryRepository
@@ -74,6 +83,10 @@ from flux.core.supervisor import (
     SupervisorRepository,
     SupervisorService,
     SupervisorWorker,
+    WechatAssistant,
+    WechatBridge,
+    WechatChannel,
+    WechatSessionRepository,
 )
 from flux.core.task_engine.agent_switch import AgentSwitchService
 from flux.core.task_engine.assistant import TaskAssistant
@@ -130,6 +143,9 @@ class Container:
     conversation_summarizer: ConversationSummarizer = field(init=False)
     #: 任务对话的实时增量（SSE）：进程内广播，最终消息仍以数据库为准
     task_stream: TaskStreamHub = field(init=False)
+    #: 内部多 bot 群聊：群/成员/消息/epoch 读写 + 有限轮编排
+    group_repo: GroupRepository = field(init=False)
+    groups: GroupOrchestrator = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
     batch_repo: ApplyBatchRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
@@ -171,6 +187,17 @@ class Container:
     supervisor_notifier: SupervisorNotifier = field(init=False)
     #: 飞书事件回调（验签 + 解析 + 幂等入库），免 REST 鉴权单独挂载
     supervisor_feishu: FeishuWebhook = field(init=False)
+    #: 微信私聊 ↔ Flux 助理任务的映射（含入站幂等游标）
+    wechat_sessions: WechatSessionRepository = field(init=False)
+    #: 微信入站桥：OpenClaw / 微信 ClawBot 只做传输，Flux 负责理解与回复
+    supervisor_wechat: WechatBridge = field(init=False)
+    #: 助理知识库（RAG）：对话 / docs / 项目记忆的增量索引与混合检索
+    knowledge_enabled: bool = field(init=False)
+    knowledge_repo: KnowledgeRepository = field(init=False)
+    knowledge_embedder: EmbeddingClient = field(init=False)
+    knowledge_indexer: KnowledgeIndexer = field(init=False)
+    knowledge: KnowledgeRetriever = field(init=False)
+    knowledge_worker: KnowledgeWorker = field(init=False)
 
     def __post_init__(self) -> None:
         self.engine = create_engine(self.settings.database_url)
@@ -214,6 +241,15 @@ class Container:
         # 对话交接摘要：新对话带旧对话前情时使用，与助手共用平台模型通道
         self.conversation_summarizer = ConversationSummarizer(self.router)
         self.task_stream = TaskStreamHub()
+        # 内部多 bot 群聊：复用任务仓储读每个 bot 的私聊，复用平台模型通道发言
+        self.group_repo = GroupRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.groups = GroupOrchestrator(
+            self.group_repo,
+            self.task_repo,
+            self.router,
+            key_vault=self.key_vault,
+            summarizer=self.conversation_summarizer,
+        )
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)
         # Apply Engine 是唯一会写用户真实文件的组件（§7.6），根目录与测试命令来自配置
@@ -466,6 +502,63 @@ class Container:
             verification_token=self.settings.supervisor_feishu_verification_token,
             encrypt_key=self.settings.supervisor_feishu_encrypt_key,
         )
+        # 助理知识库（RAG）：对话 / docs / 项目记忆增量落入 knowledge_chunks，
+        # 检索走 BM25 + 向量 + MMR。未配置 embedding 密钥时自动降级为纯词法，
+        # 装配本身不发起任何网络请求。
+        self.knowledge_enabled = self.settings.knowledge_enabled
+        self.knowledge_repo = KnowledgeRepository(
+            self.session_factory  # type: ignore[attr-defined]
+        )
+        self.knowledge_embedder = EmbeddingClient(
+            api_key=self.settings.knowledge_embedding_api_key or self.settings.openai_api_key,
+            base_url=self.settings.knowledge_embedding_base_url,
+            model=self.settings.knowledge_embedding_model,
+            dimensions=self.settings.knowledge_embedding_dimensions,
+            timeout=self.settings.knowledge_embedding_timeout_seconds,
+            batch_size=self.settings.knowledge_embedding_batch_size,
+        )
+        self.knowledge_indexer = KnowledgeIndexer(
+            session_factory=self.session_factory,  # type: ignore[attr-defined]
+            repository=self.knowledge_repo,
+            embedder=self.knowledge_embedder,
+            brain_repo=self.brain_repo,
+            docs_path=self.settings.knowledge_docs_path,
+            docs_max_bytes=self.settings.knowledge_docs_max_bytes,
+            docs_max_files=self.settings.knowledge_docs_max_files,
+            chunk_tokens=self.settings.knowledge_chunk_tokens,
+            chunk_overlap_tokens=self.settings.knowledge_chunk_overlap_tokens,
+            conversation_window_tokens=self.settings.knowledge_conversation_window_tokens,
+            max_messages_per_conversation=self.settings.knowledge_max_messages_per_conversation,
+        )
+        self.knowledge = KnowledgeRetriever(
+            repository=self.knowledge_repo,
+            embedder=self.knowledge_embedder,
+            candidate_limit=self.settings.knowledge_candidate_limit,
+        )
+        self.knowledge_worker = KnowledgeWorker(
+            self.knowledge_indexer,
+            interval_seconds=self.settings.knowledge_index_interval_seconds,
+        )
+        # 微信接入：OpenClaw + 微信 ClawBot 负责登录与收发，Flux 只做大脑。
+        # 每条微信私聊绑定一条 assistant 任务，消息落 task_messages 后自动进入知识库索引；
+        # 令牌 / 白名单未配置时 fail-closed（见 `flux.core.supervisor.wechat`）。
+        self.wechat_sessions = WechatSessionRepository(
+            self.session_factory  # type: ignore[attr-defined]
+        )
+        self.supervisor_wechat = WechatBridge(
+            WechatAssistant(
+                self.router,
+                self.task_repo,
+                self.wechat_sessions,
+                knowledge=self.knowledge if self.knowledge_enabled else None,
+                source_key=self.settings.supervisor_wechat_source_key,
+                history_limit=self.settings.supervisor_wechat_history_limit,
+                knowledge_limit=self.settings.supervisor_wechat_knowledge_limit,
+            ),
+            bridge_token=self.settings.supervisor_wechat_bridge_token,
+            allow_from=self.settings.wechat_allow_from,
+            source_key=self.settings.supervisor_wechat_source_key,
+        )
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""
@@ -521,19 +614,36 @@ class Container:
         # 出站通道持有 httpx 连接池，退出时一并释放
         for channel in self.supervisor_channels.values():
             await channel.aclose()
+        # 知识库 embedding 客户端同样持有连接池（未启用时是空操作）
+        await self.knowledge_embedder.aclose()
         await self.dsh.shutdown()
         await self.engine.dispose()
 
 
 def _supervisor_channels(settings: Settings) -> dict[str, SupervisorChannel]:
-    """按配置装配出站通道：没配飞书凭据就退化为只记日志的空通道。"""
-    source_key = settings.supervisor_feishu_source_key
+    """按配置装配出站通道：没配凭据就退化为只记日志的空通道。"""
+    channels: dict[str, SupervisorChannel] = {}
+    feishu_key = settings.supervisor_feishu_source_key
     if settings.supervisor_feishu_app_id and settings.supervisor_feishu_app_secret:
-        return {
-            source_key: FeishuChannel(
-                app_id=settings.supervisor_feishu_app_id,
-                app_secret=settings.supervisor_feishu_app_secret,
-                api_base=settings.supervisor_feishu_api_base,
-            )
-        }
-    return {source_key: NullChannel(source_key)}
+        channels[feishu_key] = FeishuChannel(
+            app_id=settings.supervisor_feishu_app_id,
+            app_secret=settings.supervisor_feishu_app_secret,
+            api_base=settings.supervisor_feishu_api_base,
+        )
+    else:
+        channels[feishu_key] = NullChannel(feishu_key)
+    # 微信主动出站要 OpenClaw 网关的发送地址 + 同一个 bridge token；
+    # 入站的被动回复不经过这里（直接走 HTTP 响应）。
+    wechat_key = settings.supervisor_wechat_source_key
+    if settings.supervisor_wechat_send_url and settings.supervisor_wechat_bridge_token:
+        channels.setdefault(
+            wechat_key,
+            WechatChannel(
+                send_url=settings.supervisor_wechat_send_url,
+                token=settings.supervisor_wechat_bridge_token,
+                timeout_seconds=settings.supervisor_wechat_timeout_seconds,
+            ),
+        )
+    else:
+        channels.setdefault(wechat_key, NullChannel(wechat_key))
+    return channels

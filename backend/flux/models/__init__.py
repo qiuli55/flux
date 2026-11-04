@@ -12,7 +12,16 @@ from flux.models.apply_batch import ApplyBatch
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
 from flux.models.context import ContextBlob, ContextStep, ContextStepToken
+from flux.models.group import (
+    ChatGroup,
+    ChatGroupEpoch,
+    ChatGroupMember,
+    ChatGroupMemberState,
+    ChatGroupMemory,
+    ChatGroupMessage,
+)
 from flux.models.imported_capability import ImportedCapability
+from flux.models.knowledge import KnowledgeChunk, KnowledgeDocument
 from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
 from flux.models.run_trace import RunTraceItem
@@ -37,6 +46,7 @@ from flux.models.task_memory import TaskMemoryCard
 from flux.models.terminal import TerminalEvent, TerminalSession
 from flux.models.usage import UsageRecord, UsageSnapshot
 from flux.models.user import Organization, OrganizationMember, ProviderAccount, User
+from flux.models.wechat import WechatSession
 from flux.models.workspace import VirtualChange
 
 __all__ = [
@@ -49,12 +59,20 @@ __all__ = [
     "ApiKey",
     "ApplyBatch",
     "Base",
+    "ChatGroup",
+    "ChatGroupEpoch",
+    "ChatGroupMember",
+    "ChatGroupMemberState",
+    "ChatGroupMemory",
+    "ChatGroupMessage",
     "ConnectorConfig",
     "ConnectorLog",
     "ContextBlob",
     "ContextStep",
     "ContextStepToken",
     "ImportedCapability",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
     "MemoryEntry",
     "Organization",
     "OrganizationMember",
@@ -85,4 +103,5 @@ __all__ = [
     "UsageSnapshot",
     "User",
     "VirtualChange",
+    "WechatSession",
 ]

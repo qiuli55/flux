@@ -100,6 +100,23 @@ SPEC_TABLES = {
     "supervisor_reports",
     "supervisor_digests",
     "supervisor_outbox",
+    # §11.2 之外的新增表：助理知识库（RAG）。documents 是切块来源（对话 / docs / 项目记忆），
+    # chunks 是检索单元（正文 + 词法 + 可选向量）；两者随来源替换同事务刷新。
+    "knowledge_documents",
+    "knowledge_chunks",
+    # 微信接入（OpenClaw / 微信 ClawBot 只做传输层）：微信私聊 ↔ Flux 助理对话的映射，
+    # 兼作入站消息幂等（last_message_id）。消息本身仍落 task_messages。
+    "wechat_sessions",
+    # 内部多 bot 群聊（2026-11-04）：群 / 成员 / epoch / 消息四张表同属一个迁移
+    # （f6b2c9d4a81e）。成员是已有的 bot 对话（tasks.id），群消息按群内 seq 单调递增。
+    "chat_groups",
+    "chat_group_members",
+    "chat_group_epochs",
+    "chat_group_messages",
+    # 群聊成员状态（每个 bot 在每个群的 last_seen_seq / turns / 私聊摘要）与
+    # 分层记忆（scope=group 本群 / scope=team 跨群），同属迁移 b7d1a9c4e320。
+    "chat_group_member_states",
+    "chat_group_memories",
 }
 
 

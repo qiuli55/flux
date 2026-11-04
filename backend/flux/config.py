@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -239,6 +240,35 @@ class Settings(BaseSettings):
     # watchdog：单次 Run 执行时长上限（秒）；0 表示不限制，交给 DSH 自身超时。
     supervisor_run_timeout_seconds: float = 0.0
 
+    # --- 助理知识库（RAG / wiki）---
+    # 给助理建一份覆盖「全部对话 + docs + 项目记忆」的检索层（见 flux.core.knowledge）。
+    # 关闭后不做任何索引，assistant.search 直接返回空——测试里关掉，避免后台索引抢时序。
+    knowledge_enabled: bool = True
+    # 后台索引 worker：按间隔把新对话 / 变更文档增量写进知识库。
+    knowledge_worker_enabled: bool = True
+    knowledge_index_interval_seconds: float = 300.0
+    # 文档来源目录（相对路径按仓库根解析）：递归收 *.md。
+    knowledge_docs_dir: str = "docs"
+    # 单文件与总文件数上限：避免把巨型文档或整棵依赖树吞进来。
+    knowledge_docs_max_bytes: int = 1_000_000
+    knowledge_docs_max_files: int = 2000
+    # 文档切块预算（估算 token）；overlap 用于跨块保留上下文。
+    knowledge_chunk_tokens: int = 420
+    knowledge_chunk_overlap_tokens: int = 60
+    # 对话按「会话 × 时间窗」切块：窗口预算与单个会话最多取最近多少条消息。
+    knowledge_conversation_window_tokens: int = 600
+    knowledge_max_messages_per_conversation: int = 5000
+    # 关键词预筛后进入打分的候选数；越大越准、越慢。
+    knowledge_candidate_limit: int = 200
+    # Embedding（OpenAI 兼容 /embeddings）。未单独配置 api_key 时复用
+    # openai_api_key；两者都为空 = 纯词法检索，索引照常可用，只是少了语义召回。
+    knowledge_embedding_api_key: str | None = None
+    knowledge_embedding_base_url: str = "https://api.openai.com/v1"
+    knowledge_embedding_model: str = "text-embedding-3-large"
+    knowledge_embedding_dimensions: int | None = 3072
+    knowledge_embedding_timeout_seconds: float = 30.0
+    knowledge_embedding_batch_size: int = 32
+
     # --- Supervisor · 飞书接入 ---
     # 自建应用凭据：只用于主动发消息（报告直通回原会话）。留空 = 走空通道，
     # 投递只记日志，不让 outbox 在本地开发环境里反复重试到 dead。
@@ -252,6 +282,23 @@ class Settings(BaseSettings):
     supervisor_feishu_api_base: str = "https://open.feishu.cn"
     # 回调事件在 Supervisor 里的来源标识，同时也是订阅/通道的键。
     supervisor_feishu_source_key: str = "feishu"
+
+    # --- Supervisor · 微信接入（OpenClaw + 微信 ClawBot 仅作传输层）---
+    # 微信消息由本机 OpenClaw 网关转给 Flux，Flux 当大脑。入站令牌：插件每次转发
+    # 都带 `Authorization: Bearer <token>`；留空 = 拒绝一切微信回调（fail-closed）。
+    supervisor_wechat_bridge_token: str | None = None
+    # 允许使用的微信发送者（OpenClaw senderId，通常 wxid_xxx），逗号/分号/空白分隔。
+    # 留空 = 谁都拒绝：机器人绑的是个人微信，必须显式列白名单。
+    supervisor_wechat_allow_from: str = ""
+    # 微信来源标识：同时是订阅/出站通道的键。
+    supervisor_wechat_source_key: str = "wechat"
+    # 主动出站（报告回推）地址：由 OpenClaw 网关提供；留空 = 只记日志的空通道。
+    # 被动回复不走这里——它直接作为入站请求的响应返回给插件。
+    supervisor_wechat_send_url: str | None = None
+    supervisor_wechat_timeout_seconds: float = 15.0
+    # 单次回复携带的最近对话条数与知识库片段数（控制上下文预算）。
+    supervisor_wechat_history_limit: int = 12
+    supervisor_wechat_knowledge_limit: int = 6
 
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。
@@ -358,6 +405,18 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "completion-stats.json"
+
+    @property
+    def knowledge_docs_path(self) -> Path:
+        """知识库文档来源目录；相对路径按仓库根解析。"""
+        path = Path(self.knowledge_docs_dir).expanduser()
+        return path if path.is_absolute() else (REPO_ROOT / path)
+
+    @property
+    def wechat_allow_from(self) -> set[str]:
+        """微信白名单集合：把逗号 / 分号 / 空白分隔的配置拆成 senderId 集合。"""
+        raw = self.supervisor_wechat_allow_from or ""
+        return {part for part in re.split(r"[,;\s]+", raw.strip()) if part}
 
     @property
     def key_vault_key_path(self) -> Path:

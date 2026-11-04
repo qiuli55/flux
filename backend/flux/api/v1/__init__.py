@@ -12,6 +12,7 @@ from flux.api.v1 import (
     designs,
     dsh,
     git,
+    groups,
     health,
     ide,
     installations,
@@ -33,6 +34,7 @@ api_v1_router.include_router(billing.router)
 api_v1_router.include_router(keys.router)
 api_v1_router.include_router(installations.router)
 api_v1_router.include_router(tasks.router)
+api_v1_router.include_router(groups.router)
 api_v1_router.include_router(workspace.router)
 api_v1_router.include_router(terminal.router)
 api_v1_router.include_router(ide.router)

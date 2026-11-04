@@ -61,6 +61,10 @@ def settings(tmp_path) -> Settings:
         context_cloud_sync=False,
         # 助理后台 worker 关掉：否则事件刚入队就被判断消费，幂等断言会看到不同的 outbox 数
         supervisor_worker_enabled=False,
+        # 知识库同理：后台索引会读写对话/docs，用例自己按需显式触发 run_once
+        knowledge_enabled=False,
+        knowledge_worker_enabled=False,
+        knowledge_embedding_api_key=None,
         memory_prefs_file=str(tmp_path / "memory-prefs.json"),
         # 补全偏好同样落临时目录：不能读写开发机 ~/.flux/completion-prefs.json
         completion_prefs_file=str(tmp_path / "completion-prefs.json"),
