@@ -41,7 +41,10 @@ public sealed record TaskDetail(
     TaskDecision? PendingDecision,
     string? RunId,
     string? Model,
-    string? ApiKeyId);
+    string? ApiKeyId,
+    string? BotName = null,
+    string? AvatarShape = null,
+    string? AvatarColor = null);
 
 /// <summary>GET/POST /tasks/{id}/messages 的单条消息。</summary>
 public sealed record TaskMessage(

@@ -290,6 +290,10 @@ public sealed class FluxApiClient : IDisposable
         string? keyId = null,
         string? summary = null,
         string? summaryFrom = null,
+        string? botName = null,
+        string? avatarShape = null,
+        string? avatarColor = null,
+        bool start = true,
         CancellationToken ct = default)
         => PostAsync<TaskDetail>("/api/v1/tasks", new
         {
@@ -301,6 +305,10 @@ public sealed class FluxApiClient : IDisposable
             key_id = keyId,
             summary,
             summary_from = summaryFrom,
+            bot_name = botName,
+            avatar_shape = avatarShape,
+            avatar_color = avatarColor,
+            start,
         }, ct);
 
     /// <summary>GET /tasks/{id}/context：对话上下文占用（「上下文快满」提醒的口径）。</summary>

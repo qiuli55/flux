@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:views="using:Flux.Desktop.Views"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="900"
@@ -54,7 +55,7 @@
         <DataTemplate x:Key="MessageCard" DataType="vm:MessageRow">
             <Border Classes="bubble" Classes.user="{Binding IsUser}" Margin="0,0,0,8">
                 <StackPanel Spacing="5">
-                    <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
+                    <TextBlock Text="前情摘要 · 来自上一个 Bot" FontSize="10"
                                Foreground="{DynamicResource TnInfo}"
                                IsVisible="{Binding IsSummary}" />
                     <TextBlock Text="{Binding Meta}" FontSize="10"
@@ -93,11 +94,11 @@
         <Border Grid.Column="0" Classes="solo-side" Padding="12,14">
             <Grid RowDefinitions="Auto,Auto,*,Auto">
                 <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Classes="caps" Text="任务" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Classes="mini" Content="新建"
+                    <TextBlock Classes="caps" Text="Bot" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Classes="mini" Content="新建 Bot"
                             Command="{Binding NewTaskCommand}" />
                 </Grid>
-                <TextBlock Grid.Row="1" Text="选择任务继续，或新建一条需求"
+                <TextBlock Grid.Row="1" Text="选择一只 Bot 继续，或新建一只"
                            FontSize="10" Foreground="{DynamicResource TnText4}"
                            Margin="2,8,0,0" TextWrapping="Wrap" />
                 <ScrollViewer Grid.Row="2" Margin="0,8,0,0">
@@ -108,22 +109,30 @@
                                         HorizontalAlignment="Stretch" Margin="0,0,0,4"
                                         Command="{Binding SelectCommand}"
                                         CommandParameter="{Binding}">
-                                    <StackPanel Spacing="5" HorizontalAlignment="Stretch">
-                                        <Grid ColumnDefinitions="*,Auto">
-                                            <TextBlock Text="{Binding Title}" FontSize="12"
-                                                       TextWrapping="Wrap" MaxLines="2" />
-                                            <Ellipse Grid.Column="1" Width="6" Height="6"
-                                                     Fill="{Binding StatusBrush}"
-                                                     VerticalAlignment="Top" Margin="6,5,0,0" />
-                                        </Grid>
-                                        <Grid ColumnDefinitions="*,Auto">
-                                            <TextBlock Text="{Binding Meta}" FontSize="10"
-                                                       FontFamily="{DynamicResource TnMonoFont}"
-                                                       Foreground="{DynamicResource TnText4}" />
-                                            <TextBlock Grid.Column="1" Text="{Binding StatusText}"
-                                                       FontSize="10" Foreground="{Binding StatusBrush}" />
-                                        </Grid>
-                                    </StackPanel>
+                                    <Grid ColumnDefinitions="26,*" ColumnSpacing="8"
+                                          HorizontalAlignment="Stretch">
+                                        <views:BotAvatar Width="26" Height="26"
+                                                         VerticalAlignment="Top"
+                                                         AvatarShape="{Binding AvatarShape}"
+                                                         AvatarColor="{Binding AvatarColor}" />
+                                        <StackPanel Grid.Column="1" Spacing="5"
+                                                    HorizontalAlignment="Stretch">
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock Text="{Binding Title}" FontSize="12"
+                                                           TextWrapping="Wrap" MaxLines="2" />
+                                                <Ellipse Grid.Column="1" Width="6" Height="6"
+                                                         Fill="{Binding StatusBrush}"
+                                                         VerticalAlignment="Top" Margin="6,5,0,0" />
+                                            </Grid>
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock Text="{Binding Meta}" FontSize="10"
+                                                           FontFamily="{DynamicResource TnMonoFont}"
+                                                           Foreground="{DynamicResource TnText4}" />
+                                                <TextBlock Grid.Column="1" Text="{Binding StatusText}"
+                                                           FontSize="10" Foreground="{Binding StatusBrush}" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </Grid>
                                 </Button>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -139,18 +148,23 @@
         <Grid Grid.Column="1" RowDefinitions="Auto,*">
             <!-- 页头 -->
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="20,16,20,14">
-                <StackPanel Grid.Column="0" Spacing="6">
-                    <TextBlock Text="{Binding TaskTitle}" FontSize="17" FontWeight="SemiBold"
-                               TextTrimming="CharacterEllipsis" />
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Border Classes="badge" BorderBrush="{Binding StatusBrush}">
-                            <TextBlock Text="{Binding StatusText}" FontSize="10"
-                                       Foreground="{Binding StatusBrush}" />
-                        </Border>
-                        <TextBlock Text="{Binding TaskMeta}" FontSize="11"
-                                   Foreground="{DynamicResource TnText4}" />
+                <Grid Grid.Column="0" ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                    <views:BotAvatar Width="34" Height="34" VerticalAlignment="Top"
+                                     AvatarShape="{Binding TaskAvatarShape}"
+                                     AvatarColor="{Binding TaskAvatarColor}" />
+                    <StackPanel Grid.Column="1" Spacing="6">
+                        <TextBlock Text="{Binding TaskTitle}" FontSize="17" FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Classes="badge" BorderBrush="{Binding StatusBrush}">
+                                <TextBlock Text="{Binding StatusText}" FontSize="10"
+                                           Foreground="{Binding StatusBrush}" />
+                            </Border>
+                            <TextBlock Text="{Binding TaskMeta}" FontSize="11"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
                     </StackPanel>
-                </StackPanel>
+                </Grid>
                 <Border Grid.Column="1" Classes="pill" Padding="2" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal">
                         <Button Classes="seg" Classes.active="{Binding IsPipeline}" Content="流水线"
@@ -167,29 +181,82 @@
                     <StackPanel Margin="20,0,20,12" Spacing="12">
 
                         <Border Classes="solo-card" IsVisible="{Binding IsNewTask}">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="从一条需求开始" FontSize="13" FontWeight="SemiBold" />
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="新建 Bot" FontSize="13" FontWeight="SemiBold" />
                                 <TextBlock Classes="page-desc"
-                                           Text="发送后 Flux 会建任务并先做需求澄清；确认六个维度后才会执行。执行中的每个改动都可以回滚。" />
-                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
-                                    <Border Classes="pill">
-                                        <TextBlock Text="自动决策" FontSize="10"
-                                                   Foreground="{DynamicResource TnText3}" />
-                                    </Border>
-                                    <Border Classes="pill">
-                                        <TextBlock Text="六维确认" FontSize="10"
-                                                   Foreground="{DynamicResource TnText3}" />
-                                    </Border>
-                                    <Border Classes="pill">
-                                        <TextBlock Text="改动可回滚" FontSize="10"
-                                                   Foreground="{DynamicResource TnText3}" />
-                                    </Border>
-                                </StackPanel>
+                                           Text="起个名字、挑一个头像。创建后直接进入它自己的对话；第一条消息才会真正开始干活。" />
+                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
+                                    <views:BotAvatar Width="64" Height="64" VerticalAlignment="Top"
+                                                     AvatarShape="{Binding SelectedShape}"
+                                                     AvatarColor="{Binding SelectedColor}" />
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Classes="caps" Text="名称" />
+                                        <TextBox Classes="input" Height="32" MaxLength="64"
+                                                 Text="{Binding BotNameInput, Mode=TwoWay}"
+                                                 Watermark="例如：巡检助手" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Classes="caps" Text="形状" />
+                                <ItemsControl ItemsSource="{Binding ShapeOptions}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:BotShapeOption">
+                                            <Button Command="{Binding PickCommand}"
+                                                    CommandParameter="{Binding}"
+                                                    Background="Transparent" Padding="3"
+                                                    Margin="0,0,6,6" Cursor="Hand">
+                                                <Grid>
+                                                    <views:BotAvatar Width="28" Height="28"
+                                                                     AvatarShape="{Binding Shape}"
+                                                                     AvatarColor="{Binding PreviewColor}" />
+                                                    <Border IsVisible="{Binding IsSelected}"
+                                                            BorderBrush="{DynamicResource TnAccent}"
+                                                            BorderThickness="2" CornerRadius="18"
+                                                            Margin="-3" />
+                                                </Grid>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Classes="caps" Text="颜色" />
+                                <ItemsControl ItemsSource="{Binding ColorOptions}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:BotColorOption">
+                                            <Button Command="{Binding PickCommand}"
+                                                    CommandParameter="{Binding}"
+                                                    Background="Transparent" Padding="3"
+                                                    Margin="0,0,6,6" Cursor="Hand">
+                                                <Grid>
+                                                    <views:BotAvatar Width="28" Height="28"
+                                                                     AvatarShape="{Binding PreviewShape}"
+                                                                     AvatarColor="{Binding Color}" />
+                                                    <Border IsVisible="{Binding IsSelected}"
+                                                            BorderBrush="{DynamicResource TnAccent}"
+                                                            BorderThickness="2" CornerRadius="18"
+                                                            Margin="-3" />
+                                                </Grid>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Classes="btn primary" HorizontalAlignment="Left"
+                                        Content="创建 Bot" Padding="18,8"
+                                        Command="{Binding CreateBotCommand}"
+                                        IsEnabled="{Binding !IsCreatingBot}" />
                             </StackPanel>
                         </Border>
 
                         <!-- 七步流程 -->
-                        <Border Classes="solo-card">
+                        <Border Classes="solo-card" IsVisible="{Binding !IsNewTask}">
                             <StackPanel>
                                 <Grid ColumnDefinitions="*,Auto">
                                     <StackPanel Spacing="3">
@@ -311,10 +378,10 @@
                         </Border>
 
                         <!-- 对话 -->
-                        <Border Classes="solo-card">
+                        <Border Classes="solo-card" IsVisible="{Binding !IsNewTask}">
                             <StackPanel Spacing="8">
                                 <Grid ColumnDefinitions="*,Auto">
-                                    <TextBlock Classes="caps" Text="任务对话" />
+                                    <TextBlock Classes="caps" Text="Bot 对话" />
                                     <TextBlock Grid.Column="1" FontSize="10"
                                                Foreground="{DynamicResource TnText4}"
                                                Text="{Binding StrategyText}" />
@@ -336,12 +403,12 @@
                                     <TextBlock Text="{Binding ContextHintText}" FontSize="9"
                                                Foreground="{DynamicResource TnText4}" />
                                 </StackPanel>
-                                <!-- 从上一段对话接手：只带摘要，不搬旧消息 -->
+                                <!-- 从上一个 Bot 接手：只带摘要，不搬旧消息 -->
                                 <Border IsVisible="{Binding HasPendingSummary}"
                                         Background="#0C1B22" BorderBrush="#1F4E5A"
                                         BorderThickness="1" CornerRadius="6" Padding="10">
                                     <StackPanel Spacing="4">
-                                        <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
+                                        <TextBlock Text="前情摘要 · 来自上一个 Bot" FontSize="10"
                                                    Foreground="{DynamicResource TnInfo}" />
                                         <ScrollViewer MaxHeight="110">
                                             <TextBlock Text="{Binding PendingSummary}" FontSize="11"
@@ -360,7 +427,7 @@
                 </ScrollViewer>
 
                 <!-- 输入框 -->
-                <Border Grid.Row="1" Padding="20,10,20,16"
+                <Border Grid.Row="1" Padding="20,10,20,16" IsVisible="{Binding !IsNewTask}"
                         BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
                     <StackPanel Spacing="6">
                         <!-- 上下文将满：就在输入框上方问一句，不打断当前对话 -->
@@ -391,7 +458,7 @@
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBox Classes="compose" Text="{Binding Draft, Mode=TwoWay}"
-                                     Watermark="描述需求或继续对话…" />
+                                     Watermark="给这个 Bot 发消息…" />
                             <Button Grid.Column="1" Classes="btn primary" Content="发送"
                                     Height="62" Margin="10,0,0,0" Width="88"
                                     Command="{Binding SendCommand}"

@@ -113,4 +113,7 @@ public sealed record FluxTask(
     string DecisionMode,
     string? AgentId,
     string? ProjectId,
-    string CreatedAt);
+    string CreatedAt,
+    string? BotName = null,
+    string? AvatarShape = null,
+    string? AvatarColor = null);

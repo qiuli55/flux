@@ -48,8 +48,28 @@ public partial class SoloViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isNewTask = true;
 
+    /// <summary>新建 Bot：名称与头像（形状 × 颜色）。</summary>
     [ObservableProperty]
-    private string _taskTitle = "新建任务";
+    private string _botNameInput = "";
+
+    [ObservableProperty]
+    private string _selectedShape = BotAvatarPalette.DefaultShape;
+
+    [ObservableProperty]
+    private string _selectedColor = BotAvatarPalette.DefaultColor;
+
+    [ObservableProperty]
+    private bool _isCreatingBot;
+
+    /// <summary>当前 Bot 的头像，标题栏用。</summary>
+    [ObservableProperty]
+    private string _taskAvatarShape = BotAvatarPalette.DefaultShape;
+
+    [ObservableProperty]
+    private string _taskAvatarColor = BotAvatarPalette.DefaultColor;
+
+    [ObservableProperty]
+    private string _taskTitle = "新建 Bot";
 
     [ObservableProperty]
     private string _statusText = "未创建";
@@ -58,7 +78,7 @@ public partial class SoloViewModel : ViewModelBase
     private IBrush _statusBrush = Muted;
 
     [ObservableProperty]
-    private string _taskMeta = "描述需求，Flux 会先澄清再给计划";
+    private string _taskMeta = "给 Bot 起个名字，选一个头像";
 
     [ObservableProperty]
     private string _stepText = "第 1 / 7 步 · 需求确认";
@@ -198,6 +218,18 @@ public partial class SoloViewModel : ViewModelBase
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _timer.Tick += async (_, _) => await PollSelectedAsync();
         _timer.Start();
+
+        foreach (var shape in BotAvatarPalette.Shapes)
+        {
+            ShapeOptions.Add(new BotShapeOption(shape, PickShapeCommand));
+        }
+
+        foreach (var color in BotAvatarPalette.Colors)
+        {
+            ColorOptions.Add(new BotColorOption(color, PickColorCommand));
+        }
+
+        SyncAvatarOptions();
     }
 
     public bool IsPipeline => !IsSoloAgent;
@@ -221,6 +253,10 @@ public partial class SoloViewModel : ViewModelBase
     public ObservableCollection<AgentChoice> AgentChoices { get; } = new();
 
     public ObservableCollection<ModelChoice> ModelChoices { get; } = new();
+
+    public ObservableCollection<BotShapeOption> ShapeOptions { get; } = new();
+
+    public ObservableCollection<BotColorOption> ColorOptions { get; } = new();
 
     public TaskDetail? SelectedTask { get; private set; }
 
@@ -268,10 +304,16 @@ public partial class SoloViewModel : ViewModelBase
     {
         IsNewTask = true;
         SelectedTask = null;
-        TaskTitle = "新建任务";
+        TaskTitle = "新建 Bot";
         StatusText = "未创建";
         StatusBrush = Muted;
-        TaskMeta = "描述需求，Flux 会先澄清再给计划";
+        TaskMeta = "给 Bot 起个名字，选一个头像";
+        BotNameInput = "";
+        SelectedShape = BotAvatarPalette.DefaultShape;
+        SelectedColor = BotAvatarPalette.DefaultColor;
+        TaskAvatarShape = SelectedShape;
+        TaskAvatarColor = SelectedColor;
+        SyncAvatarOptions();
         StepText = "第 1 / 7 步 · 需求确认";
         HasConfirmation = false;
         ConfirmationItems.Clear();
@@ -297,7 +339,106 @@ public partial class SoloViewModel : ViewModelBase
         _pendingSummaryFrom = null;
 
         SwitchChat(null);
-        AppLog.Info("Solo 新建任务草稿");
+        AppLog.Info("Solo 新建 Bot 草稿");
+    }
+
+    [RelayCommand]
+    private void PickShape(BotShapeOption? option)
+    {
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedShape = option.Shape;
+        SyncAvatarOptions();
+    }
+
+    [RelayCommand]
+    private void PickColor(BotColorOption? option)
+    {
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedColor = option.Color;
+        SyncAvatarOptions();
+    }
+
+    /// <summary>
+    /// 新建 Bot：先落一条空记录（start=false），拿到名称与头像后直接进入它的对话。
+    /// 不能拿 Bot 名字当需求去跑 Agent。
+    /// </summary>
+    [RelayCommand]
+    private async Task CreateBotAsync()
+    {
+        var api = Api();
+        if (api is null || IsCreatingBot)
+        {
+            return;
+        }
+
+        var name = BotNameInput.Trim();
+        if (name.Length == 0)
+        {
+            ConfirmationHint = "先给这个 Bot 起个名字。";
+            return;
+        }
+
+        IsCreatingBot = true;
+        try
+        {
+            var created = (await api.CreateTaskAsync(
+                name,
+                null,
+                null,
+                "auto",
+                summary: PendingSummary,
+                summaryFrom: _pendingSummaryFrom,
+                botName: name,
+                avatarShape: SelectedShape,
+                avatarColor: SelectedColor,
+                start: false))?.Data;
+            if (created is null)
+            {
+                throw new InvalidOperationException("创建 Bot 没有返回数据");
+            }
+
+            ApplyTask(created);
+            Messages.Clear();
+            PendingSummary = null;
+            _pendingSummaryFrom = null;
+            await RefreshTaskListAsync(api);
+            ConfirmationHint = "Bot 已创建，说点什么开始吧。";
+            AppLog.Info($"Solo 新建 Bot · task={created.Id} · {name} · {SelectedShape}/{SelectedColor}");
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"创建 Bot 失败：{ex.Message}";
+            AppLog.Error("Solo 新建 Bot 失败", ex);
+        }
+        finally
+        {
+            IsCreatingBot = false;
+        }
+    }
+
+    private void SyncAvatarOptions()
+    {
+        TaskAvatarShape = SelectedShape;
+        TaskAvatarColor = SelectedColor;
+        foreach (var option in ShapeOptions)
+        {
+            option.PreviewColor = SelectedColor;
+            option.IsSelected = option.Shape == SelectedShape;
+        }
+
+        foreach (var option in ColorOptions)
+        {
+            option.PreviewShape = SelectedShape;
+            option.IsSelected = option.Color == SelectedColor;
+        }
     }
 
     [RelayCommand]
@@ -340,29 +481,13 @@ public partial class SoloViewModel : ViewModelBase
             var taskId = SelectedTask?.Id;
             if (taskId is null)
             {
-                // 从「上下文快满 → 新建并带摘要」接手：只带摘要，不搬旧消息
-                var created = (await api.CreateTaskAsync(
-                    content,
-                    null,
-                    null,
-                    "auto",
-                    summary: PendingSummary,
-                    summaryFrom: _pendingSummaryFrom))?.Data;
-                if (created is null)
-                {
-                    throw new InvalidOperationException("创建任务没有返回数据");
-                }
-
-                ApplyTask(created);
-                IsNewTask = false;
-                taskId = created.Id;
-                PendingSummary = null;
-                _pendingSummaryFrom = null;
-                await RefreshTaskListAsync(api);
+                // 消息只往已存在的 Bot 里发；新建入口是「新建 Bot」面板
+                throw new InvalidOperationException("先创建 Bot，再给它发消息。");
             }
-            else if (SoloRules.IsTerminalStatus(SelectedTask?.Status))
+
+            if (SoloRules.IsTerminalStatus(SelectedTask?.Status))
             {
-                throw new InvalidOperationException("任务已结束，请新建任务后继续。");
+                throw new InvalidOperationException("这个 Bot 已结束，请新建 Bot 后继续。");
             }
 
             var result = (await api.CreateTaskMessageAsync(taskId, content))?.Data;
@@ -819,7 +944,11 @@ public partial class SoloViewModel : ViewModelBase
 
         SelectedTask = task;
         IsNewTask = false;
-        TaskTitle = SoloRules.Title(task.Description);
+        TaskTitle = string.IsNullOrWhiteSpace(task.BotName)
+            ? SoloRules.Title(task.Description)
+            : task.BotName.Trim();
+        TaskAvatarShape = BotAvatarPalette.NormalizeShape(task.AvatarShape);
+        TaskAvatarColor = BotAvatarPalette.NormalizeColor(task.AvatarColor);
         StatusText = SoloRules.StatusLabel(task.Status);
         StatusBrush = ToneBrush(SoloRules.StatusTone(task.Status));
         TaskMeta = $"{SoloRules.ShortId(task.Id)} · {Clock(task.CreatedAt)} · {task.AgentId ?? "内置执行器"}";
@@ -1140,15 +1269,16 @@ public partial class SoloViewModel : ViewModelBase
                 throw new InvalidOperationException("摘要生成为空，请稍后重试");
             }
 
-            var sourceTitle = SoloRules.Title(SelectedTask?.Description ?? "上一段对话");
+            var sourceTitle = SoloRules.Title(SelectedTask?.Description ?? "上一个 Bot");
             NewTask();
             PendingSummary = handoff.Summary;
             _pendingSummaryFrom = handoff.FromTaskId;
-            TaskTitle = $"延续 · {sourceTitle}";
-            TaskMeta = "已带上上一段对话的摘要 · 发出第一条消息后才创建";
-            ConfirmationHint = "已生成前情摘要，接着说你想做的事。";
+            var suggest = $"延续 · {sourceTitle}";
+            BotNameInput = suggest.Length > 64 ? suggest[..64] : suggest;
+            TaskMeta = "已带上上一个 Bot 的摘要 · 命名并创建后带过来";
+            ConfirmationHint = "已生成前情摘要，起个名字继续吧。";
             AppLog.Info(
-                $"Solo 新建带摘要对话 · from={SoloRules.ShortId(taskId)} · 摘要 {handoff.Summary.Length} 字");
+                $"Solo 新建带摘要 Bot · from={SoloRules.ShortId(taskId)} · 摘要 {handoff.Summary.Length} 字");
         }
         catch (Exception ex)
         {
@@ -1407,7 +1537,11 @@ public partial class TaskRow : ObservableObject
     public TaskRow(FluxTask task, ICommand select)
     {
         Id = task.Id;
-        Title = SoloRules.Title(task.Description);
+        Title = string.IsNullOrWhiteSpace(task.BotName)
+            ? SoloRules.Title(task.Description)
+            : task.BotName.Trim();
+        AvatarShape = BotAvatarPalette.NormalizeShape(task.AvatarShape);
+        AvatarColor = BotAvatarPalette.NormalizeColor(task.AvatarColor);
         Meta = $"{SoloRules.ShortId(task.Id)} · {ClockText(task.CreatedAt)}";
         StatusText = SoloRules.StatusLabel(task.Status);
         StatusBrush = ToneBrush(SoloRules.StatusTone(task.Status));
@@ -1417,6 +1551,10 @@ public partial class TaskRow : ObservableObject
     public string Id { get; }
 
     public string Title { get; }
+
+    public string AvatarShape { get; }
+
+    public string AvatarColor { get; }
 
     public string Meta { get; }
 
@@ -1716,3 +1854,48 @@ public sealed record AgentChoice(string? Id, string Label);
 
 /// <summary>模型下拉项；KeyId 为空表示使用原生模型名。</summary>
 public sealed record ModelChoice(string? KeyId, string? Model, string Label);
+
+/// <summary>新建 Bot 时的头像形状选项。</summary>
+public partial class BotShapeOption : ObservableObject
+{
+    public BotShapeOption(string shape, ICommand pick)
+    {
+        Shape = shape;
+        PickCommand = pick;
+    }
+
+    public string Shape { get; }
+
+    public ICommand PickCommand { get; }
+
+    /// <summary>预览用的当前颜色，随颜色选择同步。</summary>
+    [ObservableProperty]
+    private string _previewColor = BotAvatarPalette.DefaultColor;
+
+    [ObservableProperty]
+    private bool _isSelected;
+}
+
+/// <summary>新建 Bot 时的头像颜色选项。</summary>
+public partial class BotColorOption : ObservableObject
+{
+    public BotColorOption(string color, ICommand pick)
+    {
+        Color = color;
+        PickCommand = pick;
+        Fill = new SolidColorBrush(Avalonia.Media.Color.Parse(BotAvatarPalette.Hex(color)));
+    }
+
+    public string Color { get; }
+
+    public ICommand PickCommand { get; }
+
+    public IBrush Fill { get; }
+
+    /// <summary>预览用的当前形状，随形状选择同步。</summary>
+    [ObservableProperty]
+    private string _previewShape = BotAvatarPalette.DefaultShape;
+
+    [ObservableProperty]
+    private bool _isSelected;
+}
