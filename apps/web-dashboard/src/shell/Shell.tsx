@@ -16,6 +16,7 @@ import { SoloPage } from "../pages/SoloPage";
 import { AssistantPage } from "../pages/AssistantPage";
 import { BillingPage } from "../pages/BillingPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
+import { GroupsPage } from "../pages/GroupsPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SkillsPage } from "../pages/SkillsPage";
@@ -186,6 +187,7 @@ function Content({ view, navigate }: { view: View; navigate: (v: View) => void }
         {view === "overview" ? <OverviewPage navigate={navigate} /> : null}
         {view === "assistant" ? <AssistantPage /> : null}
         {view === "tasks" ? <TasksPage navigate={navigate} /> : null}
+        {view === "groups" ? <GroupsPage /> : null}
         {view === "skills" ? <SkillsPage /> : null}
         {view === "billing" ? <BillingPage /> : null}
         {view === "diagnostics" ? <DiagnosticsPage /> : null}

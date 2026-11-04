@@ -28,6 +28,8 @@ import { setSoloIntentHandler } from "../app/soloIntent";
 import { toast } from "../app/toast";
 import { MOBILE_QUERY, useMediaQuery } from "../app/useMediaQuery";
 import { AgentChatPanel } from "../components/agent/AgentChatPanel";
+import { BotAvatar } from "../components/group/BotAvatar";
+import { CreateBotDialog } from "../components/group/CreateBotDialog";
 import { SoloSidePanel } from "../components/side/SoloSidePanel";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
 import { BUILTIN_ROLES, ROLE_LABELS, STATE_LABELS, toCreateRequest } from "../data/team";
@@ -92,6 +94,16 @@ function errorMessage(error: unknown): string {
 function taskTitle(description: string): string {
   const firstLine = description.split("\n")[0]?.trim() ?? "";
   return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+}
+
+/** 对话即 bot：有自定义名称时优先用它，否则退回需求首行 */
+function botTitle(task: Task): string {
+  return (task.bot_name ?? "").trim() || taskTitle(task.description);
+}
+
+/** 从需求首行提一个 bot 默认名（创建弹窗的预填） */
+function botNameSeed(content: string): string {
+  return taskTitle(content).replace(/…$/, "").slice(0, 24);
 }
 
 type StepState = "done" | "active" | "todo";
@@ -438,6 +450,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  /** 创建 Bot 弹窗（对话即 bot：名称 + 头像在创建时定） */
+  const [createBotOpen, setCreateBotOpen] = useState(false);
+  const [createBotSeed, setCreateBotSeed] = useState("");
+  /** 在空对话里直接发需求时，先建 bot，建完再把这条补发出去 */
+  const pendingSendRef = useRef<{ content: string; payload: string } | null>(null);
 
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -779,25 +796,20 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     if (sending) return;
     const target = taskId ?? "";
     const payload = quote ? `${QUOTE_PREFIX}「${quote}」\n\n${content}` : content;
+    if (!target) {
+      // 还没有对话：先让用户给这个新 bot 起名、挑头像，创建成功后自动补发这条消息
+      pendingSendRef.current = { content, payload };
+      setCreateBotSeed(botNameSeed(content));
+      setCreateBotOpen(true);
+      setDraft("");
+      return;
+    }
     setSending(true);
     setDraft("");
     try {
-      let activeId = target;
-      if (!activeId) {
-        // 没有任务时，第一条需求直接建任务（描述即需求），决策策略用当前选择
-        const created = await api.createTask({
-          description: content,
-          project_id: projectId,
-          decision_mode: strategy,
-          agent_id: taskAgentId,
-        });
-        setTasks((prev) => [created, ...prev]);
-        setTaskId(created.id);
-        activeId = created.id;
-      }
-      const outcome = await api.sendTaskMessage(activeId, payload);
+      const outcome = await api.sendTaskMessage(target, payload);
       setMessages((prev) => [...prev, ...outcome.messages]);
-      setTasks((prev) => prev.map((item) => (item.id === activeId ? outcome.task : item)));
+      setTasks((prev) => prev.map((item) => (item.id === target ? outcome.task : item)));
       setQuote(null);
       toast(`已发送 · ${outcome.messages.length} 条消息已落库`);
     } catch (error) {
@@ -806,7 +818,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [draft, quote, sending, taskId, projectId, strategy, taskAgentId]);
+  }, [draft, quote, sending, taskId]);
 
   const runReview = useCallback(
     async (approved: boolean) => {
@@ -1320,9 +1332,37 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   };
 
   const startNewTask = () => {
-    openTaskScreen(null);
-    window.setTimeout(() => inputRef.current?.focus(), 120);
+    pendingSendRef.current = null;
+    setCreateBotSeed("");
+    setCreateBotOpen(true);
   };
+
+  /** 新 bot 建好：进入它的对话；若是从空对话直接发需求触发，补发那条消息 */
+  const handleBotCreated = useCallback(async (created: Task) => {
+    setQuote(null);
+    setTasks((prev) => [created, ...prev]);
+    setTaskId(created.id);
+    setMScreen("task");
+    const pending = pendingSendRef.current;
+    pendingSendRef.current = null;
+    if (!pending) {
+      window.setTimeout(() => inputRef.current?.focus(), 120);
+      return;
+    }
+    setSending(true);
+    try {
+      const outcome = await api.sendTaskMessage(created.id, pending.payload);
+      setTasks((prev) => prev.map((item) => (item.id === created.id ? outcome.task : item)));
+      const page = await api.listTaskMessages(created.id, { limit: 30 });
+      setMessages(page.items);
+      setHasMore(page.hasMore);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+      setDraft(pending.content);
+    } finally {
+      setSending(false);
+    }
+  }, []);
 
   const jumpToReview = () => {
     const first = pendingChanges[0];
@@ -1421,7 +1461,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </button>
           {mScreen === "solo" ? (
             <button type="button" className="btn btn-primary btn-sm" onClick={startNewTask}>
-              ＋ 新建任务
+              ＋ 新建 Bot
             </button>
           ) : mScreen === "agents" ? (
             <button
@@ -1736,16 +1776,13 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           <button
             type="button"
             className={`s-task-new${taskId === null ? " is-active" : ""}`}
-            onClick={() => {
-              setTaskId(null);
-              inputRef.current?.focus();
-            }}
+            onClick={startNewTask}
           >
             <span className="n-ic i-solo" />
-            新建任务
+            新建 Bot
           </button>
           {tasks.length === 0 ? (
-            <div className="s-task-empty">还没有任务：在下方写下第一条需求即创建</div>
+            <div className="s-task-empty">还没有对话：点上方新建一个 Bot，或直接在下方写下需求</div>
           ) : (
             <ul className="s-tasks">
               {tasks.map((item) => (
@@ -1754,11 +1791,20 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                     type="button"
                     className={`s-task${item.id === taskId ? " is-active" : ""}`}
                     onClick={() => setTaskId(item.id)}
-                    title={taskTitle(item.description)}
+                    title={botTitle(item)}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
                   >
-                    <span className="s-task-title">{taskTitle(item.description)}</span>
-                    <span className="s-task-meta">
-                      {TASK_STATUS_LABELS[item.status]} · {item.id.slice(0, 8)} · {clockOf(item.created_at)}
+                    <BotAvatar
+                      shape={item.avatar_shape}
+                      color={item.avatar_color}
+                      size={26}
+                      name={botTitle(item)}
+                    />
+                    <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
+                      <span className="s-task-title">{botTitle(item)}</span>
+                      <span className="s-task-meta">
+                        {TASK_STATUS_LABELS[item.status]} · {item.id.slice(0, 8)} · {clockOf(item.created_at)}
+                      </span>
                     </span>
                   </button>
                 </li>
@@ -1807,7 +1853,15 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
 
           {!isMobile ? (
             <section className="s-head card">
-              <h1>{task ? taskTitle(task.description) : "新建任务"}</h1>
+              {task ? (
+                <BotAvatar
+                  shape={task.avatar_shape}
+                  color={task.avatar_color}
+                  size={26}
+                  name={botTitle(task)}
+                />
+              ) : null}
+              <h1>{task ? botTitle(task) : "新建任务"}</h1>
               <span className="chip chip-dim">
                 {projects.find((project) => project.id === (task?.project_id ?? projectId))?.name ??
                   "未选择项目"}
@@ -1876,7 +1930,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 </svg>
               </div>
               <div className="th-body">
-                <h1>{task ? taskTitle(task.description) : "新建任务"}</h1>
+                <h1>{task ? botTitle(task) : "新建任务"}</h1>
                 <p>
                   {task
                     ? task.description
@@ -2455,7 +2509,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             </div>
             <div className="dialog-body">
               {tasks.length === 0 ? (
-                <div className="empty-note wide">还没有任务：关闭本窗口后在下方输入需求即可创建。</div>
+                <div className="empty-note wide">还没有对话：点下方「新建 Bot」创建一个。</div>
               ) : (
                 <ul className="tasks">
                   {tasks.map((item) => (
@@ -2467,8 +2521,14 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                         setTaskListOpen(false);
                       }}
                     >
+                      <BotAvatar
+                        shape={item.avatar_shape}
+                        color={item.avatar_color}
+                        size={28}
+                        name={botTitle(item)}
+                      />
                       <div className="tk-main">
-                        <b>{taskTitle(item.description)}</b>
+                        <b>{botTitle(item)}</b>
                         <i>
                           {TASK_STATUS_LABELS[item.status]} · {item.id.slice(0, 8)}
                         </i>
@@ -2484,12 +2544,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 type="button"
                 className="btn btn-ghost"
                 onClick={() => {
-                  setTaskId(null);
                   setTaskListOpen(false);
-                  inputRef.current?.focus();
+                  startNewTask();
                 }}
               >
-                新建任务
+                新建 Bot
               </button>
             </div>
           </div>
@@ -2541,6 +2600,22 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </div>
         </div>
       ) : null}
+
+      <CreateBotDialog
+        open={createBotOpen}
+        initialName={createBotSeed}
+        projectId={projectId}
+        decisionMode={strategy}
+        agentId={taskAgentId}
+        onClose={() => {
+          setCreateBotOpen(false);
+          const pending = pendingSendRef.current;
+          pendingSendRef.current = null;
+          // 取消创建时把用户刚写的需求放回输入框，别让它跟着弹窗一起消失
+          if (pending) setDraft(pending.content);
+        }}
+        onCreated={(task) => void handleBotCreated(task)}
+      />
     </div>
   );
 }

@@ -379,6 +379,12 @@ export interface Task {
   model?: string | null;
   /** 任务级模型来自哪条 key 库条目；null = 原生模型 */
   api_key_id?: string | null;
+  /** 对话即 bot：自定义 bot 名称；null = 用需求首行兜底 */
+  bot_name?: string | null;
+  /** bot 头像形状（见 components/group/BotAvatar.tsx 的 AVATAR_SHAPES） */
+  avatar_shape?: string;
+  /** bot 头像颜色（见 AVATAR_COLORS） */
+  avatar_color?: string;
 }
 
 /** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
@@ -1187,4 +1193,69 @@ export interface SupervisorStopResult {
 export interface SupervisorDispatchThreadResult {
   dispatched: number;
   outcomes: SupervisorDispatchOutcome[];
+}
+
+/* ---------------- 内部群聊（/api/v1/groups） ---------------- */
+
+/** 群成员 = 一个对话（bot）的公开档案 */
+export interface ChatGroupMember {
+  task_id: string;
+  name: string;
+  description: string;
+  avatar_shape: string;
+  avatar_color: string;
+  status: string;
+}
+
+/** 一个内部群（ChatGroup.to_dict 的字段） */
+export interface ChatGroup {
+  id: string;
+  name: string;
+  project_id: string | null;
+  description: string | null;
+  /** 每轮最多发言轮数闸门（1~5） */
+  max_rounds: number;
+  status: string;
+  last_message_at: string | null;
+  created_at: string | null;
+  /** 列表接口只给数量，成员列表为空数组 */
+  member_count: number;
+  members: ChatGroupMember[];
+}
+
+/** 一条群消息（ChatGroupMessage.to_dict） */
+export interface ChatGroupMessage {
+  id: string;
+  group_id: string;
+  /** 群内自增游标，轮询用 after_seq */
+  seq: number;
+  /** 发言的 bot；用户 / 系统消息为 null */
+  task_id: string | null;
+  author_name: string;
+  role: "user" | "assistant" | "system";
+  kind: string;
+  content: string;
+  payload: Record<string, unknown> | null;
+  epoch_id: string | null;
+  created_at: string;
+}
+
+/** GET /api/v1/groups/{id}/messages 的 data */
+export interface ChatGroupMessagePage {
+  messages: ChatGroupMessage[];
+  has_more: boolean;
+}
+
+/** POST /api/v1/groups/{id}/messages 的 data */
+export interface ChatGroupSendOutcome {
+  message: ChatGroupMessage;
+  epoch_id: string;
+  /** 这条消息里 @ 到的成员 task_id */
+  mentioned: string[];
+}
+
+/** POST /api/v1/groups/{id}/interrupt 的 data */
+export interface ChatGroupInterruptOutcome {
+  interrupted: boolean;
+  epoch_id: string | null;
 }
