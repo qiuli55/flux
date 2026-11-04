@@ -481,16 +481,33 @@ public partial class SoloViewModel : ViewModelBase
             var taskId = SelectedTask?.Id;
             if (taskId is null)
             {
-                // 消息只往已存在的 Bot 里发；新建入口是「新建 Bot」面板
-                throw new InvalidOperationException("先创建 Bot，再给它发消息。");
+                // 对话模式：第一句话就是这段对话的需求，直接建会话；先不启动执行
+                var created = (await api.CreateTaskAsync(
+                    content,
+                    null,
+                    null,
+                    "auto",
+                    summary: PendingSummary,
+                    summaryFrom: _pendingSummaryFrom,
+                    start: false))?.Data;
+                if (created is null)
+                {
+                    throw new InvalidOperationException("创建对话没有返回数据");
+                }
+
+                ApplyTask(created);
+                IsNewTask = false;
+                taskId = created.Id;
+                PendingSummary = null;
+                _pendingSummaryFrom = null;
+                await RefreshTaskListAsync(api);
             }
 
-            if (SoloRules.IsTerminalStatus(SelectedTask?.Status))
-            {
-                throw new InvalidOperationException("这个 Bot 已结束，请新建 Bot 后继续。");
-            }
-
-            var result = (await api.CreateTaskMessageAsync(taskId, content))?.Data;
+            // 终态不锁死：新消息走续跑，历史消息与项目关联都保留
+            var continued = SoloRules.IsTerminalStatus(SelectedTask?.Status);
+            var result = (continued
+                ? await api.ContinueTaskAsync(taskId, content)
+                : await api.CreateTaskMessageAsync(taskId, content))?.Data;
             if (result is null)
             {
                 throw new InvalidOperationException("发送消息没有返回数据");
@@ -498,7 +515,9 @@ public partial class SoloViewModel : ViewModelBase
 
             ApplyTask(result.Task);
             AppendMessages(result.Messages);
-            ConfirmationHint = $"已落库 · {result.Messages.Length} 条消息";
+            ConfirmationHint = continued
+                ? "已续跑 · Agent 正在接着执行"
+                : $"已落库 · {result.Messages.Length} 条消息";
             await RefreshTaskListAsync(api);
             await RefreshContextUsageAsync(api, taskId);
             AppLog.Info($"Solo 发送消息 · task={taskId} · {result.Messages.Length} 条");

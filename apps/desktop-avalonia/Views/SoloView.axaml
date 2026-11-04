@@ -55,7 +55,7 @@
         <DataTemplate x:Key="MessageCard" DataType="vm:MessageRow">
             <Border Classes="bubble" Classes.user="{Binding IsUser}" Margin="0,0,0,8">
                 <StackPanel Spacing="5">
-                    <TextBlock Text="前情摘要 · 来自上一个 Bot" FontSize="10"
+                    <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
                                Foreground="{DynamicResource TnInfo}"
                                IsVisible="{Binding IsSummary}" />
                     <TextBlock Text="{Binding Meta}" FontSize="10"
@@ -94,11 +94,11 @@
         <Border Grid.Column="0" Classes="solo-side" Padding="12,14">
             <Grid RowDefinitions="Auto,Auto,*,Auto">
                 <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Classes="caps" Text="Bot" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Classes="mini" Content="新建 Bot"
+                    <TextBlock Classes="caps" Text="对话" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Classes="mini" Content="新建对话"
                             Command="{Binding NewTaskCommand}" />
                 </Grid>
-                <TextBlock Grid.Row="1" Text="选择一只 Bot 继续，或新建一只"
+                <TextBlock Grid.Row="1" Text="选择一段对话继续，或直接输入开始新的"
                            FontSize="10" Foreground="{DynamicResource TnText4}"
                            Margin="2,8,0,0" TextWrapping="Wrap" />
                 <ScrollViewer Grid.Row="2" Margin="0,8,0,0">
@@ -181,77 +181,24 @@
                     <StackPanel Margin="20,0,20,12" Spacing="12">
 
                         <Border Classes="solo-card" IsVisible="{Binding IsNewTask}">
-                            <StackPanel Spacing="10">
-                                <TextBlock Text="新建 Bot" FontSize="13" FontWeight="SemiBold" />
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="从一段对话开始" FontSize="13" FontWeight="SemiBold" />
                                 <TextBlock Classes="page-desc"
-                                           Text="起个名字、挑一个头像。创建后直接进入它自己的对话；第一条消息才会真正开始干活。" />
-                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
-                                    <views:BotAvatar Width="64" Height="64" VerticalAlignment="Top"
-                                                     AvatarShape="{Binding SelectedShape}"
-                                                     AvatarColor="{Binding SelectedColor}" />
-                                    <StackPanel Grid.Column="1" Spacing="6">
-                                        <TextBlock Classes="caps" Text="名称" />
-                                        <TextBox Classes="input" Height="32" MaxLength="64"
-                                                 Text="{Binding BotNameInput, Mode=TwoWay}"
-                                                 Watermark="例如：巡检助手" />
-                                    </StackPanel>
-                                </Grid>
-                                <TextBlock Classes="caps" Text="形状" />
-                                <ItemsControl ItemsSource="{Binding ShapeOptions}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:BotShapeOption">
-                                            <Button Command="{Binding PickCommand}"
-                                                    CommandParameter="{Binding}"
-                                                    Background="Transparent" Padding="3"
-                                                    Margin="0,0,6,6" Cursor="Hand">
-                                                <Grid>
-                                                    <views:BotAvatar Width="28" Height="28"
-                                                                     AvatarShape="{Binding Shape}"
-                                                                     AvatarColor="{Binding PreviewColor}" />
-                                                    <Border IsVisible="{Binding IsSelected}"
-                                                            BorderBrush="{DynamicResource TnAccent}"
-                                                            BorderThickness="2" CornerRadius="18"
-                                                            Margin="-3" />
-                                                </Grid>
-                                            </Button>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock Classes="caps" Text="颜色" />
-                                <ItemsControl ItemsSource="{Binding ColorOptions}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:BotColorOption">
-                                            <Button Command="{Binding PickCommand}"
-                                                    CommandParameter="{Binding}"
-                                                    Background="Transparent" Padding="3"
-                                                    Margin="0,0,6,6" Cursor="Hand">
-                                                <Grid>
-                                                    <views:BotAvatar Width="28" Height="28"
-                                                                     AvatarShape="{Binding PreviewShape}"
-                                                                     AvatarColor="{Binding Color}" />
-                                                    <Border IsVisible="{Binding IsSelected}"
-                                                            BorderBrush="{DynamicResource TnAccent}"
-                                                            BorderThickness="2" CornerRadius="18"
-                                                            Margin="-3" />
-                                                </Grid>
-                                            </Button>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <Button Classes="btn primary" HorizontalAlignment="Left"
-                                        Content="创建 Bot" Padding="18,8"
-                                        Command="{Binding CreateBotCommand}"
-                                        IsEnabled="{Binding !IsCreatingBot}" />
+                                           Text="在下方输入你的需求，Flux 会先做需求澄清；确认后才会执行。执行完可以继续追问，历史消息不会丢。" />
+                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
+                                    <Border Classes="pill">
+                                        <TextBlock Text="自动决策" FontSize="10"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                    <Border Classes="pill">
+                                        <TextBlock Text="六维确认" FontSize="10"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                    <Border Classes="pill">
+                                        <TextBlock Text="改动可回滚" FontSize="10"
+                                                   Foreground="{DynamicResource TnText3}" />
+                                    </Border>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -381,7 +328,7 @@
                         <Border Classes="solo-card" IsVisible="{Binding !IsNewTask}">
                             <StackPanel Spacing="8">
                                 <Grid ColumnDefinitions="*,Auto">
-                                    <TextBlock Classes="caps" Text="Bot 对话" />
+                                    <TextBlock Classes="caps" Text="对话" />
                                     <TextBlock Grid.Column="1" FontSize="10"
                                                Foreground="{DynamicResource TnText4}"
                                                Text="{Binding StrategyText}" />
@@ -403,12 +350,12 @@
                                     <TextBlock Text="{Binding ContextHintText}" FontSize="9"
                                                Foreground="{DynamicResource TnText4}" />
                                 </StackPanel>
-                                <!-- 从上一个 Bot 接手：只带摘要，不搬旧消息 -->
+                                <!-- 从上一段对话接手：只带摘要，不搬旧消息 -->
                                 <Border IsVisible="{Binding HasPendingSummary}"
                                         Background="#0C1B22" BorderBrush="#1F4E5A"
                                         BorderThickness="1" CornerRadius="6" Padding="10">
                                     <StackPanel Spacing="4">
-                                        <TextBlock Text="前情摘要 · 来自上一个 Bot" FontSize="10"
+                                        <TextBlock Text="前情摘要 · 来自上一段对话" FontSize="10"
                                                    Foreground="{DynamicResource TnInfo}" />
                                         <ScrollViewer MaxHeight="110">
                                             <TextBlock Text="{Binding PendingSummary}" FontSize="11"
@@ -427,7 +374,7 @@
                 </ScrollViewer>
 
                 <!-- 输入框 -->
-                <Border Grid.Row="1" Padding="20,10,20,16" IsVisible="{Binding !IsNewTask}"
+                <Border Grid.Row="1" Padding="20,10,20,16"
                         BorderBrush="{DynamicResource TnLine}" BorderThickness="0,1,0,0">
                     <StackPanel Spacing="6">
                         <!-- 上下文将满：就在输入框上方问一句，不打断当前对话 -->
@@ -458,7 +405,7 @@
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBox Classes="compose" Text="{Binding Draft, Mode=TwoWay}"
-                                     Watermark="给这个 Bot 发消息…" />
+                                     Watermark="继续这段对话…" />
                             <Button Grid.Column="1" Classes="btn primary" Content="发送"
                                     Height="62" Margin="10,0,0,0" Width="88"
                                     Command="{Binding SendCommand}"
