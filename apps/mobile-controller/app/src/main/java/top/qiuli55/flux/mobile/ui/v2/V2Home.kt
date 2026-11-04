@@ -36,7 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
@@ -85,15 +85,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import top.qiuli55.flux.mobile.data.ChatGroup
 import kotlin.math.roundToInt
 
-/** 首页：设备筛选 + 助理/额度/设计入口 + 单一/多 Agent 两个分区。 */
+/** 首页：设备筛选 + 助理/额度/设计入口 + 单聊/群聊两个分区。 */
 @Composable
 fun V2HomeScreen(
     device: String,
     onDeviceChange: (String) -> Unit,
     conversations: List<V2Conversation>,
-    groups: List<V2Group>,
+    groups: List<ChatGroup>,
+    groupsLoading: Boolean = false,
     billingHeadline: String,
     extraTop: androidx.compose.ui.unit.Dp,
     onOpenBilling: () -> Unit,
@@ -101,7 +103,8 @@ fun V2HomeScreen(
     onOpenAssistant: () -> Unit,
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
-    onOpenGroup: (V2Group) -> Unit,
+    onOpenGroup: (ChatGroup) -> Unit,
+    onCreateGroup: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onRefresh: () -> Unit = {},
@@ -137,13 +140,11 @@ fun V2HomeScreen(
                     demoAgent(conversation.agentId).name.lowercase().contains(normalized))
         }
     }
-    val filteredGroups = remember(groups, device, normalized) {
+    val filteredGroups = remember(groups, normalized) {
         groups.filter { group ->
-            (device == ALL_DEVICES || group.device == device) &&
-                (normalized.isEmpty() ||
-                    group.title.lowercase().contains(normalized) ||
-                    group.device.lowercase().contains(normalized) ||
-                    group.agents.any { demoAgent(it).name.lowercase().contains(normalized) })
+            normalized.isEmpty() ||
+                group.name.lowercase().contains(normalized) ||
+                group.members.any { it.name.lowercase().contains(normalized) }
         }
     }
 
@@ -222,6 +223,15 @@ fun V2HomeScreen(
             ) {
                 if (multiMode) {
                     LazyColumn(Modifier.fillMaxSize(), state = multiList) {
+                        if (filteredGroups.isEmpty()) {
+                            item {
+                                GroupsEmptyState(
+                                    loading = groupsLoading,
+                                    searching = normalized.isNotEmpty(),
+                                    onCreate = onCreateGroup,
+                                )
+                            }
+                        }
                         itemsIndexed(filteredGroups, key = { _, item -> item.id }) { index, group ->
                             V2Stagger(index) {
                                 GroupRow(group = group, onClick = { onOpenGroup(group) })
@@ -230,7 +240,10 @@ fun V2HomeScreen(
                                 ThinDivider(color = V2Colors.lineSoft, modifier = Modifier.padding(horizontal = 20.dp))
                             }
                         }
-                        item { Spacer(Modifier.height(96.dp)) }
+                        item {
+                            NewGroupRow(onClick = onCreateGroup)
+                            Spacer(Modifier.height(96.dp))
+                        }
                     }
                 } else {
                     LazyColumn(Modifier.fillMaxSize(), state = singleList) {
@@ -347,7 +360,7 @@ fun V2HomeScreen(
             Icon(
                 Icons.Outlined.AddComment,
                 contentDescription = "新建对话，按住可拖动选择快捷动作",
-                tint = Color.White,
+                tint = V2Colors.actionInk,
                 modifier = Modifier.size(24.dp),
             )
         }
@@ -557,7 +570,7 @@ private fun SectionTabs(multiMode: Boolean, onSelect: (Boolean) -> Unit) {
                 },
             ) { onSelect(false) }
             SectionTab(
-                text = "多 Agent 协作任务",
+                text = "群聊",
                 selected = multiMode,
                 modifier = Modifier.onGloballyPositioned {
                     secondX = it.positionInParent().x
@@ -751,7 +764,7 @@ private fun ConversationRow(
                             .background(V2Colors.cyan500),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Label("${conversation.unread}", 9.5f, Color.White, FontWeight.Medium)
+                        Label("${conversation.unread}", 9.5f, V2Colors.actionInk, FontWeight.Medium)
                     }
                 }
             }
@@ -777,8 +790,7 @@ private fun ConversationRow(
 }
 
 @Composable
-private fun GroupRow(group: V2Group, onClick: () -> Unit) {
-    val stageName = group.stages.getOrNull(group.stage)?.name ?: "已完成"
+private fun GroupRow(group: ChatGroup, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -786,24 +798,74 @@ private fun GroupRow(group: V2Group, onClick: () -> Unit) {
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(tint = V2Colors.indigo, icon = Icons.Outlined.AccountTree, online = false)
+        GroupAvatarStack(members = group.members)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Label(group.title, 14f, V2Colors.ink(.90f), FontWeight.Medium, maxLines = 1)
+            Label(group.name, 14f, V2Colors.ink(.90f), FontWeight.Medium, maxLines = 1)
             Spacer(Modifier.height(4.dp))
             Label(
-                "${group.agents.size} 个 Agent · $stageName",
+                "${group.memberCount} 个 Bot · ${group.maxRounds} 轮讨论",
                 11f,
                 V2Colors.ink(.40f),
                 maxLines = 1,
             )
         }
         Spacer(Modifier.width(10.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            Label(group.updated, 11f, V2Colors.ink(.30f))
-            Spacer(Modifier.height(4.dp))
-            Label(groupStatusLabel(group.status), 10f, groupStatusColor(group.status))
+        Label(
+            relativeTime(group.lastMessageAt ?: group.createdAt),
+            11f,
+            V2Colors.ink(.30f),
+        )
+    }
+}
+
+@Composable
+private fun GroupsEmptyState(loading: Boolean, searching: Boolean, onCreate: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Label(
+            when {
+                loading -> "正在读取群聊…"
+                searching -> "没有匹配的群聊"
+                else -> "还没有群聊"
+            },
+            13f,
+            V2Colors.ink(.45f),
+        )
+        if (!loading && !searching) {
+            Spacer(Modifier.height(6.dp))
+            Label("把几个 Bot 拉进同一个群，它们会互相接力讨论", 11f, V2Colors.ink(.32f))
+            Spacer(Modifier.height(14.dp))
+            GhostButton(text = "新建群聊", onClick = onCreate)
         }
+    }
+}
+
+@Composable
+private fun NewGroupRow(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .v2Pressable(pressScale = .985f, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(46.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(V2Colors.ink(.05f))
+                .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Add, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Label("新建群聊", 13.5f, V2Colors.ink(.72f), FontWeight.Medium)
     }
 }
 

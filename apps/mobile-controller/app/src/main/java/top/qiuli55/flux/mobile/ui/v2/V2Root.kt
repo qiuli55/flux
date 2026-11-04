@@ -88,6 +88,10 @@ private sealed interface V2Route {
     data object Chat : V2Route
 
     data object Terminals : V2Route
+
+    /** 内部多 Bot 群聊（整页，不用 Sheet）。 */
+    data class GroupChat(val groupId: String) : V2Route
+
     data class TaskDetail(val taskId: String) : V2Route
     data class TaskChat(val taskId: String) : V2Route
     data class Confirmation(val taskId: String) : V2Route
@@ -146,7 +150,10 @@ fun FluxV2Root() {
     var billingOpen by remember { mutableStateOf(false) }
     var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
-    var groupDetail by remember { mutableStateOf<V2Group?>(null) }
+    var createGroupOpen by remember { mutableStateOf(false) }
+    var createBotOpen by remember { mutableStateOf(false) }
+    // 从建群面板点「新建 Bot」时，创建完要回到建群面板继续选人
+    var createBotReturnToGroup by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
     // 画布有未保存改动时，返回先问一句：保存并退出 / 放弃 / 继续编辑
@@ -189,7 +196,10 @@ fun FluxV2Root() {
     LaunchedEffect(route) {
         if (app.boot == V2Boot.READY) {
             when (route) {
-                V2Route.Home -> vm.refresh(quiet = true)
+                V2Route.Home -> {
+                    vm.refresh(quiet = true)
+                    vm.loadGroups(quiet = true)
+                }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 else -> Unit
@@ -383,7 +393,7 @@ fun FluxV2Root() {
 
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
         settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
-        groupDetail != null || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
+        createGroupOpen || createBotOpen || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
         designExitOpen || memoryOpen
 
     BackHandler(enabled = hasBack) {
@@ -396,7 +406,11 @@ fun FluxV2Root() {
             }
             manualConnectOpen -> manualConnectOpen = false
             agentPickerOpen -> agentPickerOpen = false
-            groupDetail != null -> groupDetail = null
+            createBotOpen -> {
+                createBotOpen = false
+                createBotReturnToGroup = false
+            }
+            createGroupOpen -> createGroupOpen = false
             newChatOpen -> newChatOpen = false
             keyVaultOpen -> keyVaultOpen = false
             memoryOpen -> memoryOpen = false
@@ -410,6 +424,10 @@ fun FluxV2Root() {
                   is V2Route.Diff -> V2Route.Changes(current.taskId)
                   is V2Route.Run -> V2Route.TaskDetail(current.taskId)
                   is V2Route.Terminal -> V2Route.Terminals
+                  is V2Route.GroupChat -> {
+                      vm.closeGroupChat()
+                      V2Route.Home
+                  }
                   is V2Route.Browser -> current.origin
                   V2Route.DesignCanvas -> {
                       if (designState.dirty) {
@@ -477,7 +495,8 @@ fun FluxV2Root() {
                             device = device,
                             onDeviceChange = { device = it },
                             conversations = app.conversations,
-                            groups = app.groups,
+                            groups = app.groupChat.groups,
+                            groupsLoading = app.groupChat.loadingGroups,
                             billingHeadline = app.billing?.headline ?: "暂无额度数据",
                             extraTop = extraTop,
                             onOpenBilling = {
@@ -491,11 +510,68 @@ fun FluxV2Root() {
                                 deleteConversationError = null
                                 deleteConversationId = it.id
                             },
-                            onOpenGroup = { groupDetail = it },
+                            onOpenGroup = { route = V2Route.GroupChat(it.id) },
+                            onCreateGroup = { createGroupOpen = true },
                             onOpenSettings = { settingsOpen = true },
                             onNewChat = { newChatOpen = true },
-                            onRefresh = { vm.refresh(quiet = true) },
+                            onRefresh = {
+                                vm.refresh(quiet = true)
+                                vm.loadGroups(quiet = true)
+                            },
                         )
+
+                        is V2Route.GroupChat -> {
+                            LaunchedEffect(current.groupId) { vm.openGroupChat(current.groupId) }
+                            DisposableEffect(current.groupId) {
+                                onDispose { vm.closeGroupChat() }
+                            }
+                            GroupChatScreen(
+                                state = app.groupChat,
+                                botCandidates = app.botCandidates,
+                                extraTop = extraTop,
+                                showBack = showBack,
+                                onBack = {
+                                    vm.closeGroupChat()
+                                    route = V2Route.Home
+                                },
+                                onSend = { vm.sendGroupMessage(current.groupId, it) },
+                                onInterrupt = { vm.interruptGroupChat(current.groupId) },
+                                onAddMember = { vm.addGroupMember(current.groupId, it) },
+                                onRemoveMember = { vm.removeGroupMember(current.groupId, it) },
+                                onSetRole = { taskId, role ->
+                                    vm.updateGroupMember(
+                                        current.groupId,
+                                        taskId,
+                                        role = role,
+                                    )
+                                },
+                                onSetPermission = { taskId, mode ->
+                                    vm.updateGroupMember(
+                                        current.groupId,
+                                        taskId,
+                                        permissionMode = mode,
+                                    )
+                                },
+                                onSetModel = { taskId, model, keyId ->
+                                    vm.updateGroupMember(
+                                        current.groupId,
+                                        taskId,
+                                        model = model,
+                                        keyId = keyId,
+                                    )
+                                },
+                                onLoadMemory = { vm.loadGroupMemory(current.groupId) },
+                                onCreateBot = {
+                                    createBotReturnToGroup = false
+                                    createBotOpen = true
+                                },
+                                onDeleteGroup = {
+                                    vm.deleteGroupChat(current.groupId) { error ->
+                                        if (error.isEmpty()) route = V2Route.Home
+                                    }
+                                },
+                            )
+                        }
 
                         V2Route.Assistant -> V2AssistantScreen(
                             state = assistantState,
@@ -854,11 +930,14 @@ fun FluxV2Root() {
                     }
 
                     val flash = app.error ?: app.notice
+                        ?: app.groupChat.error ?: app.groupChat.notice
+                    val flashIsError = app.error != null || app.groupChat.error != null
                     // 提示条到点自动收起：错误留久一点，成功提示更快消失，避免长期糊在顶栏。
                     LaunchedEffect(flash) {
                         if (flash != null) {
-                            delay(if (app.error != null) 5000L else 2600L)
+                            delay(if (flashIsError) 5000L else 2600L)
                             vm.clearMessages()
+                            vm.clearGroupMessages()
                         }
                     }
                     if (flash != null) {
@@ -868,8 +947,11 @@ fun FluxV2Root() {
                                 .statusBarsPadding()
                                 .padding(top = 8.dp, start = 16.dp, end = 16.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (app.error != null) V2Colors.rose else V2Colors.emerald700)
-                                .clickable { vm.clearMessages() }
+                                .background(if (flashIsError) V2Colors.rose else V2Colors.emerald700)
+                                .clickable {
+                                    vm.clearMessages()
+                                    vm.clearGroupMessages()
+                                }
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                         ) {
                             Label(flash, 10.5f, Color.White)
@@ -1010,10 +1092,50 @@ fun FluxV2Root() {
                         )
                     }
 
-                    groupDetail?.let { group ->
-                        MultiGroupSheet(
-                            group = group,
-                            onDismiss = { groupDetail = null },
+                    if (createGroupOpen) {
+                        CreateGroupSheet(
+                            candidates = app.botCandidates,
+                            onCreateBot = {
+                                createGroupOpen = false
+                                createBotReturnToGroup = true
+                                createBotOpen = true
+                            },
+                            onCreate = { name, description, rounds, memberIds, adminTaskId ->
+                                vm.createGroup(
+                                    name,
+                                    description,
+                                    rounds,
+                                    memberIds,
+                                    adminTaskId,
+                                ) { group ->
+                                    if (group != null) {
+                                        createGroupOpen = false
+                                        route = V2Route.GroupChat(group.id)
+                                    }
+                                }
+                            },
+                            onDismiss = { createGroupOpen = false },
+                        )
+                    }
+
+                    if (createBotOpen) {
+                        CreateBotSheet(
+                            onCreate = { name, shape, color, done ->
+                                vm.createBot(name, shape, color) { error ->
+                                    done(error)
+                                    if (error.isEmpty()) {
+                                        createBotOpen = false
+                                        if (createBotReturnToGroup) {
+                                            createGroupOpen = true
+                                        }
+                                        createBotReturnToGroup = false
+                                    }
+                                }
+                            },
+                            onDismiss = {
+                                createBotOpen = false
+                                createBotReturnToGroup = false
+                            },
                         )
                     }
 
@@ -1241,7 +1363,7 @@ private fun RailButton(
                         .padding(horizontal = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Label("$badge", 9f, Color.White, FontWeight.Medium, maxLines = 1)
+                    Label("$badge", 9f, V2Colors.actionInk, FontWeight.Medium, maxLines = 1)
                 }
             }
         }
@@ -1261,5 +1383,6 @@ private fun v2RouteDepth(route: V2Route): Int = when (route) {
     is V2Route.Changes -> 3
     is V2Route.Run -> 3
     is V2Route.Terminal -> 2
+    is V2Route.GroupChat -> 2
     is V2Route.Diff -> 4
 }

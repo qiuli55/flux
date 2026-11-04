@@ -169,27 +169,6 @@ data class V2Conversation(
     val messages: List<V2Message>,
 )
 
-enum class V2GroupStatus { RUNNING, BLOCKED, DONE }
-
-enum class V2StageState { DONE, ACTIVE, PENDING }
-
-data class V2Stage(val name: String, val note: String, val time: String, val state: V2StageState)
-
-data class V2Event(val agentId: String, val text: String, val time: String)
-
-data class V2Group(
-    val id: String,
-    val title: String,
-    val device: String,
-    val status: V2GroupStatus,
-    val progress: Int,
-    val stage: Int,
-    val updated: String,
-    val agents: List<String>,
-    val stages: List<V2Stage>,
-    val events: List<V2Event>,
-)
-
 enum class V2Risk { HIGH, MEDIUM, LOW }
 
 data class V2Impact(val key: String, val value: String, val danger: Boolean = false)
@@ -450,89 +429,6 @@ val demoConversations = listOf(
     ),
 )
 
-val demoGroups = listOf(
-    V2Group(
-        id = "g-201",
-        title = "生产库迁移演练",
-        device = "MacBook Pro",
-        status = V2GroupStatus.RUNNING,
-        progress = 62,
-        stage = 1,
-        updated = "3 分钟前",
-        agents = listOf("arch", "ops", "sec"),
-        stages = listOf(
-            V2Stage("影响评估", "3 张表依赖梳理完成", "02:02", V2StageState.DONE),
-            V2Stage("影子库回放", "正在回放 1.2M 行数据", "02:11", V2StageState.ACTIVE),
-            V2Stage("安全复核", "等待 Security-Auditor 接入", "—", V2StageState.PENDING),
-            V2Stage("等待批准", "需长按确认后执行", "—", V2StageState.PENDING),
-        ),
-        events = listOf(
-            V2Event("ops", "影子库回放进度 62%，查询延迟稳定在 58ms", "02:18:24"),
-            V2Event("arch", "索引方案已确认，回滚脚本已提交评审", "02:16:05"),
-            V2Event("sec", "已加入复核队列，回放结束后检查锁等待", "02:14:41"),
-        ),
-    ),
-    V2Group(
-        id = "g-202",
-        title = "web-console v2.4.0 灰度发布",
-        device = "Studio",
-        status = V2GroupStatus.RUNNING,
-        progress = 40,
-        stage = 1,
-        updated = "9 分钟前",
-        agents = listOf("arch", "ops"),
-        stages = listOf(
-            V2Stage("发布准备", "构建产物已签名", "01:48", V2StageState.DONE),
-            V2Stage("5% 灰度", "internal-beta 组正在放量", "01:55", V2StageState.ACTIVE),
-            V2Stage("指标观察", "错误率与 LCP 采样中", "—", V2StageState.PENDING),
-            V2Stage("全量放量", "等待观察窗口结束", "—", V2StageState.PENDING),
-        ),
-        events = listOf(
-            V2Event("ops", "灰度组 5% 放量完成，错误率 0.42%", "02:09:12"),
-            V2Event("arch", "图表渲染改动的回归用例全部通过", "01:58:30"),
-        ),
-    ),
-    V2Group(
-        id = "g-196",
-        title = "异常令牌隔离与审计",
-        device = "MacBook Pro",
-        status = V2GroupStatus.BLOCKED,
-        progress = 75,
-        stage = 2,
-        updated = "26 分钟前",
-        agents = listOf("sec", "ops"),
-        stages = listOf(
-            V2Stage("隔离令牌", "3 个令牌已阻断", "00:52", V2StageState.DONE),
-            V2Stage("服务只读", "14 个服务已切换只读", "00:58", V2StageState.DONE),
-            V2Stage("来源追溯", "等待安全值班授权", "—", V2StageState.ACTIVE),
-            V2Stage("重新签发", "需业务方确认后执行", "—", V2StageState.PENDING),
-        ),
-        events = listOf(
-            V2Event("sec", "境外 IP 归属已定位，等待调取审计日志的授权", "01:36:02"),
-            V2Event("ops", "只读切换完成，写入队列已暂存", "01:12:44"),
-        ),
-    ),
-    V2Group(
-        id = "g-188",
-        title = "CI 缓存清理与容量回收",
-        device = "Studio",
-        status = V2GroupStatus.DONE,
-        progress = 100,
-        stage = 3,
-        updated = "昨天",
-        agents = listOf("ops"),
-        stages = listOf(
-            V2Stage("容量盘点", "识别 42GB 可回收缓存", "21:04", V2StageState.DONE),
-            V2Stage("清理构建缓存", "保留最近 30 天产物", "21:18", V2StageState.DONE),
-            V2Stage("验证流水线", "冷启动构建耗时回到 6 分 20 秒", "21:41", V2StageState.DONE),
-            V2Stage("容量回收", "磁盘占用降至 61%", "21:46", V2StageState.DONE),
-        ),
-        events = listOf(
-            V2Event("ops", "清理完成，释放 38.6GB，流水线验证通过", "21:46:18"),
-        ),
-    ),
-)
-
 val demoDecisions = listOf(
     V2Decision(
         id = "d-1041",
@@ -655,16 +551,4 @@ fun demoAgentReply(input: String): String = when {
     Regex("扩容|建议").containsMatchIn(input) ->
         "峰值前把 api 副本从 6 提到 8 即可；数据库连接池仍有余量，不需要改配置。"
     else -> "收到「$input」。我正在解析意图并调度最近的 Agent 处理，结果会进入任务队列。"
-}
-
-fun groupStatusLabel(status: V2GroupStatus): String = when (status) {
-    V2GroupStatus.RUNNING -> "协作中"
-    V2GroupStatus.BLOCKED -> "等待授权"
-    V2GroupStatus.DONE -> "已完成"
-}
-
-fun groupStatusColor(status: V2GroupStatus): Color = when (status) {
-    V2GroupStatus.RUNNING -> V2Colors.cyan700
-    V2GroupStatus.BLOCKED -> V2Colors.amber700
-    V2GroupStatus.DONE -> V2Colors.emerald700
 }

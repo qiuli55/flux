@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,8 +24,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Devices
@@ -39,10 +36,8 @@ import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Verified
@@ -58,7 +53,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -651,7 +645,7 @@ fun NewChatSheet(
                                 .align(Alignment.BottomEnd)
                                 .size(10.dp)
                                 .background(V2Colors.emerald, CircleShape)
-                                .border(2.dp, Color.White, CircleShape),
+                                .border(2.dp, V2Colors.surface, CircleShape),
                         )
                     }
                     Spacer(Modifier.width(12.dp))
@@ -666,206 +660,6 @@ fun NewChatSheet(
                     }
                 }
             }
-        }
-    }
-}
-
-// ================================================================== 多 Agent 详情
-
-@Composable
-fun MultiGroupSheet(group: V2Group, onDismiss: () -> Unit) {
-    val statusColor = groupStatusColor(group.status)
-    val stage = group.stages.getOrNull(group.stage)
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
-        SheetHeader(
-            title = group.title,
-            subtitle = "${group.agents.size} 个 Agent 协作 · ${group.device}",
-            onClose = onDismiss,
-        )
-        Column(
-            Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(V2Colors.surface(.55f))
-                    .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(16.dp))
-                    .padding(16.dp),
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(statusColor.copy(alpha = .10f))
-                            .border(1.dp, statusColor.copy(alpha = .20f), RoundedCornerShape(999.dp))
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Outlined.AccountTree, null, tint = statusColor, modifier = Modifier.size(12.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Label(groupStatusLabel(group.status), 10f, statusColor, FontWeight.Medium)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Label("${group.progress} %", 12f, V2Colors.ink(.70f), FontWeight.SemiBold, mono = true)
-                }
-                Spacer(Modifier.height(12.dp))
-                ProgressBar(group.progress, V2Colors.cyan500, height = 6.dp)
-                Spacer(Modifier.height(10.dp))
-                Label(
-                    "当前阶段：${stage?.name ?: "已完成"} · 最近更新 ${group.updated}",
-                    10.5f,
-                    V2Colors.ink(.40f),
-                )
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Label("参与 Agent", 11f, V2Colors.ink(.45f), FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                group.agents.forEach { agentId ->
-                    val agent = demoAgent(agentId)
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(V2Colors.surface(.45f))
-                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(999.dp))
-                            .padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(agent.tint.copy(alpha = .12f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Outlined.SmartToy, null, tint = agent.tint, modifier = Modifier.size(11.dp))
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        Label(agent.name, 10.5f, V2Colors.ink(.65f))
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Label("阶段进度", 11f, V2Colors.ink(.45f), FontWeight.Medium)
-            Spacer(Modifier.height(10.dp))
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(V2Colors.surface(.45f))
-                    .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(16.dp))
-                    .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
-            ) {
-                group.stages.forEachIndexed { index, item ->
-                    Row(Modifier.fillMaxWidth()) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(
-                                Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when (item.state) {
-                                            V2StageState.DONE -> V2Colors.emerald.copy(alpha = .14f)
-                                            V2StageState.ACTIVE -> V2Colors.cyan500.copy(alpha = .16f)
-                                            V2StageState.PENDING -> V2Colors.ink(.04f)
-                                        },
-                                    )
-                                    .border(
-                                        1.dp,
-                                        when (item.state) {
-                                            V2StageState.DONE -> V2Colors.emerald.copy(alpha = .30f)
-                                            V2StageState.ACTIVE -> V2Colors.accent.copy(alpha = .30f)
-                                            V2StageState.PENDING -> V2Colors.ink(.15f)
-                                        },
-                                        CircleShape,
-                                    ),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                when (item.state) {
-                                    V2StageState.DONE -> Icon(
-                                        Icons.Outlined.Check,
-                                        null,
-                                        tint = Color(0xFF059669),
-                                        modifier = Modifier.size(10.dp),
-                                    )
-                                    V2StageState.ACTIVE -> Box(
-                                        Modifier.size(6.dp).background(V2Colors.cyan500, CircleShape),
-                                    )
-                                    V2StageState.PENDING -> Box(
-                                        Modifier.size(6.dp).background(V2Colors.ink(.20f), CircleShape),
-                                    )
-                                }
-                            }
-                            if (index != group.stages.lastIndex) {
-                                Box(
-                                    Modifier
-                                        .padding(top = 4.dp)
-                                        .width(1.dp)
-                                        .height(34.dp)
-                                        .background(
-                                            if (item.state == V2StageState.DONE) V2Colors.emerald.copy(alpha = .25f)
-                                            else V2Colors.ink(.10f),
-                                        ),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f).padding(bottom = 14.dp)) {
-                            Label(
-                                item.name,
-                                11.5f,
-                                when (item.state) {
-                                    V2StageState.DONE -> V2Colors.ink(.65f)
-                                    V2StageState.ACTIVE -> V2Colors.ink(.85f)
-                                    V2StageState.PENDING -> V2Colors.ink(.35f)
-                                },
-                                if (item.state == V2StageState.ACTIVE) FontWeight.Medium else FontWeight.Normal,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Label(
-                                if (item.time == "—") item.note else "${item.note} · ${item.time}",
-                                10f,
-                                V2Colors.ink(.33f),
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Label("最近动态", 11f, V2Colors.ink(.45f), FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                group.events.forEach { event ->
-                    val agent = demoAgent(event.agentId)
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(V2Colors.surface(.45f))
-                            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                    ) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Label(agent.name, 10f, agent.tint, FontWeight.Medium)
-                            Spacer(Modifier.weight(1f))
-                            Label(event.time, 9f, V2Colors.ink(.25f), mono = true)
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Label(event.text, 11f, V2Colors.ink(.55f))
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
         }
     }
 }
@@ -1036,14 +830,14 @@ fun AgentPickerSheet(
                                     Label(
                                         model.label,
                                         11f,
-                                        if (selectedModel) Color.White else V2Colors.ink(.65f),
+                                        if (selectedModel) V2Colors.actionInk else V2Colors.ink(.65f),
                                         if (selectedModel) FontWeight.Medium else FontWeight.Normal,
                                         modifier = Modifier.weight(1f),
                                     )
                                     Label(
                                         if (selectedModel) "使用中" else "选择",
                                         9.5f,
-                                        if (selectedModel) Color.White.copy(alpha = .8f) else V2Colors.ink(.35f),
+                                        if (selectedModel) V2Colors.actionInk.copy(alpha = .8f) else V2Colors.ink(.35f),
                                     )
                                 }
                             }

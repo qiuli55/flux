@@ -5,8 +5,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.serializer
@@ -93,6 +95,13 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
+        /** bot 展示名；为空时后端沿用 description。 */
+        botName: String? = null,
+        /** bot 头像形状 / 颜色（后端 avatar.py 枚举）。 */
+        avatarShape: String? = null,
+        avatarColor: String? = null,
+        /** false = 先建对话不立刻跑第一轮（建 bot / 拉进群时用）。 */
+        start: Boolean = true,
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -106,10 +115,91 @@ class FluxApi(
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
             }
             put("origin", origin)
+            if (!botName.isNullOrBlank()) put("bot_name", botName.trim())
+            if (!avatarShape.isNullOrBlank()) put("avatar_shape", avatarShape)
+            if (!avatarColor.isNullOrBlank()) put("avatar_color", avatarColor)
+            if (!start) put("start", false)
             putAttachmentIds(attachmentIds)
         }
         return post("api/v1/tasks", body)
     }
+
+    /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
+
+    suspend fun listGroups(): List<ChatGroup> = get("api/v1/groups")
+
+    suspend fun createGroup(
+        name: String,
+        memberIds: List<String>,
+        description: String? = null,
+        projectId: String? = null,
+        maxRounds: Int = 2,
+        adminTaskId: String? = null,
+    ): ChatGroup = post(
+        "api/v1/groups",
+        buildJsonObject {
+            put("name", name.trim())
+            if (!description.isNullOrBlank()) put("description", description.trim())
+            if (!projectId.isNullOrBlank()) put("project_id", projectId)
+            put("max_rounds", maxRounds)
+            if (!adminTaskId.isNullOrBlank()) put("admin_task_id", adminTaskId)
+            putJsonArray("member_ids") { memberIds.forEach { add(JsonPrimitive(it)) } }
+        },
+    )
+
+    suspend fun getGroup(groupId: String): ChatGroup = get("api/v1/groups/$groupId")
+
+    suspend fun deleteGroup(groupId: String): JsonElement = delete("api/v1/groups/$groupId")
+
+    /** 加成员返回更新后的成员列表。 */
+    suspend fun addGroupMember(groupId: String, taskId: String): List<ChatGroupMember> = post(
+        "api/v1/groups/$groupId/members",
+        buildJsonObject { put("task_id", taskId) },
+    )
+
+    suspend fun removeGroupMember(groupId: String, taskId: String): JsonElement =
+        delete("api/v1/groups/$groupId/members/$taskId")
+
+    /**
+     * 调整成员：角色（admin/member）、模型、权限预设。只传要改的项，返回最新成员列表。
+     * model 传空串表示清除覆盖、回到默认模型。
+     */
+    suspend fun updateGroupMember(
+        groupId: String,
+        taskId: String,
+        role: String? = null,
+        model: String? = null,
+        keyId: String? = null,
+        permissionMode: String? = null,
+    ): List<ChatGroupMember> = patch(
+        "api/v1/groups/$groupId/members/$taskId",
+        buildJsonObject {
+            if (role != null) put("role", role)
+            if (model != null) put("model", model)
+            if (keyId != null) put("key_id", keyId)
+            if (permissionMode != null) put("permission_mode", permissionMode)
+        },
+    )
+
+    /** 分层记忆：本群 + 团队（都由编排器在 epoch 结束时压缩写入）。 */
+    suspend fun getGroupMemory(groupId: String): ChatGroupMemoryState =
+        get("api/v1/groups/$groupId/memory")
+
+    /** 群消息增量拉取：afterSeq 之后的至多 limit 条，has_more 表示还有。 */
+    suspend fun listGroupMessages(
+        groupId: String,
+        afterSeq: Int = 0,
+        limit: Int = 200,
+    ): ChatGroupMessagePage =
+        get("api/v1/groups/$groupId/messages?after_seq=$afterSeq&limit=$limit")
+
+    suspend fun sendGroupMessage(groupId: String, content: String): ChatGroupSendOutcome = post(
+        "api/v1/groups/$groupId/messages",
+        buildJsonObject { put("content", content.trim()) },
+    )
+
+    suspend fun interruptGroup(groupId: String): ChatGroupInterruptOutcome =
+        post("api/v1/groups/$groupId/interrupt", buildJsonObject {})
 
     suspend fun getTask(taskId: String): Task = get("api/v1/tasks/$taskId")
 
