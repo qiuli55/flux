@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -65,6 +65,40 @@ class Bot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: 最近一次开工的任务；不设外键，任务被清理后 Bot 仍可查
     last_task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    #: 最近一次已结算结果的任务。调度器每轮都会看到 last_task_id，
+    #: 用它保证同一条终态任务只计入健康统计一次。
+    last_settled_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    #: 连续失败多少次自动暂停；0 = 永不自动暂停（用户完全自己管）
+    failure_threshold: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    #: 累计已结算的轮次与其中失败的轮次（只增不减，用于健康度展示）
+    runs_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    runs_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #: 最近一次失败原因（截断后落库）；成功一轮后清空
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 自动暂停的原因；用户手动恢复时清空
+    paused_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: 每日 token 预算（按 UTC 自然日）。NULL 或 0 = 不限制；
+    #: 已用量不落库，直接从 usage_records 按当日聚合（账本是唯一权威，天然幂等）。
+    token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 失败时是否主动通知用户（写 bot_notifications）
+    notify_on_failure: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    #: 可触发本 Bot 的事件名列表（如 task.completed）；NULL/空 = 不响应事件
+    event_triggers: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: 允许调用的 MCP 工具名；NULL = 不额外限制（仍受权限模式约束）
+    allowed_tools: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: 允许执行的命令首 token 白名单；NULL = 不限制
+    allowed_commands: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: 允许访问的路径前缀（相对工作目录）；NULL = 不限制
+    allowed_paths: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +117,23 @@ class Bot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "next_run_at": _iso(self.next_run_at),
             "last_run_at": _iso(self.last_run_at),
             "last_task_id": str(self.last_task_id) if self.last_task_id is not None else None,
+            "last_settled_task_id": (
+                str(self.last_settled_task_id) if self.last_settled_task_id is not None else None
+            ),
+            "failure_threshold": int(self.failure_threshold or 0),
+            "consecutive_failures": int(self.consecutive_failures or 0),
+            "runs_total": int(self.runs_total or 0),
+            "runs_failed": int(self.runs_failed or 0),
+            "last_error": self.last_error,
+            "paused_reason": self.paused_reason,
+            "token_budget": int(self.token_budget) if self.token_budget else None,
+            "notify_on_failure": bool(self.notify_on_failure),
+            "event_triggers": list(self.event_triggers or []),
+            "allowed_tools": list(self.allowed_tools) if self.allowed_tools is not None else None,
+            "allowed_commands": (
+                list(self.allowed_commands) if self.allowed_commands is not None else None
+            ),
+            "allowed_paths": (list(self.allowed_paths) if self.allowed_paths is not None else None),
             "created_at": _iso(self.created_at),
             "updated_at": _iso(self.updated_at),
         }

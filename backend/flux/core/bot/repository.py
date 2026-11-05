@@ -45,6 +45,13 @@ class BotRepository:
         status: str,
         schedule: str | None,
         next_run_at: datetime | None,
+        failure_threshold: int = 3,
+        token_budget: int | None = None,
+        notify_on_failure: bool = True,
+        event_triggers: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+        allowed_commands: list[str] | None = None,
+        allowed_paths: list[str] | None = None,
     ) -> Bot:
         async with self._session_factory() as session:
             bot = Bot(
@@ -62,6 +69,13 @@ class BotRepository:
                 status=status,
                 schedule=schedule,
                 next_run_at=next_run_at,
+                failure_threshold=failure_threshold,
+                token_budget=token_budget,
+                notify_on_failure=notify_on_failure,
+                event_triggers=event_triggers,
+                allowed_tools=allowed_tools,
+                allowed_commands=allowed_commands,
+                allowed_paths=allowed_paths,
             )
             session.add(bot)
             await self._commit(session)
@@ -89,6 +103,19 @@ class BotRepository:
                 Bot.next_run_at <= now,
             )
             .order_by(Bot.next_run_at.asc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            return list(await session.scalars(statement))
+
+    async def list_unsettled(self, *, limit: int = 50) -> list[Bot]:
+        """有终态任务还没计入健康统计的 Bot（含已暂停的，用于结算自愈）。"""
+        statement = (
+            select(Bot)
+            .where(
+                Bot.last_task_id.is_not(None),
+                Bot.last_settled_task_id.is_distinct_from(Bot.last_task_id),
+            )
             .limit(limit)
         )
         async with self._session_factory() as session:

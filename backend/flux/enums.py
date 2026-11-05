@@ -60,6 +60,31 @@ class BotStatus(StrEnum):
     PAUSED = "paused"
 
 
+class BotMemoryRelevance(StrEnum):
+    """Bot 记忆与自己关系的三档（无关内容不落库，所以只有两档）。"""
+
+    DIRECT = "direct"
+    INDIRECT = "indirect"
+
+
+class BotMemoryKind(StrEnum):
+    """Bot 记忆的类别（bot_memories.kind）。"""
+
+    PREFERENCE = "preference"
+    FACT = "fact"
+    DECISION = "decision"
+    COMMITMENT = "commitment"
+    SUMMARY = "summary"
+
+
+class BotMemorySource(StrEnum):
+    """Bot 记忆的来源（bot_memories.source）。"""
+
+    GROUP = "group"
+    CHAT = "chat"
+    MANUAL = "manual"
+
+
 class DecisionMode(StrEnum):
     """任务级决策策略（文档 §5）：Agent 遇到可选方案时是自己拍板还是停下来问用户。"""
 

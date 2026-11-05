@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from flux.enums import (
     AcceptMode,
     AgentRole,
+    BotMemoryKind,
+    BotMemoryRelevance,
     BotStatus,
     BrainSection,
     Capability,
@@ -101,6 +103,20 @@ class BotCreateRequest(BaseModel):
     #: 独立工作目录（绝对路径）；留空 = <dsh_home>/bots/<id>/workspace
     workspace: str | None = Field(default=None, max_length=512)
     schedule: str | None = Field(default=None, max_length=64)
+    #: 连续失败多少次自动暂停；0 = 永不自动暂停
+    failure_threshold: int = Field(default=3, ge=0, le=20)
+    #: 每日 token 预算（UTC 自然日）；留空或 0 = 无上限
+    token_budget: int | None = Field(default=None, ge=0, le=1_000_000_000)
+    #: 开工失败时是否主动通知（写一条 bot_notifications）
+    notify_on_failure: bool = True
+    #: 可触发本 Bot 的事件名（如 task.completed）；留空 = 不响应事件
+    event_triggers: list[str] | None = Field(default=None, max_length=32)
+    #: 允许调用的 MCP 工具名；留空 = 不额外限制
+    allowed_tools: list[str] | None = Field(default=None, max_length=64)
+    #: 允许执行的命令首 token；留空 = 不限制
+    allowed_commands: list[str] | None = Field(default=None, max_length=64)
+    #: 允许访问的路径前缀（相对工作目录）；留空 = 不限制
+    allowed_paths: list[str] | None = Field(default=None, max_length=64)
 
 
 class BotUpdateRequest(BaseModel):
@@ -122,12 +138,52 @@ class BotUpdateRequest(BaseModel):
     workspace: str | None = Field(default=None, max_length=512)
     schedule: str | None = Field(default=None, max_length=64)
     status: BotStatus | None = None
+    failure_threshold: int | None = Field(default=None, ge=0, le=20)
+    #: 每日 token 预算；显式传 null 表示改为无上限
+    token_budget: int | None = Field(default=None, ge=0, le=1_000_000_000)
+    notify_on_failure: bool | None = None
+    #: 显式传 null / [] 表示清空事件触发
+    event_triggers: list[str] | None = Field(default=None, max_length=32)
+    #: 显式传 null / [] 表示取消白名单限制
+    allowed_tools: list[str] | None = Field(default=None, max_length=64)
+    allowed_commands: list[str] | None = Field(default=None, max_length=64)
+    allowed_paths: list[str] | None = Field(default=None, max_length=64)
+
+
+class BotRoutineCreateRequest(BaseModel):
+    """给 Bot 加一个例程：自己的指令 + 自己的定时。"""
+
+    name: str = Field(min_length=1, max_length=64)
+    instruction: str = Field(default="", max_length=8000)
+    #: 5 段 cron；留空 = 只手动触发
+    schedule: str | None = Field(default=None, max_length=64)
+    enabled: bool = True
+
+
+class BotRoutineUpdateRequest(BaseModel):
+    """部分更新例程；`schedule` 显式传 null 表示改成手动触发。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    instruction: str | None = Field(default=None, max_length=8000)
+    schedule: str | None = Field(default=None, max_length=64)
+    enabled: bool | None = None
 
 
 class BotRunRequest(BaseModel):
     """手动触发一次开工；`instruction` 留空则用 Bot 自己的 description。"""
 
     instruction: str | None = Field(default=None, max_length=8000)
+
+
+class BotMemoryCreateRequest(BaseModel):
+    """手工给 Bot 记一条长期记忆（第一人称）。
+
+    自动沉淀来自群聊与开工；这里用于用户直接告诉 Bot「你该记住这件事」。
+    """
+
+    content: str = Field(min_length=1, max_length=8000)
+    kind: BotMemoryKind = BotMemoryKind.FACT
+    relevance: BotMemoryRelevance = BotMemoryRelevance.DIRECT
 
 
 class TaskMessageCreateRequest(BaseModel):

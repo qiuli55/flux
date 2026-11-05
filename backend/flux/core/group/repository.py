@@ -422,6 +422,21 @@ class GroupRepository:
         rows.reverse()
         return rows
 
+    async def messages_for_epoch(
+        self, group_id: uuid.UUID, epoch_id: uuid.UUID
+    ) -> list[ChatGroupMessage]:
+        """取某个 epoch 里落库的全部消息（按 seq 升序），供 Bot 记忆提炼。"""
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(ChatGroupMessage)
+                .where(
+                    ChatGroupMessage.group_id == group_id,
+                    ChatGroupMessage.epoch_id == epoch_id,
+                )
+                .order_by(ChatGroupMessage.seq.asc())
+            )
+            return list(rows)
+
     async def latest_seq(self, group_id: uuid.UUID) -> int:
         async with self._session_factory() as session:
             await self._require(session, group_id)

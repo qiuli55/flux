@@ -59,6 +59,8 @@ from flux.core.knowledge import (
     KnowledgeWorker,
 )
 from flux.core.mcp.auth import AgentTokenService
+from flux.core.memory.bot_memory_repository import BotMemoryRepository
+from flux.core.memory.bot_memory_service import BotMemoryService
 from flux.core.memory.prefs import MemoryPrefsStore
 from flux.core.memory.repository import MemoryRepository
 from flux.core.memory.service import MemoryService
@@ -147,6 +149,9 @@ class Container:
     #: 内部多 bot 群聊：群/成员/消息/epoch 读写 + 有限轮编排
     group_repo: GroupRepository = field(init=False)
     groups: GroupOrchestrator = field(init=False)
+    #: Bot 自己的长期记忆（第一人称）：摘要层合并覆盖 + 全文 chunk 层只追加
+    bot_memory_repo: BotMemoryRepository = field(init=False)
+    bot_memories: BotMemoryService = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
     batch_repo: ApplyBatchRepository = field(init=False)
     dsh: FluxDshClient = field(init=False)
@@ -246,12 +251,19 @@ class Container:
         self.task_stream = TaskStreamHub()
         # 内部多 bot 群聊：复用任务仓储读每个 bot 的私聊，复用平台模型通道发言
         self.group_repo = GroupRepository(self.session_factory)  # type: ignore[attr-defined]
+        # Bot 长期记忆：跟随 Bot 跨群、跨开工；群聊 epoch 结束与独立开工都会读写这里
+        self.bot_memory_repo = BotMemoryRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.bot_memories = BotMemoryService(
+            self.bot_memory_repo,
+            summarizer=self.conversation_summarizer,
+        )
         self.groups = GroupOrchestrator(
             self.group_repo,
             self.task_repo,
             self.router,
             key_vault=self.key_vault,
             summarizer=self.conversation_summarizer,
+            bot_memories=self.bot_memories,
         )
         self.scheduler = TaskScheduler()
         self.connectors = ConnectorRegistry(self.bus, self.policy)

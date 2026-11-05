@@ -119,6 +119,14 @@ SPEC_TABLES = {
     # 分层记忆（scope=group 本群 / scope=team 跨群），同属迁移 b7d1a9c4e320。
     "chat_group_member_states",
     "chat_group_memories",
+    # Bot 分层长期记忆（迁移 d9e4a7c2b613）：摘要行 + 全文副本分块，
+    # 摘要按 relevance（direct / indirect）分层，chunks 保留当时原文。
+    "bot_memories",
+    "bot_memory_chunks",
+    # Bot 自动化（迁移 a7f3c9e1d284）：一个 Bot 多个例程（各自 cron / 指令），
+    # 以及开工失败等主动通知（read_at 为空即未读）。
+    "bot_routines",
+    "bot_notifications",
 }
 
 

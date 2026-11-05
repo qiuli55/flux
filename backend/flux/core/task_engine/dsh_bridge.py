@@ -146,6 +146,9 @@ class TaskRunBridge:
         self._retry_pending: set[str] = set()
         #: 重试协程的强引用，避免 create_task 后被 GC 提前回收
         self._retry_jobs: set[asyncio.Task[Any]] = set()
+        #: 事件总线（可选）：任务终态再 PUBLISH 一条 task.completed / task.failed，
+        #: 供 Bot 事件触发等下游订阅；没 attach 时行为不变。
+        self._bus: EventBus | None = None
         #: 计费服务（可选）：Run 收尾时补一次官方额度快照，
         #: 给「外部客户端消耗」的差分估算切出干净的区间边界。
         self._billing: Any | None = None
@@ -167,6 +170,7 @@ class TaskRunBridge:
         self._switch_handler = handler
 
     def attach(self, bus: EventBus) -> None:
+        self._bus = bus
         for event in _STATUS_BY_EVENT:
             bus.subscribe(event, self._on_run_settled)
 
@@ -307,6 +311,35 @@ class TaskRunBridge:
         await self._write_memory_card(task, run_id, status=status, body=body)
         # 无感切换：本轮已真实收尾，排队中的 Agent 切换此刻生效并生成交接卡
         await self._apply_pending_switch(task, run_id, status)
+        # 任务终态事件：下游（如 Bot 事件触发）据此在别的任务收尾后开工
+        await self._publish_task_event(task, status, body)
+
+    async def _publish_task_event(
+        self, task: Any, status: TaskStatus, body: dict[str, Any]
+    ) -> None:
+        """把任务终态再发一条总线事件；只发 completed / failed，cancelled 不算可触发信号。"""
+        if self._bus is None:
+            return
+        if status == TaskStatus.COMPLETED:
+            event = Events.TASK_COMPLETED
+        elif status == TaskStatus.FAILED:
+            event = Events.TASK_FAILED
+        else:
+            return
+        try:
+            await self._bus.publish(
+                event,
+                {
+                    "task_id": str(task.id),
+                    "bot_id": str(task.bot_id) if task.bot_id else None,
+                    "project_id": str(task.project_id) if task.project_id else None,
+                    "description": task.description,
+                    "status": str(status),
+                    "error": body.get("error"),
+                },
+            )
+        except Exception:  # noqa: BLE001 - 事件没人订阅/订阅者失败不影响任务收尾
+            logger.warning("任务终态事件发布失败 task=%s status=%s", task.id, status)
 
     async def _apply_pending_switch(
         self, task: Any, run_id: str | None, status: TaskStatus

@@ -11,6 +11,9 @@ from flux.models.api_key import ApiKey
 from flux.models.apply_batch import ApplyBatch
 from flux.models.base import Base
 from flux.models.bot import Bot
+from flux.models.bot_memory import BotMemory, BotMemoryChunk
+from flux.models.bot_notification import BotNotification
+from flux.models.bot_routine import BotRoutine
 from flux.models.connector import ConnectorConfig, ConnectorLog
 from flux.models.context import ContextBlob, ContextStep, ContextStepToken
 from flux.models.group import (
@@ -61,6 +64,10 @@ __all__ = [
     "ApplyBatch",
     "Base",
     "Bot",
+    "BotMemory",
+    "BotMemoryChunk",
+    "BotNotification",
+    "BotRoutine",
     "ChatGroup",
     "ChatGroupEpoch",
     "ChatGroupMember",

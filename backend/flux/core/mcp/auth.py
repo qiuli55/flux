@@ -98,6 +98,11 @@ class AgentIdentity:
     #: 本次 Run 的权限模式（plan / normal / full），由 MCP 层从 agent_runs 快照读取后附加。
     #: 不在令牌里：DSH 内置 Agent 用长期令牌，能力位是写死的超集，只能按 Run 判定模式。
     permission_mode: str = "normal"
+    #: Bot 级执行白名单（来自 Bot 配置）：None = 不额外限制。
+    #: 由 MCP 层按 run → task → bot 解析后附加，仅约束本次 Run。
+    allowed_tools: tuple[str, ...] | None = None
+    allowed_commands: tuple[str, ...] | None = None
+    allowed_paths: tuple[str, ...] | None = None
 
     def has(self, capability: Capability) -> bool:
         return capability in self.scopes

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from flux.models.task import Task
 from flux.models.usage import UsageRecord, UsageSnapshot
 
 
@@ -109,6 +110,22 @@ class BillingRepository:
             "total_tokens": int(row[5] or 0),
             "cost": round(float(row[6] or 0.0), 6),
         }
+
+    async def tokens_by_bot_since(self, since: datetime) -> dict[uuid.UUID, int]:
+        """按 Bot 聚合 `since` 之后的 token 用量。
+
+        `usage_records` 没有 `bot_id`，只能经 `tasks.bot_id` 归因（Bot 每次开工都落一条任务）。
+        直接读明细账而不是累加计数，重算幂等，也不会因为漏记/重记而漂移。
+        """
+        statement = (
+            select(Task.bot_id, func.coalesce(func.sum(UsageRecord.total_tokens), 0))
+            .join(UsageRecord, UsageRecord.task_id == Task.id)
+            .where(Task.bot_id.is_not(None), UsageRecord.occurred_at >= since)
+            .group_by(Task.bot_id)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement)).all()
+        return {row[0]: int(row[1] or 0) for row in rows if row[0] is not None}
 
     async def record_times(
         self,

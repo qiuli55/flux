@@ -97,6 +97,7 @@ class TaskRunService:
         messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
         memory = await _latest_memory(container, task_uuid)
         user_memory = await _user_memory_instruction(container)
+        bot_memory = await _bot_memory_instruction(container, task)
         instruction = _execution_instruction(
             task,
             None if followup else confirmation,
@@ -108,6 +109,7 @@ class TaskRunService:
             messages=messages,
             memory=memory,
             user_memory=user_memory,
+            bot_memory=bot_memory,
             resumed=resumed,
         )
         # 额度闸门：默认只告警（FLUX_BILLING_ENFORCE=false）；开启拦截且已超额时在这里拒单。
@@ -163,6 +165,7 @@ class TaskRunService:
             messages, _ = await container.task_repo.list_messages(task.id, limit=_HISTORY_LIMIT)
             memory = await _latest_memory(container, task.id)
             user_memory = await _user_memory_instruction(container)
+            bot_memory = await _bot_memory_instruction(container, task)
             runtime_id = _runtime_of(self._agent(task))
             resumed = await _has_session(container, task.id, runtime_id, task.agent_id)
             return _execution_instruction(
@@ -176,6 +179,7 @@ class TaskRunService:
                 messages=messages,
                 memory=memory,
                 user_memory=user_memory,
+                bot_memory=bot_memory,
                 resumed=resumed,
             )
         except Exception:  # noqa: BLE001 - 预览失败不影响对话本身
@@ -343,6 +347,29 @@ async def _user_memory_instruction(container: Container) -> str:
     return "\n\n".join(blocks)
 
 
+async def _bot_memory_instruction(container: Container, task: Any) -> str:
+    """Bot 自己的长期记忆（第一人称）：只在任务来自某个 Bot 时注入。
+
+    `group_id=None` 表示当前不在任何群里：direct 全量、出群后的 indirect 只按
+    任务描述命中关键词低权重召回。记忆只进执行指令，不写进 `task.description`。
+    """
+    bot_id = getattr(task, "bot_id", None)
+    if not bot_id:
+        return ""
+    service = getattr(container, "bot_memories", None)
+    bots = getattr(container, "bots", None)
+    if service is None or bots is None:
+        return ""
+    try:
+        bot = await bots.get(bot_id)
+        return await service.render_block(
+            bot, group_id=None, query=str(getattr(task, "description", "") or "")
+        )
+    except Exception:  # noqa: BLE001 - 记忆读取失败不能挡住任务启动
+        logger.warning("读取 Bot 记忆失败 task=%s", task.id, exc_info=True)
+        return ""
+
+
 def _mode_constraints(mode: str) -> list[str]:
     """三种权限模式的执行约束（与 protocol.compose_instruction 的模式段保持一致）。"""
     if mode == "plan":
@@ -416,6 +443,7 @@ def _execution_instruction(
     messages: list[Any] | None = None,
     memory: str = "",
     user_memory: str = "",
+    bot_memory: str = "",
     resumed: bool = False,
 ) -> str:
     """拼出交给 Agent 的执行指令。
@@ -487,6 +515,9 @@ def _execution_instruction(
     if memory:
         # 上一轮结束由平台生成的事实卡：改过哪些文件、结果如何、为什么失败
         lines += ["", memory.strip()]
+    if bot_memory:
+        # Bot 自己的长期记忆：跟随 Bot 跨群、跨开工，按与本次任务的相关性排序
+        lines += ["", bot_memory.strip()]
     if user_memory:
         # 账号级长期记忆：稳定的个人偏好/禁忌，跨设备跨项目都适用
         lines += ["", user_memory.strip()]

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -221,6 +222,10 @@ class BillingService:
             logger.warning("计费落账失败 run=%s model=%s", run_id, model, exc_info=True)
 
     # --- 查询 ---
+
+    async def tokens_by_bot_since(self, since: datetime) -> dict[uuid.UUID, int]:
+        """按 Bot 聚合 `since` 之后的 token 用量（Bot 每日预算的数据来源）。"""
+        return await self._repo.tokens_by_bot_since(since)
 
     async def overview(self, *, refresh: bool = False) -> dict[str, Any]:
         """所有套餐的额度概览（前端成本中心的主数据）。"""

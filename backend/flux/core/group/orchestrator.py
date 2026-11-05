@@ -28,6 +28,7 @@ from typing import Any
 
 from flux.core.group.repository import GroupMessageDraft, GroupRepository
 from flux.core.key_vault.service import KeyVaultService
+from flux.core.memory.bot_memory_service import BotMemoryService
 from flux.core.model_gateway.base import ChatMessage, ChatResult
 from flux.core.model_gateway.providers.registry import build_channel_provider
 from flux.core.model_gateway.router import ModelRouter
@@ -64,7 +65,7 @@ SYSTEM_PROMPT = """你是「{bot_name}」，正在一个内部协作群聊「{gr
 {description_line}{project_line}{role_line}
 群成员：
 {roster}
-{memory_block}{notes_block}
+{memory_block}{bot_memory_block}{notes_block}
 规则：
 1. 你看到的是群聊记录；另外会给你自己与用户的私聊摘要——它只属于你，不要在群里复述其中细节。
 2. 只在你有新的、能推进当前话题的信息时发言；不要重复别人刚说过的话，不必为发言而谋。
@@ -94,12 +95,14 @@ class GroupOrchestrator:
         *,
         key_vault: KeyVaultService | None = None,
         summarizer: ConversationSummarizer | None = None,
+        bot_memories: BotMemoryService | None = None,
     ) -> None:
         self._repo = repo
         self._tasks = tasks
         self._router = router
         self._key_vault = key_vault
         self._summarizer = summarizer
+        self._bot_memories = bot_memories
 
     async def run_epoch(
         self,
@@ -145,6 +148,7 @@ class GroupOrchestrator:
 
         await self._repo.set_epoch_status(epoch_id, "done", rounds=rounds, finished=True)
         await self._refresh_memory(group)
+        await self._remember_bots(group, epoch_id, members)
 
     async def _run_legacy(
         self,
@@ -312,6 +316,7 @@ class GroupOrchestrator:
         notes_block = ""
         if state is not None and (state.memory or "").strip():
             notes_block = f"\n你在本群的历史笔记（只有你能看到）：\n{state.memory.strip()}\n"
+        bot_memory_block = await self._bot_memory_block(bot, group, transcript)
 
         system = SYSTEM_PROMPT.format(
             bot_name=_bot_name(bot),
@@ -321,6 +326,7 @@ class GroupOrchestrator:
             role_line=role_line,
             roster=roster or "- （暂无）",
             memory_block=memory_block,
+            bot_memory_block=bot_memory_block,
             notes_block=notes_block,
         )
 
@@ -423,6 +429,38 @@ class GroupOrchestrator:
         if team_memory is not None and team_memory.content.strip():
             blocks.append(f"团队共享记忆（跨群可见）：\n{team_memory.content.strip()}")
         return ("\n" + "\n\n".join(blocks) + "\n") if blocks else ""
+
+    async def _bot_memory_block(
+        self, bot: Bot, group: ChatGroup, transcript: list[ChatGroupMessage]
+    ) -> str:
+        """该 Bot 自己的长期记忆（第一人称）；按最近一条用户发言做关键词召回。"""
+        if self._bot_memories is None:
+            return ""
+        query = ""
+        for message in reversed(transcript):
+            if message.role == "user" and (message.content or "").strip():
+                query = message.content
+                break
+        try:
+            return await self._bot_memories.render_block(bot, group_id=group.id, query=query)
+        except Exception:  # noqa: BLE001 - 记忆读失败不能挡住正常发言
+            logger.warning("读取 Bot 记忆失败 bot_id=%s", bot.id, exc_info=True)
+            return ""
+
+    async def _remember_bots(
+        self,
+        group: ChatGroup,
+        epoch_id: uuid.UUID,
+        members: list[tuple[ChatGroupMember, Bot]],
+    ) -> None:
+        """把本 epoch 的消息沉淀进每个成员自己的长期记忆。"""
+        if self._bot_memories is None:
+            return
+        try:
+            messages = await self._repo.messages_for_epoch(group.id, epoch_id)
+            await self._bot_memories.remember_epoch(group, members, messages)
+        except Exception:  # noqa: BLE001 - 记忆写入失败不影响已完成的讨论
+            logger.warning("Bot 记忆沉淀失败 group_id=%s", group.id, exc_info=True)
 
     async def _refresh_memory(self, group: ChatGroup) -> None:
         """把尚未压缩的群消息压成群记忆，并沉淀一条团队记忆。"""

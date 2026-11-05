@@ -12,6 +12,8 @@ JSON-RPC 层 → 工具层 → Flux 既有服务。**无状态**——不返回 
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -108,8 +110,14 @@ class McpServer:
             return _result(request_id, {})
         if method == "tools/list":
             whitelist = allowed_tools(identity.permission_mode)
+            bot_whitelist = (
+                set(identity.allowed_tools) if identity.allowed_tools is not None else None
+            )
             tools = [
-                spec.to_mcp() for spec in ALL_TOOLS if whitelist is None or spec.name in whitelist
+                spec.to_mcp()
+                for spec in ALL_TOOLS
+                if (whitelist is None or spec.name in whitelist)
+                and (bot_whitelist is None or spec.name in bot_whitelist)
             ]
             return _result(request_id, {"tools": tools})
         if method == "tools/call":
@@ -162,6 +170,18 @@ class McpServer:
                 name,
             )
             return _result(request_id, _tool_error(message))
+
+        if identity.allowed_tools is not None and name not in identity.allowed_tools:
+            message = f"Bot 执行白名单未包含工具 {name}，已拒绝执行"
+            await self._publish(Events.MCP_TOOL_DENIED, identity, spec, error="bot_allowed_tools")
+            logger.warning("MCP Bot 工具白名单拒绝 agent=%s tool=%s", identity.agent_id, name)
+            return _result(request_id, _tool_error(message))
+
+        violation = _policy_violation(identity, name, arguments)
+        if violation is not None:
+            await self._publish(Events.MCP_TOOL_DENIED, identity, spec, error="bot_policy")
+            logger.warning("MCP Bot 执行策略拒绝 agent=%s tool=%s", identity.agent_id, name)
+            return _result(request_id, _tool_error(violation))
 
         if not identity.has(spec.capability):
             message = (
@@ -345,11 +365,7 @@ async def _attach_run_id(
         if row is None or not row.agent_id or row.agent_id != identity.agent_id:
             logger.warning("mcp 忽略非法 X-Flux-Run-Id run=%s agent=%s", run_id, identity.agent_id)
             return identity
-        return replace(
-            identity,
-            run_id=run_id,
-            permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
-        )
+        return await _with_run(container, identity, row, run_id=run_id)
     task_id = (request.headers.get("x-flux-task-id") or "").strip()
     if not task_id:
         return identity
@@ -384,6 +400,111 @@ async def _attach_run_id(
         run_id=str(row.id),
         permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
     )
+
+
+async def _with_run(
+    container: Container, identity: AgentIdentity, row: Any, *, run_id: str
+) -> AgentIdentity:
+    """把 Run 维度的模式与 Bot 执行白名单附加到身份上（都来自服务端事实）。"""
+    policy = await _bot_policy(container, getattr(row, "task_id", None))
+    return replace(
+        identity,
+        run_id=run_id,
+        permission_mode=normalize_mode(getattr(row, "permission_mode", None)),
+        **policy,
+    )
+
+
+async def _bot_policy(container: Container, task_id: Any) -> dict[str, Any]:
+    """run → task → bot：Bot 开工的 Run 才带执行白名单；普通对话不受影响。"""
+    if not task_id:
+        return {}
+    try:
+        task = await container.task_repo.get(task_id)
+    except Exception:  # noqa: BLE001 - 查不到任务只是没有 Bot 策略，不影响调用
+        return {}
+    bot_id = getattr(task, "bot_id", None)
+    if not bot_id:
+        return {}
+    try:
+        bot = await container.bots.get(bot_id)
+    except Exception:  # noqa: BLE001 - Bot 已删除：本次 Run 仍按模式执行
+        return {}
+    return {
+        "allowed_tools": _as_tuple(getattr(bot, "allowed_tools", None)),
+        "allowed_commands": _as_tuple(getattr(bot, "allowed_commands", None)),
+        "allowed_paths": _as_tuple(getattr(bot, "allowed_paths", None)),
+    }
+
+
+def _as_tuple(value: Any) -> tuple[str, ...] | None:
+    if not value:
+        return None
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+#: 复合命令按分隔符切开，每一段的首 token 都要过白名单
+_COMMAND_SPLIT = re.compile(r"[;&|\n]+")
+
+
+def _command_heads(command: str) -> list[str]:
+    heads: list[str] = []
+    for segment in _COMMAND_SPLIT.split(command):
+        tokens = segment.strip().split()
+        # 跳过前置的环境变量赋值（FOO=bar cmd）
+        while len(tokens) > 1 and "=" in tokens[0] and not tokens[0].startswith("="):
+            tokens = tokens[1:]
+        if tokens:
+            heads.append(tokens[0])
+    return heads
+
+
+def _normalize_rel(value: str) -> str | None:
+    """白名单里的路径一律相对工作目录；绝对路径返回 None（fail-closed）。"""
+    text = value.replace("\\", "/").strip()
+    if not text:
+        return None
+    if text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+        return None
+    normalized = posixpath.normpath(text)
+    return "." if normalized in ("", ".") else normalized
+
+
+def _path_allowed(rel: str | None, allowed: tuple[str, ...]) -> bool:
+    if rel is None:
+        return False
+    for prefix in allowed:
+        item = posixpath.normpath(prefix)
+        if item == "." or rel == item or rel.startswith(item + "/"):
+            return True
+    return False
+
+
+def _policy_violation(identity: AgentIdentity, name: str, arguments: dict[str, Any]) -> str | None:
+    """Bot 级执行限制：命令白名单（terminal.execute）与路径白名单（path/paths 参数）。"""
+    if name == "terminal.execute" and identity.allowed_commands is not None:
+        command = arguments.get("command")
+        if isinstance(command, str) and command.strip():
+            allowed = set(identity.allowed_commands)
+            for head in _command_heads(command):
+                base = posixpath.basename(head)
+                if head not in allowed and base not in allowed:
+                    return f"命令 {base} 不在 Bot 允许的命令白名单里，已拒绝执行"
+    if identity.allowed_paths is not None:
+        for key in ("path", "paths"):
+            raw = arguments.get(key)
+            if isinstance(raw, str):
+                values: list[Any] = [raw]
+            elif isinstance(raw, (list, tuple)):
+                values = list(raw)
+            else:
+                continue
+            for item in values:
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                if not _path_allowed(_normalize_rel(item), identity.allowed_paths):
+                    return f"路径 {item} 不在 Bot 允许的路径白名单里，已拒绝执行"
+    return None
 
 
 def _safe_id(message: Any) -> Any:
