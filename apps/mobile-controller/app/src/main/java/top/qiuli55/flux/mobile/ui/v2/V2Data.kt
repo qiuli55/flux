@@ -172,6 +172,8 @@ data class V2Conversation(
     /** bot 头像形状 / 颜色；空串表示旧数据，退回 Agent 色调头像。 */
     val avatarShape: String = "",
     val avatarColor: String = "",
+    /** 产生这条对话的常驻 Bot；空串 = 普通人工对话。 */
+    val botId: String = "",
 )
 
 enum class V2Risk { HIGH, MEDIUM, LOW }

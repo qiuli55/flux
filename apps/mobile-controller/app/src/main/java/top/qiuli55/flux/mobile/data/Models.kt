@@ -168,6 +168,8 @@ data class Task(
     @SerialName("avatar_shape") val avatarShape: String = "circle",
     /** bot 头像颜色（12 选一，顺序与后端 avatar.py 一致）。 */
     @SerialName("avatar_color") val avatarColor: String = "violet",
+    /** 由常驻 Bot 开工产生的任务；null = 普通对话。 */
+    @SerialName("bot_id") val botId: String? = null,
 ) {
     /** 列表/群聊里展示的 bot 名称。 */
     val displayName: String
@@ -188,9 +190,69 @@ data class Bot(
     @SerialName("agent_id") val agentId: String? = null,
     val model: String? = null,
     @SerialName("permission_mode") val permissionMode: String = "unattended",
+    @SerialName("decision_mode") val decisionMode: String = "auto",
+    /** 用户显式指定的工作目录；null = 平台派生目录。 */
+    val workspace: String? = null,
+    /** 后端解析后的绝对工作目录，只读。 */
+    @SerialName("workspace_path") val workspacePath: String? = null,
     val status: String = "active",
     val schedule: String? = null,
+    @SerialName("next_run_at") val nextRunAt: String? = null,
+    @SerialName("last_run_at") val lastRunAt: String? = null,
+    @SerialName("last_task_id") val lastTaskId: String? = null,
+    @SerialName("last_settled_task_id") val lastSettledTaskId: String? = null,
+    @SerialName("failure_threshold") val failureThreshold: Int = 3,
+    @SerialName("consecutive_failures") val consecutiveFailures: Int = 0,
+    @SerialName("runs_total") val runsTotal: Int = 0,
+    @SerialName("runs_failed") val runsFailed: Int = 0,
+    @SerialName("last_error") val lastError: String? = null,
+    @SerialName("paused_reason") val pausedReason: String? = null,
+    @SerialName("token_budget") val tokenBudget: Int? = null,
+    @SerialName("tokens_used_today") val tokensUsedToday: Int = 0,
+    @SerialName("notify_on_failure") val notifyOnFailure: Boolean = true,
+    @SerialName("event_triggers") val eventTriggers: List<String> = emptyList(),
+    /** null = 不额外限制（仍受权限模式约束）。 */
+    @SerialName("allowed_tools") val allowedTools: List<String>? = null,
+    @SerialName("allowed_commands") val allowedCommands: List<String>? = null,
+    @SerialName("allowed_paths") val allowedPaths: List<String>? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+) {
+    val isPaused: Boolean get() = status == "paused"
+}
+
+/** Bot 的例程：一个 Bot 可以有多个定时任务。 */
+@Serializable
+data class BotRoutine(
+    val id: String = "",
+    @SerialName("bot_id") val botId: String = "",
+    val name: String = "",
+    val instruction: String = "",
+    val schedule: String? = null,
+    val enabled: Boolean = true,
+    @SerialName("next_run_at") val nextRunAt: String? = null,
+    @SerialName("last_run_at") val lastRunAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
+
+/** Bot 主动通知（目前主要是开工失败）。 */
+@Serializable
+data class BotNotification(
+    val id: String = "",
+    @SerialName("bot_id") val botId: String? = null,
+    @SerialName("bot_name") val botName: String = "",
+    @SerialName("task_id") val taskId: String? = null,
+    /** info / warning / error */
+    val level: String = "error",
+    val title: String = "",
+    val body: String = "",
+    @SerialName("read_at") val readAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+) {
+    val isUnread: Boolean get() = readAt.isNullOrBlank()
+}
 
 /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
 

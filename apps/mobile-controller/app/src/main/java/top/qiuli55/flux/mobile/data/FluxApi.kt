@@ -96,6 +96,92 @@ class FluxApi(
         },
     )
 
+    suspend fun getBot(botId: String): Bot = get("api/v1/bots/$botId")
+
+    /** 部分更新 Bot；只提交非空字段。 */
+    suspend fun updateBot(
+        botId: String,
+        description: String? = null,
+        schedule: String? = null,
+        status: String? = null,
+        permissionMode: String? = null,
+        model: String? = null,
+        agentId: String? = null,
+        tokenBudget: Int? = null,
+        notifyOnFailure: Boolean? = null,
+    ): Bot = patch(
+        "api/v1/bots/$botId",
+        buildJsonObject {
+            if (description != null) put("description", description)
+            if (schedule != null) put("schedule", schedule)
+            if (status != null) put("status", status)
+            if (permissionMode != null) put("permission_mode", permissionMode)
+            if (model != null) put("model", model)
+            if (agentId != null) put("agent_id", agentId)
+            if (tokenBudget != null) put("token_budget", tokenBudget)
+            if (notifyOnFailure != null) put("notify_on_failure", notifyOnFailure)
+        },
+    )
+
+    /** 手动开工一次；返回本轮产生的任务。 */
+    suspend fun runBot(botId: String, instruction: String? = null): Task {
+        val body = buildJsonObject {
+            if (!instruction.isNullOrBlank()) put("instruction", instruction.trim())
+        }
+        val data: JsonObject = post("api/v1/bots/$botId/run", body)
+        val task = data["task"] ?: throw FluxApiException("invalid_response", "服务端响应缺少 task")
+        return json.decodeFromJsonElement(Task.serializer(), task)
+    }
+
+    suspend fun listBotTasks(botId: String, limit: Int = 50): List<Task> =
+        get("api/v1/bots/$botId/tasks?limit=$limit")
+
+    suspend fun listBotRoutines(botId: String): List<BotRoutine> =
+        get("api/v1/bots/$botId/routines")
+
+    suspend fun createBotRoutine(
+        botId: String,
+        name: String,
+        instruction: String,
+        schedule: String? = null,
+    ): BotRoutine = post(
+        "api/v1/bots/$botId/routines",
+        buildJsonObject {
+            put("name", name.trim())
+            put("instruction", instruction.trim())
+            if (!schedule.isNullOrBlank()) put("schedule", schedule.trim())
+        },
+    )
+
+    suspend fun updateBotRoutine(
+        botId: String,
+        routineId: String,
+        name: String? = null,
+        instruction: String? = null,
+        schedule: String? = null,
+        enabled: Boolean? = null,
+    ): BotRoutine = patch(
+        "api/v1/bots/$botId/routines/$routineId",
+        buildJsonObject {
+            if (name != null) put("name", name)
+            if (instruction != null) put("instruction", instruction)
+            if (schedule != null) put("schedule", schedule)
+            if (enabled != null) put("enabled", enabled)
+        },
+    )
+
+    suspend fun deleteBotRoutine(botId: String, routineId: String): JsonElement =
+        delete("api/v1/bots/$botId/routines/$routineId")
+
+    suspend fun listBotNotifications(unreadOnly: Boolean = false, limit: Int = 100): List<BotNotification> =
+        get("api/v1/bots/notifications?unread_only=$unreadOnly&limit=$limit")
+
+    suspend fun markBotNotificationRead(notificationId: String): BotNotification =
+        post("api/v1/bots/notifications/$notificationId/read", buildJsonObject {})
+
+    suspend fun markAllBotNotificationsRead(): JsonElement =
+        post("api/v1/bots/notifications/read-all", buildJsonObject {})
+
     /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")
 

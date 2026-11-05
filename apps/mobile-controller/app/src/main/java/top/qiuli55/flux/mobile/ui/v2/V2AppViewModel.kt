@@ -20,6 +20,8 @@ import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
 import top.qiuli55.flux.mobile.data.Bot
+import top.qiuli55.flux.mobile.data.BotNotification
+import top.qiuli55.flux.mobile.data.BotRoutine
 import top.qiuli55.flux.mobile.data.ChatGroup
 import top.qiuli55.flux.mobile.data.ChatGroupMember
 import top.qiuli55.flux.mobile.data.ChatGroupMemoryState
@@ -71,6 +73,20 @@ data class V2GroupChatState(
     val notice: String? = null,
 )
 
+/** Bot 详情页的按需状态：进页面时一次性拉取，操作后就地更新。 */
+data class V2BotDetailState(
+    val botId: String = "",
+    val bot: Bot? = null,
+    val routines: List<BotRoutine> = emptyList(),
+    val tasks: List<Task> = emptyList(),
+    val notifications: List<BotNotification> = emptyList(),
+    val loading: Boolean = false,
+    /** 手动开工 / 暂停恢复等操作正在进行。 */
+    val busy: Boolean = false,
+    val error: String? = null,
+    val notice: String? = null,
+)
+
 data class V2AppState(
     val boot: V2Boot = V2Boot.LOADING,
     val account: AccountSession? = null,
@@ -110,14 +126,24 @@ data class V2AppState(
     val billingError: String? = null,
     /** 内部群聊：群列表与当前打开群的消息流。 */
     val groupChat: V2GroupChatState = V2GroupChatState(),
+    /** Bot 详情页数据；botId 为空表示没打开详情。 */
+    val botDetail: V2BotDetailState = V2BotDetailState(),
+    /** 全站 Bot 通知（用于首页 Bot Tab 的未读提示）。 */
+    val botNotifications: List<BotNotification> = emptyList(),
 ) {
     /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
-    private val chatTasks: List<Task> get() = tasks.filterNot { it.origin == "assistant" }
+    private val chatTasks: List<Task>
+        get() = tasks.filterNot { it.origin == "assistant" || !it.botId.isNullOrBlank() }
 
     /** 建群 / 加成员时的候选：全部常驻 Bot。 */
     val botCandidates: List<Bot> get() = bots
+
+    /** 首页「对话」Tab：人工发起的普通对话。 */
     val conversations: List<V2Conversation>
         get() = chatTasks.map { it.toV2Conversation(deviceLabel) }
+
+    /** Bot 通知未读数。 */
+    val botUnreadCount: Int get() = botNotifications.count { it.isUnread }
     val queueTasks: List<V2Task>
         get() = chatTasks
             .filterNot { hideFinished && it.isFinished }
@@ -316,6 +342,12 @@ class V2AppViewModel : FluxViewModel() {
                 // 串行请求：并发失败时会整组取消（真机踩过坑）。
                 val tasks = api.listTasks()
                 val bots = runCatching { api.listBots() }.getOrDefault(emptyList())
+                val notifications = if (!quiet) {
+                    runCatching { api.listBotNotifications(limit = 100) }
+                        .getOrDefault(_state.value.botNotifications)
+                } else {
+                    _state.value.botNotifications
+                }
                 val groups = runCatching { api.listGroups() }.getOrNull()
                 val agents = runCatching { api.listAgents() }.getOrDefault(emptyList())
                 val models = runCatching { api.dshStatus() }.getOrNull()
@@ -346,6 +378,7 @@ class V2AppViewModel : FluxViewModel() {
                 _state.value = _state.value.copy(
                     tasks = tasks,
                     bots = bots,
+                    botNotifications = notifications,
                     agents = mapped,
                     models = models,
                     refreshing = false,
@@ -860,7 +893,7 @@ class V2AppViewModel : FluxViewModel() {
                 // 先本地摘掉再刷新：正在进行的轮询可能带着旧列表晚到，避免对话短暂复活。
                 _state.value = _state.value.copy(
                     busyAction = null,
-                    notice = "Bot 已删除",
+                    notice = "对话已删除",
                     tasks = _state.value.tasks.filterNot { it.id == taskId },
                 )
                 refresh(quiet = true)
@@ -1256,6 +1289,250 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    // ------------------------------------------------------------ Bot 详情
+
+    /** 进 Bot 详情页时一次性拉取：配置、例程、最近开工、失败通知。 */
+    fun loadBotDetail(botId: String, quiet: Boolean = false) {
+        viewModelScope.launch {
+            if (!quiet) {
+                _state.value = _state.value.copy(
+                    botDetail = V2BotDetailState(botId = botId, loading = true),
+                )
+            }
+            try {
+                val api = api()
+                val bot = api.getBot(botId)
+                val routines = runCatching { api.listBotRoutines(botId) }
+                    .getOrDefault(emptyList())
+                val botTasks = runCatching { api.listBotTasks(botId) }
+                    .getOrDefault(emptyList())
+                val notifications = _state.value.botNotifications
+                    .filter { it.botId == botId }
+                    .ifEmpty {
+                        runCatching { api.listBotNotifications(limit = 100) }
+                            .getOrDefault(emptyList())
+                            .filter { it.botId == botId }
+                    }
+                _state.value = _state.value.copy(
+                    bots = _state.value.bots.map { if (it.id == botId) bot else it },
+                    botDetail = V2BotDetailState(
+                        botId = botId,
+                        bot = bot,
+                        routines = routines,
+                        tasks = botTasks,
+                        notifications = notifications,
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(
+                        loading = false,
+                        error = readable(e),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun clearBotDetail() {
+        _state.value = _state.value.copy(botDetail = V2BotDetailState())
+    }
+
+    /** 手动开工一次；本轮任务直接插到「最近开工」顶部。 */
+    fun runBotNow(botId: String, instruction: String? = null) {
+        if (_state.value.botDetail.busy) return
+        viewModelScope.launch {
+            val detail = _state.value.botDetail
+            _state.value = _state.value.copy(
+                botDetail = detail.copy(busy = true, error = null, notice = null),
+            )
+            try {
+                val task = api().runBot(botId, instruction)
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(
+                        busy = false,
+                        tasks = listOf(task) + _state.value.botDetail.tasks.filterNot { it.id == task.id },
+                        notice = "已开工",
+                    ),
+                )
+                refresh(quiet = true)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
+                )
+            }
+        }
+    }
+
+    /** 暂停 / 恢复 Bot 的定时开工。 */
+    fun setBotStatus(botId: String, status: String) {
+        if (_state.value.botDetail.busy) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                botDetail = _state.value.botDetail.copy(busy = true, error = null, notice = null),
+            )
+            try {
+                val updated = api().updateBot(botId, status = status)
+                _state.value = _state.value.copy(
+                    bots = _state.value.bots.map { if (it.id == botId) updated else it },
+                    botDetail = _state.value.botDetail.copy(
+                        bot = updated,
+                        busy = false,
+                        notice = if (status == "paused") "已暂停" else "已恢复",
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
+                )
+            }
+        }
+    }
+
+    /** 部分更新 Bot 配置；只提交非 null 的字段。 */
+    fun updateBotConfig(
+        botId: String,
+        schedule: String? = null,
+        notifyOnFailure: Boolean? = null,
+        tokenBudget: Int? = null,
+    ) {
+        if (_state.value.botDetail.busy) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                botDetail = _state.value.botDetail.copy(busy = true, error = null, notice = null),
+            )
+            try {
+                val updated = api().updateBot(
+                    botId = botId,
+                    schedule = schedule,
+                    notifyOnFailure = notifyOnFailure,
+                    tokenBudget = tokenBudget,
+                )
+                _state.value = _state.value.copy(
+                    bots = _state.value.bots.map { if (it.id == botId) updated else it },
+                    botDetail = _state.value.botDetail.copy(
+                        bot = updated,
+                        busy = false,
+                        notice = "已保存",
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
+                )
+            }
+        }
+    }
+
+    fun setBotRoutineEnabled(botId: String, routine: BotRoutine, enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                val updated = api().updateBotRoutine(
+                    botId = botId,
+                    routineId = routine.id,
+                    enabled = enabled,
+                )
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(
+                        routines = _state.value.botDetail.routines.map {
+                            if (it.id == routine.id) updated else it
+                        },
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(error = readable(e)),
+                )
+            }
+        }
+    }
+
+    fun createBotRoutine(
+        botId: String,
+        name: String,
+        instruction: String,
+        schedule: String?,
+        onResult: (String) -> Unit,
+    ) {
+        if (name.isBlank() || instruction.isBlank()) {
+            onResult("名称与指令不能为空")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val created = api().createBotRoutine(botId, name, instruction, schedule)
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(
+                        routines = _state.value.botDetail.routines + created,
+                        notice = "例程已创建",
+                    ),
+                )
+                onResult("")
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    fun deleteBotRoutine(botId: String, routineId: String) {
+        viewModelScope.launch {
+            try {
+                api().deleteBotRoutine(botId, routineId)
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(
+                        routines = _state.value.botDetail.routines.filterNot { it.id == routineId },
+                        notice = "例程已删除",
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    botDetail = _state.value.botDetail.copy(error = readable(e)),
+                )
+            }
+        }
+    }
+
+    fun markBotNotificationRead(notificationId: String) {
+        viewModelScope.launch {
+            try {
+                val updated = api().markBotNotificationRead(notificationId)
+                _state.value = _state.value.copy(
+                    botNotifications = _state.value.botNotifications.map {
+                        if (it.id == notificationId) updated else it
+                    },
+                    botDetail = _state.value.botDetail.copy(
+                        notifications = _state.value.botDetail.notifications.map {
+                            if (it.id == notificationId) updated else it
+                        },
+                    ),
+                )
+            } catch (_: Exception) {
+                // 已读是弱一致操作，失败不打断阅读。
+            }
+        }
+    }
+
+    fun markAllBotNotificationsRead() {
+        viewModelScope.launch {
+            try {
+                api().markAllBotNotificationsRead()
+                val now = Instant.now().toString()
+                _state.value = _state.value.copy(
+                    botNotifications = _state.value.botNotifications.map {
+                        if (it.isUnread) it.copy(readAt = now) else it
+                    },
+                    botDetail = _state.value.botDetail.copy(
+                        notifications = _state.value.botDetail.notifications.map {
+                            if (it.isUnread) it.copy(readAt = now) else it
+                        },
+                    ),
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = readable(e))
+            }
+        }
+    }
+
     private fun applyGroupMembers(groupId: String, members: List<ChatGroupMember>) {
         val current = _state.value.groupChat
         if (current.group?.id != groupId) {
@@ -1442,6 +1719,7 @@ internal fun Task.toV2Conversation(device: String): V2Conversation = V2Conversat
     botName = botName.orEmpty(),
     avatarShape = avatarShape,
     avatarColor = avatarColor,
+    botId = botId.orEmpty(),
 )
 
 internal fun Task.toV2Task(): V2Task {

@@ -92,6 +92,9 @@ private sealed interface V2Route {
     /** 内部多 Bot 群聊（整页，不用 Sheet）。 */
     data class GroupChat(val groupId: String) : V2Route
 
+    /** 常驻 Bot 详情：状态 / 定时 / 例程 / 最近开工 / 失败通知。 */
+    data class BotDetail(val botId: String) : V2Route
+
     data class TaskDetail(val taskId: String) : V2Route
     data class TaskChat(val taskId: String) : V2Route
     data class Confirmation(val taskId: String) : V2Route
@@ -195,13 +198,21 @@ fun FluxV2Root() {
     // 首页 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
     LaunchedEffect(route) {
         if (app.boot == V2Boot.READY) {
-            when (route) {
+            when (val current = route) {
                 V2Route.Home -> {
                     vm.refresh(quiet = true)
                     vm.loadGroups(quiet = true)
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
+                is V2Route.BotDetail -> {
+                    // 首次进入走非静默加载（先显示骨架）；从开工记录返回时静默刷新，不闪
+                    val known = app.botDetail
+                    vm.loadBotDetail(
+                        current.botId,
+                        quiet = known.botId == current.botId && known.bot != null,
+                    )
+                }
                 else -> Unit
             }
         }
@@ -428,6 +439,10 @@ fun FluxV2Root() {
                       vm.closeGroupChat()
                       V2Route.Home
                   }
+                  is V2Route.BotDetail -> {
+                      vm.clearBotDetail()
+                      V2Route.Home
+                  }
                   is V2Route.Browser -> current.origin
                   V2Route.DesignCanvas -> {
                       if (designState.dirty) {
@@ -495,6 +510,8 @@ fun FluxV2Root() {
                             device = device,
                             onDeviceChange = { device = it },
                             conversations = app.conversations,
+                            bots = app.bots,
+                            botUnreadCount = app.botUnreadCount,
                             groups = app.groupChat.groups,
                             groupsLoading = app.groupChat.loadingGroups,
                             billingHeadline = app.billing?.headline ?: "暂无额度数据",
@@ -509,6 +526,11 @@ fun FluxV2Root() {
                             onDeleteConversation = {
                                 deleteConversationError = null
                                 deleteConversationId = it.id
+                            },
+                            onOpenBot = { route = V2Route.BotDetail(it.id) },
+                            onCreateBot = {
+                                createBotReturnToGroup = false
+                                createBotOpen = true
                             },
                             onOpenGroup = { route = V2Route.GroupChat(it.id) },
                             onCreateGroup = { createGroupOpen = true },
@@ -782,6 +804,37 @@ fun FluxV2Root() {
                                 )
                             }
                         }
+
+                        is V2Route.BotDetail -> V2BotDetailScreen(
+                            detail = app.botDetail,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = {
+                                vm.clearBotDetail()
+                                route = V2Route.Home
+                            },
+                            onRefresh = { vm.loadBotDetail(current.botId, quiet = true) },
+                            onRunNow = { vm.runBotNow(current.botId) },
+                            onToggleStatus = { vm.setBotStatus(current.botId, it) },
+                            onOpenTask = { openChat(it, V2Route.BotDetail(current.botId)) },
+                            onToggleRoutine = { routine, enabled ->
+                                vm.setBotRoutineEnabled(current.botId, routine, enabled)
+                            },
+                            onCreateRoutine = { name, instruction, schedule, done ->
+                                vm.createBotRoutine(current.botId, name, instruction, schedule, done)
+                            },
+                            onDeleteRoutine = { vm.deleteBotRoutine(current.botId, it.id) },
+                            onUpdateConfig = { schedule, notify, budget ->
+                                vm.updateBotConfig(
+                                    current.botId,
+                                    schedule = schedule,
+                                    notifyOnFailure = notify,
+                                    tokenBudget = budget,
+                                )
+                            },
+                            onMarkNotificationRead = { vm.markBotNotificationRead(it) },
+                            onMarkAllRead = { vm.markAllBotNotificationsRead() },
+                        )
 
                         is V2Route.TaskDetail -> V2TaskDetailScreen(
                             taskId = current.taskId,
@@ -1393,5 +1446,6 @@ private fun v2RouteDepth(route: V2Route): Int = when (route) {
     is V2Route.Run -> 3
     is V2Route.Terminal -> 2
     is V2Route.GroupChat -> 2
+    is V2Route.BotDetail -> 2
     is V2Route.Diff -> 4
 }
