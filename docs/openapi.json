@@ -298,6 +298,613 @@
         "title": "ApiKeyUpdateRequest",
         "type": "object"
       },
+      "BotCreateRequest": {
+        "description": "创建一个常驻 Bot（Bot 模式）。\n\n与对话不同，Bot 有自己的工作目录和固定的 Agent / 权限模式，可以按 cron 定时开工。\n`description` 是它的固定作业内容：定时触发时就是本轮的执行指令。\n`schedule` 为 5 段 cron（分 时 日 月 周），留空表示只手动触发。",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "allowed_commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Commands"
+          },
+          "allowed_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Paths"
+          },
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "avatar_color": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Color"
+          },
+          "avatar_shape": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Shape"
+          },
+          "decision_mode": {
+            "$ref": "#/components/schemas/DecisionMode",
+            "default": "auto"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Description",
+            "type": "string"
+          },
+          "event_triggers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Triggers"
+          },
+          "failure_threshold": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Failure Threshold",
+            "type": "integer"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "notify_on_failure": {
+            "default": true,
+            "title": "Notify On Failure",
+            "type": "boolean"
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PermissionMode",
+            "default": "unattended"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "token_budget": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "BotCreateRequest",
+        "type": "object"
+      },
+      "BotMemoryCreateRequest": {
+        "description": "手工给 Bot 记一条长期记忆（第一人称）。\n\n自动沉淀来自群聊与开工；这里用于用户直接告诉 Bot「你该记住这件事」。",
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BotMemoryKind",
+            "default": "fact"
+          },
+          "relevance": {
+            "$ref": "#/components/schemas/BotMemoryRelevance",
+            "default": "direct"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "BotMemoryCreateRequest",
+        "type": "object"
+      },
+      "BotMemoryKind": {
+        "description": "Bot 记忆的类别（bot_memories.kind）。",
+        "enum": [
+          "preference",
+          "fact",
+          "decision",
+          "commitment",
+          "summary"
+        ],
+        "title": "BotMemoryKind",
+        "type": "string"
+      },
+      "BotMemoryRelevance": {
+        "description": "Bot 记忆与自己关系的三档（无关内容不落库，所以只有两档）。",
+        "enum": [
+          "direct",
+          "indirect"
+        ],
+        "title": "BotMemoryRelevance",
+        "type": "string"
+      },
+      "BotRoutineCreateRequest": {
+        "description": "给 Bot 加一个例程：自己的指令 + 自己的定时。",
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "instruction": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Instruction",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "BotRoutineCreateRequest",
+        "type": "object"
+      },
+      "BotRoutineUpdateRequest": {
+        "description": "部分更新例程；`schedule` 显式传 null 表示改成手动触发。",
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          }
+        },
+        "title": "BotRoutineUpdateRequest",
+        "type": "object"
+      },
+      "BotRunRequest": {
+        "description": "手动触发一次开工；`instruction` 留空则用 Bot 自己的 description。",
+        "properties": {
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          }
+        },
+        "title": "BotRunRequest",
+        "type": "object"
+      },
+      "BotStatus": {
+        "description": "常驻 Bot 的生命周期（bots.status）。\n\nACTIVE 才会被定时调度；PAUSED 保留配置与历史，但不再自动开工。",
+        "enum": [
+          "active",
+          "paused"
+        ],
+        "title": "BotStatus",
+        "type": "string"
+      },
+      "BotUpdateRequest": {
+        "description": "部分更新：只改请求里出现的字段。\n\n用 `model_fields_set` 区分「没传」与「显式传 null 清空」——否则前端只想改名，\n却会把 schedule / workspace 一起清掉。",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "allowed_commands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Commands"
+          },
+          "allowed_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Paths"
+          },
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "avatar_color": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Color"
+          },
+          "avatar_shape": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Shape"
+          },
+          "decision_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "event_triggers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Triggers"
+          },
+          "failure_threshold": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Threshold"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "notify_on_failure": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notify On Failure"
+          },
+          "permission_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PermissionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BotStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_budget": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          }
+        },
+        "title": "BotUpdateRequest",
+        "type": "object"
+      },
       "BrainSection": {
         "description": "Project Brain 的记忆分区（主规格 §5.6；实施计划 ⑪）。\n\n`overview` / `tech_stack` / `architecture` / `coding_rules` / `progress` 是\n\"项目现状\"型分区，每区只保留一份最新内容（重新写入即覆盖）；\n`decisions` / `agent_notes` 是\"累积\"型分区，每次写入都新增一条，历史不可被覆盖。",
         "enum": [
@@ -1267,9 +1874,9 @@
         "type": "object"
       },
       "GroupCreateRequest": {
-        "description": "创建一个内部多 bot 群聊；成员是已有的 bot 对话（tasks.id）。",
+        "description": "创建一个内部多 bot 群聊；成员是已有的常驻 Bot（bots.id）。",
         "properties": {
-          "admin_task_id": {
+          "admin_bot_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -1278,7 +1885,15 @@
                 "type": "null"
               }
             ],
-            "title": "Admin Task Id"
+            "title": "Admin Bot Id"
+          },
+          "bot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Bot Ids",
+            "type": "array"
           },
           "description": {
             "anyOf": [
@@ -1298,14 +1913,6 @@
             "minimum": 1.0,
             "title": "Max Rounds",
             "type": "integer"
-          },
-          "member_ids": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 20,
-            "title": "Member Ids",
-            "type": "array"
           },
           "name": {
             "maxLength": 128,
@@ -1332,8 +1939,13 @@
         "type": "object"
       },
       "GroupMemberAddRequest": {
-        "description": "把一条 bot 对话拉进群。",
+        "description": "把一个 Bot 拉进群。",
         "properties": {
+          "bot_id": {
+            "minLength": 1,
+            "title": "Bot Id",
+            "type": "string"
+          },
           "role": {
             "default": "member",
             "enum": [
@@ -1342,15 +1954,10 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "task_id": {
-            "minLength": 1,
-            "title": "Task Id",
-            "type": "string"
           }
         },
         "required": [
-          "task_id"
+          "bot_id"
         ],
         "title": "GroupMemberAddRequest",
         "type": "object"
@@ -3029,6 +3636,1230 @@
         "summary": "Plan Usage",
         "tags": [
           "billing"
+        ]
+      }
+    },
+    "/api/v1/bots": {
+      "get": {
+        "description": "列出全部 Bot；status=active / paused 用于分组展示。",
+        "operationId": "list_bots_api_v1_bots_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bots Api V1 Bots Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bots",
+        "tags": [
+          "bots"
+        ]
+      },
+      "post": {
+        "description": "创建 Bot。带 schedule 时立刻算出 next_run_at，后台调度器随即接管。",
+        "operationId": "create_bot_api_v1_bots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Bot Api V1 Bots Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Bot",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/notifications": {
+      "get": {
+        "description": "Bot 主动通知（当前主要是开工失败）；按时间倒序。",
+        "operationId": "list_bot_notifications_api_v1_bots_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "unread_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bot Notifications Api V1 Bots Notifications Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bot Notifications",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/notifications/read-all": {
+      "post": {
+        "description": "把全部未读通知标记为已读。",
+        "operationId": "read_all_bot_notifications_api_v1_bots_notifications_read_all_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read All Bot Notifications Api V1 Bots Notifications Read All Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read All Bot Notifications",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/notifications/{notification_id}/read": {
+      "post": {
+        "description": "标记单条通知已读（已读的重复调用保持幂等）。",
+        "operationId": "read_bot_notification_api_v1_bots_notifications__notification_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "title": "Notification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Bot Notification Api V1 Bots Notifications  Notification Id  Read Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Bot Notification",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/tools": {
+      "get": {
+        "description": "可为 Bot 配置的技能清单（MCP 工具面，已剔除硬禁令工具）。",
+        "operationId": "list_bot_tools_api_v1_bots_tools_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bot Tools Api V1 Bots Tools Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bot Tools",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}": {
+      "delete": {
+        "description": "删除 Bot；历史开工任务保留（tasks.bot_id 由外键置空）。",
+        "operationId": "delete_bot_api_v1_bots__bot_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Bot Api V1 Bots  Bot Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Bot",
+        "tags": [
+          "bots"
+        ]
+      },
+      "get": {
+        "operationId": "get_bot_api_v1_bots__bot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Bot Api V1 Bots  Bot Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Bot",
+        "tags": [
+          "bots"
+        ]
+      },
+      "patch": {
+        "description": "部分更新：只改请求里出现的字段（exclude_unset 保留「没传」与「传 null」的区别）。",
+        "operationId": "update_bot_api_v1_bots__bot_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Bot Api V1 Bots  Bot Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Bot",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/memories": {
+      "delete": {
+        "description": "清空该 Bot 的记忆；传 group_id 时只清某个群沉淀的部分。",
+        "operationId": "clear_bot_memories_api_v1_bots__bot_id__memories_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Bot Memories Api V1 Bots  Bot Id  Memories Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Clear Bot Memories",
+        "tags": [
+          "bots"
+        ]
+      },
+      "get": {
+        "description": "某个 Bot 的长期记忆摘要（第一人称视角），可按相关性与来源群过滤。",
+        "operationId": "list_bot_memories_api_v1_bots__bot_id__memories_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "relevance",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relevance"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bot Memories Api V1 Bots  Bot Id  Memories Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bot Memories",
+        "tags": [
+          "bots"
+        ]
+      },
+      "post": {
+        "description": "手工给 Bot 记一条记忆（不参与摘要合并，直接成为独立一条）。",
+        "operationId": "create_bot_memory_api_v1_bots__bot_id__memories_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotMemoryCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Bot Memory Api V1 Bots  Bot Id  Memories Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Bot Memory",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/memories/search": {
+      "get": {
+        "description": "全文检索：从只追加的原文层里找回「当时到底怎么说的」。",
+        "operationId": "search_bot_memories_api_v1_bots__bot_id__memories_search_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Bot Memories Api V1 Bots  Bot Id  Memories Search Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search Bot Memories",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/memories/{memory_id}": {
+      "delete": {
+        "description": "删除一条记忆（全文副本级联删除）。",
+        "operationId": "delete_bot_memory_api_v1_bots__bot_id__memories__memory_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Bot Memory Api V1 Bots  Bot Id  Memories  Memory Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Bot Memory",
+        "tags": [
+          "bots"
+        ]
+      },
+      "get": {
+        "description": "一条记忆的摘要 + 全文副本。",
+        "operationId": "get_bot_memory_api_v1_bots__bot_id__memories__memory_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Bot Memory Api V1 Bots  Bot Id  Memories  Memory Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Bot Memory",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/routines": {
+      "get": {
+        "description": "某个 Bot 的全部例程。",
+        "operationId": "list_bot_routines_api_v1_bots__bot_id__routines_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bot Routines Api V1 Bots  Bot Id  Routines Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bot Routines",
+        "tags": [
+          "bots"
+        ]
+      },
+      "post": {
+        "description": "新增例程：自带指令与 cron，到点由后台调度器开工。",
+        "operationId": "create_bot_routine_api_v1_bots__bot_id__routines_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotRoutineCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Bot Routine Api V1 Bots  Bot Id  Routines Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Bot Routine",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/routines/{routine_id}": {
+      "delete": {
+        "description": "删除例程；Bot 本身与历史任务不受影响。",
+        "operationId": "delete_bot_routine_api_v1_bots__bot_id__routines__routine_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "routine_id",
+            "required": true,
+            "schema": {
+              "title": "Routine Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Bot Routine Api V1 Bots  Bot Id  Routines  Routine Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Bot Routine",
+        "tags": [
+          "bots"
+        ]
+      },
+      "patch": {
+        "description": "部分更新例程；只改请求里出现的字段。",
+        "operationId": "update_bot_routine_api_v1_bots__bot_id__routines__routine_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "routine_id",
+            "required": true,
+            "schema": {
+              "title": "Routine Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BotRoutineUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Bot Routine Api V1 Bots  Bot Id  Routines  Routine Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Bot Routine",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/run": {
+      "post": {
+        "description": "手动开工一次。`instruction` 留空则用 Bot 自己的 description。",
+        "operationId": "run_bot_api_v1_bots__bot_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BotRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Bot Api V1 Bots  Bot Id  Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run Bot",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{bot_id}/tasks": {
+      "get": {
+        "description": "某个 Bot 的开工记录（按创建时间倒序）。",
+        "operationId": "list_bot_tasks_api_v1_bots__bot_id__tasks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bot_id",
+            "required": true,
+            "schema": {
+              "title": "Bot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Bot Tasks Api V1 Bots  Bot Id  Tasks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Bot Tasks",
+        "tags": [
+          "bots"
         ]
       }
     },
@@ -5162,9 +6993,9 @@
         ]
       }
     },
-    "/api/v1/groups/{group_id}/members/{task_id}": {
+    "/api/v1/groups/{group_id}/members/{bot_id}": {
       "delete": {
-        "operationId": "remove_member_api_v1_groups__group_id__members__task_id__delete",
+        "operationId": "remove_member_api_v1_groups__group_id__members__bot_id__delete",
         "parameters": [
           {
             "in": "path",
@@ -5177,10 +7008,10 @@
           },
           {
             "in": "path",
-            "name": "task_id",
+            "name": "bot_id",
             "required": true,
             "schema": {
-              "title": "Task Id",
+              "title": "Bot Id",
               "type": "string"
             }
           }
@@ -5191,7 +7022,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Remove Member Api V1 Groups  Group Id  Members  Task Id  Delete",
+                  "title": "Response Remove Member Api V1 Groups  Group Id  Members  Bot Id  Delete",
                   "type": "object"
                 }
               }
@@ -5221,7 +7052,7 @@
       },
       "patch": {
         "description": "调整成员角色 / 模型 / 权限预设；只有人能改，bot 不能自改。",
-        "operationId": "update_member_api_v1_groups__group_id__members__task_id__patch",
+        "operationId": "update_member_api_v1_groups__group_id__members__bot_id__patch",
         "parameters": [
           {
             "in": "path",
@@ -5234,10 +7065,10 @@
           },
           {
             "in": "path",
-            "name": "task_id",
+            "name": "bot_id",
             "required": true,
             "schema": {
-              "title": "Task Id",
+              "title": "Bot Id",
               "type": "string"
             }
           }
@@ -5258,7 +7089,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Update Member Api V1 Groups  Group Id  Members  Task Id  Patch",
+                  "title": "Response Update Member Api V1 Groups  Group Id  Members  Bot Id  Patch",
                   "type": "object"
                 }
               }
@@ -9211,7 +11042,7 @@
     },
     "/api/v1/tasks": {
       "get": {
-        "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。",
+        "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。\n\n`bot_id` 只看某个 Bot 的开工记录；不传时默认把 Bot 任务挡在对话列表之外，\n需要连同 Bot 任务一起看时显式传 `include_bot_tasks=true`。",
         "operationId": "list_tasks_api_v1_tasks_get",
         "parameters": [
           {
@@ -9260,6 +11091,32 @@
                 }
               ],
               "title": "Origin"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Bot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_bot_tasks",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Bot Tasks",
+              "type": "boolean"
             }
           },
           {
