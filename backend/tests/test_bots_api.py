@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -88,7 +90,7 @@ def test_create_bot_defaults(client: TestClient) -> None:
     assert bot["decision_mode"] == "auto"
     assert bot["schedule"] is None
     assert bot["next_run_at"] is None
-    assert bot["workspace_path"].endswith(f"/bots/{bot['id']}/workspace")
+    assert Path(bot["workspace_path"]).parts[-3:] == ("bots", bot["id"], "workspace")
     # 健康与熔断：默认连续失败 3 次自动暂停，统计从 0 开始
     assert bot["failure_threshold"] == 3
     assert bot["consecutive_failures"] == 0
@@ -142,7 +144,7 @@ def test_patch_pause_clears_next_run(client: TestClient) -> None:
 
 
 def test_run_now_creates_bot_task_hidden_from_chat_list(client: TestClient) -> None:
-    bot = _create(client, workspace="/tmp/flux-bot-test")
+    bot = _create(client, workspace=str(Path(tempfile.gettempdir()) / "flux-bot-test"))
     started = client.post(f"{PREFIX}/bots/{bot['id']}/run")
     assert started.status_code == 200, started.text
     payload = started.json()["data"]

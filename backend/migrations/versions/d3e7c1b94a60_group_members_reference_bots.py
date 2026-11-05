@@ -64,9 +64,10 @@ def upgrade() -> None:
     for table, old_unique, old_index, new_unique, new_index in _MEMBER_TABLES:
         # 没有对应 Bot 的成员、以及回填后重复的同一 Bot，都不该留在群里
         op.execute(f"DELETE FROM {table} WHERE bot_id IS NULL")
+        # PostgreSQL 没有 min(uuid)，按文本取最小 UUID 只用于「每组留一行」
         op.execute(
-            f"DELETE FROM {table} WHERE id NOT IN "  # noqa: S608 — 常量表名
-            f"(SELECT MIN(id) FROM {table} GROUP BY group_id, bot_id)"
+            f"DELETE FROM {table} WHERE CAST(id AS TEXT) NOT IN "  # noqa: S608 — 常量表名
+            f"(SELECT MIN(CAST(id AS TEXT)) FROM {table} GROUP BY group_id, bot_id)"
         )
         with op.batch_alter_table(table, recreate="always") as batch:
             batch.drop_index(old_index)
@@ -119,8 +120,8 @@ def downgrade() -> None:
         )
         op.execute(f"DELETE FROM {table} WHERE task_id IS NULL")
         op.execute(
-            f"DELETE FROM {table} WHERE id NOT IN "  # noqa: S608 — 常量表名
-            f"(SELECT MIN(id) FROM {table} GROUP BY group_id, task_id)"
+            f"DELETE FROM {table} WHERE CAST(id AS TEXT) NOT IN "  # noqa: S608 — 常量表名
+            f"(SELECT MIN(CAST(id AS TEXT)) FROM {table} GROUP BY group_id, task_id)"
         )
         with op.batch_alter_table(table, recreate="always") as batch:
             batch.drop_index(new_index)
