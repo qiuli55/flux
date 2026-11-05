@@ -13,6 +13,13 @@ import type {
   AgentHandle,
   Bot,
   BotCreateInput,
+  BotMemory,
+  BotMemoryChunk,
+  BotMemoryDetail,
+  BotMemoryRelevance,
+  BotNotification,
+  BotRoutine,
+  BotTool,
   PermissionMode,
   Task,
   TaskStatus,
@@ -27,7 +34,7 @@ import {
 } from "../components/group/BotAvatar";
 import { Icon } from "../shell/Icon";
 import { Modal } from "../shell/Overlay";
-import { Badge, Button, Empty, Field, Input, PageHead, Segmented, Textarea } from "../shell/ui";
+import { Badge, Button, Empty, Field, Input, PageHead, Segmented, Switch, Textarea } from "../shell/ui";
 
 const PERMISSION_OPTIONS: { value: PermissionMode; label: string }[] = [
   { value: "unattended", label: "免审核" },
@@ -54,6 +61,69 @@ function formatTime(iso: string | null | undefined): string {
   return sameDay ? clock : `${date.getMonth() + 1}/${date.getDate()} ${clock}`;
 }
 
+/** 可触发 Bot 的事件（与后端 Events 常量一致，仅列出对 Bot 有意义的几类） */
+const EVENT_OPTIONS: { value: string; label: string }[] = [
+  { value: "task.completed", label: "任务完成" },
+  { value: "task.failed", label: "任务失败" },
+  { value: "workspace.applied", label: "改动落盘" },
+  { value: "git.committed", label: "Git 提交" },
+  { value: "dsh.run_completed", label: "Run 完成" },
+  { value: "dsh.run_failed", label: "Run 失败" },
+];
+
+/** 多行 / 逗号分隔文本 → 去重列表（空 = 不限制，后端会把 [] 归一成 null） */
+function splitList(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .split(/[\n,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+/** 可多选的标签按钮：事件、技能这类「从固定集合里挑」的配置共用 */
+function ChipToggle({
+  active,
+  title,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  title?: string;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "4px 10px",
+        borderRadius: 999,
+        fontSize: 12,
+        cursor: "pointer",
+        background: active ? "var(--tn-panel-3)" : "transparent",
+        border: `1px solid ${active ? "var(--tn-accent)" : "var(--tn-line)"}`,
+        color: active ? "var(--tn-text)" : "var(--tn-text-3)",
+      }}
+    >
+      {active ? <Icon name="check" className="fx-icon-sm" /> : null}
+      {children}
+    </button>
+  );
+}
+
+/** 在两个列表之间开关某个值 */
+function toggleItem(list: string[], item: string): string[] {
+  return list.includes(item) ? list.filter((entry) => entry !== item) : [...list, item];
+}
+
 function randomPair() {
   const shape = AVATAR_SHAPES[Math.floor(Math.random() * AVATAR_SHAPES.length)] ?? DEFAULT_AVATAR_SHAPE;
   const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)] ?? DEFAULT_AVATAR_COLOR;
@@ -76,10 +146,20 @@ function BotFormDialog({ open, bot, onClose, onSaved }: BotFormProps) {
   const [schedule, setSchedule] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [permission, setPermission] = useState<PermissionMode>("unattended");
+  const [threshold, setThreshold] = useState(3);
+  // null = 无上限（后端同样把 0 视作无上限）
+  const [tokenBudget, setTokenBudget] = useState<number | null>(null);
   const [agentId, setAgentId] = useState("");
+  // 自动化相关的配置：失败通知 / 事件触发 / 技能与执行白名单
+  const [notifyOnFailure, setNotifyOnFailure] = useState(true);
+  const [triggers, setTriggers] = useState<string[]>([]);
+  const [tools, setTools] = useState<string[]>([]);
+  const [commands, setCommands] = useState("");
+  const [paths, setPaths] = useState("");
   const [shape, setShape] = useState<string>(DEFAULT_AVATAR_SHAPE);
   const [color, setColor] = useState<string>(DEFAULT_AVATAR_COLOR);
   const [agents, setAgents] = useState<AgentHandle[]>([]);
+  const [catalog, setCatalog] = useState<BotTool[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +171,14 @@ function BotFormDialog({ open, bot, onClose, onSaved }: BotFormProps) {
     setSchedule(bot?.schedule ?? "");
     setWorkspace(bot?.workspace ?? "");
     setPermission(bot?.permission_mode ?? "unattended");
+    setThreshold(bot?.failure_threshold ?? 3);
+    setTokenBudget(bot?.token_budget ?? null);
     setAgentId(bot?.agent_id ?? "");
+    setNotifyOnFailure(bot?.notify_on_failure ?? true);
+    setTriggers(bot?.event_triggers ?? []);
+    setTools(bot?.allowed_tools ?? []);
+    setCommands((bot?.allowed_commands ?? []).join("\n"));
+    setPaths((bot?.allowed_paths ?? []).join("\n"));
     setShape(bot?.avatar_shape ?? pair.shape);
     setColor(bot?.avatar_color ?? pair.color);
     setBusy(false);
@@ -104,6 +191,14 @@ function BotFormDialog({ open, bot, onClose, onSaved }: BotFormProps) {
       })
       .catch(() => {
         if (alive) setAgents([]);
+      });
+    api
+      .listBotTools()
+      .then((list) => {
+        if (alive) setCatalog(list);
+      })
+      .catch(() => {
+        if (alive) setCatalog([]);
       });
     return () => {
       alive = false;
@@ -123,6 +218,13 @@ function BotFormDialog({ open, bot, onClose, onSaved }: BotFormProps) {
       decision_mode: "auto",
       workspace: workspace.trim() || null,
       schedule: schedule.trim() || null,
+      failure_threshold: threshold,
+      token_budget: tokenBudget,
+      notify_on_failure: notifyOnFailure,
+      event_triggers: triggers,
+      allowed_tools: tools,
+      allowed_commands: splitList(commands),
+      allowed_paths: splitList(paths),
     };
     setBusy(true);
     setError(null);
@@ -234,6 +336,139 @@ function BotFormDialog({ open, bot, onClose, onSaved }: BotFormProps) {
         <Field label="权限模式" hint="Bot 默认无人值守；需要人工把关时改成正常或只读计划。">
           <Segmented value={permission} options={PERMISSION_OPTIONS} onChange={setPermission} />
         </Field>
+
+        <Field
+          label="连续失败自动暂停"
+          hint="连续失败达到这个次数就自动暂停，避免一直空跑；跑通一轮后计数清零。0 表示永不自动暂停。"
+        >
+          <Input
+            type="number"
+            min={0}
+            max={20}
+            value={`${threshold}`}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              setThreshold(Number.isFinite(next) ? Math.min(20, Math.max(0, Math.trunc(next))) : 0);
+            }}
+            style={{ width: 120 }}
+          />
+        </Field>
+
+        <Field
+          label="每日 token 预算"
+          hint="按 UTC 自然日重置；当天用量达到上限就停止开工。开启「无上限」表示不限制。"
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <Input
+              type="number"
+              min={0}
+              max={1_000_000_000}
+              placeholder="不限制"
+              value={tokenBudget === null ? "" : `${tokenBudget}`}
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                const next = Number(raw);
+                // 0 和空都表示无上限，与后端语义一致
+                setTokenBudget(
+                  raw && Number.isFinite(next)
+                    ? Math.min(1_000_000_000, Math.max(0, Math.trunc(next))) || null
+                    : null,
+                );
+              }}
+              style={{ width: 160 }}
+            />
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--tn-text-2)",
+              }}
+            >
+              <Switch
+                on={tokenBudget === null}
+                onChange={(on) => setTokenBudget(on ? null : 100_000)}
+              />
+              无上限
+            </label>
+          </div>
+        </Field>
+
+        <Field label="失败主动通知" hint="开工失败或触发自动暂停时，在 Bot 页面顶部留一条通知。">
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 12,
+              color: "var(--tn-text-2)",
+            }}
+          >
+            <Switch on={notifyOnFailure} onChange={setNotifyOnFailure} />
+            {notifyOnFailure ? "失败时通知我" : "不通知"}
+          </label>
+        </Field>
+
+        <Field label="事件触发" hint="除定时之外，这些事件发生时也会开工；全不选表示不响应事件。">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {EVENT_OPTIONS.map((option) => (
+              <ChipToggle
+                key={option.value}
+                active={triggers.includes(option.value)}
+                onClick={() => setTriggers((prev) => toggleItem(prev, option.value))}
+              >
+                {option.label}
+              </ChipToggle>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="可用技能" hint="只勾选它允许调用的工具；全不选表示沿用默认工具面。">
+          {catalog.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--tn-text-4)" }}>技能清单暂不可用</div>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                maxHeight: 180,
+                overflowY: "auto",
+              }}
+            >
+              {catalog.map((tool) => (
+                <ChipToggle
+                  key={tool.name}
+                  active={tools.includes(tool.name)}
+                  title={tool.description || tool.title}
+                  onClick={() => setTools((prev) => toggleItem(prev, tool.name))}
+                >
+                  {tool.title}
+                </ChipToggle>
+              ))}
+            </div>
+          )}
+        </Field>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <Field label="允许的命令" hint="每行一个命令首 token，如 git、npm；留空不限制。">
+            <Textarea
+              rows={3}
+              value={commands}
+              placeholder={"git\nnpm\npython3"}
+              onChange={(event) => setCommands(event.target.value)}
+            />
+          </Field>
+          <Field label="允许的路径" hint="每行一个相对工作目录的路径前缀；留空不限制。">
+            <Textarea
+              rows={3}
+              value={paths}
+              placeholder={"reports\nsrc"}
+              onChange={(event) => setPaths(event.target.value)}
+            />
+          </Field>
+        </div>
 
         <div>
           <div style={{ fontSize: 12, color: "var(--tn-text-2)", marginBottom: 8 }}>头像形状</div>
@@ -380,6 +615,629 @@ function RunsModal({ bot, onClose }: { bot: Bot | null; onClose: () => void }) {
   );
 }
 
+/* ---------------- 例程 ---------------- */
+
+interface RoutineDraft {
+  name: string;
+  instruction: string;
+  schedule: string;
+  enabled: boolean;
+}
+
+const EMPTY_ROUTINE: RoutineDraft = { name: "", instruction: "", schedule: "", enabled: true };
+
+/**
+ * 一个 Bot 下可以挂多个例程：每个例程有自己的指令和 cron，
+ * 到点各自开工，互不覆盖 Bot 主定时。
+ */
+function RoutinesModal({ bot, onClose }: { bot: Bot | null; onClose: () => void }) {
+  const [items, setItems] = useState<BotRoutine[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<RoutineDraft>(EMPTY_ROUTINE);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!bot) return;
+    setLoading(true);
+    try {
+      setItems(await api.listBotRoutines(bot.id));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载例程失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [bot]);
+
+  useEffect(() => {
+    setDraft(EMPTY_ROUTINE);
+    setEditingId(null);
+    setError(null);
+    void load();
+  }, [load]);
+
+  const reset = () => {
+    setDraft(EMPTY_ROUTINE);
+    setEditingId(null);
+  };
+
+  const submit = async () => {
+    if (!bot || saving) return;
+    const name = draft.name.trim();
+    if (!name) return;
+    setSaving(true);
+    setError(null);
+    const body = {
+      name,
+      instruction: draft.instruction.trim(),
+      schedule: draft.schedule.trim() || null,
+      enabled: draft.enabled,
+    };
+    try {
+      if (editingId) {
+        await api.updateBotRoutine(bot.id, editingId, body);
+      } else {
+        await api.createBotRoutine(bot.id, body);
+      }
+      reset();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存例程失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (routine: BotRoutine) => {
+    setEditingId(routine.id);
+    setDraft({
+      name: routine.name,
+      instruction: routine.instruction,
+      schedule: routine.schedule ?? "",
+      enabled: routine.enabled,
+    });
+  };
+
+  const toggleEnabled = async (routine: BotRoutine) => {
+    if (!bot) return;
+    setBusyId(routine.id);
+    setError(null);
+    try {
+      await api.updateBotRoutine(bot.id, routine.id, { enabled: !routine.enabled });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新例程失败");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (routine: BotRoutine) => {
+    if (!bot) return;
+    if (!window.confirm(`删除例程「${routine.name}」？已产生的开工记录会保留。`)) return;
+    setBusyId(routine.id);
+    setError(null);
+    try {
+      await api.deleteBotRoutine(bot.id, routine.id);
+      if (editingId === routine.id) reset();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除例程失败");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Modal
+      open={bot !== null}
+      title={`例程 · ${bot?.name ?? ""}`}
+      onClose={onClose}
+      large
+      footer={
+        <>
+          <Button icon="refresh" onClick={() => void load()} busy={loading}>
+            刷新
+          </Button>
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {error ? <div style={{ fontSize: 12, color: "var(--tn-danger)" }}>{error}</div> : null}
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            padding: 12,
+            border: "1px solid var(--tn-line-soft)",
+            borderRadius: 10,
+          }}
+        >
+          <div style={{ fontSize: 12, color: "var(--tn-text-2)" }}>
+            {editingId ? "编辑例程" : "新建例程"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="名称" required>
+              <Input
+                value={draft.name}
+                maxLength={64}
+                placeholder="例如：每日简报"
+                onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+              />
+            </Field>
+            <Field label="定时（cron）" hint="留空表示只手动触发。">
+              <Input
+                value={draft.schedule}
+                maxLength={64}
+                placeholder="0 9 * * 1-5"
+                onChange={(event) => setDraft((prev) => ({ ...prev, schedule: event.target.value }))}
+              />
+            </Field>
+          </div>
+          <Field label="例程指令" hint="这一段就是该例程开工时的执行指令。">
+            <Textarea
+              rows={3}
+              value={draft.instruction}
+              maxLength={8000}
+              placeholder="例如：把今天的提交整理成简报，写到 reports/daily.md。"
+              onChange={(event) => setDraft((prev) => ({ ...prev, instruction: event.target.value }))}
+            />
+          </Field>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--tn-text-2)",
+              }}
+            >
+              <Switch
+                on={draft.enabled}
+                onChange={(enabled) => setDraft((prev) => ({ ...prev, enabled }))}
+              />
+              启用
+            </label>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              {editingId ? (
+                <Button size="sm" variant="ghost" onClick={reset} disabled={saving}>
+                  取消编辑
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="primary"
+                icon={editingId ? "check" : "plus"}
+                busy={saving}
+                disabled={!draft.name.trim()}
+                onClick={() => void submit()}
+              >
+                {editingId ? "保存" : "添加"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {loading && items.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--tn-text-4)" }}>加载中…</div>
+        ) : items.length === 0 ? (
+          <Empty
+            icon="clock"
+            title="还没有例程"
+            desc="加一个例程，让它按自己的 cron 和指令独立开工。"
+          />
+        ) : (
+          items.map((routine) => (
+            <div
+              key={routine.id}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                padding: "10px 12px",
+                border: "1px solid var(--tn-line-soft)",
+                borderRadius: 8,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--tn-text)" }}>{routine.name}</span>
+                <Badge tone={routine.enabled ? "green" : "default"} dot>
+                  {routine.enabled ? "启用" : "停用"}
+                </Badge>
+                <Badge tone="blue">{routine.schedule ? `定时 ${routine.schedule}` : "仅手动"}</Badge>
+                {routine.next_run_at ? (
+                  <span style={{ fontSize: 11, color: "var(--tn-text-4)" }}>
+                    下次 {formatTime(routine.next_run_at)}
+                  </span>
+                ) : null}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--tn-text-3)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                {routine.instruction.trim() || "（未填写指令）"}
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="edit"
+                  onClick={() => startEdit(routine)}
+                  disabled={busyId === routine.id}
+                >
+                  编辑
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={routine.enabled ? "pause" : "play"}
+                  busy={busyId === routine.id}
+                  onClick={() => void toggleEnabled(routine)}
+                >
+                  {routine.enabled ? "停用" : "启用"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  icon="trash"
+                  onClick={() => void remove(routine)}
+                  disabled={busyId === routine.id}
+                >
+                  删除
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- 长期记忆 ---------------- */
+
+const RELEVANCE_LABEL: Record<BotMemoryRelevance, string> = {
+  direct: "直接相关",
+  indirect: "间接相关",
+};
+
+const KIND_LABEL: Record<BotMemory["kind"], string> = {
+  preference: "偏好",
+  fact: "事实",
+  decision: "决定",
+  commitment: "承诺",
+  summary: "摘要",
+};
+
+const SOURCE_LABEL: Record<BotMemory["source"], string> = {
+  group: "群聊",
+  chat: "对话",
+  manual: "手动",
+};
+
+type RelevanceFilter = "all" | BotMemoryRelevance;
+
+function MemoriesModal({ bot, onClose }: { bot: Bot | null; onClose: () => void }) {
+  const [filter, setFilter] = useState<RelevanceFilter>("all");
+  const [items, setItems] = useState<BotMemory[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [keyword, setKeyword] = useState("");
+  const [hits, setHits] = useState<BotMemoryChunk[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<BotMemoryDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!bot) return;
+    setLoading(true);
+    try {
+      setItems(
+        await api.listBotMemories(bot.id, {
+          relevance: filter === "all" ? undefined : filter,
+          limit: 200,
+        }),
+      );
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载记忆失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [bot, filter]);
+
+  useEffect(() => {
+    setFilter("all");
+    setKeyword("");
+    setHits(null);
+    setDetailId(null);
+    setDetail(null);
+  }, [bot]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const search = async () => {
+    const q = keyword.trim();
+    if (!bot || !q || searching) return;
+    setSearching(true);
+    try {
+      setHits(await api.searchBotMemories(bot.id, q, 50));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "检索失败");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const toggleDetail = async (memoryId: string) => {
+    if (!bot) return;
+    if (detailId === memoryId) {
+      setDetailId(null);
+      setDetail(null);
+      return;
+    }
+    setDetailId(memoryId);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      setDetail(await api.getBotMemory(bot.id, memoryId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载记忆详情失败");
+      setDetailId(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const remove = async (memory: BotMemory) => {
+    if (!bot) return;
+    if (!window.confirm("删除这条记忆？对应的全文副本会一并移除。")) return;
+    try {
+      await api.deleteBotMemory(bot.id, memory.id);
+      if (detailId === memory.id) {
+        setDetailId(null);
+        setDetail(null);
+      }
+      if (hits) setHits(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除失败");
+    }
+  };
+
+  const clearAll = async () => {
+    if (!bot) return;
+    if (!window.confirm(`清空「${bot.name}」的全部长期记忆？此操作不可撤销。`)) return;
+    try {
+      await api.clearBotMemories(bot.id);
+      setKeyword("");
+      setHits(null);
+      setDetailId(null);
+      setDetail(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清空失败");
+    }
+  };
+
+  const renderDetail = () => {
+    if (detailLoading) {
+      return <div style={{ fontSize: 12, color: "var(--tn-text-4)" }}>加载中…</div>;
+    }
+    if (!detail) return null;
+    return (
+      <div
+        style={{
+          marginTop: 8,
+          paddingTop: 8,
+          borderTop: "1px dashed var(--tn-line-soft)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--tn-text-2)", whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
+          {detail.content}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--tn-text-4)" }}>
+          全文副本 {detail.chunks.length} 条
+        </div>
+        {detail.chunks.map((chunk) => (
+          <div
+            key={chunk.id}
+            style={{
+              padding: "6px 8px",
+              borderRadius: 6,
+              background: "var(--tn-panel-3)",
+              fontSize: 12,
+              color: "var(--tn-text-3)",
+              whiteSpace: "pre-wrap",
+              lineHeight: 1.6,
+            }}
+          >
+            {chunk.content}
+            <div style={{ fontSize: 10, color: "var(--tn-text-4)", marginTop: 2 }}>
+              {SOURCE_LABEL[chunk.source]} · {formatTime(chunk.created_at)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const rowStyle = {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 6,
+    padding: "10px 12px",
+    border: "1px solid var(--tn-line-soft)",
+    borderRadius: 8,
+    cursor: "pointer",
+  };
+
+  return (
+    <Modal
+      open={bot !== null}
+      title={`长期记忆 · ${bot?.name ?? ""}`}
+      onClose={onClose}
+      large
+      footer={
+        <>
+          <Button icon="refresh" onClick={() => void load()} busy={loading}>
+            刷新
+          </Button>
+          <Button variant="quiet" icon="trash" onClick={() => void clearAll()}>
+            清空记忆
+          </Button>
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {error ? <div style={{ fontSize: 12, color: "var(--tn-danger)" }}>{error}</div> : null}
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Input
+              icon="search"
+              value={keyword}
+              placeholder="搜全文：当时到底怎么说的…"
+              onChange={(event) => setKeyword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void search();
+              }}
+            />
+          </div>
+          <Button
+            size="sm"
+            variant="subtle"
+            busy={searching}
+            disabled={!keyword.trim()}
+            onClick={() => void search()}
+          >
+            搜索
+          </Button>
+        </div>
+
+        {hits ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Badge tone="blue">全文命中 {hits.length}</Badge>
+            <button
+              type="button"
+              onClick={() => setHits(null)}
+              style={{ fontSize: 12, color: "var(--tn-accent)", background: "transparent", cursor: "pointer" }}
+            >
+              返回摘要列表
+            </button>
+          </div>
+        ) : (
+          <div style={{ maxWidth: 360 }}>
+            <Segmented<RelevanceFilter>
+              value={filter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "direct", label: "直接相关" },
+                { value: "indirect", label: "间接相关" },
+              ]}
+              onChange={setFilter}
+            />
+          </div>
+        )}
+
+        {hits ? (
+          hits.length === 0 ? (
+            <Empty icon="search" title="没有命中原文" desc="换一个关键词，或返回摘要列表看看。" />
+          ) : (
+            hits.map((chunk) => (
+              <div key={chunk.id} style={rowStyle} onClick={() => void toggleDetail(chunk.memory_id)}>
+                <div style={{ fontSize: 12, color: "var(--tn-text-2)", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+                  {chunk.content}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--tn-text-4)" }}>
+                  {SOURCE_LABEL[chunk.source]}
+                  {chunk.created_at ? ` · ${formatTime(chunk.created_at)}` : ""}
+                </div>
+                {detailId === chunk.memory_id ? renderDetail() : null}
+              </div>
+            ))
+          )
+        ) : loading && items.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--tn-text-4)" }}>加载中…</div>
+        ) : items.length === 0 ? (
+          <Empty
+            icon="brain"
+            title="还没有长期记忆"
+            desc="在群聊里和它协作、或直接对话之后，与它相关的部分会沉淀到这里。"
+          />
+        ) : (
+          items.map((memory) => (
+            <div key={memory.id} style={rowStyle} onClick={() => void toggleDetail(memory.id)}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <Badge tone={memory.relevance === "direct" ? "brand" : "blue"}>
+                  {RELEVANCE_LABEL[memory.relevance]}
+                </Badge>
+                <Badge>{KIND_LABEL[memory.kind]}</Badge>
+                {memory.topic ? <Badge>{memory.topic}</Badge> : null}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--tn-text-2)",
+                  lineHeight: 1.6,
+                  display: "-webkit-box",
+                  WebkitLineClamp: 3,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {memory.content}
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 11, color: "var(--tn-text-4)" }}>
+                <span>{SOURCE_LABEL[memory.source]}</span>
+                {memory.source_group_name ? <span>{memory.source_group_name}</span> : null}
+                <span>v{memory.version}</span>
+                <span>{memory.chunk_count} 条原文</span>
+                <span>权重 {memory.weight.toFixed(2)}</span>
+                {memory.self_authored ? <span>自己说的</span> : null}
+                <button
+                  type="button"
+                  title="删除这条记忆"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void remove(memory);
+                  }}
+                  style={{
+                    marginLeft: "auto",
+                    background: "transparent",
+                    color: "var(--tn-text-4)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Icon name="trash" className="fx-icon-sm" />
+                </button>
+              </div>
+              {detailId === memory.id ? renderDetail() : null}
+            </div>
+          ))
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- 卡片 ---------------- */
 
 function Meta({ icon, children, title }: { icon: string; children: ReactNode; title?: string }) {
@@ -408,13 +1266,26 @@ interface BotCardProps {
   busy: boolean;
   onRun: () => void;
   onRuns: () => void;
+  onRoutines: () => void;
+  onMemories: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
 }
 
-function BotCard({ bot, busy, onRun, onRuns, onEdit, onToggle, onDelete }: BotCardProps) {
+function BotCard({
+  bot,
+  busy,
+  onRun,
+  onRuns,
+  onRoutines,
+  onMemories,
+  onEdit,
+  onToggle,
+  onDelete,
+}: BotCardProps) {
   const active = bot.status === "active";
+  const autoPaused = !active && Boolean(bot.paused_reason);
   return (
     <div
       style={{
@@ -433,7 +1304,7 @@ function BotCard({ bot, busy, onRun, onRuns, onEdit, onToggle, onDelete }: BotCa
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: "var(--tn-text)" }}>{bot.name}</span>
             <Badge tone={active ? "green" : "orange"} dot>
-              {active ? "运行中" : "已暂停"}
+              {active ? "运行中" : autoPaused ? "自动暂停" : "已暂停"}
             </Badge>
             {bot.schedule ? null : <Badge>仅手动</Badge>}
           </div>
@@ -465,7 +1336,46 @@ function BotCard({ bot, busy, onRun, onRuns, onEdit, onToggle, onDelete }: BotCa
         <Meta icon="play" title={bot.last_run_at ?? undefined}>
           {bot.last_run_at ? `上次开工 ${formatTime(bot.last_run_at)}` : "还没开过工"}
         </Meta>
+        <Meta icon="activity" title={`累计开工 ${bot.runs_total} 次，失败 ${bot.runs_failed} 次`}>
+          {bot.runs_total > 0
+            ? `开工 ${bot.runs_total} 次 · 失败 ${bot.runs_failed}`
+            : "暂无运行统计"}
+          {bot.consecutive_failures > 0 ? ` · 连续失败 ${bot.consecutive_failures}` : ""}
+        </Meta>
+        <Meta
+          icon="zap"
+          title={bot.token_budget ? "每日 token 预算，按 UTC 自然日重置" : "未设置每日 token 预算"}
+        >
+          今日已用 {bot.tokens_used_today.toLocaleString()}
+          {bot.token_budget ? ` / ${bot.token_budget.toLocaleString()}` : " · 无上限"}
+        </Meta>
+        {bot.event_triggers.length > 0 ? (
+          <Meta icon="bell" title={bot.event_triggers.join("、")}>
+            事件触发 {bot.event_triggers.length} 个
+          </Meta>
+        ) : null}
       </div>
+
+      {bot.paused_reason ? (
+        <div style={{ fontSize: 11, color: "var(--tn-danger)", lineHeight: 1.6 }}>
+          自动暂停：{bot.paused_reason}
+        </div>
+      ) : bot.last_error ? (
+        <div
+          title={bot.last_error}
+          style={{
+            fontSize: 11,
+            color: "var(--tn-danger)",
+            lineHeight: 1.6,
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}
+        >
+          最近失败：{bot.last_error}
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: "auto" }}>
         <Button size="sm" variant="primary" icon="play" busy={busy} onClick={onRun}>
@@ -473,6 +1383,12 @@ function BotCard({ bot, busy, onRun, onRuns, onEdit, onToggle, onDelete }: BotCa
         </Button>
         <Button size="sm" variant="subtle" icon="layers" onClick={onRuns}>
           记录
+        </Button>
+        <Button size="sm" variant="subtle" icon="clock" onClick={onRoutines}>
+          例程
+        </Button>
+        <Button size="sm" variant="subtle" icon="brain" onClick={onMemories}>
+          记忆
         </Button>
         <Button size="sm" variant="ghost" icon="edit" onClick={onEdit}>
           编辑
@@ -502,6 +1418,18 @@ export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Bot | null>(null);
   const [runsFor, setRunsFor] = useState<Bot | null>(null);
+  const [routinesFor, setRoutinesFor] = useState<Bot | null>(null);
+  const [memoriesFor, setMemoriesFor] = useState<Bot | null>(null);
+  const [notifications, setNotifications] = useState<BotNotification[]>([]);
+
+  const loadNotifications = useCallback(async () => {
+    try {
+      setNotifications(await api.listBotNotifications({ unreadOnly: true, limit: 20 }));
+    } catch {
+      // 通知是辅助信息，拉取失败不打断页面
+      setNotifications([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -512,11 +1440,30 @@ export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+    await loadNotifications();
+  }, [loadNotifications]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const readNotification = async (item: BotNotification) => {
+    try {
+      await api.markBotNotificationRead(item.id);
+      setNotifications((prev) => prev.filter((entry) => entry.id !== item.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "标记通知已读失败");
+    }
+  };
+
+  const readAllNotifications = async () => {
+    try {
+      await api.markAllBotNotificationsRead();
+      setNotifications([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "标记通知已读失败");
+    }
+  };
 
   const upsert = (bot: Bot) =>
     setBots((prev) => {
@@ -619,6 +1566,62 @@ export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
         </div>
       ) : null}
 
+      {notifications.length > 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: 12,
+            border: "1px solid var(--tn-line)",
+            borderRadius: 10,
+            background: "var(--tn-panel)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="bell" className="fx-icon-sm" />
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--tn-text)" }}>Bot 通知</span>
+            <Badge tone="red">{notifications.length} 条未读</Badge>
+            <Button
+              size="sm"
+              variant="ghost"
+              style={{ marginLeft: "auto" }}
+              onClick={() => void readAllNotifications()}
+            >
+              全部已读
+            </Button>
+          </div>
+          {notifications.map((item) => (
+            <div
+              key={item.id}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: item.level === "error" ? "var(--tn-danger)" : "var(--tn-text)" }}>
+                  {item.title}
+                </div>
+                {item.body ? (
+                  <div style={{ color: "var(--tn-text-3)", whiteSpace: "pre-wrap" }}>{item.body}</div>
+                ) : null}
+                <div style={{ fontSize: 11, color: "var(--tn-text-4)" }}>
+                  {item.bot_name}
+                  {item.created_at ? ` · ${formatTime(item.created_at)}` : ""}
+                </div>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => void readNotification(item)}>
+                知道了
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div style={{ maxWidth: 320 }}>
         <Segmented<StatusFilter>
           value={filter}
@@ -654,6 +1657,8 @@ export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
               busy={busyId === bot.id}
               onRun={() => void runNow(bot)}
               onRuns={() => setRunsFor(bot)}
+              onRoutines={() => setRoutinesFor(bot)}
+              onMemories={() => setMemoriesFor(bot)}
               onEdit={() => {
                 setEditing(bot);
                 setFormOpen(true);
@@ -672,6 +1677,8 @@ export function BotsPage({ navigate }: { navigate: (v: View) => void }) {
         onSaved={upsert}
       />
       <RunsModal bot={runsFor} onClose={() => setRunsFor(null)} />
+      <RoutinesModal bot={routinesFor} onClose={() => setRoutinesFor(null)} />
+      <MemoriesModal bot={memoriesFor} onClose={() => setMemoriesFor(null)} />
     </div>
   );
 }
