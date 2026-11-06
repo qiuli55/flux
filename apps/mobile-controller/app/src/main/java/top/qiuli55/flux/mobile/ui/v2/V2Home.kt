@@ -2,7 +2,6 @@ package top.qiuli55.flux.mobile.ui.v2
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,8 +23,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,7 +33,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
@@ -57,7 +53,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,40 +63,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
-import top.qiuli55.flux.mobile.data.Bot
-import top.qiuli55.flux.mobile.data.ChatGroup
-import kotlin.math.roundToInt
 
-/** 首页分区：对话（人工）/ Bot（常驻执行者）/ 群聊。 */
-private enum class HomeSection { CHATS, BOTS, GROUPS }
-
-/** 首页：设备筛选 + 助理/额度/设计入口 + 对话/Bot/群聊三个分区。 */
+/** 首页：设备筛选 + 助理/额度/设计入口 + 对话列表。 */
 @Composable
 fun V2HomeScreen(
     device: String,
     onDeviceChange: (String) -> Unit,
     conversations: List<V2Conversation>,
-    bots: List<Bot>,
-    botUnreadCount: Int = 0,
-    groups: List<ChatGroup>,
-    groupsLoading: Boolean = false,
     billingHeadline: String,
     extraTop: androidx.compose.ui.unit.Dp,
     onOpenBilling: () -> Unit,
@@ -109,15 +88,10 @@ fun V2HomeScreen(
     onOpenAssistant: () -> Unit,
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
-    onOpenBot: (Bot) -> Unit,
-    onCreateBot: () -> Unit,
-    onOpenGroup: (ChatGroup) -> Unit,
-    onCreateGroup: () -> Unit,
     onOpenSettings: () -> Unit,
     onNewChat: () -> Unit,
     onRefresh: () -> Unit = {},
 ) {
-    var section by remember { mutableStateOf(HomeSection.CHATS) }
     var searchOpen by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var deviceMenu by remember { mutableStateOf(false) }
@@ -127,14 +101,8 @@ fun V2HomeScreen(
     var quickHover by remember { mutableIntStateOf(-1) }
     val haptics = LocalV2Haptics.current
     val singleList = rememberLazyListState()
-    val botList = rememberLazyListState()
-    val multiList = rememberLazyListState()
     val compact = singleList.firstVisibleItemIndex > 0 ||
-        singleList.firstVisibleItemScrollOffset > 24 ||
-        botList.firstVisibleItemIndex > 0 ||
-        botList.firstVisibleItemScrollOffset > 24 ||
-        multiList.firstVisibleItemIndex > 0 ||
-        multiList.firstVisibleItemScrollOffset > 24
+        singleList.firstVisibleItemScrollOffset > 24
     val fabScale by animateFloatAsState(
         targetValue = if (compact) .786f else 1f,
         animationSpec = tween(180),
@@ -149,20 +117,6 @@ fun V2HomeScreen(
                     conversation.title.lowercase().contains(normalized) ||
                     conversation.device.lowercase().contains(normalized) ||
                     demoAgent(conversation.agentId).name.lowercase().contains(normalized))
-        }
-    }
-    val filteredGroups = remember(groups, normalized) {
-        groups.filter { group ->
-            normalized.isEmpty() ||
-                group.name.lowercase().contains(normalized) ||
-                group.members.any { it.name.lowercase().contains(normalized) }
-        }
-    }
-    val filteredBots = remember(bots, normalized) {
-        bots.filter { bot ->
-            normalized.isEmpty() ||
-                bot.name.lowercase().contains(normalized) ||
-                bot.description.lowercase().contains(normalized)
         }
     }
 
@@ -223,16 +177,6 @@ fun V2HomeScreen(
 
             ThinDivider(modifier = Modifier.padding(top = 12.dp))
 
-            SectionTabs(
-                section = section,
-                botUnread = botUnreadCount,
-                onSelect = {
-                    section = it
-                    deviceMenu = false
-                    openRowId = null
-                },
-            )
-
             V2PullRefresh(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 onRefresh = {
@@ -240,100 +184,51 @@ fun V2HomeScreen(
                     delay(650)
                 },
             ) {
-                when (section) {
-                    HomeSection.GROUPS -> LazyColumn(Modifier.fillMaxSize(), state = multiList) {
-                        if (filteredGroups.isEmpty()) {
-                            item {
-                                GroupsEmptyState(
-                                    loading = groupsLoading,
-                                    searching = normalized.isNotEmpty(),
-                                    onCreate = onCreateGroup,
-                                )
-                            }
-                        }
-                        itemsIndexed(filteredGroups, key = { _, item -> item.id }) { index, group ->
+                LazyColumn(Modifier.fillMaxSize(), state = singleList) {
+                    itemsIndexed(filteredConversations, key = { _, item -> item.id }) { index, conversation ->
+                        val isOpen = openRowId == conversation.id
+                        V2SwipeRow(
+                            open = isOpen,
+                            openDir = openRowDir,
+                            onOpenChange = { open, dir ->
+                                if (open) {
+                                    openRowId = conversation.id
+                                    openRowDir = dir
+                                } else if (openRowId == conversation.id) {
+                                    openRowId = null
+                                }
+                            },
+                            rightAction = {
+                                SwipeDeleteAction {
+                                    openRowId = null
+                                    onDeleteConversation(conversation)
+                                }
+                            },
+                        ) {
                             V2Stagger(index) {
-                                GroupRow(group = group, onClick = { onOpenGroup(group) })
-                            }
-                            if (index != filteredGroups.lastIndex) {
-                                ThinDivider(color = V2Colors.lineSoft, modifier = Modifier.padding(horizontal = 20.dp))
-                            }
-                        }
-                        item {
-                            NewGroupRow(onClick = onCreateGroup)
-                            Spacer(Modifier.height(96.dp))
-                        }
-                    }
-
-                    HomeSection.BOTS -> LazyColumn(Modifier.fillMaxSize(), state = botList) {
-                        if (filteredBots.isEmpty()) {
-                            item {
-                                BotsEmptyState(
-                                    searching = normalized.isNotEmpty(),
-                                    onCreate = onCreateBot,
-                                )
-                            }
-                        }
-                        itemsIndexed(filteredBots, key = { _, item -> item.id }) { index, bot ->
-                            V2Stagger(index) {
-                                BotRow(bot = bot, onClick = { onOpenBot(bot) })
-                            }
-                            if (index != filteredBots.lastIndex) {
-                                ThinDivider(color = V2Colors.lineSoft, modifier = Modifier.padding(horizontal = 20.dp))
-                            }
-                        }
-                        item {
-                            NewBotRow(onClick = onCreateBot)
-                            Spacer(Modifier.height(96.dp))
-                        }
-                    }
-
-                    HomeSection.CHATS -> LazyColumn(Modifier.fillMaxSize(), state = singleList) {
-                        itemsIndexed(filteredConversations, key = { _, item -> item.id }) { index, conversation ->
-                            val isOpen = openRowId == conversation.id
-                            V2SwipeRow(
-                                open = isOpen,
-                                openDir = openRowDir,
-                                onOpenChange = { open, dir ->
-                                    if (open) {
-                                        openRowId = conversation.id
-                                        openRowDir = dir
-                                    } else if (openRowId == conversation.id) {
-                                        openRowId = null
-                                    }
-                                },
-                                rightAction = {
-                                    SwipeDeleteAction {
+                                ConversationRow(
+                                    conversation = conversation,
+                                    online = conversation.unread > 0,
+                                    onClick = {
+                                        if (openRowId == conversation.id) {
+                                            openRowId = null
+                                        } else {
+                                            onOpenConversation(conversation)
+                                        }
+                                    },
+                                    // 长按不再直接删：先弹一个小菜单，避免误删整段对话
+                                    onDelete = {
                                         openRowId = null
                                         onDeleteConversation(conversation)
-                                    }
-                                },
-                            ) {
-                                V2Stagger(index) {
-                                    ConversationRow(
-                                        conversation = conversation,
-                                        online = conversation.unread > 0,
-                                        onClick = {
-                                            if (openRowId == conversation.id) {
-                                                openRowId = null
-                                            } else {
-                                                onOpenConversation(conversation)
-                                            }
-                                        },
-                                        // 长按不再直接删：先弹一个小菜单，避免误删整段对话
-                                        onDelete = {
-                                            openRowId = null
-                                            onDeleteConversation(conversation)
-                                        },
-                                    )
-                                }
-                            }
-                            if (index != filteredConversations.lastIndex) {
-                                ThinDivider(color = V2Colors.lineSoft, modifier = Modifier.padding(horizontal = 20.dp))
+                                    },
+                                )
                             }
                         }
-                        item { Spacer(Modifier.height(96.dp)) }
+                        if (index != filteredConversations.lastIndex) {
+                            ThinDivider(color = V2Colors.lineSoft, modifier = Modifier.padding(horizontal = 20.dp))
+                        }
                     }
+                    item { Spacer(Modifier.height(96.dp)) }
                 }
             }
         }
@@ -490,7 +385,7 @@ private fun HomeHeader(
             ) {
                 Icon(
                     if (searchOpen) Icons.Outlined.Close else Icons.Outlined.Search,
-                    contentDescription = if (searchOpen) "关闭搜索" else "搜索 Bot",
+                    contentDescription = if (searchOpen) "关闭搜索" else "搜索对话",
                     tint = V2Colors.ink(.6f),
                     modifier = Modifier.size(17.dp),
                 )
@@ -540,7 +435,7 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
             if (query.isEmpty()) {
-                Label("搜索对话、Bot 或群聊", 12.5f, V2Colors.ink(.28f))
+                Label("搜索对话", 12.5f, V2Colors.ink(.28f))
             }
             BasicTextField(
                 value = query,
@@ -573,107 +468,6 @@ private fun EntryRow(
         Spacer(Modifier.width(14.dp))
         Label(title, 15f, V2Colors.ink(.90f), modifier = Modifier.weight(1f), maxLines = 1)
         Label(meta, 10.5f, metaColor, maxLines = 1)
-    }
-}
-
-@Composable
-private fun SectionTabs(section: HomeSection, botUnread: Int, onSelect: (HomeSection) -> Unit) {
-    val density = LocalDensity.current
-    var chatsX by remember { mutableFloatStateOf(0f) }
-    var chatsW by remember { mutableFloatStateOf(0f) }
-    var botsX by remember { mutableFloatStateOf(0f) }
-    var botsW by remember { mutableFloatStateOf(0f) }
-    var groupsX by remember { mutableFloatStateOf(0f) }
-    var groupsW by remember { mutableFloatStateOf(0f) }
-    val targetX = when (section) {
-        HomeSection.CHATS -> chatsX
-        HomeSection.BOTS -> botsX
-        HomeSection.GROUPS -> groupsX
-    }
-    val targetW = when (section) {
-        HomeSection.CHATS -> chatsW
-        HomeSection.BOTS -> botsW
-        HomeSection.GROUPS -> groupsW
-    }
-    val underlineX by animateFloatAsState(
-        targetValue = targetX,
-        animationSpec = spring(stiffness = 520f, dampingRatio = .42f),
-        label = "tab-x",
-    )
-    val underlineW by animateFloatAsState(
-        targetValue = targetW,
-        animationSpec = spring(stiffness = 520f, dampingRatio = .42f),
-        label = "tab-w",
-    )
-
-    Box {
-        Row(
-            Modifier
-                .padding(start = 20.dp, end = 20.dp, top = 16.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            SectionTab(
-                text = "对话",
-                selected = section == HomeSection.CHATS,
-                modifier = Modifier.onGloballyPositioned {
-                    chatsX = it.positionInParent().x
-                    chatsW = it.size.width.toFloat()
-                },
-            ) { onSelect(HomeSection.CHATS) }
-            SectionTab(
-                text = if (botUnread > 0) "Bot $botUnread" else "Bot",
-                selected = section == HomeSection.BOTS,
-                modifier = Modifier.onGloballyPositioned {
-                    botsX = it.positionInParent().x
-                    botsW = it.size.width.toFloat()
-                },
-            ) { onSelect(HomeSection.BOTS) }
-            SectionTab(
-                text = "群聊",
-                selected = section == HomeSection.GROUPS,
-                modifier = Modifier.onGloballyPositioned {
-                    groupsX = it.positionInParent().x
-                    groupsW = it.size.width.toFloat()
-                },
-            ) { onSelect(HomeSection.GROUPS) }
-        }
-        Box(
-            Modifier
-                .offset {
-                    IntOffset(
-                        underlineX.roundToInt(),
-                        (16.dp + 26.dp).roundToPx(),
-                    )
-                }
-                .width(with(density) { underlineW.coerceAtLeast(0f).toDp() })
-                .height(2.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(V2Colors.accent),
-        )
-    }
-}
-
-@Composable
-private fun SectionTab(
-    text: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier
-            .height(28.dp)
-            .v2Pressable(pressScale = .96f, onClick = onClick),
-        contentAlignment = Alignment.TopStart,
-    ) {
-        Label(
-            text,
-            13.5f,
-            if (selected) V2Colors.ink(.95f) else V2Colors.ink(.40f),
-            if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
     }
 }
 
@@ -865,196 +659,6 @@ private fun ConversationRow(
                 },
             )
         }
-    }
-}
-
-@Composable
-private fun BotRow(bot: Bot, onClick: () -> Unit) {
-    val paused = bot.status == "paused"
-    val statusText = when {
-        paused -> "已暂停"
-        bot.schedule.isNullOrBlank() && bot.eventTriggers.isEmpty() -> "手动开工"
-        else -> "定时开工"
-    }
-    val moment = when {
-        !bot.nextRunAt.isNullOrBlank() -> "下次 ${shortMoment(bot.nextRunAt)}"
-        !bot.lastRunAt.isNullOrBlank() -> "上次 ${relativeTime(bot.lastRunAt)}"
-        else -> "还没开过工"
-    }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .985f, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(46.dp)) {
-            BotAvatar(shape = bot.avatarShape, color = bot.avatarColor, size = 46.dp)
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .size(10.dp)
-                    .background(if (paused) V2Colors.amber500 else V2Colors.emerald, CircleShape)
-                    .border(2.dp, V2Colors.shellTop, CircleShape),
-            )
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Label(bot.name, 14f, V2Colors.ink(.90f), FontWeight.Medium, maxLines = 1)
-                if (bot.runsFailed > 0) {
-                    Spacer(Modifier.width(6.dp))
-                    Label("失败 ${bot.runsFailed}", 9.5f, V2Colors.rose, FontWeight.Medium)
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Label(
-                listOf(statusText, moment).joinToString(" · "),
-                11f,
-                V2Colors.ink(.40f),
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Label(
-            if (bot.tokensUsedToday > 0) "${bot.tokensUsedToday} tok" else "",
-            10f,
-            V2Colors.ink(.28f),
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun BotsEmptyState(searching: Boolean, onCreate: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 36.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Label(
-            if (searching) "没有匹配的 Bot" else "还没有 Bot",
-            13f,
-            V2Colors.ink(.45f),
-        )
-        if (!searching) {
-            Spacer(Modifier.height(6.dp))
-            Label("Bot 是常驻执行者：可定时开工、也能手动催一次", 11f, V2Colors.ink(.32f))
-            Spacer(Modifier.height(14.dp))
-            GhostButton(text = "新建 Bot", onClick = onCreate)
-        }
-    }
-}
-
-@Composable
-private fun NewBotRow(onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .985f, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(V2Colors.ink(.05f))
-                .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(14.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Outlined.Add, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(20.dp))
-        }
-        Spacer(Modifier.width(14.dp))
-        Label("新建 Bot", 13.5f, V2Colors.ink(.72f), FontWeight.Medium)
-    }
-}
-
-/** Bot 列表里的绝对时间（下次开工 / 上次开工），只用于紧凑展示。 */
-private fun shortMoment(raw: String?): String {
-    val epoch = parseEpochSeconds(raw) ?: return "—"
-    return java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
-        .format(java.util.Date(epoch * 1000))
-}
-
-@Composable
-private fun GroupRow(group: ChatGroup, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .985f, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        GroupAvatarStack(members = group.members)
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Label(group.name, 14f, V2Colors.ink(.90f), FontWeight.Medium, maxLines = 1)
-            Spacer(Modifier.height(4.dp))
-            Label(
-                "${group.memberCount} 个 Bot · ${group.maxRounds} 轮讨论",
-                11f,
-                V2Colors.ink(.40f),
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Label(
-            relativeTime(group.lastMessageAt ?: group.createdAt),
-            11f,
-            V2Colors.ink(.30f),
-        )
-    }
-}
-
-@Composable
-private fun GroupsEmptyState(loading: Boolean, searching: Boolean, onCreate: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 36.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Label(
-            when {
-                loading -> "正在读取群聊…"
-                searching -> "没有匹配的群聊"
-                else -> "还没有群聊"
-            },
-            13f,
-            V2Colors.ink(.45f),
-        )
-        if (!loading && !searching) {
-            Spacer(Modifier.height(6.dp))
-            Label("把几个 Bot 拉进同一个群，它们会互相接力讨论", 11f, V2Colors.ink(.32f))
-            Spacer(Modifier.height(14.dp))
-            GhostButton(text = "新建群聊", onClick = onCreate)
-        }
-    }
-}
-
-@Composable
-private fun NewGroupRow(onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .985f, onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(V2Colors.ink(.05f))
-                .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(14.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Outlined.Add, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(20.dp))
-        }
-        Spacer(Modifier.width(14.dp))
-        Label("新建群聊", 13.5f, V2Colors.ink(.72f), FontWeight.Medium)
     }
 }
 

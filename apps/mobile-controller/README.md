@@ -12,11 +12,11 @@
 
 ```bash
 # 任选一种方式推到设备
-adb install -r flux-mobile-0.9.0-vc57.apk
+adb install -r flux-mobile-0.9.10-vc67.apk
 # 或者把 APK 复制到手机文件管理器里点开安装
 ```
 
-应用版本 `0.9.9`（versionCode 66），最低 Android 8.0（API 26），target API 34。
+应用版本 `0.9.10`（versionCode 67），最低 Android 8.0（API 26），target API 34。
 
 ## 首次配置
 

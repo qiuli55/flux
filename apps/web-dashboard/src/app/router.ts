@@ -9,9 +9,9 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
-export type View = "overview" | "assistant" | "solo" | "ide" | "tasks" | "groups" | "bots" | "skills" | "billing" | "diagnostics" | "settings";
+export type View = "overview" | "assistant" | "solo" | "ide" | "tasks" | "skills" | "billing" | "diagnostics" | "settings";
 
-export const VIEWS: readonly View[] = ["overview", "assistant", "solo", "ide", "tasks", "groups", "bots", "skills", "billing", "diagnostics", "settings"];
+export const VIEWS: readonly View[] = ["overview", "assistant", "solo", "ide", "tasks", "skills", "billing", "diagnostics", "settings"];
 export const DEFAULT_VIEW: View = "overview";
 
 /** dev 为 "/"，若产物按子路径构建则为该子路径 */

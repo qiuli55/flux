@@ -54,7 +54,7 @@
         },
         {
           "id": "fluxTasks",
-          "name": "Bot"
+          "name": "对话"
         },
         {
           "id": "fluxChanges",
@@ -65,11 +65,11 @@
     "viewsWelcome": [
       {
         "view": "fluxProjects",
-        "contents": "还没有从 Flux 读取到项目。\n[新建 Bot](command:flux.newTask)\n[检查连接](command:flux.healthCheck)\n后端地址不对时，运行 [设置服务器地址](command:flux.setServer)。"
+        "contents": "还没有从 Flux 读取到项目。\n[新建对话](command:flux.newTask)\n[检查连接](command:flux.healthCheck)\n后端地址不对时，运行 [设置服务器地址](command:flux.setServer)。"
       },
       {
         "view": "fluxTasks",
-        "contents": "这里会列出所选项目的 Bot。\n[新建 Bot](command:flux.newTask)\n[选择项目](command:flux.pickProject)"
+        "contents": "这里会列出所选项目的对话。\n[新建对话](command:flux.newTask)\n[选择项目](command:flux.pickProject)"
       },
       {
         "view": "fluxChanges",
@@ -85,19 +85,19 @@
       },
       {
         "command": "flux.newTask",
-        "title": "新建 Bot",
+        "title": "新建对话",
         "category": "Flux",
         "icon": "$(add)"
       },
       {
         "command": "flux.openTaskPanel",
-        "title": "打开 Bot 面板…",
+        "title": "打开对话面板…",
         "category": "Flux",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "flux.openTask",
-        "title": "打开 Bot",
+        "title": "打开对话",
         "category": "Flux"
       },
       {

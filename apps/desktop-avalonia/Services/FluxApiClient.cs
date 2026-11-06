@@ -136,63 +136,6 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<List<FluxTask>>?> ListTasksAsync(int limit = 50, CancellationToken ct = default)
         => GetAsync<List<FluxTask>>($"/api/v1/tasks?limit={limit}", ct);
 
-    // --- Bot 模式 ---
-
-    public Task<ApiEnvelope<List<BotModel>>?> ListBotsAsync(
-        string? status = null,
-        int limit = 100,
-        CancellationToken ct = default)
-    {
-        var url = $"/api/v1/bots?limit={limit}";
-        if (!string.IsNullOrWhiteSpace(status))
-        {
-            url += $"&status={Uri.EscapeDataString(status)}";
-        }
-
-        return GetAsync<List<BotModel>>(url, ct);
-    }
-
-    public Task<ApiEnvelope<BotModel>?> CreateBotAsync(object payload, CancellationToken ct = default)
-        => PostAsync<BotModel>("/api/v1/bots", payload, ct);
-
-    /// <summary>PATCH 只改请求里出现的字段，未传的配置原样保留。</summary>
-    public Task<ApiEnvelope<BotModel>?> UpdateBotAsync(
-        string botId,
-        object payload,
-        CancellationToken ct = default)
-        => SendAsync<BotModel>(
-            HttpMethod.Patch,
-            $"/api/v1/bots/{Uri.EscapeDataString(botId)}",
-            payload,
-            ct);
-
-    public Task<ApiEnvelope<JsonObject>?> DeleteBotAsync(
-        string botId,
-        CancellationToken ct = default)
-        => SendAsync<JsonObject>(
-            HttpMethod.Delete,
-            $"/api/v1/bots/{Uri.EscapeDataString(botId)}",
-            null,
-            ct);
-
-    /// <summary>手动开工一次；instruction 留空则用 Bot 自己的 description。</summary>
-    public Task<ApiEnvelope<BotRunOutcome>?> RunBotAsync(
-        string botId,
-        string? instruction = null,
-        CancellationToken ct = default)
-        => PostAsync<BotRunOutcome>(
-            $"/api/v1/bots/{Uri.EscapeDataString(botId)}/run",
-            new { instruction = string.IsNullOrWhiteSpace(instruction) ? null : instruction },
-            ct);
-
-    public Task<ApiEnvelope<List<BotRunItem>>?> ListBotTasksAsync(
-        string botId,
-        int limit = 50,
-        CancellationToken ct = default)
-        => GetAsync<List<BotRunItem>>(
-            $"/api/v1/bots/{Uri.EscapeDataString(botId)}/tasks?limit={limit}",
-            ct);
-
     // --- 助理（Supervisor） ---
 
     public Task<ApiEnvelope<SupervisorOverview>?> SupervisorOverviewAsync(

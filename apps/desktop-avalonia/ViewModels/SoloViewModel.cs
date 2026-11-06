@@ -48,7 +48,7 @@ public partial class SoloViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isNewTask = true;
 
-    /// <summary>新建 Bot：名称与头像（形状 × 颜色）。</summary>
+    /// <summary>新建对话：名称与头像（形状 × 颜色）。</summary>
     [ObservableProperty]
     private string _botNameInput = "";
 
@@ -61,7 +61,7 @@ public partial class SoloViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isCreatingBot;
 
-    /// <summary>当前 Bot 的头像，标题栏用。</summary>
+    /// <summary>当前对话的头像，标题栏用。</summary>
     [ObservableProperty]
     private string _taskAvatarShape = BotAvatarPalette.DefaultShape;
 
@@ -69,7 +69,7 @@ public partial class SoloViewModel : ViewModelBase
     private string _taskAvatarColor = BotAvatarPalette.DefaultColor;
 
     [ObservableProperty]
-    private string _taskTitle = "新建 Bot";
+    private string _taskTitle = "新建对话";
 
     [ObservableProperty]
     private string _statusText = "未创建";
@@ -78,7 +78,7 @@ public partial class SoloViewModel : ViewModelBase
     private IBrush _statusBrush = Muted;
 
     [ObservableProperty]
-    private string _taskMeta = "给 Bot 起个名字，选一个头像";
+    private string _taskMeta = "给对话起个名字，选一个头像";
 
     [ObservableProperty]
     private string _stepText = "第 1 / 7 步 · 需求确认";
@@ -304,10 +304,10 @@ public partial class SoloViewModel : ViewModelBase
     {
         IsNewTask = true;
         SelectedTask = null;
-        TaskTitle = "新建 Bot";
+        TaskTitle = "新建对话";
         StatusText = "未创建";
         StatusBrush = Muted;
-        TaskMeta = "给 Bot 起个名字，选一个头像";
+        TaskMeta = "给对话起个名字，选一个头像";
         BotNameInput = "";
         SelectedShape = BotAvatarPalette.DefaultShape;
         SelectedColor = BotAvatarPalette.DefaultColor;
@@ -339,7 +339,7 @@ public partial class SoloViewModel : ViewModelBase
         _pendingSummaryFrom = null;
 
         SwitchChat(null);
-        AppLog.Info("Solo 新建 Bot 草稿");
+        AppLog.Info("Solo 新建对话草稿");
     }
 
     [RelayCommand]
@@ -367,8 +367,8 @@ public partial class SoloViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 新建 Bot：先落一条空记录（start=false），拿到名称与头像后直接进入它的对话。
-    /// 不能拿 Bot 名字当需求去跑 Agent。
+    /// 新建对话：先落一条空记录（start=false），拿到名称与头像后直接进入它的对话。
+    /// 不能拿对话名字当需求去跑 Agent。
     /// </summary>
     [RelayCommand]
     private async Task CreateBotAsync()
@@ -382,7 +382,7 @@ public partial class SoloViewModel : ViewModelBase
         var name = BotNameInput.Trim();
         if (name.Length == 0)
         {
-            ConfirmationHint = "先给这个 Bot 起个名字。";
+            ConfirmationHint = "先给这个对话起个名字。";
             return;
         }
 
@@ -402,7 +402,7 @@ public partial class SoloViewModel : ViewModelBase
                 start: false))?.Data;
             if (created is null)
             {
-                throw new InvalidOperationException("创建 Bot 没有返回数据");
+                throw new InvalidOperationException("创建对话没有返回数据");
             }
 
             ApplyTask(created);
@@ -410,13 +410,13 @@ public partial class SoloViewModel : ViewModelBase
             PendingSummary = null;
             _pendingSummaryFrom = null;
             await RefreshTaskListAsync(api);
-            ConfirmationHint = "Bot 已创建，说点什么开始吧。";
-            AppLog.Info($"Solo 新建 Bot · task={created.Id} · {name} · {SelectedShape}/{SelectedColor}");
+            ConfirmationHint = "对话已创建，说点什么开始吧。";
+            AppLog.Info($"Solo 新建对话 · task={created.Id} · {name} · {SelectedShape}/{SelectedColor}");
         }
         catch (Exception ex)
         {
-            ConfirmationHint = $"创建 Bot 失败：{ex.Message}";
-            AppLog.Error("Solo 新建 Bot 失败", ex);
+            ConfirmationHint = $"创建对话失败：{ex.Message}";
+            AppLog.Error("Solo 新建对话失败", ex);
         }
         finally
         {
@@ -1288,16 +1288,16 @@ public partial class SoloViewModel : ViewModelBase
                 throw new InvalidOperationException("摘要生成为空，请稍后重试");
             }
 
-            var sourceTitle = SoloRules.Title(SelectedTask?.Description ?? "上一个 Bot");
+            var sourceTitle = SoloRules.Title(SelectedTask?.Description ?? "上一个对话");
             NewTask();
             PendingSummary = handoff.Summary;
             _pendingSummaryFrom = handoff.FromTaskId;
             var suggest = $"延续 · {sourceTitle}";
             BotNameInput = suggest.Length > 64 ? suggest[..64] : suggest;
-            TaskMeta = "已带上上一个 Bot 的摘要 · 命名并创建后带过来";
+            TaskMeta = "已带上上一个对话的摘要 · 命名并创建后带过来";
             ConfirmationHint = "已生成前情摘要，起个名字继续吧。";
             AppLog.Info(
-                $"Solo 新建带摘要 Bot · from={SoloRules.ShortId(taskId)} · 摘要 {handoff.Summary.Length} 字");
+                $"Solo 新建带摘要对话 · from={SoloRules.ShortId(taskId)} · 摘要 {handoff.Summary.Length} 字");
         }
         catch (Exception ex)
         {
@@ -1874,7 +1874,7 @@ public sealed record AgentChoice(string? Id, string Label);
 /// <summary>模型下拉项；KeyId 为空表示使用原生模型名。</summary>
 public sealed record ModelChoice(string? KeyId, string? Model, string Label);
 
-/// <summary>新建 Bot 时的头像形状选项。</summary>
+/// <summary>新建对话时的头像形状选项。</summary>
 public partial class BotShapeOption : ObservableObject
 {
     public BotShapeOption(string shape, ICommand pick)
@@ -1895,7 +1895,7 @@ public partial class BotShapeOption : ObservableObject
     private bool _isSelected;
 }
 
-/// <summary>新建 Bot 时的头像颜色选项。</summary>
+/// <summary>新建对话时的头像颜色选项。</summary>
 public partial class BotColorOption : ObservableObject
 {
     public BotColorOption(string color, ICommand pick)

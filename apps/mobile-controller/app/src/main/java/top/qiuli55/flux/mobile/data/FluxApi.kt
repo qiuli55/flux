@@ -5,10 +5,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.serializer
@@ -72,117 +70,9 @@ class FluxApi(
     suspend fun listAgents(): List<Agent> = get("api/v1/agents")
     suspend fun listTasks(): List<Task> = get("api/v1/tasks")
 
-    /* ---------------- 常驻 Bot（/api/v1/bots） ---------------- */
+    /* ---------------- 套餐额度 ---------------- */
 
-    suspend fun listBots(): List<Bot> = get("api/v1/bots?limit=200")
 
-    /** 建一个常驻 Bot（群聊成员）。 */
-    suspend fun createBot(
-        name: String,
-        shape: String? = null,
-        color: String? = null,
-        agentId: String? = null,
-        description: String = "",
-        permissionMode: String = "unattended",
-    ): Bot = post(
-        "api/v1/bots",
-        buildJsonObject {
-            put("name", name.trim())
-            if (description.isNotBlank()) put("description", description.trim())
-            if (!shape.isNullOrBlank()) put("avatar_shape", shape)
-            if (!color.isNullOrBlank()) put("avatar_color", color)
-            if (!agentId.isNullOrBlank()) put("agent_id", agentId)
-            put("permission_mode", permissionMode)
-        },
-    )
-
-    suspend fun getBot(botId: String): Bot = get("api/v1/bots/$botId")
-
-    /** 部分更新 Bot；只提交非空字段。 */
-    suspend fun updateBot(
-        botId: String,
-        description: String? = null,
-        schedule: String? = null,
-        status: String? = null,
-        permissionMode: String? = null,
-        model: String? = null,
-        agentId: String? = null,
-        tokenBudget: Int? = null,
-        notifyOnFailure: Boolean? = null,
-    ): Bot = patch(
-        "api/v1/bots/$botId",
-        buildJsonObject {
-            if (description != null) put("description", description)
-            if (schedule != null) put("schedule", schedule)
-            if (status != null) put("status", status)
-            if (permissionMode != null) put("permission_mode", permissionMode)
-            if (model != null) put("model", model)
-            if (agentId != null) put("agent_id", agentId)
-            if (tokenBudget != null) put("token_budget", tokenBudget)
-            if (notifyOnFailure != null) put("notify_on_failure", notifyOnFailure)
-        },
-    )
-
-    /** 手动开工一次；返回本轮产生的任务。 */
-    suspend fun runBot(botId: String, instruction: String? = null): Task {
-        val body = buildJsonObject {
-            if (!instruction.isNullOrBlank()) put("instruction", instruction.trim())
-        }
-        val data: JsonObject = post("api/v1/bots/$botId/run", body)
-        val task = data["task"] ?: throw FluxApiException("invalid_response", "服务端响应缺少 task")
-        return json.decodeFromJsonElement(Task.serializer(), task)
-    }
-
-    suspend fun listBotTasks(botId: String, limit: Int = 50): List<Task> =
-        get("api/v1/bots/$botId/tasks?limit=$limit")
-
-    suspend fun listBotRoutines(botId: String): List<BotRoutine> =
-        get("api/v1/bots/$botId/routines")
-
-    suspend fun createBotRoutine(
-        botId: String,
-        name: String,
-        instruction: String,
-        schedule: String? = null,
-    ): BotRoutine = post(
-        "api/v1/bots/$botId/routines",
-        buildJsonObject {
-            put("name", name.trim())
-            put("instruction", instruction.trim())
-            if (!schedule.isNullOrBlank()) put("schedule", schedule.trim())
-        },
-    )
-
-    suspend fun updateBotRoutine(
-        botId: String,
-        routineId: String,
-        name: String? = null,
-        instruction: String? = null,
-        schedule: String? = null,
-        enabled: Boolean? = null,
-    ): BotRoutine = patch(
-        "api/v1/bots/$botId/routines/$routineId",
-        buildJsonObject {
-            if (name != null) put("name", name)
-            if (instruction != null) put("instruction", instruction)
-            if (schedule != null) put("schedule", schedule)
-            if (enabled != null) put("enabled", enabled)
-        },
-    )
-
-    suspend fun deleteBotRoutine(botId: String, routineId: String): JsonElement =
-        delete("api/v1/bots/$botId/routines/$routineId")
-
-    suspend fun listBotNotifications(unreadOnly: Boolean = false, limit: Int = 100): List<BotNotification> =
-        get("api/v1/bots/notifications?unread_only=$unreadOnly&limit=$limit")
-
-    suspend fun markBotNotificationRead(notificationId: String): BotNotification =
-        post("api/v1/bots/notifications/$notificationId/read", buildJsonObject {})
-
-    suspend fun markAllBotNotificationsRead(): JsonElement =
-        post("api/v1/bots/notifications/read-all", buildJsonObject {})
-
-    /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")
 
     /** 主动对账：抓 OpenCode Go 官方额度 / 跑 arkcli，结果落到快照表。 */
@@ -205,12 +95,12 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
-        /** bot 展示名；为空时后端沿用 description。 */
+        /** 对话展示名；为空时后端沿用 description。 */
         botName: String? = null,
-        /** bot 头像形状 / 颜色（后端 avatar.py 枚举）。 */
+        /** 对话头像形状 / 颜色（后端 avatar.py 枚举）。 */
         avatarShape: String? = null,
         avatarColor: String? = null,
-        /** false = 先建对话不立刻跑第一轮（建 bot / 拉进群时用）。 */
+        /** false = 先建对话不立刻跑第一轮。 */
         start: Boolean = true,
     ): Task {
         val body = buildJsonObject {
@@ -233,83 +123,6 @@ class FluxApi(
         }
         return post("api/v1/tasks", body)
     }
-
-    /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
-
-    suspend fun listGroups(): List<ChatGroup> = get("api/v1/groups")
-
-    suspend fun createGroup(
-        name: String,
-        botIds: List<String>,
-        description: String? = null,
-        projectId: String? = null,
-        maxRounds: Int = 2,
-        adminBotId: String? = null,
-    ): ChatGroup = post(
-        "api/v1/groups",
-        buildJsonObject {
-            put("name", name.trim())
-            if (!description.isNullOrBlank()) put("description", description.trim())
-            if (!projectId.isNullOrBlank()) put("project_id", projectId)
-            put("max_rounds", maxRounds)
-            if (!adminBotId.isNullOrBlank()) put("admin_bot_id", adminBotId)
-            putJsonArray("bot_ids") { botIds.forEach { add(JsonPrimitive(it)) } }
-        },
-    )
-
-    suspend fun getGroup(groupId: String): ChatGroup = get("api/v1/groups/$groupId")
-
-    suspend fun deleteGroup(groupId: String): JsonElement = delete("api/v1/groups/$groupId")
-
-    /** 加成员返回更新后的成员列表。 */
-    suspend fun addGroupMember(groupId: String, botId: String): List<ChatGroupMember> = post(
-        "api/v1/groups/$groupId/members",
-        buildJsonObject { put("bot_id", botId) },
-    )
-
-    suspend fun removeGroupMember(groupId: String, botId: String): JsonElement =
-        delete("api/v1/groups/$groupId/members/$botId")
-
-    /**
-     * 调整成员：角色（admin/member）、模型、权限预设。只传要改的项，返回最新成员列表。
-     * model 传空串表示清除覆盖、回到默认模型。
-     */
-    suspend fun updateGroupMember(
-        groupId: String,
-        botId: String,
-        role: String? = null,
-        model: String? = null,
-        keyId: String? = null,
-        permissionMode: String? = null,
-    ): List<ChatGroupMember> = patch(
-        "api/v1/groups/$groupId/members/$botId",
-        buildJsonObject {
-            if (role != null) put("role", role)
-            if (model != null) put("model", model)
-            if (keyId != null) put("key_id", keyId)
-            if (permissionMode != null) put("permission_mode", permissionMode)
-        },
-    )
-
-    /** 分层记忆：本群 + 团队（都由编排器在 epoch 结束时压缩写入）。 */
-    suspend fun getGroupMemory(groupId: String): ChatGroupMemoryState =
-        get("api/v1/groups/$groupId/memory")
-
-    /** 群消息增量拉取：afterSeq 之后的至多 limit 条，has_more 表示还有。 */
-    suspend fun listGroupMessages(
-        groupId: String,
-        afterSeq: Int = 0,
-        limit: Int = 200,
-    ): ChatGroupMessagePage =
-        get("api/v1/groups/$groupId/messages?after_seq=$afterSeq&limit=$limit")
-
-    suspend fun sendGroupMessage(groupId: String, content: String): ChatGroupSendOutcome = post(
-        "api/v1/groups/$groupId/messages",
-        buildJsonObject { put("content", content.trim()) },
-    )
-
-    suspend fun interruptGroup(groupId: String): ChatGroupInterruptOutcome =
-        post("api/v1/groups/$groupId/interrupt", buildJsonObject {})
 
     suspend fun getTask(taskId: String): Task = get("api/v1/tasks/$taskId")
 
@@ -784,7 +597,7 @@ class FluxApi(
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
                 val status = response?.code?.let { "HTTP $it" }
-                onFailure(t?.message?.takeIf { it.isNotBlank() } ?: status ?: "Bot 实时流连接失败")
+                onFailure(t?.message?.takeIf { it.isNotBlank() } ?: status ?: "对话实时流连接失败")
             }
         })
     }

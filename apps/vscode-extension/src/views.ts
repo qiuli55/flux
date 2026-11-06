@@ -138,7 +138,7 @@ export class TaskNode extends vscode.TreeItem {
     ].filter(Boolean));
     this.command = {
       command: "flux.openTask",
-      title: "打开 Bot",
+      title: "打开对话",
       arguments: [task.id],
     };
   }
@@ -211,7 +211,7 @@ export class TasksProvider extends StatefulProvider<TaskNode> {
       });
       return tasks.map((t) => new TaskNode(t));
     } catch (err) {
-      this.setState({ count: 0, description: undefined, message: `无法读取 Bot：${(err as Error).message}` });
+      this.setState({ count: 0, description: undefined, message: `无法读取对话：${(err as Error).message}` });
       return [];
     }
   }

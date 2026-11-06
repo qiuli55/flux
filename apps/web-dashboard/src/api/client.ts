@@ -14,12 +14,8 @@ import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
   ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
-  Bot, BotCreateInput, BotMemory, BotMemoryChunk, BotMemoryDetail, BotMemoryRelevance,
-  BotNotification, BotRoutine, BotRoutineInput, BotRoutineUpdateInput, BotRunOutcome,
-  BotStatus, BotTool, BotUpdateInput,
   CapabilityImportOutcome, CapabilityKind,
-  CapabilityScanReport, Change, ChatGroup, ChatGroupInterruptOutcome, ChatGroupMember,
-  ChatGroupMessagePage, ChatGroupSendOutcome,
+  CapabilityScanReport, Change,
   ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
@@ -386,116 +382,4 @@ export const api = {
       `/supervisor/tickets/${encodeURIComponent(ticketId)}/stop`,
       { note },
     ),
-  /** 内部群聊：群 CRUD、成员、消息轮询（非流式）、打断 */
-  listGroups: () => getData<ChatGroup[]>("GET", "/groups"),
-  createGroup: (body: {
-    name: string;
-    project_id?: string | null;
-    description?: string | null;
-    max_rounds?: number;
-    bot_ids?: string[];
-    admin_bot_id?: string | null;
-  }) => getData<ChatGroup>("POST", "/groups", body),
-  getGroup: (groupId: string) => getData<ChatGroup>("GET", `/groups/${groupId}`),
-  deleteGroup: (groupId: string) =>
-    getData<{ deleted: boolean }>("DELETE", `/groups/${groupId}`),
-  addGroupMember: (groupId: string, botId: string) =>
-    getData<ChatGroupMember[]>("POST", `/groups/${groupId}/members`, { bot_id: botId }),
-  removeGroupMember: (groupId: string, botId: string) =>
-    getData<{ removed: boolean; members: ChatGroupMember[] }>(
-      "DELETE",
-      `/groups/${groupId}/members/${botId}`,
-    ),
-  listGroupMessages: (groupId: string, options?: { afterSeq?: number; limit?: number }) =>
-    getData<ChatGroupMessagePage>(
-      "GET",
-      `/groups/${groupId}/messages${query({
-        after_seq: options?.afterSeq?.toString(),
-        limit: options?.limit?.toString(),
-      })}`,
-    ),
-  sendGroupMessage: (groupId: string, content: string) =>
-    getData<ChatGroupSendOutcome>("POST", `/groups/${groupId}/messages`, { content }),
-  interruptGroup: (groupId: string) =>
-    getData<ChatGroupInterruptOutcome>("POST", `/groups/${groupId}/interrupt`),
-  /** 群成员候选：全部常驻 Bot */
-  listBotCandidates: () => getData<Bot[]>("GET", "/bots?limit=200"),
-  /**
-   * Bot 模式：常驻 Bot 的配置面。
-   * 开工仍是普通任务（`tasks.bot_id` 指回 Bot），执行 / 消息 / 计费都复用任务接口。
-   */
-  listBots: (options?: { status?: BotStatus; limit?: number }) =>
-    getData<Bot[]>(
-      "GET",
-      `/bots${query({ status: options?.status, limit: options?.limit?.toString() })}`,
-    ),
-  getBot: (botId: string) => getData<Bot>("GET", `/bots/${botId}`),
-  createBot: (body: BotCreateInput) => getData<Bot>("POST", "/bots", body),
-  updateBot: (botId: string, body: BotUpdateInput) =>
-    getData<Bot>("PATCH", `/bots/${botId}`, body),
-  deleteBot: (botId: string) => getData<{ deleted: string }>("DELETE", `/bots/${botId}`),
-  /** 手动开工一次；instruction 留空则用 Bot 的 description */
-  runBot: (botId: string, instruction?: string) =>
-    getData<BotRunOutcome>("POST", `/bots/${botId}/run`, {
-      instruction: instruction?.trim() || null,
-    }),
-  listBotTasks: (botId: string, options?: { status?: string; limit?: number }) =>
-    getData<Task[]>(
-      "GET",
-      `/bots/${botId}/tasks${query({
-        status: options?.status,
-        limit: options?.limit?.toString(),
-      })}`,
-    ),
-  /** 分层长期记忆：摘要层列表（可按相关性 / 来源群过滤） */
-  listBotMemories: (
-    botId: string,
-    options?: { relevance?: BotMemoryRelevance; groupId?: string; limit?: number; offset?: number },
-  ) =>
-    getData<BotMemory[]>(
-      "GET",
-      `/bots/${botId}/memories${query({
-        relevance: options?.relevance,
-        group_id: options?.groupId,
-        limit: options?.limit?.toString(),
-        offset: options?.offset?.toString(),
-      })}`,
-    ),
-  /** 全文检索：从只追加的原文层里找回「当时到底怎么说的」 */
-  searchBotMemories: (botId: string, q: string, limit = 20) =>
-    getData<BotMemoryChunk[]>(
-      "GET",
-      `/bots/${botId}/memories/search${query({ q, limit: limit.toString() })}`,
-    ),
-  /** 一条记忆的摘要 + 全文副本 */
-  getBotMemory: (botId: string, memoryId: string) =>
-    getData<BotMemoryDetail>("GET", `/bots/${botId}/memories/${memoryId}`),
-  deleteBotMemory: (botId: string, memoryId: string) =>
-    getData<{ deleted: string }>("DELETE", `/bots/${botId}/memories/${memoryId}`),
-  /** 清空该 Bot 的记忆；传 groupId 时只清某个群沉淀的部分 */
-  clearBotMemories: (botId: string, groupId?: string) =>
-    getData<{ deleted: number }>("DELETE", `/bots/${botId}/memories${query({ group_id: groupId })}`),
-  /** 可为 Bot 配置的技能清单（已剔除硬禁令工具） */
-  listBotTools: () => getData<BotTool[]>("GET", "/bots/tools"),
-  /** 例程：一个 Bot 下多个独立作业单元 */
-  listBotRoutines: (botId: string) => getData<BotRoutine[]>("GET", `/bots/${botId}/routines`),
-  createBotRoutine: (botId: string, body: BotRoutineInput) =>
-    getData<BotRoutine>("POST", `/bots/${botId}/routines`, body),
-  updateBotRoutine: (botId: string, routineId: string, body: BotRoutineUpdateInput) =>
-    getData<BotRoutine>("PATCH", `/bots/${botId}/routines/${routineId}`, body),
-  deleteBotRoutine: (botId: string, routineId: string) =>
-    getData<{ deleted: string }>("DELETE", `/bots/${botId}/routines/${routineId}`),
-  /** Bot 主动通知（当前主要是开工失败） */
-  listBotNotifications: (options?: { unreadOnly?: boolean; limit?: number }) =>
-    getData<BotNotification[]>(
-      "GET",
-      `/bots/notifications${query({
-        unread_only: options?.unreadOnly ? "true" : undefined,
-        limit: options?.limit?.toString(),
-      })}`,
-    ),
-  markBotNotificationRead: (notificationId: string) =>
-    getData<BotNotification>("POST", `/bots/notifications/${notificationId}/read`),
-  markAllBotNotificationsRead: () =>
-    getData<{ updated: number }>("POST", "/bots/notifications/read-all"),
 };

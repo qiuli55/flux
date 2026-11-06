@@ -41,7 +41,7 @@ fun ConversationDeleteSheet(
 ) {
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .58f) {
         SheetHeader(
-            title = if (running) "Bot 正在执行" else "删除这个 Bot",
+            title = if (running) "对话正在执行" else "删除这个对话",
             subtitle = title,
             onClose = onDismiss,
         )
@@ -72,7 +72,7 @@ fun ConversationDeleteSheet(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Label(
-                        if (running) "Agent 还在执行这个 Bot" else "删除后不可恢复",
+                        if (running) "Agent 还在执行这个对话" else "删除后不可恢复",
                         12f,
                         V2Colors.ink(.78f),
                         FontWeight.SemiBold,
@@ -82,7 +82,7 @@ fun ConversationDeleteSheet(
                         if (running) {
                             "先停止执行，再删除。停止后聊天记录仍会保留，可随时再删。"
                         } else {
-                            "这个 Bot 的消息记录与 Agent 运行记录会一并彻底删除。"
+                            "这个对话的消息记录与 Agent 运行记录会一并彻底删除。"
                         },
                         11f,
                         V2Colors.ink(.48f),
@@ -100,7 +100,7 @@ fun ConversationDeleteSheet(
                     enabled = !stopping,
                 )
                 Spacer(Modifier.height(8.dp))
-                Label("停止后即可删除这个 Bot", 10.5f, V2Colors.ink(.38f))
+                Label("停止后即可删除这个对话", 10.5f, V2Colors.ink(.38f))
             } else if (deleting) {
                 Spacer(Modifier.height(28.dp))
                 Label("正在删除…", 12f, V2Colors.ink(.55f), FontWeight.Medium)

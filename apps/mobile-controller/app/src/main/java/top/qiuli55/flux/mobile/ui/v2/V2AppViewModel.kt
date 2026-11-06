@@ -19,13 +19,6 @@ import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
-import top.qiuli55.flux.mobile.data.Bot
-import top.qiuli55.flux.mobile.data.BotNotification
-import top.qiuli55.flux.mobile.data.BotRoutine
-import top.qiuli55.flux.mobile.data.ChatGroup
-import top.qiuli55.flux.mobile.data.ChatGroupMember
-import top.qiuli55.flux.mobile.data.ChatGroupMemoryState
-import top.qiuli55.flux.mobile.data.ChatGroupMessage
 import top.qiuli55.flux.mobile.data.CloudApi
 import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.CodexLoginSession
@@ -54,46 +47,11 @@ import java.util.TimeZone
 /** 启动分流：读本地会话决定落在哪一屏。 */
 enum class V2Boot { LOADING, LOGIN, DEVICES, READY }
 
-/** 群聊页面的本地状态：群列表 + 当前群的消息流。 */
-data class V2GroupChatState(
-    val groups: List<ChatGroup> = emptyList(),
-    val loadingGroups: Boolean = false,
-    val groupsError: String? = null,
-    /** 当前打开的群（含成员列表）；null = 没进群聊页。 */
-    val group: ChatGroup? = null,
-    val messages: List<ChatGroupMessage> = emptyList(),
-    val loadingMessages: Boolean = false,
-    val sending: Boolean = false,
-    /** 「Bot 们正在讨论」窗口结束时间（epoch ms）；<= now 即视为已停。 */
-    val discussUntil: Long = 0L,
-    /** 分层记忆（本群 + 团队）；打开成员面板时按需加载。 */
-    val memory: ChatGroupMemoryState? = null,
-    val loadingMemory: Boolean = false,
-    val error: String? = null,
-    val notice: String? = null,
-)
-
-/** Bot 详情页的按需状态：进页面时一次性拉取，操作后就地更新。 */
-data class V2BotDetailState(
-    val botId: String = "",
-    val bot: Bot? = null,
-    val routines: List<BotRoutine> = emptyList(),
-    val tasks: List<Task> = emptyList(),
-    val notifications: List<BotNotification> = emptyList(),
-    val loading: Boolean = false,
-    /** 手动开工 / 暂停恢复等操作正在进行。 */
-    val busy: Boolean = false,
-    val error: String? = null,
-    val notice: String? = null,
-)
-
 data class V2AppState(
     val boot: V2Boot = V2Boot.LOADING,
     val account: AccountSession? = null,
     val devices: List<DeviceInfo> = emptyList(),
     val tasks: List<Task> = emptyList(),
-    /** 常驻 Bot 列表；群聊的成员与候选都来自这里。 */
-    val bots: List<Bot> = emptyList(),
     val agents: List<V2Agent> = emptyList(),
     val models: List<String> = emptyList(),
     val deviceLabel: String = "本机",
@@ -124,26 +82,15 @@ data class V2AppState(
     val billingPrices: BillingPrices? = null,
     val billingLoading: Boolean = false,
     val billingError: String? = null,
-    /** 内部群聊：群列表与当前打开群的消息流。 */
-    val groupChat: V2GroupChatState = V2GroupChatState(),
-    /** Bot 详情页数据；botId 为空表示没打开详情。 */
-    val botDetail: V2BotDetailState = V2BotDetailState(),
-    /** 全站 Bot 通知（用于首页 Bot Tab 的未读提示）。 */
-    val botNotifications: List<BotNotification> = emptyList(),
 ) {
     /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
     private val chatTasks: List<Task>
-        get() = tasks.filterNot { it.origin == "assistant" || !it.botId.isNullOrBlank() }
-
-    /** 建群 / 加成员时的候选：全部常驻 Bot。 */
-    val botCandidates: List<Bot> get() = bots
+        get() = tasks.filterNot { it.origin == "assistant" }
 
     /** 首页「对话」Tab：人工发起的普通对话。 */
     val conversations: List<V2Conversation>
         get() = chatTasks.map { it.toV2Conversation(deviceLabel) }
 
-    /** Bot 通知未读数。 */
-    val botUnreadCount: Int get() = botNotifications.count { it.isUnread }
     val queueTasks: List<V2Task>
         get() = chatTasks
             .filterNot { hideFinished && it.isFinished }
@@ -166,10 +113,6 @@ class V2AppViewModel : FluxViewModel() {
     private var pollingJob: Job? = null
     private var codexLoginJob: Job? = null
     private var billingJob: Job? = null
-    private var groupListJob: Job? = null
-    private var groupPollJob: Job? = null
-    /** 当前打开的群 id；用于丢弃「切群后晚到的旧请求」。 */
-    private var openGroupId: String? = null
     private var foreground = true
 
     private val _state = MutableStateFlow(V2AppState())
@@ -341,14 +284,6 @@ class V2AppViewModel : FluxViewModel() {
                 val api = api()
                 // 串行请求：并发失败时会整组取消（真机踩过坑）。
                 val tasks = api.listTasks()
-                val bots = runCatching { api.listBots() }.getOrDefault(emptyList())
-                val notifications = if (!quiet) {
-                    runCatching { api.listBotNotifications(limit = 100) }
-                        .getOrDefault(_state.value.botNotifications)
-                } else {
-                    _state.value.botNotifications
-                }
-                val groups = runCatching { api.listGroups() }.getOrNull()
                 val agents = runCatching { api.listAgents() }.getOrDefault(emptyList())
                 val models = runCatching { api.dshStatus() }.getOrNull()
                     ?.model?.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
@@ -377,17 +312,10 @@ class V2AppViewModel : FluxViewModel() {
                 )
                 _state.value = _state.value.copy(
                     tasks = tasks,
-                    bots = bots,
-                    botNotifications = notifications,
                     agents = mapped,
                     models = models,
                     refreshing = false,
                     error = null,
-                    groupChat = if (groups != null) {
-                        _state.value.groupChat.copy(groups = groups, groupsError = null)
-                    } else {
-                        _state.value.groupChat
-                    },
                 )
                 ensurePolling()
                 // 额度只在显式刷新（进首页 / 切设备 / 下拉刷新）时读，静默轮询不额外打这个接口。
@@ -919,299 +847,6 @@ class V2AppViewModel : FluxViewModel() {
         _state.value = _state.value.copy(hideFinished = true)
     }
 
-    // ------------------------------------------------------------ 内部群聊
-
-    /** 群列表：进首页时与对话一起刷新；失败保留上一份。 */
-    fun loadGroups(quiet: Boolean = true) {
-        if (groupListJob?.isActive == true) return
-        groupListJob = viewModelScope.launch {
-            if (!quiet) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(loadingGroups = true, groupsError = null),
-                )
-            }
-            try {
-                val groups = api().listGroups()
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        groups = groups,
-                        loadingGroups = false,
-                        groupsError = null,
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        loadingGroups = false,
-                        groupsError = if (quiet) _state.value.groupChat.groupsError else readable(e),
-                    ),
-                )
-            }
-        }
-    }
-
-    /** 进入群聊页：拉群详情 + 全量消息，然后开 2s 增量轮询。 */
-    fun openGroupChat(groupId: String) {
-        if (openGroupId == groupId) return
-        openGroupId = groupId
-        groupPollJob?.cancel()
-        _state.value = _state.value.copy(
-            groupChat = _state.value.groupChat.copy(
-                group = null,
-                messages = emptyList(),
-                loadingMessages = true,
-                sending = false,
-                discussUntil = 0L,
-                memory = null,
-                loadingMemory = false,
-                error = null,
-                notice = null,
-            ),
-        )
-        viewModelScope.launch {
-            try {
-                val api = api()
-                val group = api.getGroup(groupId)
-                if (openGroupId != groupId) return@launch
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(group = group),
-                )
-                val messages = fetchAllGroupMessages(api, groupId)
-                if (openGroupId != groupId) return@launch
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        messages = messages,
-                        loadingMessages = false,
-                    ),
-                )
-                startGroupPolling(groupId)
-            } catch (e: Exception) {
-                if (openGroupId != groupId) return@launch
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        loadingMessages = false,
-                        error = readable(e),
-                    ),
-                )
-            }
-        }
-    }
-
-    /** 离开群聊页：停轮询并清空当前群，避免下次进来看到旧消息。 */
-    fun closeGroupChat() {
-        if (openGroupId == null) return
-        openGroupId = null
-        groupPollJob?.cancel()
-        _state.value = _state.value.copy(
-            groupChat = _state.value.groupChat.copy(
-                group = null,
-                messages = emptyList(),
-                loadingMessages = false,
-                sending = false,
-                discussUntil = 0L,
-                memory = null,
-                loadingMemory = false,
-                error = null,
-                notice = null,
-            ),
-        )
-        loadGroups(quiet = true)
-    }
-
-    /** 发言：先本地插入自己的消息，再等 bot 逐个回复（轮询增量拉取）。 */
-    fun sendGroupMessage(groupId: String, content: String) {
-        val text = content.trim()
-        if (text.isEmpty() || _state.value.groupChat.sending) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                groupChat = _state.value.groupChat.copy(sending = true, error = null),
-            )
-            try {
-                val outcome = api().sendGroupMessage(groupId, text)
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        sending = false,
-                        messages = mergeGroupMessages(
-                            _state.value.groupChat.messages,
-                            listOf(outcome.message),
-                        ),
-                        discussUntil = System.currentTimeMillis() + DISCUSS_WINDOW_MS,
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(sending = false, error = readable(e)),
-                )
-            }
-        }
-    }
-
-    /** 打断本轮讨论：后端会停掉后续发言。 */
-    fun interruptGroupChat(groupId: String) {
-        viewModelScope.launch {
-            try {
-                api().interruptGroup(groupId)
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        discussUntil = 0L,
-                        notice = "已打断本轮讨论",
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    fun createGroup(
-        name: String,
-        description: String,
-        maxRounds: Int,
-        botIds: List<String>,
-        adminBotId: String? = null,
-        onResult: (ChatGroup?) -> Unit,
-    ) {
-        val title = name.trim()
-        if (title.isEmpty()) {
-            onResult(null)
-            return
-        }
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                groupChat = _state.value.groupChat.copy(error = null),
-            )
-            try {
-                val group = api().createGroup(
-                    name = title,
-                    botIds = botIds,
-                    description = description.trim().takeIf { it.isNotEmpty() },
-                    maxRounds = maxRounds,
-                    adminBotId = adminBotId?.takeIf { it in botIds },
-                )
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        groups = listOf(group) + _state.value.groupChat.groups,
-                        notice = "群聊已创建",
-                    ),
-                )
-                onResult(group)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(error = readable(e)),
-                )
-                onResult(null)
-            }
-        }
-    }
-
-    fun deleteGroupChat(groupId: String, onResult: (String) -> Unit) {
-        viewModelScope.launch {
-            try {
-                api().deleteGroup(groupId)
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        groups = _state.value.groupChat.groups.filterNot { it.id == groupId },
-                        notice = "群聊已删除",
-                    ),
-                )
-                if (openGroupId == groupId) closeGroupChat()
-                onResult("")
-            } catch (e: Exception) {
-                onResult(readable(e))
-            }
-        }
-    }
-
-    fun addGroupMember(groupId: String, botId: String) {
-        viewModelScope.launch {
-            try {
-                val members = api().addGroupMember(groupId, botId)
-                applyGroupMembers(groupId, members)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    fun removeGroupMember(groupId: String, botId: String) {
-        viewModelScope.launch {
-            try {
-                val api = api()
-                api.removeGroupMember(groupId, botId)
-                val group = api.getGroup(groupId)
-                if (openGroupId == groupId) {
-                    _state.value = _state.value.copy(
-                        groupChat = _state.value.groupChat.copy(group = group),
-                    )
-                }
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    /**
-     * 调整群成员：角色（admin/member）、模型、权限预设。只传需要改的项。
-     * 传 role="admin" 时后端会把原群主降为普通成员（一个群最多一个群主）。
-     */
-    fun updateGroupMember(
-        groupId: String,
-        botId: String,
-        role: String? = null,
-        model: String? = null,
-        keyId: String? = null,
-        permissionMode: String? = null,
-    ) {
-        viewModelScope.launch {
-            try {
-                val members = api().updateGroupMember(
-                    groupId = groupId,
-                    botId = botId,
-                    role = role,
-                    model = model,
-                    keyId = keyId,
-                    permissionMode = permissionMode,
-                )
-                applyGroupMembers(groupId, members)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    /** 读取分层记忆（群共享 + 团队共享）；由成员面板打开时触发。 */
-    fun loadGroupMemory(groupId: String) {
-        if (_state.value.groupChat.loadingMemory) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                groupChat = _state.value.groupChat.copy(memory = null, loadingMemory = true),
-            )
-            try {
-                val memory = api().getGroupMemory(groupId)
-                if (openGroupId != groupId) return@launch
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(memory = memory, loadingMemory = false),
-                )
-            } catch (e: Exception) {
-                if (openGroupId != groupId) return@launch
-                _state.value = _state.value.copy(
-                    groupChat = _state.value.groupChat.copy(
-                        loadingMemory = false,
-                        error = readable(e),
-                    ),
-                )
-            }
-        }
-    }
-
     /** 新建一个对话（本质是一条不立即执行的 tasks 记录）：名称 + 头像，可选执行 Agent。 */
     fun createConversation(
         name: String,
@@ -1230,7 +865,7 @@ class V2AppViewModel : FluxViewModel() {
             return
         }
         viewModelScope.launch {
-            _state.value = _state.value.copy(busyAction = "create-bot", error = null, notice = null)
+            _state.value = _state.value.copy(busyAction = "create-conversation", error = null, notice = null)
             try {
                 val created = api().createTask(
                     description = title,
@@ -1249,363 +884,6 @@ class V2AppViewModel : FluxViewModel() {
                 onResult(readable(e), "")
             }
         }
-    }
-
-    /** 新建一个常驻 Bot（群聊成员）：落到 /bots，返回 botId。 */
-    fun createBot(
-        name: String,
-        shape: String,
-        color: String,
-        agentId: String? = null,
-        onResult: (error: String, botId: String) -> Unit,
-    ) {
-        val title = name.trim()
-        if (title.isEmpty()) {
-            onResult("名称不能为空", "")
-            return
-        }
-        if (_state.value.busyAction != null) {
-            onResult("有操作正在进行，稍后再试", "")
-            return
-        }
-        viewModelScope.launch {
-            _state.value = _state.value.copy(busyAction = "create-bot", error = null, notice = null)
-            try {
-                val created = api().createBot(
-                    name = title,
-                    shape = shape,
-                    color = color,
-                    agentId = agentId,
-                )
-                _state.value = _state.value.copy(
-                    busyAction = null,
-                    bots = listOf(created) + _state.value.bots,
-                )
-                onResult("", created.id)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(busyAction = null)
-                onResult(readable(e), "")
-            }
-        }
-    }
-
-    // ------------------------------------------------------------ Bot 详情
-
-    /** 进 Bot 详情页时一次性拉取：配置、例程、最近开工、失败通知。 */
-    fun loadBotDetail(botId: String, quiet: Boolean = false) {
-        viewModelScope.launch {
-            if (!quiet) {
-                _state.value = _state.value.copy(
-                    botDetail = V2BotDetailState(botId = botId, loading = true),
-                )
-            }
-            try {
-                val api = api()
-                val bot = api.getBot(botId)
-                val routines = runCatching { api.listBotRoutines(botId) }
-                    .getOrDefault(emptyList())
-                val botTasks = runCatching { api.listBotTasks(botId) }
-                    .getOrDefault(emptyList())
-                val notifications = _state.value.botNotifications
-                    .filter { it.botId == botId }
-                    .ifEmpty {
-                        runCatching { api.listBotNotifications(limit = 100) }
-                            .getOrDefault(emptyList())
-                            .filter { it.botId == botId }
-                    }
-                _state.value = _state.value.copy(
-                    bots = _state.value.bots.map { if (it.id == botId) bot else it },
-                    botDetail = V2BotDetailState(
-                        botId = botId,
-                        bot = bot,
-                        routines = routines,
-                        tasks = botTasks,
-                        notifications = notifications,
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(
-                        loading = false,
-                        error = readable(e),
-                    ),
-                )
-            }
-        }
-    }
-
-    fun clearBotDetail() {
-        _state.value = _state.value.copy(botDetail = V2BotDetailState())
-    }
-
-    /** 手动开工一次；本轮任务直接插到「最近开工」顶部。 */
-    fun runBotNow(botId: String, instruction: String? = null) {
-        if (_state.value.botDetail.busy) return
-        viewModelScope.launch {
-            val detail = _state.value.botDetail
-            _state.value = _state.value.copy(
-                botDetail = detail.copy(busy = true, error = null, notice = null),
-            )
-            try {
-                val task = api().runBot(botId, instruction)
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(
-                        busy = false,
-                        tasks = listOf(task) + _state.value.botDetail.tasks.filterNot { it.id == task.id },
-                        notice = "已开工",
-                    ),
-                )
-                refresh(quiet = true)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
-                )
-            }
-        }
-    }
-
-    /** 暂停 / 恢复 Bot 的定时开工。 */
-    fun setBotStatus(botId: String, status: String) {
-        if (_state.value.botDetail.busy) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                botDetail = _state.value.botDetail.copy(busy = true, error = null, notice = null),
-            )
-            try {
-                val updated = api().updateBot(botId, status = status)
-                _state.value = _state.value.copy(
-                    bots = _state.value.bots.map { if (it.id == botId) updated else it },
-                    botDetail = _state.value.botDetail.copy(
-                        bot = updated,
-                        busy = false,
-                        notice = if (status == "paused") "已暂停" else "已恢复",
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
-                )
-            }
-        }
-    }
-
-    /** 部分更新 Bot 配置；只提交非 null 的字段。 */
-    fun updateBotConfig(
-        botId: String,
-        schedule: String? = null,
-        notifyOnFailure: Boolean? = null,
-        tokenBudget: Int? = null,
-    ) {
-        if (_state.value.botDetail.busy) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                botDetail = _state.value.botDetail.copy(busy = true, error = null, notice = null),
-            )
-            try {
-                val updated = api().updateBot(
-                    botId = botId,
-                    schedule = schedule,
-                    notifyOnFailure = notifyOnFailure,
-                    tokenBudget = tokenBudget,
-                )
-                _state.value = _state.value.copy(
-                    bots = _state.value.bots.map { if (it.id == botId) updated else it },
-                    botDetail = _state.value.botDetail.copy(
-                        bot = updated,
-                        busy = false,
-                        notice = "已保存",
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(busy = false, error = readable(e)),
-                )
-            }
-        }
-    }
-
-    fun setBotRoutineEnabled(botId: String, routine: BotRoutine, enabled: Boolean) {
-        viewModelScope.launch {
-            try {
-                val updated = api().updateBotRoutine(
-                    botId = botId,
-                    routineId = routine.id,
-                    enabled = enabled,
-                )
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(
-                        routines = _state.value.botDetail.routines.map {
-                            if (it.id == routine.id) updated else it
-                        },
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    fun createBotRoutine(
-        botId: String,
-        name: String,
-        instruction: String,
-        schedule: String?,
-        onResult: (String) -> Unit,
-    ) {
-        if (name.isBlank() || instruction.isBlank()) {
-            onResult("名称与指令不能为空")
-            return
-        }
-        viewModelScope.launch {
-            try {
-                val created = api().createBotRoutine(botId, name, instruction, schedule)
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(
-                        routines = _state.value.botDetail.routines + created,
-                        notice = "例程已创建",
-                    ),
-                )
-                onResult("")
-            } catch (e: Exception) {
-                onResult(readable(e))
-            }
-        }
-    }
-
-    fun deleteBotRoutine(botId: String, routineId: String) {
-        viewModelScope.launch {
-            try {
-                api().deleteBotRoutine(botId, routineId)
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(
-                        routines = _state.value.botDetail.routines.filterNot { it.id == routineId },
-                        notice = "例程已删除",
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    botDetail = _state.value.botDetail.copy(error = readable(e)),
-                )
-            }
-        }
-    }
-
-    fun markBotNotificationRead(notificationId: String) {
-        viewModelScope.launch {
-            try {
-                val updated = api().markBotNotificationRead(notificationId)
-                _state.value = _state.value.copy(
-                    botNotifications = _state.value.botNotifications.map {
-                        if (it.id == notificationId) updated else it
-                    },
-                    botDetail = _state.value.botDetail.copy(
-                        notifications = _state.value.botDetail.notifications.map {
-                            if (it.id == notificationId) updated else it
-                        },
-                    ),
-                )
-            } catch (_: Exception) {
-                // 已读是弱一致操作，失败不打断阅读。
-            }
-        }
-    }
-
-    fun markAllBotNotificationsRead() {
-        viewModelScope.launch {
-            try {
-                api().markAllBotNotificationsRead()
-                val now = Instant.now().toString()
-                _state.value = _state.value.copy(
-                    botNotifications = _state.value.botNotifications.map {
-                        if (it.isUnread) it.copy(readAt = now) else it
-                    },
-                    botDetail = _state.value.botDetail.copy(
-                        notifications = _state.value.botDetail.notifications.map {
-                            if (it.isUnread) it.copy(readAt = now) else it
-                        },
-                    ),
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(error = readable(e))
-            }
-        }
-    }
-
-    private fun applyGroupMembers(groupId: String, members: List<ChatGroupMember>) {
-        val current = _state.value.groupChat
-        if (current.group?.id != groupId) {
-            // 成员变化不影响其他群；首页只显示数量，下次刷新会同步。
-            return
-        }
-        _state.value = _state.value.copy(
-            groupChat = current.copy(
-                group = current.group.copy(
-                    members = members,
-                    memberCount = members.size,
-                ),
-            ),
-        )
-    }
-
-    private suspend fun fetchAllGroupMessages(api: FluxApi, groupId: String): List<ChatGroupMessage> {
-        var afterSeq = 0
-        var pages = 0
-        var collected: List<ChatGroupMessage> = emptyList()
-        while (pages < GROUP_MAX_PAGES) {
-            val page = api.listGroupMessages(groupId, afterSeq, GROUP_PAGE_SIZE)
-            collected = mergeGroupMessages(collected, page.messages)
-            val lastSeq = page.messages.maxOfOrNull { it.seq } ?: break
-            afterSeq = lastSeq
-            pages += 1
-            if (!page.hasMore) break
-        }
-        return collected
-    }
-
-    private fun startGroupPolling(groupId: String) {
-        groupPollJob?.cancel()
-        groupPollJob = viewModelScope.launch {
-            while (isActive) {
-                delay(GROUP_POLL_MS)
-                if (!foreground) continue
-                if (openGroupId != groupId) break
-                val current = _state.value.groupChat
-                val afterSeq = current.messages.lastOrNull()?.seq ?: 0
-                try {
-                    val page = api().listGroupMessages(groupId, afterSeq, GROUP_PAGE_SIZE)
-                    if (page.messages.isEmpty()) continue
-                    val botSpoke = page.messages.any { it.role == "bot" }
-                    _state.value = _state.value.copy(
-                        groupChat = _state.value.groupChat.copy(
-                            messages = mergeGroupMessages(
-                                _state.value.groupChat.messages,
-                                page.messages,
-                            ),
-                            discussUntil = if (botSpoke) {
-                                System.currentTimeMillis() + DISCUSS_WINDOW_MS
-                            } else {
-                                _state.value.groupChat.discussUntil
-                            },
-                        ),
-                    )
-                } catch (_: Exception) {
-                    // 轮询失败静默：下一拍自动重试，不打断阅读。
-                }
-            }
-        }
-    }
-
-    fun clearMessages() {
-        _state.value = _state.value.copy(notice = null, error = null)
-    }
-
-    /** 清掉群聊页自己的错误/提示（顶部提示条到点收起时调用）。 */
-    fun clearGroupMessages() {
-        _state.value = _state.value.copy(
-            groupChat = _state.value.groupChat.copy(notice = null, error = null),
-        )
     }
 
     private fun runAction(key: String, block: suspend (FluxApi) -> String) {
@@ -1629,18 +907,11 @@ class V2AppViewModel : FluxViewModel() {
         devicesJob?.cancel()
         refreshJob?.cancel()
         pollingJob?.cancel()
-        groupListJob?.cancel()
-        groupPollJob?.cancel()
         super.onCleared()
     }
 
     companion object {
         private const val POLL_INTERVAL_MS = 3000L
-        private const val GROUP_POLL_MS = 2000L
-        private const val GROUP_PAGE_SIZE = 200
-        private const val GROUP_MAX_PAGES = 10
-        /** 发言后「Bot 们正在讨论」的显示窗口；后端没有 epoch 状态查询接口。 */
-        private const val DISCUSS_WINDOW_MS = 90_000L
     }
 }
 
@@ -1719,7 +990,6 @@ internal fun Task.toV2Conversation(device: String): V2Conversation = V2Conversat
     botName = botName.orEmpty(),
     avatarShape = avatarShape,
     avatarColor = avatarColor,
-    botId = botId.orEmpty(),
 )
 
 internal fun Task.toV2Task(): V2Task {
@@ -1819,18 +1089,6 @@ internal fun Task.toV2Decision(): V2Decision? {
         }.take(3),
         taskId = id,
     )
-}
-
-// ---------------------------------------------------------------- 群聊
-
-/** 按 seq 合并去重；轮询可能重复返回同一条消息。 */
-internal fun mergeGroupMessages(
-    prev: List<ChatGroupMessage>,
-    incoming: List<ChatGroupMessage>,
-): List<ChatGroupMessage> {
-    if (incoming.isEmpty()) return prev
-    val seen = prev.mapTo(HashSet()) { it.id }
-    return (prev + incoming.filter { seen.add(it.id) }).sortedBy { it.seq }
 }
 
 // ---------------------------------------------------------------- 时间

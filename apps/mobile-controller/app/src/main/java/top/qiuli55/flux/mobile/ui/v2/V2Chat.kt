@@ -597,7 +597,7 @@ fun V2ChatScreen(
             ) {
                 if (!chat.pendingSummary.isNullOrBlank()) {
                     // 新对话开篇：只带上一段对话的摘要，不搬旧消息
-                    item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一个 Bot 接手") }
+                    item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一个对话接手") }
                 }
                 itemsIndexed(messages) { index, message ->
                     // 不做入场动画：像微信一样，消息直接出现。
@@ -790,7 +790,7 @@ fun V2ChatScreen(
             Box(Modifier.weight(1f)) {
                 if (input.isEmpty()) {
                     Label(
-                        if (locked) "正在加载 Bot…"
+                        if (locked) "正在加载对话…"
                         else if (uploading) "附件上传中…"
                         else if (sending) "等待 ${agent.name} 回复…"
                         else if (chat.permissionMode == "plan") "让 Agent 先出计划，不动手…"
@@ -1068,9 +1068,9 @@ private fun ContextPromptCard(
         Spacer(Modifier.height(4.dp))
         Label(
             if (usage.level == "full") {
-                "再聊下去，最早的消息就会被挤出模型视野。新建一个 Bot，这段的摘要会一起带过去。"
+                "再聊下去，最早的消息就会被挤出模型视野。新建一个对话，这段的摘要会一起带过去。"
             } else {
-                "再聊几轮，最早的消息就会被挤出模型视野。要新建一个 Bot 吗？"
+                "再聊几轮，最早的消息就会被挤出模型视野。要新建一个对话吗？"
             },
             9.5f,
             V2Colors.ink(.55f),
@@ -1190,7 +1190,7 @@ private fun HandoffCard(message: V2Message) {
 }
 
 @Composable
-private fun SummaryCard(text: String, time: String, note: String = "来自上一个 Bot") {
+private fun SummaryCard(text: String, time: String, note: String = "来自上一个对话") {
     var expanded by remember(text) { mutableStateOf(false) }
     Column(
         Modifier
@@ -1565,7 +1565,7 @@ private fun SecureInputCardBody(
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Label("密钥只进密钥库，不写入 Bot 的上下文", 8.5f, V2Colors.ink(.30f), mono = true)
+            Label("密钥只进密钥库，不写入对话的上下文", 8.5f, V2Colors.ink(.30f), mono = true)
         }
     }
 }

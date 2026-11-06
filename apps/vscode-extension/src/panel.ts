@@ -23,7 +23,7 @@ export class TaskPanel {
     }
     const panel = vscode.window.createWebviewPanel(
       "fluxTask",
-      `Flux Bot ${taskId.slice(0, 8)}`,
+      `Flux 对话 ${taskId.slice(0, 8)}`,
       vscode.ViewColumn.One,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
     );
@@ -382,7 +382,7 @@ export class TaskPanel {
 <body>
 <header>
   <div class="head-row">
-    <h1 id="title">Flux Bot</h1>
+    <h1 id="title">Flux 对话</h1>
     <span class="pill" id="pill">加载中</span>
   </div>
   <div class="meta">
@@ -411,7 +411,7 @@ export class TaskPanel {
 </main>
 <footer>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="给这个 Bot 发消息，或补充上下文…"></textarea>
+    <textarea id="input" rows="1" placeholder="给这个对话发消息，或补充上下文…"></textarea>
     <button id="send" class="primary">发送</button>
   </div>
   <div class="foot-row">
@@ -552,10 +552,10 @@ export class TaskPanel {
     pillEl.textContent = label;
     pillEl.className = 'pill ' + status;
     $('start').disabled = status === 'running' || TERMINAL.has(status);
-    $('start').title = TERMINAL.has(status) ? '该 Bot 已结束，无法再次开始' : '';
+    $('start').title = TERMINAL.has(status) ? '该对话已结束，无法再次开始' : '';
     $('cancel').disabled = !(status === 'running' || status === 'pending' || status === 'queued' || status === 'planning');
     const ended = TERMINAL.has(status);
-    inputEl.placeholder = ended ? '这个 Bot 已结束，发送会续跑这个对话…' : '给这个 Bot 发消息，或补充上下文…';
+    inputEl.placeholder = ended ? '这个对话已结束，发送会续跑这个对话…' : '给这个对话发消息，或补充上下文…';
     sendBtn.title = ended ? '发送后会把这条消息当作新一轮指令，续跑同一个对话' : '';
     const thinking = document.getElementById('thinking');
     if (thinking) { thinking.classList.toggle('show', status === 'running'); }
@@ -584,7 +584,7 @@ export class TaskPanel {
     const msg = ev.data || {};
     if (msg.type === 'task') {
       const t = msg.task || {};
-      titleEl.textContent = t.bot_name || t.title || (t.description ? String(t.description).slice(0, 60) : 'Flux Bot');
+      titleEl.textContent = t.bot_name || t.title || (t.description ? String(t.description).slice(0, 60) : 'Flux 对话');
       document.title = titleEl.textContent;
       $('taskId').textContent = shortId(t.id);
       $('taskId').title = t.id || '';

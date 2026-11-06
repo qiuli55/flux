@@ -27,7 +27,7 @@ let tasksView: vscode.TreeView<TaskNode>;
 let healthTimer: NodeJS.Timeout | undefined;
 let connected = false;
 
-/** Bot 头像契约：形状与颜色取值必须与后端、桌面端保持一致。 */
+/** 对话头像契约：形状与颜色取值必须与后端、桌面端保持一致。 */
 const BOT_SHAPES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "circle", label: "圆形" },
   { id: "squircle", label: "圆角矩形" },
@@ -208,7 +208,7 @@ async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
   if (!taskId) {
     const tasks = await tasksProvider.tasks();
     if (!tasks.length) {
-      void vscode.window.showInformationMessage("当前项目还没有 Bot，先新建一个。");
+      void vscode.window.showInformationMessage("当前项目还没有对话，先新建一个。");
       return;
     }
     const picked = await vscode.window.showQuickPick(
@@ -222,7 +222,7 @@ async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
           id: task.id,
         };
       }),
-      { placeHolder: "选择要打开的 Bot", matchOnDescription: true }
+      { placeHolder: "选择要打开的对话", matchOnDescription: true }
     );
     if (!picked) {
       return;
@@ -235,12 +235,12 @@ async function openTaskPanel(arg?: TaskNode | string): Promise<void> {
 async function quickMenu(): Promise<void> {
   const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
     {
-      label: "$(add) 新建 Bot",
+      label: "$(add) 新建对话",
       description: "Ctrl+Alt+N",
       run: () => vscode.commands.executeCommand("flux.newTask"),
     },
     {
-      label: "$(comment-discussion) 打开 Bot 面板…",
+      label: "$(comment-discussion) 打开对话面板…",
       description: "Ctrl+Alt+T",
       run: () => vscode.commands.executeCommand("flux.openTaskPanel"),
     },
@@ -458,24 +458,24 @@ export function activate(context: vscode.ExtensionContext): void {
         target = picked.id;
       }
       const name = await vscode.window.showInputBox({
-        prompt: "这个 Bot 叫什么名字？",
+        prompt: "这个对话叫什么名字？",
         placeHolder: "例如：数据统计、前端搭子",
         ignoreFocusOut: true,
-        validateInput: (input) => (input.trim() ? undefined : "Bot 名称不能为空"),
+        validateInput: (input) => (input.trim() ? undefined : "对话名称不能为空"),
       });
       if (!name?.trim()) {
         return;
       }
       const shape = await vscode.window.showQuickPick(
         BOT_SHAPES.map((item) => ({ label: item.id, description: item.label })),
-        { placeHolder: "选择 Bot 头像形状" }
+        { placeHolder: "选择对话头像形状" }
       );
       if (!shape) {
         return;
       }
       const color = await vscode.window.showQuickPick(
         BOT_COLORS.map((item) => ({ label: item.id, description: item.label })),
-        { placeHolder: "选择 Bot 头像颜色" }
+        { placeHolder: "选择对话头像颜色" }
       );
       if (!color) {
         return;
@@ -492,7 +492,7 @@ export function activate(context: vscode.ExtensionContext): void {
         tasksProvider.refresh();
         TaskPanel.show(context, client, task.id);
       } catch (err) {
-        void vscode.window.showErrorMessage(`创建 Bot 失败：${(err as Error).message}`);
+        void vscode.window.showErrorMessage(`创建对话失败：${(err as Error).message}`);
       }
     }),
     vscode.commands.registerCommand("flux.spec.draft", async () => {

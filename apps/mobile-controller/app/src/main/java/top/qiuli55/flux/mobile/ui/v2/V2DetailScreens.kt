@@ -380,7 +380,7 @@ fun V2TaskDetailScreen(
                 val last = chatMessages.lastOrNull()?.content?.replace('\n', ' ')?.take(40)
                 EntryRow(
                     icon = Icons.Outlined.ChatBubbleOutline,
-                    title = "Bot",
+                    title = "对话",
                     subtitle = if (chatMessages.isEmpty()) "还没有消息" else last.orEmpty(),
                     badge = if (chatMessages.isEmpty()) null else "${chatMessages.size}",
                     onClick = onOpenChat,
@@ -559,7 +559,7 @@ fun V2TaskChatScreen(
     } ?: models.firstOrNull()
     val chat = V2ChatState(
         conversationId = taskId,
-        title = task?.botName?.takeIf { it.isNotBlank() } ?: task?.firstLine(40) ?: "Bot",
+        title = task?.botName?.takeIf { it.isNotBlank() } ?: task?.firstLine(40) ?: "对话",
         device = device,
         agentId = agentId,
         model = selectedModel?.model ?: "默认模型",
@@ -615,7 +615,7 @@ fun V2TaskChatScreen(
                 message
             }
         }
-        // 新建 bot 时 description 就是 bot 名称，别把它当成一条重复的用户消息。
+        // 新建对话时 description 就是对话名称，别把它当成一条重复的用户消息。
         val descriptionIsOwnMessage =
             task != null && task.description.isNotBlank() &&
                 task.description.trim() != task.botName?.trim()

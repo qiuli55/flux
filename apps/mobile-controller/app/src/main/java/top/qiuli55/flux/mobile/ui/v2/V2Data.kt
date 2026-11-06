@@ -167,13 +167,11 @@ data class V2Conversation(
     val updated: String,
     val unread: Int,
     val messages: List<V2Message>,
-    /** bot 展示名；空串表示旧数据，退回 [title]。 */
+    /** 对话展示名；空串表示旧数据，退回 [title]。 */
     val botName: String = "",
-    /** bot 头像形状 / 颜色；空串表示旧数据，退回 Agent 色调头像。 */
+    /** 对话头像形状 / 颜色；空串表示旧数据，退回 Agent 色调头像。 */
     val avatarShape: String = "",
     val avatarColor: String = "",
-    /** 产生这条对话的常驻 Bot；空串 = 普通人工对话。 */
-    val botId: String = "",
 )
 
 enum class V2Risk { HIGH, MEDIUM, LOW }

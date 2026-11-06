@@ -162,193 +162,19 @@ data class Task(
     @SerialName("pending_agent_id") val pendingAgentId: String? = null,
     /** 对话来源：chat = 首页普通对话；assistant = 助理页的助理对话（不进首页列表）。 */
     val origin: String = "chat",
-    /** bot 展示名；为空时退回 description。 */
+    /** 对话展示名；为空时退回 description。 */
     @SerialName("bot_name") val botName: String? = null,
-    /** bot 头像形状（14 选一，顺序与后端 avatar.py 一致）。 */
+    /** 对话头像形状（14 选一，顺序与后端 avatar.py 一致）。 */
     @SerialName("avatar_shape") val avatarShape: String = "circle",
-    /** bot 头像颜色（12 选一，顺序与后端 avatar.py 一致）。 */
+    /** 对话头像颜色（12 选一，顺序与后端 avatar.py 一致）。 */
     @SerialName("avatar_color") val avatarColor: String = "violet",
-    /** 由常驻 Bot 开工产生的任务；null = 普通对话。 */
-    @SerialName("bot_id") val botId: String? = null,
 ) {
-    /** 列表/群聊里展示的 bot 名称。 */
+    /** 列表里展示的对话名称。 */
     val displayName: String
         get() = botName?.takeIf { it.isNotBlank() }
-            ?: description.take(24).ifBlank { "未命名 Bot" }
+            ?: description.take(24).ifBlank { "未命名对话" }
 }
 
-/* ---------------- 常驻 Bot（/api/v1/bots） ---------------- */
-
-/** Bot 模式里的常驻执行者；群聊成员就是它（bots.id）。 */
-@Serializable
-data class Bot(
-    val id: String = "",
-    val name: String = "",
-    val description: String = "",
-    @SerialName("avatar_shape") val avatarShape: String = "circle",
-    @SerialName("avatar_color") val avatarColor: String = "violet",
-    @SerialName("agent_id") val agentId: String? = null,
-    val model: String? = null,
-    @SerialName("permission_mode") val permissionMode: String = "unattended",
-    @SerialName("decision_mode") val decisionMode: String = "auto",
-    /** 用户显式指定的工作目录；null = 平台派生目录。 */
-    val workspace: String? = null,
-    /** 后端解析后的绝对工作目录，只读。 */
-    @SerialName("workspace_path") val workspacePath: String? = null,
-    val status: String = "active",
-    val schedule: String? = null,
-    @SerialName("next_run_at") val nextRunAt: String? = null,
-    @SerialName("last_run_at") val lastRunAt: String? = null,
-    @SerialName("last_task_id") val lastTaskId: String? = null,
-    @SerialName("last_settled_task_id") val lastSettledTaskId: String? = null,
-    @SerialName("failure_threshold") val failureThreshold: Int = 3,
-    @SerialName("consecutive_failures") val consecutiveFailures: Int = 0,
-    @SerialName("runs_total") val runsTotal: Int = 0,
-    @SerialName("runs_failed") val runsFailed: Int = 0,
-    @SerialName("last_error") val lastError: String? = null,
-    @SerialName("paused_reason") val pausedReason: String? = null,
-    @SerialName("token_budget") val tokenBudget: Int? = null,
-    @SerialName("tokens_used_today") val tokensUsedToday: Int = 0,
-    @SerialName("notify_on_failure") val notifyOnFailure: Boolean = true,
-    @SerialName("event_triggers") val eventTriggers: List<String> = emptyList(),
-    /** null = 不额外限制（仍受权限模式约束）。 */
-    @SerialName("allowed_tools") val allowedTools: List<String>? = null,
-    @SerialName("allowed_commands") val allowedCommands: List<String>? = null,
-    @SerialName("allowed_paths") val allowedPaths: List<String>? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-    @SerialName("updated_at") val updatedAt: String? = null,
-) {
-    val isPaused: Boolean get() = status == "paused"
-}
-
-/** Bot 的例程：一个 Bot 可以有多个定时任务。 */
-@Serializable
-data class BotRoutine(
-    val id: String = "",
-    @SerialName("bot_id") val botId: String = "",
-    val name: String = "",
-    val instruction: String = "",
-    val schedule: String? = null,
-    val enabled: Boolean = true,
-    @SerialName("next_run_at") val nextRunAt: String? = null,
-    @SerialName("last_run_at") val lastRunAt: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-    @SerialName("updated_at") val updatedAt: String? = null,
-)
-
-/** Bot 主动通知（目前主要是开工失败）。 */
-@Serializable
-data class BotNotification(
-    val id: String = "",
-    @SerialName("bot_id") val botId: String? = null,
-    @SerialName("bot_name") val botName: String = "",
-    @SerialName("task_id") val taskId: String? = null,
-    /** info / warning / error */
-    val level: String = "error",
-    val title: String = "",
-    val body: String = "",
-    @SerialName("read_at") val readAt: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-    @SerialName("updated_at") val updatedAt: String? = null,
-) {
-    val isUnread: Boolean get() = readAt.isNullOrBlank()
-}
-
-/* ---------------- 内部群聊（/api/v1/groups） ---------------- */
-
-/** 群成员 = 一个常驻 Bot 的公开档案。 */
-@Serializable
-data class ChatGroupMember(
-    @SerialName("bot_id") val botId: String = "",
-    val name: String = "",
-    val description: String = "",
-    @SerialName("avatar_shape") val avatarShape: String = "circle",
-    @SerialName("avatar_color") val avatarColor: String = "violet",
-    val status: String = "",
-    /** admin = 群主（每轮先发言并负责拉人）；member = 普通成员。 */
-    val role: String = "member",
-    /** 该 bot 在群里的模型覆盖；null = 沿用默认模型。 */
-    val model: String? = null,
-    @SerialName("api_key_id") val apiKeyId: String? = null,
-    /** plan = 只读+计划 / normal = 高风险审批 / full = 跳过逐步审批。 */
-    @SerialName("permission_mode") val permissionMode: String = "normal",
-) {
-    val isAdmin: Boolean get() = role == "admin"
-}
-
-/** 分层记忆：scope=group 为本群，scope=team 为跨群共享。 */
-@Serializable
-data class ChatGroupMemory(
-    @SerialName("group_id") val groupId: String? = null,
-    val scope: String = "group",
-    val content: String = "",
-    @SerialName("up_to_seq") val upToSeq: Int = 0,
-    @SerialName("updated_at") val updatedAt: String? = null,
-)
-
-/** GET /groups/{id}/memory 的返回；都没压缩过时两项为 null。 */
-@Serializable
-data class ChatGroupMemoryState(
-    val group: ChatGroupMemory? = null,
-    val team: ChatGroupMemory? = null,
-)
-
-/** 一个内部群。 */
-@Serializable
-data class ChatGroup(
-    val id: String = "",
-    val name: String = "",
-    @SerialName("project_id") val projectId: String? = null,
-    val description: String? = null,
-    /** 每轮最多发言轮数闸门（1~5）。 */
-    @SerialName("max_rounds") val maxRounds: Int = 2,
-    val status: String = "",
-    @SerialName("last_message_at") val lastMessageAt: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-    /** 列表接口只给数量，members 为空数组。 */
-    @SerialName("member_count") val memberCount: Int = 0,
-    val members: List<ChatGroupMember> = emptyList(),
-)
-
-/** 一条群消息。 */
-@Serializable
-data class ChatGroupMessage(
-    val id: String = "",
-    @SerialName("group_id") val groupId: String = "",
-    /** 群内自增游标，轮询用 after_seq。 */
-    val seq: Int = 0,
-    /** 发言的 bot（bots.id）；用户 / 系统消息为 null。 */
-    @SerialName("bot_id") val botId: String? = null,
-    @SerialName("author_name") val authorName: String = "",
-    /** user / assistant / system。 */
-    val role: String = "",
-    val kind: String = "text",
-    val content: String = "",
-    val payload: JsonElement? = null,
-    @SerialName("epoch_id") val epochId: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-)
-
-@Serializable
-data class ChatGroupMessagePage(
-    val messages: List<ChatGroupMessage> = emptyList(),
-    @SerialName("has_more") val hasMore: Boolean = false,
-)
-
-@Serializable
-data class ChatGroupSendOutcome(
-    val message: ChatGroupMessage = ChatGroupMessage(),
-    @SerialName("epoch_id") val epochId: String = "",
-    val mentioned: List<String> = emptyList(),
-)
-
-@Serializable
-data class ChatGroupInterruptOutcome(
-    val interrupted: Boolean = false,
-    @SerialName("epoch_id") val epochId: String? = null,
-)
-
-/** 安全输入提交的返回：任务 + 落库后的密钥（只有掩码）+「已存储」回执消息。 */
 @Serializable
 data class SecureInputOutcome(
     val task: Task = Task(),
