@@ -847,6 +847,11 @@ class V2AppViewModel : FluxViewModel() {
         _state.value = _state.value.copy(hideFinished = true)
     }
 
+    /** 清掉顶部提示条自己的错误/提示（到点收起时调用）。 */
+    fun clearMessages() {
+        _state.value = _state.value.copy(notice = null, error = null)
+    }
+
     /** 新建一个对话（本质是一条不立即执行的 tasks 记录）：名称 + 头像，可选执行 Agent。 */
     fun createConversation(
         name: String,
