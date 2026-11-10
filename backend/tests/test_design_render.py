@@ -317,3 +317,28 @@ def test_rotation_becomes_css_transform(spec: dict[str, Any]) -> None:
     assert "transform:" not in render._node_html(
         {"type": "card", "w": 100, "h": 60, "rotation": 0.005}
     )
+
+
+# ------------------------------------------------------------------ 预览截图页
+
+
+def test_capture_html_drops_demo_frame_and_picks_screen() -> None:
+    design = {
+        "name": "示例",
+        "bg": "#F4F6F9",
+        "screens": [
+            {"id": "a", "name": "首页", "w": 390, "h": 844, "nodes": []},
+            {"id": "b", "name": "详情", "w": 375, "h": 812, "nodes": []},
+        ],
+    }
+    html_text, meta = render.render_capture_html(design)
+    assert meta == {"id": "a", "name": "首页", "w": 390, "h": 844}
+    assert 'class="device"' in html_text
+    assert 'class="top"' not in html_text
+    assert 'data-id="b"' not in html_text
+
+    picked, picked_meta = render.render_capture_html(design, screen="2")
+    assert picked_meta["id"] == "b"
+    assert 'data-id="b"' in picked
+
+    assert render.render_capture_html(design, screen="missing") is None

@@ -38,6 +38,9 @@ RUNTIME_RULES: tuple[str, ...] = (
     "When the user is looking at the canvas, call design.view before a visual tweak: it returns "
     "the current zoom, viewport, selection, visible node ids and each selected layer's gaps to "
     "its neighbours, so you can micro-adjust with design.patch instead of rewriting the screen.",
+    "To actually see a design, call design.preview: it returns a local PNG URL and a ready-made "
+    "curl command. Run the curl into the workspace, then read the image file to judge the "
+    "result. MCP tool output is text-only, so the image itself must come from that HTTP URL.",
     "For standard blocks, call design.component_list and prefer design.component_insert or "
     "design.template_apply (search-bar, bot-card, bottom-nav, list-item, stat-card, chat-bubble) "
     "over hand-building every layer; design.component_update changes an instance's params or "
@@ -68,7 +71,8 @@ PLAN_RULES: tuple[str, ...] = (
     "do not run terminal commands or proposal.preview.",
     "Use workspace.read / workspace.search / workspace.tree / context.get to investigate, then "
     "deliver the plan with plan.write. Design tools are read-only (design.list / design.get / "
-    "design.view / design.revisions); design.create / design.update / design.patch / "
+    "design.view / design.preview / design.revisions); design.create / design.update / "
+    "design.patch / "
     "design.layout / design.ai / design.revert / design.share / design.icon_create are disabled "
     "in this mode.",
     "The plan document is written to Flux's own plans directory; never pick your own path.",

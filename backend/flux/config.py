@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # 公网路径 /design-studio/api/designs 已在 nginx 屏蔽，只有回环直连可读写。
     design_studio_url: str = "http://127.0.0.1:8091"
     design_studio_timeout_seconds: float = 60.0
+    # 设计稿预览 PNG 的缓存目录。留空 = 自动按 Chromium 可写位置选（snap 版只能读自己的
+    # 用户目录，root 的 ~/.cache 会被沙箱拒绝）。
+    design_preview_dir: str | None = None
 
     # --- 存储（主规格 §11.1）---
     database_url: str = "sqlite+aiosqlite:///./flux.db"

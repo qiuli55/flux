@@ -122,6 +122,97 @@ def render_ir_html(ir: dict[str, Any], *, page_title: str | None = None) -> str:
     )
 
 
+#: 截图专用覆盖样式：去掉演示页的居中缩放与外框阴影，让画板 1:1 占满页面。
+_CAPTURE_CSS = """
+html,body{height:auto;min-height:0;background:transparent;overflow:visible}
+.device{position:relative;display:block;border-radius:0;box-shadow:none}
+"""
+
+_CAPTURE_TEMPLATE = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<title>{title}</title>
+<style>{css}</style>
+<style>{capture_css}</style>
+</head>
+<body>
+{screen}
+<script>
+(function () {{
+  "use strict";
+  // 与演示页一致：单行放不下时按 0.5px 步长缩字号，最低 60%
+  function fitTexts() {{
+    Array.prototype.forEach.call(document.querySelectorAll("[data-fit]"), function (el) {{
+      var base = parseFloat(el.getAttribute("data-fit")) || 13;
+      var min = base * 0.6;
+      var size = base;
+      el.style.fontSize = size + "px";
+      while (size > min && el.scrollWidth > el.clientWidth + 0.5) {{
+        size -= 0.5;
+        el.style.fontSize = size + "px";
+      }}
+    }});
+  }}
+  fitTexts();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitTexts);
+}})();
+</script>
+</body>
+</html>
+"""
+
+
+def render_capture_html(
+    design: dict[str, Any], *, screen: str | None = None
+) -> tuple[str, dict[str, Any]] | None:
+    """把单块画板渲染成"没有演示页框"的整页 HTML，供 headless 浏览器截图。
+
+    ``screen`` 可以是画板 id，也可以是 1 起的序号；缺省取第一块。找不到画板时返回 None。
+    返回值第二项是画板元信息（id/name/w/h），截图尺寸直接按它定。
+    """
+    ir = compile_design(design)
+    screens = [item for item in (ir.get("screens") or []) if isinstance(item, dict)]
+    chosen = _pick_screen(screens, screen)
+    if chosen is None:
+        return None
+    markup = _screen_html(chosen, ir_color_css(ir.get("bg"), SHELL_TOP))
+    if not markup:
+        return None
+    name = str(chosen.get("name") or chosen.get("id") or "画板")
+    title = f"{ir.get('name') or '设计稿'} · {name}"
+    html_text = _CAPTURE_TEMPLATE.format(
+        title=html.escape(title),
+        css=_CSS,
+        capture_css=_CAPTURE_CSS,
+        screen=markup,
+    )
+    meta = {
+        "id": str(chosen.get("id") or ""),
+        "name": name,
+        "w": int(round(_num(chosen.get("w"), 0.0))),
+        "h": int(round(_num(chosen.get("h"), 0.0))),
+    }
+    return html_text, meta
+
+
+def _pick_screen(screens: list[dict[str, Any]], screen: str | None) -> dict[str, Any] | None:
+    if not screens:
+        return None
+    wanted = (screen or "").strip()
+    if not wanted:
+        return screens[0]
+    for item in screens:
+        if str(item.get("id") or "") == wanted:
+            return item
+    if wanted.isdigit():
+        index = int(wanted) - 1
+        if 0 <= index < len(screens):
+            return screens[index]
+    return None
+
+
 # ------------------------------------------------------------------ 画板 / 节点
 
 

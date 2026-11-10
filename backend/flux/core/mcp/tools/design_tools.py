@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -2048,6 +2049,84 @@ async def design_icon_create(ctx: ToolContext, params: dict[str, Any]) -> dict[s
     }
 
 
+def _api_base(ctx: ToolContext) -> str:
+    """从 MCP 端点推导 Flux 自己的 HTTP 基址（同机回环，回环请求免令牌）。"""
+    settings = ctx.container.settings
+    parsed = urlsplit(str(getattr(settings, "dsh_mcp_url", "") or ""))
+    prefix = str(getattr(settings, "api_v1_prefix", "/api/v1") or "/api/v1").rstrip("/")
+    if not parsed.scheme or not parsed.netloc:
+        return "http://127.0.0.1:8801" + prefix
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")) + prefix
+
+
+def _pick_preview_screen(design: dict[str, Any], screen: str | None) -> dict[str, Any]:
+    """按画板 id 或 1 起的序号选画板；缺省第一块，找不到直接报参数错误。"""
+    screens = design.get("screens") if isinstance(design.get("screens"), list) else []
+    screens = [item for item in screens if isinstance(item, dict)]
+    if not screens:
+        raise ValidationError("设计稿还没有画板", details={"param": "design_id"})
+    wanted = (screen or "").strip()
+    if not wanted:
+        return screens[0]
+    for item in screens:
+        if str(item.get("id") or "") == wanted:
+            return item
+    if wanted.isdigit() and 1 <= int(wanted) <= len(screens):
+        return screens[int(wanted) - 1]
+    raise ValidationError(f"没有这块画板：{wanted}", details={"param": "screen"})
+
+
+async def design_preview(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """给 Agent 一个能取到 PNG 的 HTTP 地址（MCP 输出只带文本，图片走 HTTP）。"""
+    reject_unknown(params, {"design_id", "screen", "scale", "refresh"})
+    design_id = _require_design_id(params.get("design_id"))
+    screen = optional_str(params, "screen")
+    scale = params.get("scale", 2)
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+        raise ValidationError("scale 必须是数字", details={"param": "scale"})
+    scale = max(1.0, min(float(scale), 3.0))
+    refresh = params.get("refresh", False)
+    if not isinstance(refresh, bool):
+        raise ValidationError("refresh 必须是布尔值", details={"param": "refresh"})
+
+    async with _client(ctx) as client:
+        body = await _request(client, "GET", f"/api/designs/{design_id}")
+    design = body.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    chosen = _pick_preview_screen(design, screen)
+    screen_id = str(chosen.get("id") or "")
+
+    query: dict[str, str] = {"scale": f"{scale:g}"}
+    if screen_id:
+        query["screen"] = screen_id
+    if refresh:
+        query["refresh"] = "true"
+    url = f"{_api_base(ctx)}/designs/{design_id}/preview.png?{urlencode(query)}"
+    filename = f"preview-{design_id}-{screen_id or 'screen'}.png"
+    width = int(round(float(chosen.get("w") or 0) * scale))
+    height = int(round(float(chosen.get("h") or 0) * scale))
+    return {
+        "design_id": design_id,
+        "version": design.get("version"),
+        "screen": {
+            "id": screen_id,
+            "name": chosen.get("name"),
+            "w": chosen.get("w"),
+            "h": chosen.get("h"),
+        },
+        "image": {"format": "png", "width": width, "height": height, "scale": scale},
+        "url": url,
+        "curl": f"curl -sS -o '{filename}' '{url}'",
+        "filename": filename,
+        "hint": (
+            "预览图是浏览器渲染的 PNG，MCP 只能回文本，所以在终端执行 curl 把图存到工作区，"
+            "再用读文件的方式看图。同机回环请求免令牌；没传 screen 时截第一块画板。"
+            "改稿后重新调本工具拿地址即可（版本变了缓存自动失效），要强制重截传 refresh=true。"
+        ),
+    }
+
+
 # ---------------------------------------------------------------- 注册
 
 
@@ -2119,6 +2198,39 @@ def design_tools() -> tuple[ToolSpec, ...]:
             },
             capability=Capability.FILE_READ,
             handler=design_view,
+        ),
+        ToolSpec(
+            name="design.preview",
+            title="取设计预览图地址",
+            description=(
+                "返回一块画板的 PNG 预览图 HTTP 地址（Flux 本机接口，回环免令牌）和一条 curl "
+                "命令。MCP 输出只有文本，所以想看画布实际效果时：调本工具 → 在终端执行返回的 "
+                "curl 把图存到工作区 → 用读文件的方式查看图片。screen 传画板 id 或 1 起序号，"
+                "缺省第一块；scale 1–3（默认 2，越大越清晰）。改稿后版本变化缓存自动失效，"
+                "需要强制重截时传 refresh=true。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "screen": {
+                        "type": "string",
+                        "description": "画板 id 或 1 起的序号；缺省第一块",
+                    },
+                    "scale": {
+                        "type": "number",
+                        "description": "像素倍率 1–3（默认 2）",
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "description": "忽略缓存重新截图（默认 false）",
+                    },
+                },
+                "required": ["design_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_READ,
+            handler=design_preview,
         ),
         ToolSpec(
             name="design.create",

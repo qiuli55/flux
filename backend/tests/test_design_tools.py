@@ -149,6 +149,8 @@ def test_design_tools_are_registered_and_instructed() -> None:
     for name in (
         "design.list",
         "design.get",
+        "design.view",
+        "design.preview",
         "design.create",
         "design.update",
         "design.patch",
@@ -165,9 +167,37 @@ def test_design_tools_are_registered_and_instructed() -> None:
     assert "design studio" in RUNTIME_BOOTSTRAP
     assert "design.ai" in RUNTIME_BOOTSTRAP
     assert "design.icon_create" in RUNTIME_BOOTSTRAP
+    assert "design.preview" in RUNTIME_BOOTSTRAP
     assert "design.share" in SERVER_INSTRUCTIONS
     assert "design.ai" in SERVER_INSTRUCTIONS
     assert "design.icon_create" in SERVER_INSTRUCTIONS
+
+
+async def test_design_preview_returns_http_url_and_curl(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(200, json={"ok": True, "design": _design()})
+    ctx, _ = _ctx(run_id=None)
+    ctx.container.settings.dsh_mcp_url = "http://127.0.0.1:8801/mcp"
+    ctx.container.settings.api_v1_prefix = "/api/v1"
+    result = await module.design_preview(ctx, {"design_id": DESIGN_ID, "screen": "1"})
+    assert result["url"] == (
+        f"http://127.0.0.1:8801/api/v1/designs/{DESIGN_ID}/preview.png?scale=2&screen=screen-1"
+    )
+    assert result["curl"] == (f"curl -sS -o 'preview-{DESIGN_ID}-screen-1.png' '{result['url']}'")
+    assert result["image"] == {
+        "format": "png",
+        "width": 780,
+        "height": 1688,
+        "scale": 2.0,
+    }
+
+
+async def test_design_preview_rejects_unknown_screen(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(200, json={"ok": True, "design": _design()})
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError, match="没有这块画板"):
+        await module.design_preview(ctx, {"design_id": DESIGN_ID, "screen": "nope"})
 
 
 async def test_design_list_filters_by_project(upstream) -> None:

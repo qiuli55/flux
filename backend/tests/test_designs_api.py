@@ -78,6 +78,63 @@ def test_get_design_missing_maps_to_not_found(design_client_app) -> None:
     assert body["message"] == "设计稿不存在"
 
 
+def test_preview_png_returns_image(design_client_app, monkeypatch) -> None:
+    test_client, holder = design_client_app
+    holder["handler"] = lambda request: httpx.Response(
+        200,
+        json={"ok": True, "design": {"id": "d-one", "version": 3, "screens": []}},
+    )
+    calls: dict = {}
+
+    async def fake_render(design, *, screen, scale, refresh, cache_dir):
+        calls.update(screen=screen, scale=scale, refresh=refresh)
+        return (
+            b"\x89PNG\r\n\x1a\nfake",
+            {"id": "screen-1", "name": "首页", "w": 390, "h": 844, "scale": scale},
+        )
+
+    monkeypatch.setattr(designs, "render_preview_png", fake_render)
+    response = test_client.get(f"{PREFIX}/designs/d-one/preview.png", params={"screen": "screen-1"})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG")
+    assert response.headers["x-preview-screen"] == "screen-1"
+    assert response.headers["x-preview-version"] == "3"
+    assert calls == {"screen": "screen-1", "scale": 2.0, "refresh": False}
+
+
+def test_preview_png_unknown_screen_is_bad_request(design_client_app, monkeypatch) -> None:
+    test_client, holder = design_client_app
+    holder["handler"] = lambda request: httpx.Response(
+        200,
+        json={"ok": True, "design": {"id": "d-one", "version": 1, "screens": []}},
+    )
+
+    async def fake_render(*args, **kwargs):
+        raise ValueError("没有这块画板")
+
+    monkeypatch.setattr(designs, "render_preview_png", fake_render)
+    response = test_client.get(f"{PREFIX}/designs/d-one/preview.png", params={"screen": "x"})
+    assert response.status_code == 400
+    assert response.json()["message"] == "没有这块画板"
+
+
+def test_preview_png_without_chromium_is_unavailable(design_client_app, monkeypatch) -> None:
+    test_client, holder = design_client_app
+    holder["handler"] = lambda request: httpx.Response(
+        200,
+        json={"ok": True, "design": {"id": "d-one", "version": 1, "screens": []}},
+    )
+
+    async def fake_render(*args, **kwargs):
+        raise designs.PreviewUnavailable("本机没有可用的 Chromium")
+
+    monkeypatch.setattr(designs, "render_preview_png", fake_render)
+    response = test_client.get(f"{PREFIX}/designs/d-one/preview.png")
+    assert response.status_code == 503
+    assert response.json()["code"] == "design_studio_unavailable"
+
+
 def test_save_design_conflict_keeps_current_version(design_client_app) -> None:
     test_client, holder = design_client_app
     holder["handler"] = lambda request: httpx.Response(

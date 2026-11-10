@@ -23,6 +23,12 @@ from flux.api.deps import get_container, get_settings_dep
 from flux.api.response import ok
 from flux.config import Settings
 from flux.container import Container
+from flux.core.design_preview import (
+    DEFAULT_SCALE,
+    MAX_SCALE,
+    PreviewUnavailable,
+    render_preview_png,
+)
 from flux.core.design_render import render_design_html
 from flux.errors import AIOSError, BadRequestError, ConflictError, NotFoundError
 from flux.logging import get_logger
@@ -249,6 +255,48 @@ async def preview_design(
         "html": html,
     }
     return ok(preview, metadata={"screen_count": preview["screen_count"]})
+
+
+@router.get("/{design_id}/preview.png")
+async def preview_design_png(
+    design_id: str,
+    screen: str | None = Query(
+        default=None, max_length=80, description="画板 id 或 1 起的序号；缺省第一块"
+    ),
+    scale: float = Query(default=DEFAULT_SCALE, ge=1.0, le=MAX_SCALE, description="像素倍率"),
+    refresh: bool = Query(default=False, description="忽略缓存重新截图"),
+    settings: Settings = Depends(get_settings_dep),
+    client: httpx.AsyncClient = Depends(design_client),
+) -> Response:
+    """把单块画板截成 PNG。
+
+    MCP 的工具输出只能带文本，Agent 靠这个 HTTP 接口把图存到工作区再读；
+    同机回环请求免令牌，`curl -o` 即可。同一版本/画板/倍率直接复用缓存。
+    """
+    design = await load_design(client, design_id)
+    cache_dir = Path(settings.design_preview_dir) if settings.design_preview_dir else None
+    try:
+        png, meta = await render_preview_png(
+            design, screen=screen, scale=scale, refresh=refresh, cache_dir=cache_dir
+        )
+    except ValueError as exc:
+        raise BadRequestError(str(exc)) from exc
+    except PreviewUnavailable as exc:
+        raise DesignStudioUnavailable(str(exc)) from exc
+    filename = f"{design_id}-{meta.get('id') or 'screen'}-x{scale:g}.png"
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Preview-Screen": str(meta.get("id") or ""),
+            "X-Preview-Size": f"{meta.get('w')}x{meta.get('h')}",
+            "X-Preview-Scale": f"{scale:g}",
+            "X-Preview-Version": str(design.get("version") or 0),
+            "X-Preview-Cached": "1" if meta.get("cached") else "0",
+        },
+    )
 
 
 @router.get("/{design_id}/export.svg")
