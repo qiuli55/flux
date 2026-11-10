@@ -260,6 +260,28 @@ class DesignSpecTest {
     }
 
     @Test
+    fun `legacy text fill is text color not background`() {
+        // 早期设计稿把文字色存在 fill（没有 color）：fill 当文字色，不能再当底色。
+        assertEquals(
+            Color.White,
+            DesignSpec.legacyTextInk(DesignNode(type = "text", fill = "#FFFFFF")),
+        )
+        // 显式 color 时 fill 仍然是底色。
+        assertNull(
+            DesignSpec.legacyTextInk(DesignNode(type = "text", fill = "#FFFFFF", color = "#000000")),
+        )
+        // 非 text、无填充、渐变、显式 none 都不算旧文字色。
+        assertNull(DesignSpec.legacyTextInk(DesignNode(type = "card", fill = "#FFFFFF")))
+        assertNull(DesignSpec.legacyTextInk(DesignNode(type = "text")))
+        assertNull(
+            DesignSpec.legacyTextInk(
+                DesignNode(type = "text", fill = "linear-gradient(#000000,#FFFFFF)"),
+            ),
+        )
+        assertNull(DesignSpec.legacyTextInk(DesignNode(type = "text", fill = "none")))
+    }
+
+    @Test
     fun `blank type is text`() {
         assertEquals("text", DesignSpec.typeOf(DesignNode(type = "  ")))
         assertEquals("card", DesignSpec.typeOf(DesignNode(type = "card")))

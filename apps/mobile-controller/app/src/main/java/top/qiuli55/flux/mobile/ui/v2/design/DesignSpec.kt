@@ -193,6 +193,17 @@ object DesignSpec {
     fun isNoneFill(raw: String?): Boolean =
         raw?.trim()?.lowercase() in setOf("none", "transparent")
 
+    /**
+     * 旧设计稿把文字色存在 `fill`（没有 `color`）。对齐 Web `paint.js`：
+     * 仅 text 节点、`color` 为空、`fill` 是纯色时成立；渐变仍按底色处理。
+     */
+    fun legacyTextInk(node: DesignNode): Color? {
+        if (typeOf(node) != "text") return null
+        if (!node.color.isNullOrBlank()) return null
+        if (isNoneFill(node.fill)) return null
+        return colorOrNull(node.fill)
+    }
+
     fun tokens(value: String): List<String> =
         TOKEN_RE.findAll(value).map { it.value }.toList()
 

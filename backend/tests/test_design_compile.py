@@ -203,6 +203,20 @@ def test_text_without_fill_has_no_background() -> None:
     assert compile_one(type="text", text="标题", fill="transparent")["fill"] == {"kind": "none"}
 
 
+def test_legacy_text_fill_is_text_color_not_background() -> None:
+    """早期设计稿把文字色存在 fill（没有 color）：不能画成色块，文字色取 fill。"""
+    ir = compile_one(type="text", text="标题", fill="#FFFFFF")
+    assert ir["fill"] == {"kind": "none"}
+    assert ir["text"]["color"] == {"hex": "#ffffff"}
+    # 显式 color 时 fill 仍然是底色（新约定）。
+    ir = compile_one(type="text", text="标题", fill="#FFFFFF", color="#000000")
+    assert ir["fill"] == {"kind": "solid", "color": {"hex": "#ffffff"}}
+    assert ir["text"]["color"] == {"hex": "#000000"}
+    # 渐变 fill 仍然按底色处理。
+    gradient = compile_one(type="text", text="标题", fill="linear-gradient(#000000,#FFFFFF)")
+    assert gradient["fill"]["kind"] == "linear"
+
+
 def test_invalid_fill_falls_back_to_type_default() -> None:
     assert compile_one(type="card", fill="not-a-color")["fill"] == {
         "kind": "solid",

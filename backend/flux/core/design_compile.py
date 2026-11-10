@@ -346,6 +346,28 @@ def compile_fill(raw: Any, fallback: dict[str, Any] | None) -> dict[str, Any]:
     return {"kind": "solid", "color": color}
 
 
+def legacy_text_ink(node: dict[str, Any], ntype: str) -> dict[str, Any] | None:
+    """旧设计稿把文字色存在 fill（没有 color）：仅 text 且 fill 为纯色时成立。
+
+    与 Web 画布 `paint.js` 对齐：这类 text 的 fill 是文字色，不是底色，不能再画色块；
+    渐变仍按底色处理。返回 IR 颜色，不成立时返回 None。
+    """
+    if ntype != "text":
+        return None
+    raw_color = node.get("color")
+    if isinstance(raw_color, str) and raw_color.strip():
+        return None
+    raw_fill = node.get("fill")
+    if not isinstance(raw_fill, str):
+        return None
+    value = raw_fill.strip()
+    if not value or value.lower() in ("none", "transparent"):
+        return None
+    if parse_gradient(value) is not None:
+        return None
+    return ir_color(value)
+
+
 def compile_stroke(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         color = ir_color(raw.get("color"))
@@ -496,7 +518,12 @@ def text_style(
     if align not in ("left", "center", "right"):
         align = "left"
 
-    color = ir_color(node.get("color"), default_text_color(ntype)) or default_text_color(ntype)
+    # 旧设计稿把文字色存在 fill（没有 color）：fill 是文字色，不能当底色。
+    color = (
+        legacy_text_ink(node, ntype)
+        or ir_color(node.get("color"), default_text_color(ntype))
+        or default_text_color(ntype)
+    )
 
     is_input = ntype == "input"
     pad_left = num(node.get("padLeft"), DEFAULT_INPUT_PAD if is_input else 0.0)
@@ -622,8 +649,10 @@ def compile_node(node: Any, *, parent_type: str | None = None) -> dict[str, Any]
 
     ntype = normalize_type(node.get("type"))
     raw_fill = node.get("fill")
-    if ntype == "text" and not (isinstance(raw_fill, str) and raw_fill.strip()):
-        # 纯文字节点没有填充：不能落到「其他类型 = ink@0.08」的默认底色上。
+    bare_text = not (isinstance(raw_fill, str) and raw_fill.strip())
+    if ntype == "text" and (bare_text or legacy_text_ink(node, ntype) is not None):
+        # 纯文字节点没有填充：不能落到「其他类型 = ink@0.08」的默认底色上；
+        # 旧设计稿的 fill 是文字色，同样不画底色。
         fill: dict[str, Any] = {"kind": "none"}
     else:
         fill = compile_fill(raw_fill, default_fill_color(ntype))
