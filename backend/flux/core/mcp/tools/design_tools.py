@@ -10,13 +10,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
+import time
 import uuid
 from typing import Any
 
 import httpx
 
+from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL
 from flux.core.mcp.tools.base import (
     ToolContext,
     ToolSpec,
@@ -65,20 +68,26 @@ def _upstream_error(response: httpx.Response) -> AIOSError:
         payload = response.json()
     except ValueError:
         payload = {}
-    message = str(payload.get("error") or "设计服务暂时不可用")
+    message = str(payload.get("error") or payload.get("message") or "设计服务暂时不可用")
+    # 上游给的原始状态/错误码要透给 Agent：只报「服务暂时不可用」会让它盲目重试
+    details: dict[str, Any] = {"upstream_status": response.status_code}
+    if payload.get("upstream_status") is not None:
+        details["upstream_status"] = payload["upstream_status"]
+    if payload.get("upstream_code"):
+        details["upstream_code"] = str(payload["upstream_code"])
     if response.status_code == 404:
-        return NotFoundError(message)
+        return NotFoundError(message, details=details)
     if response.status_code == 409:
         return ConflictError(
             message,
             code="design_conflict",
-            details={"version": payload.get("version")},
+            details={**details, "version": payload.get("version")},
         )
     if response.status_code == 429:
-        return AIOSError(message, code="rate_limited", http_status=429)
+        return AIOSError(message, code="rate_limited", http_status=429, details=details)
     if response.status_code >= 500:
-        return DesignStudioUnavailable(message)
-    return ValidationError(message, details={"upstream_status": response.status_code})
+        return DesignStudioUnavailable(message, details=details)
+    return ValidationError(message, details=details)
 
 
 async def _request(
@@ -172,19 +181,31 @@ def _summary(design: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _preview(design: dict[str, Any]) -> dict[str, Any] | None:
-    """卡片缩略图数据：第一屏的尺寸、底色与前几十个节点。"""
+def _preview(design: dict[str, Any], screen_id: str | None = None) -> dict[str, Any] | None:
+    """卡片缩略图数据：指定画板（默认第一屏）的尺寸、底色与前几十个节点。
+
+    改完立刻能拿到「这块画板现在长什么样」的结构快照，不用再跳去设计工作室确认。
+    """
     screens = design.get("screens")
     if not isinstance(screens, list) or not screens:
         return None
-    first = screens[0]
-    if not isinstance(first, dict):
+    screen: Any = None
+    if screen_id:
+        for item in screens:
+            if isinstance(item, dict) and str(item.get("id")) == str(screen_id):
+                screen = item
+                break
+    if not isinstance(screen, dict):
+        screen = screens[0]
+    if not isinstance(screen, dict):
         return None
-    nodes = first.get("nodes")
+    nodes = screen.get("nodes")
     return {
-        "w": first.get("w") or 390,
-        "h": first.get("h") or 844,
-        "bg": design.get("bg"),
+        "screen_id": screen.get("id"),
+        "name": screen.get("name"),
+        "w": screen.get("w") or 390,
+        "h": screen.get("h") or 844,
+        "bg": screen.get("bg") or design.get("bg"),
         "nodes": (nodes if isinstance(nodes, list) else [])[:_PREVIEW_NODE_LIMIT],
     }
 
@@ -236,6 +257,247 @@ async def design_get(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]
     return {"design": design, "summary": _summary(design)}
 
 
+# ---------------------------------------------------------------- 视口上下文
+
+
+def _flatten_nodes(
+    nodes: list[Any],
+    origin_x: float,
+    origin_y: float,
+    parent_id: str,
+    depth: int,
+    out: list[dict[str, Any]],
+) -> None:
+    """把节点树摊平成「相对画板」的绝对矩形，供可见性与相邻间距计算。"""
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("hidden"):
+            continue
+        try:
+            x = origin_x + float(node.get("x") or 0)
+            y = origin_y + float(node.get("y") or 0)
+            w = float(node.get("w") or 0)
+            h = float(node.get("h") or 0)
+        except (TypeError, ValueError):
+            continue
+        entry = {
+            "id": str(node.get("id") or ""),
+            "name": str(node.get("name") or ""),
+            "type": str(node.get("type") or ""),
+            "x": round(x, 2),
+            "y": round(y, 2),
+            "w": round(w, 2),
+            "h": round(h, 2),
+            "parent_id": parent_id,
+            "depth": depth,
+        }
+        out.append(entry)
+        children = node.get("children")
+        if isinstance(children, list) and depth < 6:
+            _flatten_nodes(children, x, y, entry["id"], depth + 1, out)
+
+
+def _screen_entries(
+    design: dict[str, Any], screen_id: str
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """取目标画板与它所有可见图层的矩形（坐标相对画板左上角）。"""
+    screens = design.get("screens") if isinstance(design.get("screens"), list) else []
+    screen: dict[str, Any] | None = None
+    for item in screens:
+        if isinstance(item, dict) and str(item.get("id") or "") == screen_id:
+            screen = item
+            break
+    if screen is None and screens and isinstance(screens[0], dict):
+        screen = screens[0]
+    if screen is None:
+        return None, []
+    entries: list[dict[str, Any]] = []
+    nodes = screen.get("nodes")
+    if isinstance(nodes, list):
+        _flatten_nodes(nodes, 0.0, 0.0, "@screen", 0, entries)
+    return screen, entries
+
+
+def _rect(value: Any) -> dict[str, float]:
+    value = value if isinstance(value, dict) else {}
+
+    def number(key: str) -> float:
+        try:
+            return float(value.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {"x": number("x"), "y": number("y"), "w": number("w"), "h": number("h")}
+
+
+def _visible_ids(entries: list[dict[str, Any]], viewport: dict[str, float]) -> list[str]:
+    """与可视矩形相交的图层 id，按从上到下排序（最多 120 个）。"""
+    x0, y0 = viewport["x"], viewport["y"]
+    x1, y1 = x0 + viewport["w"], y0 + viewport["h"]
+    hits = [
+        entry
+        for entry in entries
+        if entry["w"] > 0
+        and entry["h"] > 0
+        and entry["x"] < x1
+        and entry["x"] + entry["w"] > x0
+        and entry["y"] < y1
+        and entry["y"] + entry["h"] > y0
+    ]
+    hits.sort(key=lambda entry: (entry["y"], entry["x"]))
+    return [entry["id"] for entry in hits[:120]]
+
+
+def _neighbor_gaps(
+    entry: dict[str, Any], siblings: list[dict[str, Any]]
+) -> dict[str, dict[str, Any] | None]:
+    """选中图层与同级邻居的间距：Agent 调间距时不用自己算坐标。"""
+    x, y, w, h = entry["x"], entry["y"], entry["w"], entry["h"]
+    gaps: dict[str, dict[str, Any] | None] = {
+        "above": None,
+        "below": None,
+        "left": None,
+        "right": None,
+    }
+    for other in siblings:
+        if other is entry or other["w"] <= 0 or other["h"] <= 0:
+            continue
+        # 水平方向有重叠才算上下邻居，垂直方向有重叠才算左右邻居
+        overlap_x = other["x"] < x + w and other["x"] + other["w"] > x
+        overlap_y = other["y"] < y + h and other["y"] + other["h"] > y
+        if overlap_x and other["y"] + other["h"] <= y + 0.5:
+            gap = y - (other["y"] + other["h"])
+            if gaps["above"] is None or gap < gaps["above"]["gap"]:
+                gaps["above"] = {"id": other["id"], "gap": round(max(0.0, gap), 1)}
+        if overlap_x and other["y"] >= y + h - 0.5:
+            gap = other["y"] - (y + h)
+            if gaps["below"] is None or gap < gaps["below"]["gap"]:
+                gaps["below"] = {"id": other["id"], "gap": round(max(0.0, gap), 1)}
+        if overlap_y and other["x"] + other["w"] <= x + 0.5:
+            gap = x - (other["x"] + other["w"])
+            if gaps["left"] is None or gap < gaps["left"]["gap"]:
+                gaps["left"] = {"id": other["id"], "gap": round(max(0.0, gap), 1)}
+        if overlap_y and other["x"] >= x + w - 0.5:
+            gap = other["x"] - (x + w)
+            if gaps["right"] is None or gap < gaps["right"]["gap"]:
+                gaps["right"] = {"id": other["id"], "gap": round(max(0.0, gap), 1)}
+    return gaps
+
+
+def _selection_info(
+    entries: list[dict[str, Any]],
+    selected_ids: list[str],
+    screen_w: float,
+    screen_h: float,
+) -> list[dict[str, Any]]:
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_parent.setdefault(entry["parent_id"], []).append(entry)
+    index = {entry["id"]: entry for entry in entries}
+    out: list[dict[str, Any]] = []
+    for node_id in selected_ids[:5]:
+        entry = index.get(node_id)
+        if entry is None:
+            continue
+        rect = {"x": entry["x"], "y": entry["y"], "w": entry["w"], "h": entry["h"]}
+        out.append(
+            {
+                "id": entry["id"],
+                "name": entry["name"],
+                "type": entry["type"],
+                "parent_id": entry["parent_id"],
+                "rect": rect,
+                "gaps": _neighbor_gaps(entry, by_parent.get(entry["parent_id"], [])),
+                "edges": {
+                    "top": round(max(0.0, rect["y"]), 1),
+                    "bottom": round(max(0.0, screen_h - rect["y"] - rect["h"]), 1),
+                    "left": round(max(0.0, rect["x"]), 1),
+                    "right": round(max(0.0, screen_w - rect["x"] - rect["w"]), 1),
+                },
+            }
+        )
+    return out
+
+
+async def design_view(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """读取用户在 Luma 里当前的视口 / 选中，并把可见图层与相邻间距算好。"""
+    reject_unknown(params, {"design_id", "wait_ms"})
+    design_id = _require_design_id(params.get("design_id"))
+    wait_ms = params.get("wait_ms", 1500)
+    if isinstance(wait_ms, bool) or not isinstance(wait_ms, int):
+        raise ValidationError("wait_ms 必须是整数", details={"param": "wait_ms"})
+    wait_ms = max(0, min(wait_ms, 5000))
+    async with _client(ctx) as client:
+        body = await _request(client, "GET", f"/api/designs/{design_id}/view")
+        deadline = time.monotonic() + wait_ms / 1000
+        while not body.get("view") and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+            body = await _request(client, "GET", f"/api/designs/{design_id}/view")
+        view = body.get("view")
+        if not isinstance(view, dict):
+            return {
+                "design_id": design_id,
+                "view": None,
+                "hint": (
+                    "用户还没打开这块画布，Luma 网页没有上报视口。"
+                    "先 design.get 读现状并用绝对坐标改；用户打开画布后再调 design.view。"
+                ),
+            }
+        loaded = await _request(client, "GET", f"/api/designs/{design_id}")
+    design = loaded.get("design")
+    if not isinstance(design, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    screen, entries = _screen_entries(design, str(view.get("screen_id") or ""))
+    if not isinstance(screen, dict):
+        raise ValidationError("设计稿还没有画板", details={"param": "design_id"})
+    screen_w = float(screen.get("w") or 390)
+    screen_h = float(screen.get("h") or 844)
+    viewport = _rect(view.get("viewport"))
+    selected = _selection_info(entries, list(view.get("selection") or []), screen_w, screen_h)
+    visible = bool(view.get("visible", True))
+    stale = bool(body.get("stale")) or not visible
+    hint_parts = [
+        f"用户当前缩放 {round(float(view.get('zoom') or 1) * 100)}%，"
+        f"可视区域在画板「{screen.get('name') or screen.get('id')}」内 "
+        f"x={round(viewport['x'], 1)}–{round(viewport['x'] + viewport['w'], 1)}, "
+        f"y={round(viewport['y'], 1)}–{round(viewport['y'] + viewport['h'], 1)}。"
+    ]
+    if selected:
+        hint_parts.append(
+            "已选中 "
+            + "、".join(item["id"] for item in selected)
+            + "；gaps 是它与同级邻居的间距，直接用 design.patch 微调即可。"
+        )
+    else:
+        hint_parts.append("当前没有选中图层；改样式前先 design.get 取节点 id。")
+    if not visible:
+        hint_parts.append("用户目前不在画布页（visible=false），位置信息可能已过时。")
+    elif stale:
+        hint_parts.append("视口上报超过 30 秒，可能不是最新，改稿前可再看一眼或让用户刷新画布。")
+    return {
+        "design_id": design_id,
+        "version": design.get("version"),
+        "view": {
+            "zoom": view.get("zoom"),
+            "screen_id": screen.get("id"),
+            "screen": {
+                "id": screen.get("id"),
+                "name": screen.get("name"),
+                "w": screen_w,
+                "h": screen_h,
+            },
+            "viewport": viewport,
+            "selection": list(view.get("selection") or []),
+            "visible": visible,
+            "age_ms": body.get("age_ms"),
+            "seq": view.get("seq"),
+            "stale": stale,
+        },
+        "visible_node_ids": _visible_ids(entries, viewport),
+        "selection": selected,
+        "hint": "".join(hint_parts),
+    }
+
+
 async def design_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(
         params,
@@ -269,6 +531,27 @@ async def design_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
     return {"created": True, "design": design, "summary": _summary(design)}
 
 
+def _merge_screens(current: list[Any], updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按画板 id 合并：同名画板就地替换，新画板追加，未提到的画板原样保留。
+
+    `design_update` 早先是整份覆盖，改一块画板会把其余画板一起冲掉；
+    默认走这里按 id 合并，只有显式要求整份替换时才覆盖。
+    """
+    merged: list[Any] = list(current)
+    positions: dict[str, int] = {}
+    for pos, screen in enumerate(merged):
+        if isinstance(screen, dict):
+            positions[str(screen.get("id"))] = pos
+    for screen in updates:
+        key = str(screen.get("id"))
+        if key in positions:
+            merged[positions[key]] = screen
+        else:
+            positions[key] = len(merged)
+            merged.append(screen)
+    return merged
+
+
 async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(
         params,
@@ -283,6 +566,7 @@ async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
             "bg",
             "file",
             "screens",
+            "replace_screens",
         },
     )
     design_id = _require_design_id(params.get("design_id"))
@@ -291,11 +575,20 @@ async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
     base_version = params.get("base_version")
     if base_version is not None and not isinstance(base_version, int):
         raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+    replace_screens = params.get("replace_screens", False)
+    if not isinstance(replace_screens, bool):
+        raise ValidationError("replace_screens 必须是布尔值", details={"param": "replace_screens"})
     async with _client(ctx) as client:
         current = await _request(client, "GET", f"/api/designs/{design_id}")
         design = current.get("design")
         if not isinstance(design, dict):
             raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+        if screens is None:
+            merged_screens = design.get("screens") or []
+        elif replace_screens:
+            merged_screens = screens
+        else:
+            merged_screens = _merge_screens(design.get("screens") or [], screens)
         merged = {
             "name": meta.get("name") or design.get("name"),
             "project": meta.get("project") or design.get("project"),
@@ -304,7 +597,7 @@ async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
             "status": meta.get("status") or design.get("status"),
             "bg": meta.get("bg") or design.get("bg"),
             "file": meta.get("file") or design.get("file"),
-            "screens": screens if screens is not None else design.get("screens") or [],
+            "screens": merged_screens,
         }
         saved = await _request(
             client,
@@ -318,7 +611,12 @@ async def design_update(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
     updated = saved.get("design")
     if not isinstance(updated, dict):
         raise DesignStudioUnavailable("设计服务返回了异常设计稿")
-    return {"created": False, "design": updated, "summary": _summary(updated)}
+    result: dict[str, Any] = {"created": False, "design": updated, "summary": _summary(updated)}
+    if screens is not None:
+        result["mode"] = "replace" if replace_screens else "merge"
+        result["updated_screens"] = [str(screen.get("id")) for screen in screens]
+        result["preview"] = _preview(updated, str(screens[0].get("id")))
+    return result
 
 
 # ---------------------------------------------------------------- AI 局部修改
@@ -337,6 +635,73 @@ def _find_node(nodes: list[Any], node_id: str) -> tuple[list[Any], int, dict[str
             if hit is not None:
                 return hit
     return None
+
+
+def _nodes_by_id(design: dict[str, Any], node_ids: list[str], limit: int = 20) -> list[dict]:
+    """按 id 回捞节点，用于增量修改的返回值（不回整份设计稿，省 token）。"""
+    screens = design.get("screens") if isinstance(design.get("screens"), list) else []
+    found: list[dict] = []
+    for node_id in node_ids:
+        for screen in screens:
+            if not isinstance(screen, dict):
+                continue
+            nodes = screen.get("nodes")
+            if not isinstance(nodes, list):
+                continue
+            hit = _find_node(nodes, node_id)
+            if hit is not None:
+                found.append(hit[2])
+                break
+        if len(found) >= limit:
+            break
+    return found
+
+
+async def _commit_ops(
+    client: httpx.AsyncClient,
+    design_id: str,
+    design: dict[str, Any],
+    screen_id: str,
+    ops: list[dict[str, Any]],
+    label: str,
+    base_version: int | None,
+) -> dict[str, Any]:
+    """把 ops 提交到 Luma 的 commits 通道：服务端在最新稿上重放，只提交意图。"""
+    committed = await _request(
+        client,
+        "POST",
+        f"/api/designs/{design_id}/commits",
+        {
+            "author": "flux-agent",
+            "role": "agent",
+            "label": label[:120],
+            "screen": screen_id,
+            "base_version": base_version if base_version is not None else design.get("version"),
+            "ops": ops,
+        },
+    )
+    updated = committed.get("design")
+    if not isinstance(updated, dict):
+        raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+    applied = committed.get("applied")
+    applied = applied if isinstance(applied, int) and not isinstance(applied, bool) else 0
+    skipped = committed.get("skipped")
+    deferred = committed.get("deferred")
+    touched = committed.get("touched")
+    return {
+        "changed": applied > 0,
+        "design_id": design_id,
+        "screen_id": screen_id,
+        "version": updated.get("version"),
+        "applied": applied,
+        "skipped": (skipped if isinstance(skipped, list) else [])[:5],
+        "deferred": (deferred if isinstance(deferred, list) else [])[:5],
+        "rebased": bool(committed.get("rebased")),
+        "touched": touched if isinstance(touched, list) else [],
+        "nodes": _nodes_by_id(updated, touched if isinstance(touched, list) else []),
+        "preview": _preview(updated, screen_id),
+        "summary": _summary(updated),
+    }
 
 
 def _pick_screen(design: dict[str, Any], params: dict[str, Any]) -> tuple[dict[str, Any], int]:
@@ -387,6 +752,11 @@ _AI_MODES = {"auto", "node", "multi", "screen"}
 
 async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     """对设计稿做局部 AI 修改：只改当前画板，服务端应用 ops 并落盘。"""
+    if ctx.identity.kind == AGENT_KIND_EXTERNAL:
+        raise ValidationError(
+            "外部接入的 Agent 不支持 design.ai：请用 design.patch / design.layout 自行修改画布",
+            details={"tool": "design.ai", "kind": ctx.identity.kind},
+        )
     reject_unknown(
         params,
         {
@@ -401,8 +771,10 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     )
     design_id = _require_design_id(params.get("design_id"))
     instruction = require_str(params, "instruction").strip()
-    if len(instruction) > 400:
-        raise ValidationError("instruction 太长，控制在 400 字内", details={"param": "instruction"})
+    if len(instruction) > 2000:
+        raise ValidationError(
+            "instruction 太长，控制在 2000 字内", details={"param": "instruction"}
+        )
     selected_ids = _selected_ids(params)
     mode = optional_str(params, "mode") or "auto"
     if mode not in _AI_MODES:
@@ -412,6 +784,18 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
         isinstance(base_version, bool) or not isinstance(base_version, int)
     ):
         raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+
+    # 模型通道由调用方 Agent 决定：自身 runtime 的默认通道 + 密钥库，不读全局默认路由
+    try:
+        target = await ctx.container.completion_resolver.resolve(agent_id=ctx.identity.agent_id)
+    except AIOSError as exc:
+        raise AIOSError(
+            f"无法为 Agent {ctx.identity.name or ctx.identity.agent_id} 解析可用的模型："
+            f"{exc.message}",
+            code="ai_step_failed",
+            http_status=502,
+            details={"agent_id": ctx.identity.agent_id, "cause": exc.message},
+        ) from exc
 
     async with _client(ctx) as client:
         current = await _request(client, "GET", f"/api/designs/{design_id}")
@@ -452,6 +836,10 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
                     "prompt": instruction,
                     "mode": mode,
                     "nodes": selected,
+                    # 调用方 Agent 与解析出的模型通道：Luma 侧的 AI 修改不再用自身默认路由
+                    "agent_id": ctx.identity.agent_id,
+                    "model": target.model,
+                    "key_id": target.key_id or "",
                     # design id 供 Luma 建立多轮修改记录；bg 供其按底色选择深/浅基调
                     "design": design_id,
                     "screen": {
@@ -467,7 +855,9 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
         except DesignStudioUnavailable as exc:
             # /api/ask 的 502 多半是「AI 连续两次没给出可应用修改」这类可重试失败，
             # 不是设计服务宕机：翻译成 ai_step_failed，让 Agent 看到原因并重试。
-            raise AIOSError(str(exc), code="ai_step_failed", http_status=502) from exc
+            raise AIOSError(
+                str(exc), code="ai_step_failed", http_status=502, details=exc.details
+            ) from exc
         ops = asked.get("ops")
         if not isinstance(ops, list) or not ops:
             raise ValidationError("AI 没有给出可应用的修改，换个说法或缩小改动范围再试")
@@ -511,9 +901,328 @@ async def design_ai(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
         "reply": asked.get("reply"),
         "mode": asked.get("mode") or mode,
         "model": asked.get("model"),
+        "preview": _preview(updated, str(screen.get("id") or "")),
         "summary": _summary(updated),
         "design": updated,
     }
+
+
+# ---------------------------------------------------------------- 增量修改 / 布局
+
+
+_PATCH_MAX_CHANGES = 200
+_PATCH_MAX_OPS = 400
+_LAYOUT_MAX_NODES = 50
+_LAYOUT_ACTIONS = {
+    "align-left",
+    "align-right",
+    "align-top",
+    "align-bottom",
+    "align-h-center",
+    "align-v-center",
+    "distribute-h",
+    "distribute-v",
+    "stack-v",
+    "stack-h",
+    "equal-width",
+    "equal-height",
+}
+
+
+def _require_optional_version(params: dict[str, Any]) -> int | None:
+    base_version = params.get("base_version")
+    if base_version is not None and (
+        isinstance(base_version, bool) or not isinstance(base_version, int)
+    ):
+        raise ValidationError("base_version 必须是整数", details={"param": "base_version"})
+    return base_version
+
+
+def _num(value: Any, default: float) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+def _layout_patches(
+    action: str,
+    boxes: list[tuple[float, float, float, float]],
+    screen_w: float,
+    screen_h: float,
+    gap: float,
+    align_to: str,
+    size: float | None,
+) -> list[dict[str, float]]:
+    """按动作算出每个节点的目标坐标；只返回真正变化的字段。"""
+    count = len(boxes)
+    xs = [box[0] for box in boxes]
+    ys = [box[1] for box in boxes]
+    ws = [box[2] for box in boxes]
+    hs = [box[3] for box in boxes]
+    targets: list[dict[str, float]] = [{} for _ in range(count)]
+    if action == "align-left":
+        target = 0.0 if align_to == "screen" else min(xs)
+        for i in range(count):
+            targets[i]["x"] = target
+    elif action == "align-right":
+        target = (
+            screen_w if align_to == "screen" else max(x + w for x, w in zip(xs, ws, strict=True))
+        )
+        for i in range(count):
+            targets[i]["x"] = target - ws[i]
+    elif action == "align-h-center":
+        center = (
+            screen_w / 2
+            if align_to == "screen"
+            else (min(xs) + max(x + w for x, w in zip(xs, ws, strict=True))) / 2
+        )
+        for i in range(count):
+            targets[i]["x"] = center - ws[i] / 2
+    elif action == "align-top":
+        target = 0.0 if align_to == "screen" else min(ys)
+        for i in range(count):
+            targets[i]["y"] = target
+    elif action == "align-bottom":
+        target = (
+            screen_h if align_to == "screen" else max(y + h for y, h in zip(ys, hs, strict=True))
+        )
+        for i in range(count):
+            targets[i]["y"] = target - hs[i]
+    elif action == "align-v-center":
+        center = (
+            screen_h / 2
+            if align_to == "screen"
+            else (min(ys) + max(y + h for y, h in zip(ys, hs, strict=True))) / 2
+        )
+        for i in range(count):
+            targets[i]["y"] = center - hs[i] / 2
+    elif action in ("distribute-h", "distribute-v"):
+        if count < 3:
+            raise ValidationError("distribute 至少需要 3 个图层", details={"param": "node_ids"})
+        positions = xs if action == "distribute-h" else ys
+        sizes = ws if action == "distribute-h" else hs
+        axis = "x" if action == "distribute-h" else "y"
+        order = sorted(range(count), key=lambda i: positions[i])
+        span = (positions[order[-1]] + sizes[order[-1]]) - positions[order[0]]
+        step = (span - sum(sizes[i] for i in order)) / (count - 1)
+        cursor = positions[order[0]]
+        for i in order:
+            targets[i][axis] = cursor
+            cursor += sizes[i] + step
+    elif action in ("stack-v", "stack-h"):
+        vertical = action == "stack-v"
+        axis = "y" if vertical else "x"
+        sizes = hs if vertical else ws
+        cursor = min(ys) if vertical else min(xs)
+        for i in range(count):
+            targets[i][axis] = cursor
+            cursor += sizes[i] + gap
+    elif action == "equal-width":
+        target = size if size is not None else max(ws)
+        for i in range(count):
+            targets[i]["w"] = target
+    elif action == "equal-height":
+        target = size if size is not None else max(hs)
+        for i in range(count):
+            targets[i]["h"] = target
+    patches: list[dict[str, float]] = []
+    for i, target in enumerate(targets):
+        current = {"x": xs[i], "y": ys[i], "w": ws[i], "h": hs[i]}
+        patches.append(
+            {
+                key: round(value, 2)
+                for key, value in target.items()
+                if abs(value - current[key]) > 0.01
+            }
+        )
+    return patches
+
+
+async def design_patch(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """按节点 id 批量改样式，或提交原生 ops；只提交改动，不覆盖整份画板。"""
+    reject_unknown(
+        params,
+        {"design_id", "screen_id", "screen_index", "changes", "ops", "label", "base_version"},
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    changes = params.get("changes")
+    raw_ops = params.get("ops")
+    if changes is None and raw_ops is None:
+        raise ValidationError("changes 和 ops 至少给一个", details={"param": "changes"})
+    ops: list[dict[str, Any]] = []
+    if changes is not None:
+        if not isinstance(changes, list) or not changes:
+            raise ValidationError("changes 必须是非空数组", details={"param": "changes"})
+        if len(changes) > _PATCH_MAX_CHANGES:
+            raise ValidationError(
+                f"changes 最多 {_PATCH_MAX_CHANGES} 条", details={"param": "changes"}
+            )
+        for index, item in enumerate(changes):
+            if not isinstance(item, dict):
+                raise ValidationError(f"changes[{index}] 必须是对象", details={"param": "changes"})
+            target = item.get("id") or item.get("target")
+            if not isinstance(target, str) or not target.strip():
+                raise ValidationError(f"changes[{index}] 缺少节点 id", details={"param": "changes"})
+            patch = item.get("set")
+            if not isinstance(patch, dict) or not patch:
+                raise ValidationError(
+                    f"changes[{index}].set 必须是非空对象", details={"param": "changes"}
+                )
+            ops.append({"op": "set", "target": target.strip(), "set": patch})
+    if raw_ops is not None:
+        if not isinstance(raw_ops, list) or not raw_ops:
+            raise ValidationError("ops 必须是非空数组", details={"param": "ops"})
+        for index, item in enumerate(raw_ops):
+            if not isinstance(item, dict) or not isinstance(item.get("op"), str):
+                raise ValidationError(f"ops[{index}] 必须是带 op 的对象", details={"param": "ops"})
+            ops.append(item)
+    if len(ops) > _PATCH_MAX_OPS:
+        raise ValidationError(f"单次最多 {_PATCH_MAX_OPS} 条操作", details={"param": "ops"})
+    base_version = _require_optional_version(params)
+    label = optional_str(params, "label") or "增量修改"
+    async with _client(ctx) as client:
+        current = await _request(client, "GET", f"/api/designs/{design_id}")
+        design = current.get("design")
+        if not isinstance(design, dict):
+            raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+        screen, _ = _pick_screen(design, params)
+        result = await _commit_ops(
+            client,
+            design_id,
+            design,
+            str(screen.get("id") or ""),
+            ops,
+            label,
+            base_version,
+        )
+    if not result["changed"]:
+        raise ValidationError(
+            "没有任何修改生效：节点 id 不存在或字段不在白名单",
+            details={"skipped": result["skipped"], "deferred": result["deferred"]},
+        )
+    return result
+
+
+async def design_layout(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """对齐 / 分布 / 堆叠 / 等宽等高：服务端算好坐标再提交，不用整份覆盖。"""
+    reject_unknown(
+        params,
+        {
+            "design_id",
+            "screen_id",
+            "screen_index",
+            "node_ids",
+            "action",
+            "gap",
+            "align_to",
+            "size",
+            "label",
+            "base_version",
+        },
+    )
+    design_id = _require_design_id(params.get("design_id"))
+    action = optional_str(params, "action") or ""
+    if action not in _LAYOUT_ACTIONS:
+        raise ValidationError(
+            f"action 只能是 {sorted(_LAYOUT_ACTIONS)}", details={"param": "action"}
+        )
+    raw_ids = params.get("node_ids")
+    if not isinstance(raw_ids, list) or len(raw_ids) < 2:
+        raise ValidationError(
+            "node_ids 必须是至少 2 个图层 id 的数组", details={"param": "node_ids"}
+        )
+    if len(raw_ids) > _LAYOUT_MAX_NODES:
+        raise ValidationError(
+            f"node_ids 最多 {_LAYOUT_MAX_NODES} 个", details={"param": "node_ids"}
+        )
+    node_ids: list[str] = []
+    for item in raw_ids:
+        if not isinstance(item, str) or not item.strip():
+            raise ValidationError(
+                "node_ids 里每一项都必须是非空字符串", details={"param": "node_ids"}
+            )
+        node_ids.append(item.strip())
+    gap = params.get("gap", 12)
+    if isinstance(gap, bool) or not isinstance(gap, (int, float)):
+        raise ValidationError("gap 必须是数字", details={"param": "gap"})
+    align_to = optional_str(params, "align_to") or "selection"
+    if align_to not in {"selection", "screen"}:
+        raise ValidationError("align_to 只能是 selection 或 screen", details={"param": "align_to"})
+    size = params.get("size")
+    if size is not None and (
+        isinstance(size, bool) or not isinstance(size, (int, float)) or float(size) <= 0
+    ):
+        raise ValidationError("size 必须是正数", details={"param": "size"})
+    base_version = _require_optional_version(params)
+    label = optional_str(params, "label") or f"布局：{action}"
+    async with _client(ctx) as client:
+        current = await _request(client, "GET", f"/api/designs/{design_id}")
+        design = current.get("design")
+        if not isinstance(design, dict):
+            raise DesignStudioUnavailable("设计服务返回了异常设计稿")
+        screen, screen_index = _pick_screen(design, params)
+        nodes = screen.get("nodes")
+        nodes = nodes if isinstance(nodes, list) else []
+        hits: list[tuple[list[Any], int, dict[str, Any]]] = []
+        missing: list[str] = []
+        for node_id in node_ids:
+            hit = _find_node(nodes, node_id)
+            if hit is None:
+                missing.append(node_id)
+            else:
+                hits.append(hit)
+        if missing:
+            raise ValidationError(
+                f"图层不在该画板：{'、'.join(missing[:5])}", details={"param": "node_ids"}
+            )
+        parent = hits[0][0]
+        if any(hit[0] is not parent for hit in hits[1:]):
+            raise ValidationError(
+                "layout 只支持同一父级下的图层；跨分组请先解组或分批调整",
+                details={"param": "node_ids"},
+            )
+        boxes = [
+            (
+                _num(node.get("x"), 0.0),
+                _num(node.get("y"), 0.0),
+                _num(node.get("w"), 1.0),
+                _num(node.get("h"), 1.0),
+            )
+            for _, _, node in hits
+        ]
+        patches = _layout_patches(
+            action,
+            boxes,
+            _num(screen.get("w"), 390.0),
+            _num(screen.get("h"), 844.0),
+            float(gap),
+            align_to,
+            float(size) if size is not None else None,
+        )
+        ops = [
+            {"op": "set", "target": str(hits[i][2].get("id") or ""), "set": patch}
+            for i, patch in enumerate(patches)
+            if patch
+        ]
+        if not ops:
+            raise ValidationError("当前已经是目标状态，无需调整")
+        result = await _commit_ops(
+            client,
+            design_id,
+            design,
+            str(screen.get("id") or ""),
+            ops,
+            label,
+            base_version,
+        )
+    if not result["changed"]:
+        raise ValidationError(
+            "布局没有生效，请检查图层是否被锁定",
+            details={"skipped": result["skipped"], "deferred": result["deferred"]},
+        )
+    result["screen_index"] = screen_index
+    result["patches"] = [{"id": op["target"], "set": op["set"]} for op in ops[:_LAYOUT_MAX_NODES]]
+    return result
 
 
 async def design_revisions(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
@@ -1289,6 +1998,56 @@ async def design_share(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
     }
 
 
+# ---------------------------------------------------------------- 自定义图标
+
+
+async def design_icon_create(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """让 Agent 自己画一个 24×24 图标并保存到设计工作室，供 icon 节点引用。"""
+    reject_unknown(params, {"name", "label", "parts", "paths", "path"})
+    name = require_str(params, "name")
+    payload: dict[str, Any] = {"name": name}
+    label = optional_str(params, "label")
+    if label is not None:
+        payload["label"] = label
+
+    parts = params.get("parts")
+    paths = params.get("paths")
+    path = params.get("path")
+    if parts is None and paths is None and path is None:
+        raise ValidationError(
+            "需要 parts（几何指令数组）或 paths / path（SVG path 的 d 字符串）",
+            details={"param": "parts"},
+        )
+    if parts is not None:
+        if not isinstance(parts, list) or not parts:
+            raise ValidationError("parts 必须是非空数组", details={"param": "parts"})
+        payload["parts"] = parts
+    if paths is not None:
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
+            raise ValidationError("paths 必须是字符串数组", details={"param": "paths"})
+        payload["paths"] = paths
+    if path is not None:
+        if not isinstance(path, str):
+            raise ValidationError("path 必须是字符串", details={"param": "path"})
+        payload["path"] = path
+
+    async with _client(ctx) as client:
+        body = await _request(client, "POST", "/api/icons", payload)
+    return {
+        "name": body.get("name") or name,
+        "label": body.get("label"),
+        "parts": body.get("parts"),
+        "custom": True,
+        "hint": (
+            "图标已保存到设计工作室。把节点写成 type=icon、icon=该名称即可；"
+            '用 design.patch 时 changes 写 {"id": "icon-1", "set": {"icon": "<name>"}}。'
+            "画布、代码生成与 SVG 导出都会使用这套几何。"
+        ),
+    }
+
+
 # ---------------------------------------------------------------- 注册
 
 
@@ -1336,12 +2095,39 @@ def design_tools() -> tuple[ToolSpec, ...]:
             handler=design_get,
         ),
         ToolSpec(
+            name="design.view",
+            title="读取画布视口与选中",
+            description=(
+                "读取用户此刻在 Luma 画布上的视口：缩放、正在看哪块画板、可视区域坐标、"
+                "已选中的图层，并返回可视图层 id 与选中图层相对同级邻居的四向间距（gaps）"
+                "和到画板四边的距离（edges）。做「看得见的微调」前先调它，按用户正在看的位置"
+                "用 design.patch 改，不要整屏重写。用户还没打开画布时返回 view=null 与提示；"
+                "wait_ms 可在用户刚打开页面时等一帧上报（0–5000，默认 1500）。坐标都是相对"
+                "当前画板左上角的像素值。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "wait_ms": {
+                        "type": "integer",
+                        "description": "等待网页首次上报视口的最长毫秒数（0–5000，默认 1500）",
+                    },
+                },
+                "required": ["design_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_READ,
+            handler=design_view,
+        ),
+        ToolSpec(
             name="design.create",
             title="新建设计稿",
             description=(
                 "在设计工作室新建设计稿并写入画板。做页面/UI/视觉设计必须走这个工具，不要用"
                 "自写 HTML、截图或静态图片代替。screens 里每个画板需要 id、name、w、h，"
                 "nodes 是图层数组（text/card/pill/circle/decor 等，坐标与尺寸用数字）。"
+                "图标用 type=icon + icon 名称；内置图标不够时先调 design.icon_create 画一个。"
             ),
             input_schema={
                 "type": "object",
@@ -1370,9 +2156,12 @@ def design_tools() -> tuple[ToolSpec, ...]:
             name="design.update",
             title="更新设计稿",
             description=(
-                "整份更新设计稿（传 screens 则替换画板，否则只改元数据）。修改已有设计前先"
-                "design.get。带 base_version 做乐观锁；不带时按当前最新版本保存。冲突返回"
-                "design_conflict 与当前 version：重新 design.get 后再改，不要覆盖别人的改动。"
+                "更新设计稿元数据与画板。screens 默认「按画板 id 合并」：同名画板就地替换，"
+                "新画板追加，没提到的画板原样保留（所以改一块画板不会把其它画板冲掉）；"
+                "只有明确要整份替换时才传 replace_screens=true。只改局部样式时优先用"
+                "design.patch（按节点 id）或 design.ai。带 base_version 做乐观锁；不带时按当前"
+                "最新版本保存。冲突返回 design_conflict 与当前 version：重新 design.get 后再改，"
+                "不要覆盖别人的改动。返回里带 mode（merge/replace）与 preview 快照。"
             ),
             input_schema={
                 "type": "object",
@@ -1390,8 +2179,18 @@ def design_tools() -> tuple[ToolSpec, ...]:
                     "bg": {"type": "string", "description": "画布底色（可空）"},
                     "screens": {
                         "type": "array",
-                        "description": "替换全部画板；省略时保留现有画板",
+                        "description": (
+                            "要写入的画板（1–20 个，每个需 id/name/w/h）。默认按 id 合并；"
+                            "省略时保留现有画板"
+                        ),
                         "items": {"type": "object"},
+                    },
+                    "replace_screens": {
+                        "type": "boolean",
+                        "description": (
+                            "true = 用 screens 整份替换所有画板（未列出的画板会被删除）；"
+                            "默认 false = 按画板 id 合并"
+                        ),
                     },
                 },
                 "required": ["design_id"],
@@ -1399,6 +2198,139 @@ def design_tools() -> tuple[ToolSpec, ...]:
             },
             capability=Capability.FILE_WRITE,
             handler=design_update,
+        ),
+        ToolSpec(
+            name="design.patch",
+            title="按节点增量修改",
+            description=(
+                "按节点 id 做增量修改：changes 批量改现有图层的样式/文案/位置"
+                '（每项 {"id": "card-1", "set": {"radius": 16, "h": 96}}），'
+                "ops 走原生操作（set / add / remove / reorder，可增删或调整层级）。"
+                "只提交改动、不覆盖整份画板，比 design.update 更安全也更省 token。"
+                "多选统一改样式优先用它，不要依赖 design.ai 去猜。"
+                "字段白名单：x/y/w/h/radius/fill/color/text/fontSize/fontWeight/opacity/"
+                "letterSpacing/stroke/lineHeight/align/name/hidden/locked/rotation/"
+                "icon（图标名，如 search/home/heart）/sw（图标线宽、分割线粗细）/"
+                "shadow（CSS box-shadow 字符串）/maxLines（文本最多几行）/fontFamily 等；"
+                "未知字段会被跳过，原因在 skipped 里。node id 从 design.get 的图层树里取。"
+                "返回里带 preview（当前画板前 48 个节点的快照），可直接确认改动效果，"
+                "不用再跳去设计工作室。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "screen_id": {
+                        "type": "string",
+                        "description": "目标画板 id（可空，默认第一块画板）",
+                    },
+                    "screen_index": {
+                        "type": "integer",
+                        "description": "目标画板下标（screen_id 优先）",
+                    },
+                    "changes": {
+                        "type": "array",
+                        "description": "批量样式修改，最多 200 条",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "节点 id"},
+                                "set": {
+                                    "type": "object",
+                                    "description": '要改的字段，例如 {"h": 96, "radius": 16}',
+                                },
+                            },
+                            "required": ["id", "set"],
+                        },
+                    },
+                    "ops": {
+                        "type": "array",
+                        "description": (
+                            "原生 ops，与 changes 合计最多 400 条。"
+                            '例：{"op":"add","target":"@screen","node":{...},"index":0}、'
+                            '{"op":"remove","target":"node-id"}、'
+                            '{"op":"reorder","target":"node-id","index":2}'
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "label": {"type": "string", "description": "提交说明（可空）"},
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本提交（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_patch,
+        ),
+        ToolSpec(
+            name="design.layout",
+            title="对齐 / 分布 / 堆叠图层",
+            description=(
+                "对同一父级下的多个图层做几何整理，服务端算好坐标后按节点提交，不整份覆盖。"
+                "action：align-left / align-right / align-top / align-bottom / "
+                "align-h-center / align-v-center、distribute-h / distribute-v（至少 3 个）、"
+                "stack-v / stack-h（按传入顺序，gap 默认 12）、equal-width / equal-height。"
+                "align_to=selection（默认，以选区包围盒为基准）或 screen（以画板为基准）。"
+                "只支持同一父级下的图层；跨分组请先解组或分批调用。"
+                "改堆叠间距时直接调 stack-v/stack-h 改 gap，不用自己重算每个节点的 y。"
+                "返回里带 preview，可直接确认排版结果。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "design_id": {"type": "string", "description": "设计稿 id"},
+                    "screen_id": {"type": "string", "description": "目标画板 id（优先于下标）"},
+                    "screen_index": {"type": "integer", "description": "目标画板下标，默认 0"},
+                    "node_ids": {
+                        "type": "array",
+                        "description": "要整理的图层 id（2–50 个，需同一父级）",
+                        "items": {"type": "string"},
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "align-left",
+                            "align-right",
+                            "align-top",
+                            "align-bottom",
+                            "align-h-center",
+                            "align-v-center",
+                            "distribute-h",
+                            "distribute-v",
+                            "stack-v",
+                            "stack-h",
+                            "equal-width",
+                            "equal-height",
+                        ],
+                        "description": "布局动作",
+                    },
+                    "gap": {
+                        "type": "number",
+                        "description": "stack 时的间距，默认 12（像素）",
+                    },
+                    "align_to": {
+                        "type": "string",
+                        "enum": ["selection", "screen"],
+                        "description": "selection 以选区包围盒为基准（默认）；screen 以画板为基准",
+                    },
+                    "size": {
+                        "type": "number",
+                        "description": "equal-width/equal-height 的目标尺寸；省略取当前最大值",
+                    },
+                    "label": {"type": "string", "description": "提交说明（可空）"},
+                    "base_version": {
+                        "type": "integer",
+                        "description": "基于哪个版本提交（可空，缺省用刚读到的版本）",
+                    },
+                },
+                "required": ["design_id", "node_ids", "action"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_layout,
         ),
         ToolSpec(
             name="design.component_list",
@@ -1566,9 +2498,11 @@ def design_tools() -> tuple[ToolSpec, ...]:
             title="AI 局部修改设计稿",
             description=(
                 "让设计工作室的 AI 只改当前画板的局部（改文案/配色/间距、加删单个模块、调整"
-                "层级），服务端把改动落盘并返回新版本。改已有设计优先用它，不要 design.get 后"
-                "整份 design.update 覆盖：那样既费 token，也容易冲掉别人的改动。"
-                "mode=auto 时按 selected_ids 推断；要改整屏可不传选中项。"
+                "层级），服务端把改动落盘并返回新版本。指令上限 2000 字，可以一次写多句组合"
+                "要求。改已有设计优先用 design.patch（按节点 id 精确改样式）或本工具（让 AI 猜"
+                "意图）；对齐/间距用 design.layout。不要 design.get 后整份 design.update 覆盖："
+                "既费 token，也容易冲掉别人的改动。mode=auto 时按 selected_ids 推断；"
+                "要改整屏可不传选中项。改完要让用户看到效果，调 design.share 把最新设计发进对话。"
             ),
             input_schema={
                 "type": "object",
@@ -1665,5 +2599,46 @@ def design_tools() -> tuple[ToolSpec, ...]:
             },
             capability=Capability.FILE_WRITE,
             handler=design_share,
+        ),
+        ToolSpec(
+            name="design.icon_create",
+            title="画自定义图标",
+            description=(
+                "内置图标（search/home/heart 等 90+ 个）没有合适图形时，自己画一个并保存到设计"
+                "工作室，随后用 type=icon + icon=名称引用，画布、代码生成与 SVG 导出都会渲染。"
+                "几何画在 24×24 视口里，用 parts 描述（线框风格、不填色）："
+                '["path", "M3 12h18"]、["circle", cx, cy, r]、["line", x1, y1, x2, y2]、'
+                '["rect", x, y, w, h, rx?]、["polyline", "20 6 9 17 4 12"]；'
+                "只画 path 时可直接传 paths（d 字符串数组）或 path（单个 d）。"
+                "图标名只用小写字母/数字/连字符且不能与内置图标重名；同名重复调用即覆盖更新。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "图标名（小写字母/数字/连字符，1–40 位，如 brand-mark）",
+                    },
+                    "label": {"type": "string", "description": "中文标签（可空，如「品牌标志」）"},
+                    "parts": {
+                        "type": "array",
+                        "description": "几何指令数组，1–40 条，建议控制在 12 条以内",
+                        "items": {"type": "array"},
+                    },
+                    "paths": {
+                        "type": "array",
+                        "description": "仅 path 的简写：SVG path 的 d 字符串数组",
+                        "items": {"type": "string"},
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "仅一条 path 时的简写：SVG path 的 d 字符串",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            capability=Capability.FILE_WRITE,
+            handler=design_icon_create,
         ),
     )

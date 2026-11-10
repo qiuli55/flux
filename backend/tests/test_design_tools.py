@@ -86,6 +86,13 @@ class FakeRunRepo:
         return SimpleNamespace(task_id=self.task_id)
 
 
+class FakeResolver:
+    """design.ai 只用到解析后的模型名与密钥 id。"""
+
+    async def resolve(self, **_: object) -> SimpleNamespace:
+        return SimpleNamespace(model="deepseek-chat", key_id=None)
+
+
 class FakeTaskRepo:
     def __init__(self) -> None:
         self.drafts: list = []
@@ -108,6 +115,7 @@ def _ctx(run_id: str | None, task_id: uuid.UUID | None = None) -> tuple[ToolCont
         ),
         run_repo=FakeRunRepo(task_id),
         task_repo=task_repo,
+        completion_resolver=FakeResolver(),
     )
     identity = AgentIdentity(
         agent_id=str(uuid.uuid4()),
@@ -143,18 +151,23 @@ def test_design_tools_are_registered_and_instructed() -> None:
         "design.get",
         "design.create",
         "design.update",
+        "design.patch",
+        "design.layout",
         "design.ai",
         "design.revisions",
         "design.revert",
         "design.share",
+        "design.icon_create",
     ):
         assert name in TOOLS
         assert TOOLS[name].description
     assert "design.share" in RUNTIME_BOOTSTRAP
     assert "design studio" in RUNTIME_BOOTSTRAP
     assert "design.ai" in RUNTIME_BOOTSTRAP
+    assert "design.icon_create" in RUNTIME_BOOTSTRAP
     assert "design.share" in SERVER_INSTRUCTIONS
     assert "design.ai" in SERVER_INSTRUCTIONS
+    assert "design.icon_create" in SERVER_INSTRUCTIONS
 
 
 async def test_design_list_filters_by_project(upstream) -> None:
@@ -243,7 +256,8 @@ async def test_design_update_conflict_keeps_current_version(upstream) -> None:
     with pytest.raises(ConflictError) as excinfo:
         await module.design_update(ctx, {"design_id": DESIGN_ID, "name": "新名字"})
     assert excinfo.value.code == "design_conflict"
-    assert excinfo.value.details == {"version": 5}
+    assert excinfo.value.details["version"] == 5
+    assert excinfo.value.details["upstream_status"] == 409
 
 
 async def test_design_share_writes_design_card_message(upstream) -> None:
@@ -339,6 +353,10 @@ async def test_design_ai_commits_ops_instead_of_overwriting_design(upstream) -> 
     assert sent["mode"] == "screen"
     assert sent["screen"]["w"] == 390
     assert sent["screen"]["nodes"][0]["id"] == "t1"
+    # 模型通道由调用方 Agent 解析：Luma 不再用自身的默认路由
+    assert sent["agent_id"] == ctx.identity.agent_id
+    assert sent["model"] == "deepseek-chat"
+    assert sent["key_id"] == ""
     commit = json.loads(seen[2].content)
     assert commit["author"] == "flux-agent"
     assert commit["role"] == "agent"
@@ -348,6 +366,26 @@ async def test_design_ai_commits_ops_instead_of_overwriting_design(upstream) -> 
     assert commit["ops"] == asked_ops
     # 关键：不再整稿 PUT，避免覆盖人同时在改的内容
     assert "design" not in commit
+
+
+async def test_design_ai_rejects_external_agent(upstream) -> None:
+    """外部接入的 Agent 只能自己改画布，不能借用 Flux 的 AI 修改。"""
+    holder, seen = upstream
+    holder["handler"] = lambda request: httpx.Response(500)
+    ctx, _ = _ctx(run_id=None)
+    external = ToolContext(
+        container=ctx.container,
+        identity=AgentIdentity(
+            agent_id=ctx.identity.agent_id,
+            token_id=ctx.identity.token_id,
+            scopes=ctx.identity.scopes,
+            kind="external",
+        ),
+        tool_name="design.test",
+    )
+    with pytest.raises(ValidationError, match="外部接入"):
+        await module.design_ai(external, {"design_id": DESIGN_ID, "instruction": "改一下"})
+    assert seen == []
 
 
 async def test_design_ai_defers_when_human_locked(upstream) -> None:
@@ -428,6 +466,205 @@ async def test_design_ai_rejects_unknown_params(upstream) -> None:
     ctx, _ = _ctx(run_id=None)
     with pytest.raises(ValidationError):
         await module.design_ai(ctx, {"design_id": DESIGN_ID, "instruction": "x", "bogus": 1})
+
+
+async def test_upstream_error_exposes_status_and_code(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(
+        502,
+        json={
+            "ok": False,
+            "error": "模型服务暂时不可用（HTTP 400）：订阅过期",
+            "upstream_status": 400,
+            "upstream_code": "InvalidSubscription",
+        },
+    )
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(AIOSError) as excinfo:
+        await module.design_get(ctx, {"design_id": DESIGN_ID})
+    assert excinfo.value.details["upstream_status"] == 400
+    assert excinfo.value.details["upstream_code"] == "InvalidSubscription"
+
+
+async def test_design_ai_accepts_long_instruction(upstream) -> None:
+    holder, _ = upstream
+    committed = _design(version=3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design()})
+        if request.url.path == "/api/ask":
+            return httpx.Response(
+                200, json={"ok": True, "ops": [{"op": "set", "target": "t1", "set": {"x": 1}}]}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "applied": 1,
+                "skipped": [],
+                "deferred": [],
+                "touched": ["t1"],
+                "rebased": False,
+                "design": committed,
+            },
+        )
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_ai(
+        ctx, {"design_id": DESIGN_ID, "instruction": "把标题左移。" + "补充说明。" * 150}
+    )
+    assert result["changed"] is True
+
+
+async def test_design_ai_rejects_instruction_over_2000(upstream) -> None:
+    holder, seen = upstream
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError, match="2000"):
+        await module.design_ai(ctx, {"design_id": DESIGN_ID, "instruction": "x" * 2001})
+    assert seen == []
+
+
+async def test_design_patch_batches_style_changes(upstream) -> None:
+    holder, seen = upstream
+    committed = _design(version=3)
+    committed["screens"][0]["nodes"][1]["h"] = 96
+    committed["screens"][0]["nodes"][1]["radius"] = 16
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design(version=2)})
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "applied": 1,
+                "skipped": [],
+                "deferred": [],
+                "touched": ["card-1"],
+                "rebased": False,
+                "design": committed,
+            },
+        )
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_patch(
+        ctx,
+        {
+            "design_id": DESIGN_ID,
+            "changes": [{"id": "card-1", "set": {"h": 96, "radius": 16}}],
+        },
+    )
+    assert result["applied"] == 1
+    assert result["version"] == 3
+    assert result["nodes"][0]["id"] == "card-1"
+    commit = json.loads(seen[1].content)
+    assert commit["ops"] == [{"op": "set", "target": "card-1", "set": {"h": 96, "radius": 16}}]
+    assert commit["screen"] == "screen-1"
+    assert commit["base_version"] == 2
+    assert (seen[1].method, seen[1].url.path) == ("POST", f"/api/designs/{DESIGN_ID}/commits")
+
+
+async def test_design_patch_reports_skipped_when_nothing_applied(upstream) -> None:
+    holder, _ = upstream
+    skipped = [{"index": 0, "reason": "missing-target", "target": "ghost"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design()})
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "applied": 0,
+                "skipped": skipped,
+                "deferred": [],
+                "touched": [],
+                "rebased": False,
+                "design": _design(),
+            },
+        )
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError) as excinfo:
+        await module.design_patch(
+            ctx, {"design_id": DESIGN_ID, "changes": [{"id": "ghost", "set": {"x": 1}}]}
+        )
+    assert excinfo.value.details["skipped"] == skipped
+
+
+async def test_design_patch_requires_changes_or_ops(upstream) -> None:
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError, match="至少给一个"):
+        await module.design_patch(ctx, {"design_id": DESIGN_ID})
+
+
+def test_layout_patches_align_stack_and_equal_size() -> None:
+    aligned = module._layout_patches(
+        "align-left", [(10, 0, 50, 20), (30, 40, 60, 20)], 390, 844, 12, "selection", None
+    )
+    assert aligned == [{}, {"x": 10.0}]
+    stacked = module._layout_patches(
+        "stack-v", [(0, 100, 50, 40), (20, 300, 50, 40)], 390, 844, 12, "selection", None
+    )
+    assert stacked == [{}, {"y": 152.0}]
+    equal = module._layout_patches(
+        "equal-height", [(0, 0, 50, 20), (0, 0, 50, 60)], 390, 844, 12, "selection", None
+    )
+    assert equal == [{"h": 60.0}, {}]
+
+
+async def test_design_layout_commits_same_parent_ops(upstream) -> None:
+    holder, seen = upstream
+    committed = _design(version=5)
+    committed["screens"][0]["nodes"][1]["y"] = 102
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"ok": True, "design": _design(version=4)})
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "applied": 1,
+                "skipped": [],
+                "deferred": [],
+                "touched": ["card-1"],
+                "rebased": False,
+                "design": committed,
+            },
+        )
+
+    holder["handler"] = handler
+    ctx, _ = _ctx(run_id=None)
+    result = await module.design_layout(
+        ctx,
+        {
+            "design_id": DESIGN_ID,
+            "node_ids": ["t1", "card-1"],
+            "action": "stack-v",
+            "gap": 12,
+        },
+    )
+    assert result["applied"] == 1
+    assert result["screen_index"] == 0
+    commit = json.loads(seen[1].content)
+    assert commit["ops"] == [{"op": "set", "target": "card-1", "set": {"y": 102.0}}]
+    assert commit["base_version"] == 4
+
+
+async def test_design_layout_rejects_cross_parent_nodes(upstream) -> None:
+    holder, _ = upstream
+    holder["handler"] = lambda request: httpx.Response(200, json={"ok": True, "design": _design()})
+    ctx, _ = _ctx(run_id=None)
+    with pytest.raises(ValidationError, match="同一父级"):
+        await module.design_layout(
+            ctx,
+            {"design_id": DESIGN_ID, "node_ids": ["t1", "t2"], "action": "align-left"},
+        )
 
 
 async def test_design_revisions_lists_history(upstream) -> None:

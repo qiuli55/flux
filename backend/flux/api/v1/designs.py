@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -17,11 +19,15 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Body, Depends, Query, Request, Response
 
-from flux.api.deps import get_settings_dep
+from flux.api.deps import get_container, get_settings_dep
 from flux.api.response import ok
 from flux.config import Settings
+from flux.container import Container
 from flux.core.design_render import render_design_html
 from flux.errors import AIOSError, BadRequestError, ConflictError, NotFoundError
+from flux.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/designs", tags=["designs"])
 
@@ -150,6 +156,30 @@ async def get_design(
     client: httpx.AsyncClient = Depends(design_client),
 ) -> dict[str, object]:
     return ok(await load_design(client, design_id))
+
+
+@router.get("/{design_id}/view")
+async def get_design_view(
+    design_id: str,
+    wait_ms: int = Query(default=0, ge=0, le=5000, description="等待网页首次上报视口的最长毫秒数"),
+    client: httpx.AsyncClient = Depends(design_client),
+) -> dict[str, object]:
+    """读取 Luma 网页上报的画布视口（不含节点树）；Agent 靠它知道用户在看哪一块。"""
+    design_id = _require_design_id(design_id)
+    payload = await _request(client, "GET", f"/api/designs/{design_id}/view")
+    deadline = time.monotonic() + wait_ms / 1000
+    while not payload.get("view") and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+        payload = await _request(client, "GET", f"/api/designs/{design_id}/view")
+    view = payload.get("view")
+    return ok(
+        view,
+        metadata={
+            "age_ms": payload.get("age_ms"),
+            "stale": payload.get("stale"),
+            "seq": (view or {}).get("seq") if isinstance(view, dict) else None,
+        },
+    )
 
 
 @router.post("/import")
@@ -314,11 +344,43 @@ async def delete_design(
     return ok({"id": deleted.get("id") or design_id})
 
 
+async def _inject_agent_selection(payload: dict[str, Any], container: Container) -> None:
+    """给 Luma 的 /api/ask 补上 Agent/模型选择（Luma 不再使用默认路由）。
+
+    优先沿用客户端显式选择，其次 Flux 当前 Agent 选择，最后取第一个本地 Agent。
+    解析不出模型通道时只记日志并透传，由 Luma 返回可直接展示的错误文案。
+    """
+    agent_id = str(payload.get("agent_id") or "").strip()
+    if not agent_id:
+        agent_id = container.completion_prefs.active_agent().agent_id
+    if not agent_id:
+        local_agents = container.agents.list()
+        agent_id = local_agents[0].id_str if local_agents else ""
+    if not agent_id:
+        logger.warning("design.ai 没有可用的本地 Agent，透传后由 Luma 提示选择")
+        return
+    try:
+        target = await container.completion_resolver.resolve(
+            model=payload.get("model") or None,
+            key_id=payload.get("key_id") or None,
+            agent_id=agent_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - 模型未配置时透传，让 Luma 返回可读错误
+        logger.warning("design.ai 无法解析模型通道 agent=%s: %s", agent_id, exc)
+        payload["agent_id"] = agent_id
+        return
+    payload["agent_id"] = agent_id
+    payload["model"] = payload.get("model") or target.model
+    if not payload.get("key_id") and target.key_id:
+        payload["key_id"] = target.key_id
+
+
 @router.post("/{design_id}/ai")
 async def ask_design_ai(
     design_id: str,
     payload: dict[str, Any] = Body(...),
     client: httpx.AsyncClient = Depends(design_client),
+    container: Container = Depends(get_container),
 ) -> dict[str, object]:
     """对选中组件或整块画板提修改要求；上游把模型输出收敛成 set/add/remove/reorder 补丁。"""
     design_id = _require_design_id(design_id)
@@ -331,6 +393,7 @@ async def ask_design_ai(
         if isinstance(design, dict) and isinstance(design.get("bg"), str):
             screen = payload.setdefault("screen", {})
             screen.setdefault("bg", design["bg"])
+    await _inject_agent_selection(payload, container)
     result = await _request(client, "POST", "/api/ask", payload)
     ops = result.get("ops") or []
     return ok(

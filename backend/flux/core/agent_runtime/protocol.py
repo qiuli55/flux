@@ -23,12 +23,25 @@ RUNTIME_RULES: tuple[str, ...] = (
     "terminal.execute instead tests the old on-disk code. Iterate until it passes.",
     "A proposal you have not tested is not a finished change.",
     "For any page, UI or visual design task, use the design studio tools "
-    "(design.list / design.get / design.create / design.update / design.ai) to produce the design. "
+    "(design.list / design.get / design.create / design.update / design.patch / "
+    "design.layout / design.ai) to produce the design. "
     "Do not substitute hand-written HTML, screenshots or static images for the design studio.",
-    "To revise an existing design, prefer design.ai with a specific instruction (optionally "
-    "selected_ids) so only the touched layers change; avoid reading the whole design and "
-    "rewriting it with design.update. Use design.revisions / design.revert to inspect or roll "
-    "back history when a change goes wrong.",
+    "Icon nodes take an icon name. If the built-in set has nothing that fits, call "
+    "design.icon_create to draw the missing icon from SVG-style parts (path / circle / line / "
+    "rect / polyline), then reference it by that name in icon nodes — it renders in the canvas, "
+    "generated code and SVG export.",
+    "To revise an existing design, prefer design.patch for exact per-node style changes, "
+    "design.layout for align / distribute / stack, or design.ai with a specific instruction "
+    "(optionally selected_ids) so only the touched layers change; avoid reading the whole "
+    "design and rewriting it with design.update. Use design.revisions / design.revert to "
+    "inspect or roll back history when a change goes wrong.",
+    "When the user is looking at the canvas, call design.view before a visual tweak: it returns "
+    "the current zoom, viewport, selection, visible node ids and each selected layer's gaps to "
+    "its neighbours, so you can micro-adjust with design.patch instead of rewriting the screen.",
+    "For standard blocks, call design.component_list and prefer design.component_insert or "
+    "design.template_apply (search-bar, bot-card, bottom-nav, list-item, stat-card, chat-bubble) "
+    "over hand-building every layer; design.component_update changes an instance's params or "
+    "variant in place.",
     "When a design is ready, call design.share so the user gets a tappable card in the chat; "
     "before changing an existing design, read it with design.get first.",
     "When the task produces files the user should take away (reports, images, PDFs, exports, "
@@ -55,8 +68,9 @@ PLAN_RULES: tuple[str, ...] = (
     "do not run terminal commands or proposal.preview.",
     "Use workspace.read / workspace.search / workspace.tree / context.get to investigate, then "
     "deliver the plan with plan.write. Design tools are read-only (design.list / design.get / "
-    "design.revisions); design.create / design.update / design.ai / design.revert / "
-    "design.share are disabled in this mode.",
+    "design.view / design.revisions); design.create / design.update / design.patch / "
+    "design.layout / design.ai / design.revert / design.share / design.icon_create are disabled "
+    "in this mode.",
     "The plan document is written to Flux's own plans directory; never pick your own path.",
 )
 
