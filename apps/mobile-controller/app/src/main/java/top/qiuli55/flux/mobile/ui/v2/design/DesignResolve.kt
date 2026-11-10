@@ -135,7 +135,9 @@ class DesignResolver(
         val ellipse = type == "circle" || type == "avatar" ||
             (type == "decor" && kotlin.math.abs(node.w - node.h) < .01f)
         // 纯文字节点没有填充时不能落回默认底色；显式 none/transparent 同样不画底色。
-        val bareText = type == "text" && node.fill.isNullOrBlank()
+        // 旧设计稿把文字色存在 fill（无 color）时，fill 是文字色而不是底色。
+        val legacyInk = DesignSpec.legacyTextInk(node)
+        val bareText = type == "text" && (node.fill.isNullOrBlank() || legacyInk != null)
         val noFill = bareText || DesignSpec.isNoneFill(node.fill)
         val hasShape = !noFill
         val fillColor = if (type == "switch" && node.on != true) {
@@ -168,7 +170,8 @@ class DesignResolver(
                 node.align == "right" -> TextAlign.End
                 else -> TextAlign.Start
             }
-            val color = DesignSpec.color(node.color, DesignSpec.defaultTextColor(type))
+            val color = legacyInk
+                ?: DesignSpec.color(node.color, DesignSpec.defaultTextColor(type))
             val family = DesignSpec.fontFamilyOf(node)
             val weight = DesignSpec.weightOf(node).weight
             val ratio = node.lineHeight ?: DesignSpec.DEFAULT_LINE_HEIGHT

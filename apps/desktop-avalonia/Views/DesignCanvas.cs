@@ -819,7 +819,10 @@ public sealed class DesignCanvas : Control
                 break;
             default:
                 // 纯文本且没给 fill 的节点不画底色；显式 none/transparent 同样不画。
-                var bareText = type == "text" && string.IsNullOrWhiteSpace(node.Fill);
+                // 旧设计稿把文字色存在 fill（无 color）时，fill 是文字色而不是底色。
+                var legacyInk = LegacyTextInk(node, type);
+                var bareText = type == "text"
+                    && (string.IsNullOrWhiteSpace(node.Fill) || legacyInk != null);
                 if (!bareText && !IsNoneFill(node.Fill))
                 {
                     var brush = FillBrush(node.Fill, type, w, h);
@@ -1295,7 +1298,7 @@ public sealed class DesignCanvas : Control
                 _ => TextAlignment.Left,
             };
 
-        var color = SingleColor(node.Color, DefaultTextColor(type));
+        var color = LegacyTextInk(node, type) ?? SingleColor(node.Color, DefaultTextColor(type));
         var weight = (FontWeight)(ushort)Math.Clamp(node.FontWeight ?? 400, 1, 1000);
         var typeface = new Typeface(
             FontFamilyFor(node),
@@ -2253,6 +2256,20 @@ public sealed class DesignCanvas : Control
     {
         var value = raw?.Trim().ToLowerInvariant();
         return value is "none" or "transparent";
+    }
+
+    /// <summary>
+    /// 旧设计稿把文字色存在 `fill`（没有 `color`）。对齐 Web `paint.js`：
+    /// 仅 text 节点、`color` 为空、`fill` 是纯色时成立；渐变仍按底色处理。
+    /// </summary>
+    private static Color? LegacyTextInk(DesignNode node, string type)
+    {
+        if (type != "text" || !string.IsNullOrWhiteSpace(node.Color) || IsNoneFill(node.Fill))
+        {
+            return null;
+        }
+
+        return ParseColor(node.Fill);
     }
 
     /// <summary>
