@@ -62,6 +62,15 @@
             "title": "Description",
             "type": "string"
           },
+          "kind": {
+            "default": "local",
+            "enum": [
+              "local",
+              "external"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "maxLength": 128,
             "minLength": 1,
@@ -411,6 +420,45 @@
       },
       "ChatRequest": {
         "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "json_mode": {
+            "default": false,
+            "title": "Json Mode",
+            "type": "boolean"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/ChatMessageIn"
@@ -461,6 +509,17 @@
               }
             ],
             "title": "Task Id"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
           }
         },
         "required": [
@@ -4108,6 +4167,97 @@
         ]
       }
     },
+    "/api/v1/designs/{design_id}/preview.png": {
+      "get": {
+        "description": "把单块画板截成 PNG。\n\nMCP 的工具输出只能带文本，Agent 靠这个 HTTP 接口把图存到工作区再读；\n同机回环请求免令牌，`curl -o` 即可。同一版本/画板/倍率直接复用缓存。",
+        "operationId": "preview_design_png_api_v1_designs__design_id__preview_png_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "画板 id 或 1 起的序号；缺省第一块",
+            "in": "query",
+            "name": "screen",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "画板 id 或 1 起的序号；缺省第一块",
+              "title": "Screen"
+            }
+          },
+          {
+            "description": "像素倍率",
+            "in": "query",
+            "name": "scale",
+            "required": false,
+            "schema": {
+              "default": 2.0,
+              "description": "像素倍率",
+              "maximum": 3.0,
+              "minimum": 1.0,
+              "title": "Scale",
+              "type": "number"
+            }
+          },
+          {
+            "description": "忽略缓存重新截图",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "忽略缓存重新截图",
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Design Png",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
     "/api/v1/designs/{design_id}/revert": {
       "post": {
         "description": "恢复历史版本：上游会以新版本号落盘，当前版本先留档，可再次回滚。",
@@ -4274,6 +4424,70 @@
           }
         ],
         "summary": "Get Revision",
+        "tags": [
+          "designs"
+        ]
+      }
+    },
+    "/api/v1/designs/{design_id}/view": {
+      "get": {
+        "description": "读取 Luma 网页上报的画布视口（不含节点树）；Agent 靠它知道用户在看哪一块。",
+        "operationId": "get_design_view_api_v1_designs__design_id__view_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "design_id",
+            "required": true,
+            "schema": {
+              "title": "Design Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "等待网页首次上报视口的最长毫秒数",
+            "in": "query",
+            "name": "wait_ms",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "等待网页首次上报视口的最长毫秒数",
+              "maximum": 5000,
+              "minimum": 0,
+              "title": "Wait Ms",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Design View Api V1 Designs  Design Id  View Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Design View",
         "tags": [
           "designs"
         ]
@@ -12110,6 +12324,27 @@
       }
     },
     "/mcp": {
+      "get": {
+        "description": "保持一条 SSE 连接。Flux 不主动推送消息，因此只发心跳。\n\n规范允许服务端对 GET 回 405，但部分移动端连接器在保存前会先 GET 探活，\n看到 405 就判定\"无法添加连接器\"；这里给一条合法事件流，兼容这类客户端。",
+        "operationId": "mcp_stream_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "缺少或非法/已撤销的令牌"
+          }
+        },
+        "summary": "MCP SSE 通道（可选，用于兼容先探活 GET 的客户端）",
+        "tags": [
+          "mcp"
+        ]
+      },
       "post": {
         "description": "MCP 唯一入口。鉴权先于解析：没有合法令牌，任何方法都不可见。",
         "operationId": "mcp_endpoint_mcp_post",
