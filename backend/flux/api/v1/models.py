@@ -21,6 +21,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.model_gateway.base import ChatMessage
+from flux.core.model_gateway.providers.registry import build_channel_provider
 from flux.schemas.api import ChatRequest, FimRequest
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -42,7 +43,27 @@ async def chat(
     payload: ChatRequest, container: Container = Depends(get_container)
 ) -> dict[str, object]:
     messages = [ChatMessage(role=m.role, content=m.content) for m in payload.messages]
-    result = await container.router.chat(messages, provider=payload.provider)
+    if payload.model or payload.key_id or payload.agent_id:
+        # 指定 Agent / 密钥 / 模型：走补全同一条通道解析（Agent 原生模型 + 密钥库模型）
+        target = await container.completion_resolver.resolve(
+            model=payload.model, key_id=payload.key_id, agent_id=payload.agent_id
+        )
+        channel_provider = build_channel_provider(
+            target.channel,
+            model=target.model,
+            timeout=container.settings.model_timeout_seconds,
+            max_retries=container.settings.model_max_retries,
+        )
+        options: dict[str, Any] = {}
+        if payload.temperature is not None:
+            options["temperature"] = payload.temperature
+        if payload.max_tokens is not None:
+            options["max_tokens"] = payload.max_tokens
+        if payload.json_mode:
+            options["json_mode"] = True
+        result = await channel_provider.chat(messages, **options)
+    else:
+        result = await container.router.chat(messages, provider=payload.provider)
     return ok(
         {
             "content": result.content,

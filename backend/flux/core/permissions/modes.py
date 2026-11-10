@@ -13,10 +13,12 @@ from __future__ import annotations
 from flux.enums import Capability, PermissionMode
 
 #: Plan 模式允许的工具：只读 + 计划文档。
-#: design.create / design.update / design.ai / design.revert / design.share
+#: design.create / design.update / design.ai / design.revert / design.share / design.icon_create
 #: 与 proposal.* / terminal.execute 一律不在名单里（不靠"Agent 自觉"）。
 PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
     {
+        "agent.choose_name",
+        "agent.report_models",
         "context.boot",
         "flux_context",
         "context.get",
@@ -79,7 +81,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
         "cannot": [
             "terminal.execute",
             "proposal.create/preview",
-            "design.create/update/ai/revert/share",
+            "design.create/update/ai/revert/share/icon_create",
         ],
     },
     PermissionMode.NORMAL.value: {

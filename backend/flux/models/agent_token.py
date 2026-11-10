@@ -26,12 +26,18 @@ class AgentToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     agent_id: Mapped[str] = mapped_column(String(128), index=True)
     # 人类可读备注，便于在「接入 agent」界面上分辨多枚令牌
     label: Mapped[str] = mapped_column(String(128), default="")
+    # Agent 首次接入时自己取的显示名；与管理员备注分开，空串表示还没取名
+    self_name: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    # Agent 首次接入时上报的自己支持的模型；空列表表示还没上报
+    reported_models: Mapped[list[Any]] = mapped_column(JSON, default=list, server_default="[]")
     # sha256(明文令牌) 的十六进制，唯一索引；明文不落库
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     # 该令牌被授予的能力，取值见 flux.enums.Capability（SECRET_ACCESS 永不在其中，§3.5）
     scopes: Mapped[list[Any]] = mapped_column(JSON, default=list)
     # 撤销时间；非空即失效，鉴权时现查现判，不做进程内缓存
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 最近一次通过 MCP 使用该令牌的时间；外部 Agent 超过 30 天未使用即自动注销
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def revoked(self) -> bool:
@@ -43,8 +49,11 @@ class AgentToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "id": str(self.id),
             "agent_id": self.agent_id,
             "label": self.label,
+            "self_name": self.self_name,
+            "reported_models": list(self.reported_models or []),
             "scopes": [str(scope) for scope in (self.scopes or [])],
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
             "revoked_at": self.revoked_at.isoformat() if self.revoked_at else None,
             "revoked": self.revoked,
         }

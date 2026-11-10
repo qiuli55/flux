@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.core.agent_runtime.manager import AgentHandle, AgentSpec
+from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL, AgentHandle, AgentSpec
 from flux.core.agent_runtime.model_catalog import (
     KeyEntry,
     default_model_for_runtime,
@@ -19,7 +19,7 @@ from flux.core.agent_runtime.model_catalog import (
     vault_models_for_runtime,
 )
 from flux.core.ide_completion import ActiveAgentSelection
-from flux.errors import BadRequestError
+from flux.errors import BadRequestError, NotFoundError
 from flux.schemas.api import ActiveAgentRequest, AgentCreateRequest, AgentTokenIssueRequest
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -55,6 +55,7 @@ async def create_agent(
         tools=tuple(payload.tools),
         permissions=frozenset(payload.permissions),
         runtime=payload.runtime,
+        kind=payload.kind,
     )
     handle: AgentHandle = await container.agents.create(spec)
     return ok(handle.to_dict())
@@ -93,7 +94,12 @@ async def put_active_agent(
     )
     if selection.agent_id:
         # 档案不存在时 get() 抛 NotFoundError，先于落盘拦截
-        container.agents.get(selection.agent_id)
+        handle = container.agents.get(selection.agent_id)
+        if handle.spec.kind == AGENT_KIND_EXTERNAL:
+            raise BadRequestError(
+                "外部接入的 Agent 不可通过 Flux 调用",
+                details={"agent_id": selection.agent_id, "kind": handle.spec.kind},
+            )
     if selection.key_id:
         row = await container.key_vault.get(selection.key_id)
         if not row.enabled:
@@ -113,7 +119,11 @@ async def get_agent(
     agent_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
     key_entries = tuple(await container.key_vault.catalog_entries())
-    return ok(_agent_payload(container.agents.get(agent_id), container, key_entries))
+    handle = container.agents.get(agent_id)
+    if handle.spec.kind == AGENT_KIND_EXTERNAL:
+        # 外部 Agent 不显示在前端任何页面：单查也按不存在处理
+        raise NotFoundError(f"Agent {agent_id} 不存在", details={"agent_id": agent_id})
+    return ok(_agent_payload(handle, container, key_entries))
 
 
 # --- MCP 接入令牌（目标架构 §3.2）---

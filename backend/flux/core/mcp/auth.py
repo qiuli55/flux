@@ -19,12 +19,12 @@ import secrets
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.core.agent_runtime.manager import AgentManager, AgentSpec
+from flux.core.agent_runtime.manager import AGENT_KIND_LOCAL, AgentManager, AgentSpec
 from flux.enums import AgentRole, Capability
 from flux.errors import AuthenticationError, ConfigurationError, NotFoundError, ValidationError
 from flux.logging import get_logger
@@ -37,6 +37,8 @@ TOKEN_PREFIX = "fxt_"
 TOKEN_SECRET_BYTES = 32
 #: 永不可授予的能力（目标架构 §3.5）：密钥访问不进任何令牌的 scopes
 FORBIDDEN_SCOPES: frozenset[Capability] = frozenset({Capability.SECRET_ACCESS})
+#: last_used_at 的落库节流：每个令牌每小时最多写一次，够 30 天清理用
+_LAST_USED_TOUCH_INTERVAL = timedelta(hours=1)
 
 #: 由旧自由字符串迁移出来的档案角色（历史 token 多为执行类 Agent）
 _LEGACY_AGENT_ROLE = AgentRole.DEVELOPER
@@ -46,6 +48,13 @@ _LEGACY_AGENT_DESCRIPTION = "由旧自由字符串令牌迁移生成的 Agent �
 def hash_token(raw: str) -> str:
     """令牌的存储形态：sha256 十六进制。"""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite 读回的 DateTime 可能不带 tzinfo；统一按 UTC 比较。"""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def parse_scopes(values: Iterable[Capability | str]) -> tuple[Capability, ...]:
@@ -94,6 +103,12 @@ class AgentIdentity:
     token_id: str
     scopes: frozenset[Capability]
     name: str = ""
+    #: 接入方式（local / external）：external 只经 MCP 接入，Flux 侧不执行、不代调模型。
+    kind: str = AGENT_KIND_LOCAL
+    #: 当前连接第一次接入时自报的显示名（独立于管理员写的令牌备注）。为空表示还没取名。
+    self_name: str = ""
+    #: 当前连接上报的自己支持的模型；空元组表示还没上报。
+    reported_models: tuple[str, ...] = ()
     run_id: str | None = None
     #: 本次 Run 的权限模式（plan / normal / full），由 MCP 层从 agent_runs 快照读取后附加。
     #: 不在令牌里：DSH 内置 Agent 用长期令牌，能力位是写死的超集，只能按 Run 判定模式。
@@ -172,6 +187,69 @@ class AgentTokenService:
             )
         )
 
+    async def choose_name(self, *, token_id: str, name: str) -> None:
+        """MCP Agent 首次接入时给自己取名，写到独立 self_name 字段。
+
+        只改调用方自己那枚令牌，不碰管理员写的 label，也不碰 Agent 注册名：
+        `flux-builtin` 这类共享档案不会因为某个客户端自报名字而被改名。
+        下次鉴权时 self_name 会随身份一起返回。
+        """
+        text = (name or "").strip()
+        if not text:
+            raise ValidationError("名字不能为空", details={"param": "name"})
+        if len(text) > 64:
+            raise ValidationError("名字最多 64 个字符", details={"param": "name"})
+        try:
+            key = uuid.UUID(token_id)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise NotFoundError("令牌不存在", details={"token_id": token_id}) from exc
+        async with self._session_factory() as session:
+            token = await session.get(AgentToken, key)
+            if token is None or token.revoked_at is not None:
+                raise NotFoundError("令牌不存在或已撤销", details={"token_id": token_id})
+            token.self_name = text
+            await session.commit()
+        logger.info(
+            "agent_token.choose_name id=%s agent=%s self_name=%s", token_id, token.agent_id, text
+        )
+
+    async def report_models(self, *, token_id: str, models: Iterable[str]) -> tuple[str, ...]:
+        """MCP Agent 上报自己当前支持的模型，写到独立 reported_models 字段。
+
+        与 Flux runtime 能执行的模型分开：这里存的是连接方自己的模型清单，
+        不去改 Agent 档案的 runtime/model，也不影响任务实际使用的执行模型。
+        """
+        cleaned: list[str] = []
+        for raw in models:
+            text = (raw or "").strip()
+            if not text:
+                continue
+            if len(text) > 128:
+                raise ValidationError("单个模型 id 最多 128 个字符", details={"model": text})
+            if text not in cleaned:
+                cleaned.append(text)
+        if not cleaned:
+            raise ValidationError("至少上报一个模型", details={"param": "models"})
+        if len(cleaned) > 32:
+            raise ValidationError("最多上报 32 个模型", details={"param": "models"})
+        try:
+            key = uuid.UUID(token_id)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise NotFoundError("令牌不存在", details={"token_id": token_id}) from exc
+        async with self._session_factory() as session:
+            token = await session.get(AgentToken, key)
+            if token is None or token.revoked_at is not None:
+                raise NotFoundError("令牌不存在或已撤销", details={"token_id": token_id})
+            token.reported_models = cleaned
+            await session.commit()
+        logger.info(
+            "agent_token.report_models id=%s agent=%s models=%s",
+            token_id,
+            token.agent_id,
+            cleaned,
+        )
+        return tuple(cleaned)
+
     async def list(self, *, agent_id: str | None = None) -> list[AgentToken]:
         statement = select(AgentToken).order_by(AgentToken.created_at, AgentToken.id)
         if agent_id:
@@ -191,6 +269,15 @@ class AgentTokenService:
         logger.info("agent_token.revoke id=%s agent=%s", token_id, token.agent_id)
         return token
 
+    async def delete_for_agent(self, agent_id: str) -> int:
+        """删除某个 Agent 的全部令牌（外部 Agent 超过 30 天未使用、自动注销时用）。"""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(AgentToken).where(AgentToken.agent_id == agent_id)
+            )
+            await session.commit()
+        return int(result.rowcount or 0)
+
     async def authenticate(self, raw: str | None) -> AgentIdentity:
         """校验明文令牌；任何不通过都抛 AuthenticationError（401，fail-closed）。"""
         if not raw or not raw.strip():
@@ -199,11 +286,18 @@ class AgentTokenService:
         if not candidate.startswith(TOKEN_PREFIX):
             raise AuthenticationError("Agent 接入令牌格式非法")
         digest = hash_token(candidate)
+        now = datetime.now(timezone.utc)
         async with self._session_factory() as session:
             token = await session.scalar(select(AgentToken).where(AgentToken.token_hash == digest))
-        if token is None or token.revoked_at is not None:
-            raise AuthenticationError("Agent 接入令牌无效或已撤销")
-        return self._resolve_identity(token)
+            if token is None or token.revoked_at is not None:
+                raise AuthenticationError("Agent 接入令牌无效或已撤销")
+            identity = self._resolve_identity(token)
+            # 30 天清理依赖「最近一次 MCP 调用」：按小时节流更新，避免每个请求都写库
+            last_used = token.last_used_at
+            if last_used is None or _as_utc(last_used) < now - _LAST_USED_TOUCH_INTERVAL:
+                token.last_used_at = now
+                await session.commit()
+        return identity
 
     async def identity_for(self, agent_id: str) -> AgentIdentity | None:
         """按 canonical agent_id 取一枚未撤销令牌的身份，供进程内组件复用。
@@ -262,7 +356,14 @@ class AgentTokenService:
         """
         granted = frozenset(_known_scopes(token.scopes))
         if self._agents is None:
-            return AgentIdentity(agent_id=token.agent_id, token_id=str(token.id), scopes=granted)
+            return AgentIdentity(
+                agent_id=token.agent_id,
+                token_id=str(token.id),
+                scopes=granted,
+                kind=AGENT_KIND_LOCAL,
+                self_name=token.self_name or "",
+                reported_models=tuple(token.reported_models or ()),
+            )
         try:
             handle = self._agents.get(token.agent_id)
         except NotFoundError as exc:
@@ -273,6 +374,9 @@ class AgentTokenService:
         return AgentIdentity(
             agent_id=handle.id_str,
             name=handle.spec.name,
+            kind=handle.spec.kind,
+            self_name=token.self_name or "",
+            reported_models=tuple(token.reported_models or ()),
             token_id=str(token.id),
             # 令牌能力与档案权限取交集：档案被收权，令牌立即可用面同步收窄
             scopes=granted & handle.spec.permissions,

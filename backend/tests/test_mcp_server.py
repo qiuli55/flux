@@ -746,6 +746,68 @@ def test_flux_context_rejects_malformed_task_id(mcp_client: TestClient) -> None:
     assert result["isError"] is True
 
 
+def test_agent_choose_name_sets_self_name_without_touching_registry(
+    mcp_client: TestClient,
+) -> None:
+    """首次接入先给注册名，取名只写 self_name，管理员备注与档案名都不变。"""
+    token = issue_token(
+        mcp_client,
+        agent_id="selfname-test",
+        scopes=[Capability.FILE_READ],
+        label="admin-label",
+    )
+    before = payload(call(mcp_client, token, "flux_context", {}))
+    assert before["agent"]["name"] == "selfname-test"
+    assert before["agent"]["display_name"] == "selfname-test"
+    assert before["agent"]["name_chosen"] is False
+    assert before["agent"]["models"] == []
+    assert before["agent"]["models_reported"] is False
+    assert isinstance(before["agent"]["runtime_models"], list)
+
+    chosen = payload(call(mcp_client, token, "agent.choose_name", {"name": "Grok"}))
+    assert chosen["agent"]["name"] == "selfname-test"
+    assert chosen["agent"]["display_name"] == "Grok"
+
+    after = payload(call(mcp_client, token, "flux_context", {}))
+    assert after["agent"]["name"] == "selfname-test"
+    assert after["agent"]["display_name"] == "Grok"
+    assert after["agent"]["name_chosen"] is True
+
+    agent_id = before["agent"]["id"]
+    tokens = mcp_client.get(f"/api/v1/agents/{agent_id}/tokens").json()["data"]
+    row = next(item for item in tokens if item["label"] == "admin-label")
+    assert row["self_name"] == "Grok"
+
+
+def test_agent_report_models_keeps_runtime_models_separate(mcp_client: TestClient) -> None:
+    """上报的是连接方自己的模型；Flux runtime 的模型清单不被覆盖。"""
+    token = issue_token(
+        mcp_client,
+        agent_id="report-models-test",
+        scopes=[Capability.FILE_READ],
+    )
+    before = payload(call(mcp_client, token, "flux_context", {}))
+    assert before["agent"]["models"] == []
+    assert before["agent"]["models_reported"] is False
+    runtime_models = before["agent"]["runtime_models"]
+
+    reported = payload(
+        call(mcp_client, token, "agent.report_models", {"models": ["grok-4", "grok-3"]})
+    )
+    assert reported["agent"]["models"] == ["grok-4", "grok-3"]
+    assert reported["agent"]["models_reported"] is True
+
+    after = payload(call(mcp_client, token, "flux_context", {}))
+    assert after["agent"]["models"] == ["grok-4", "grok-3"]
+    assert after["agent"]["models_reported"] is True
+    assert after["agent"]["runtime_models"] == runtime_models
+
+    agent_id = before["agent"]["id"]
+    tokens = mcp_client.get(f"/api/v1/agents/{agent_id}/tokens").json()["data"]
+    row = next(item for item in tokens if item["self_name"] == "")
+    assert row["reported_models"] == ["grok-4", "grok-3"]
+
+
 def test_context_boot_returns_runtime_context_and_memory_in_one_call(
     mcp_client: TestClient,
 ) -> None:

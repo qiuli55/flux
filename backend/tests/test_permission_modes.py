@@ -76,6 +76,7 @@ def test_plan_whitelist_is_read_only_plus_plan_write() -> None:
         "design.create",
         "design.update",
         "design.share",
+        "design.icon_create",
     ):
         assert forbidden not in PLAN_ALLOWED_TOOLS
 

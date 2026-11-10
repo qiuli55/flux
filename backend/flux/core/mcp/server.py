@@ -11,16 +11,22 @@ JSON-RPC 层 → 工具层 → Flux 既有服务。**无状态**——不返回 
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from flux.api.deps import get_container
 from flux.api.response import fail
 from flux.container import Container
+from flux.core.agent_runtime.model_catalog import (
+    default_model_for_runtime,
+    models_for_runtime,
+)
 from flux.core.context.redact import redact
 from flux.core.event.bus import Events
 from flux.core.mcp.auth import AgentIdentity
@@ -32,7 +38,7 @@ from flux.core.permissions.modes import (
     tool_allowed,
 )
 from flux.enums import StepKind, StepStatus
-from flux.errors import AIOSError, AuthenticationError
+from flux.errors import AIOSError, AuthenticationError, NotFoundError
 from flux.logging import get_logger
 from flux.version import VERSION
 
@@ -62,8 +68,11 @@ SERVER_INSTRUCTIONS = (
     "改动一律经 proposal.create 提交进人审队列，真实落盘由人审通过后经 "
     "Apply Engine 执行。页面 / UI / 视觉设计任务必须用 design.* 工具在设计工作室产出"
     "（禁止用手写 HTML、截图或静态图替代），完成后调 design.share 把卡片发进对话；"
-    "改已有设计优先用 design.ai 只改局部（必要时带 selected_ids），别整份 design.update "
-    "覆盖；改坏了用 design.revisions 查历史、design.revert 回滚。任务产出了用户要带走的成品文件"
+    "改已有设计优先用 design.patch 按节点 id 精确改样式、design.layout 做对齐/分布/堆叠，"
+    "或用 design.ai 让 AI 改局部（必要时带 selected_ids），别整份 design.update 覆盖；"
+    "图标节点填图标名，内置图标不够用时先调 design.icon_create 用 path/circle/line/rect/"
+    "polyline 画一个，再按名称引用（画布、生成代码、SVG 导出都会生效）；"
+    "改坏了用 design.revisions 查历史、design.revert 回滚。任务产出了用户要带走的成品文件"
     "（报告 / 图片 / PDF / 导出数据 / 压缩包等）时，用 file.deliver 发进当前对话："
     "路径相对工作区根，一次最多 9 个，只发成品不发中间产物。历史条目是快照：断言不等于事实，"
     "采信前自行验证。MCP 不可用时，"
@@ -74,6 +83,13 @@ SERVER_INSTRUCTIONS = (
     "直到全绿；单轮最多重试 3 次，仍不绿就把失败输出写进 proposal 的 summary 里交人工判断，"
     "不要假装通过。预演本身不产生提案：只有 proposal.create 才会让改动进入人审队列，"
     "预演通过后必须再提交一次同一份 payload。"
+)
+
+#: 接入身份说明：客户端从 initialize.agent / context.boot 的 agent 字段读
+AGENT_IDENTITY_INSTRUCTIONS = (
+    "接入身份见 initialize.agent / context.boot 的 agent：display_name 是本次连接名，"
+    "name_chosen=false 时先调 agent.choose_name 给自己取名；models_reported=false 时"
+    "调 agent.report_models 上报你当前支持的模型；runtime_models 是 Flux 侧可执行模型。"
 )
 
 
@@ -103,7 +119,7 @@ class McpServer:
             logger.debug("MCP 通知 method=%s agent=%s", method, identity.agent_id)
             return None
         if method == "initialize":
-            return _result(request_id, self._initialize(params))
+            return _result(request_id, self._initialize(params, identity))
         if method == "ping":
             return _result(request_id, {})
         if method == "tools/list":
@@ -118,8 +134,7 @@ class McpServer:
 
     # --- 内部 ---
 
-    @staticmethod
-    def _initialize(params: Any) -> dict[str, Any]:
+    def _initialize(self, params: Any, identity: AgentIdentity) -> dict[str, Any]:
         requested = params.get("protocolVersion") if isinstance(params, dict) else None
         version = (
             requested
@@ -130,7 +145,33 @@ class McpServer:
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": VERSION},
-            "instructions": SERVER_INSTRUCTIONS,
+            "instructions": SERVER_INSTRUCTIONS + AGENT_IDENTITY_INSTRUCTIONS,
+            # Flux 扩展：客户端一连上就知道自己是谁、能选哪些模型
+            "agent": self._agent_view(identity),
+        }
+
+    def _agent_view(self, identity: AgentIdentity) -> dict[str, Any]:
+        """接入身份视图：注册名 + 本次连接自报名 + 当前 runtime 支持的模型。"""
+        runtime = ""
+        agents = getattr(self._container, "agents", None)
+        if agents is not None:
+            try:
+                runtime = agents.get(identity.agent_id).spec.runtime
+            except (KeyError, NotFoundError):
+                runtime = ""
+        settings = self._container.settings
+        return {
+            "id": identity.agent_id,
+            "name": identity.name,
+            "display_name": identity.self_name or identity.name,
+            "name_chosen": bool(identity.self_name),
+            "runtime": runtime,
+            # 连接方上报的自己支持的模型；首次接入为空
+            "models": list(identity.reported_models),
+            "models_reported": bool(identity.reported_models),
+            # Flux 当前 runtime 能执行的模型
+            "runtime_models": models_for_runtime(settings, runtime) if runtime else [],
+            "model": default_model_for_runtime(settings, runtime) if runtime else "",
         }
 
     async def _call_tool(
@@ -285,16 +326,9 @@ router = APIRouter(tags=["mcp"])
 async def mcp_endpoint(request: Request, container: Container = Depends(get_container)) -> Response:
     """MCP 唯一入口。鉴权先于解析：没有合法令牌，任何方法都不可见。"""
     try:
-        identity = await container.agent_tokens.authenticate(
-            _bearer_token(request.headers.get("authorization"))
-        )
+        identity = await container.agent_tokens.authenticate(_request_token(request))
     except AuthenticationError as exc:
-        # MCP 规范要求 401 带 WWW-Authenticate；这里不让全局处理器代劳，因为那个不带该头
-        return JSONResponse(
-            status_code=401,
-            content=fail(exc.code, exc.message),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return _unauthorized(exc)
 
     identity = await _attach_run_id(request, container, identity)
 
@@ -312,6 +346,62 @@ async def mcp_endpoint(request: Request, container: Container = Depends(get_cont
     if outcome is None:
         return Response(status_code=202)
     return _json(outcome)
+
+
+@router.get(
+    "/mcp",
+    summary="MCP SSE 通道（可选，用于兼容先探活 GET 的客户端）",
+    response_model=None,
+    responses={401: {"description": "缺少或非法/已撤销的令牌"}},
+)
+async def mcp_stream(request: Request, container: Container = Depends(get_container)) -> Response:
+    """保持一条 SSE 连接。Flux 不主动推送消息，因此只发心跳。
+
+    规范允许服务端对 GET 回 405，但部分移动端连接器在保存前会先 GET 探活，
+    看到 405 就判定"无法添加连接器"；这里给一条合法事件流，兼容这类客户端。
+    """
+    try:
+        await container.agent_tokens.authenticate(_request_token(request))
+    except AuthenticationError as exc:
+        return _unauthorized(exc)
+
+    async def events() -> AsyncIterator[str]:
+        yield ": connected\n\n"
+        while not await request.is_disconnected():
+            await asyncio.sleep(15)
+            yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+def _request_token(request: Request) -> str | None:
+    """取调用方令牌：Authorization 头优先，其次 URL 查询参数。
+
+    移动端连接器表单往往只让填「服务器 URL」，没有自定义 Header 入口；
+    允许把令牌放在 `token` / `access_token` / `apikey` / `key` 查询参数里，
+    让这类客户端也能接入。查询参数会进访问日志，建议只在本机/自有实例使用。
+    """
+    token = _bearer_token(request.headers.get("authorization"))
+    if token:
+        return token
+    for name in ("token", "access_token", "apikey", "key"):
+        value = request.query_params.get(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def _unauthorized(exc: AuthenticationError) -> JSONResponse:
+    # MCP 规范要求 401 带 WWW-Authenticate；全局处理器不带该头，这里单独构造
+    return JSONResponse(
+        status_code=401,
+        content=fail(exc.code, exc.message),
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _bearer_token(header: str | None) -> str | None:

@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from flux.config import Settings
-from flux.core.agent_runtime.manager import AgentManager
+from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL, AgentManager
 from flux.core.agent_runtime.runtimes.base import ModelChannel
 from flux.core.ide_completion.prefs import (
     FOLLOW_AGENT,
@@ -113,6 +113,12 @@ class CompletionModelResolver:
         handle = None
         if agent_id:
             handle = self._agents.get(agent_id)
+            if handle.spec.kind == AGENT_KIND_EXTERNAL:
+                # 外部接入的 Agent 只通过 MCP 调用 Flux，Flux 侧不执行、不代它调模型
+                raise BadRequestError(
+                    "外部接入的 Agent 不可通过 Flux 调用",
+                    details={"agent_id": handle.id_str, "kind": handle.spec.kind},
+                )
 
         # 1. 显式 key_id
         if key_id:

@@ -38,6 +38,7 @@ class AgentRepository:
         tools: tuple[str, ...] = (),
         permissions: tuple[str, ...] = (),
         runtime: str = "dsh",
+        kind: str = "local",
     ) -> Agent:
         """按 canonical id 落库（不存在则插入，存在则更新档案字段）。"""
         config: dict[str, Any] = {
@@ -47,6 +48,8 @@ class AgentRepository:
             "permissions": list(permissions),
             # P2-1：执行该档案的 runtime（dsh / codex / opencode），重启后据此分发
             "runtime": runtime,
+            # 接入方式（local / external）：external 不展示、不被 Flux 执行
+            "kind": kind,
         }
         async with self._session_factory() as session:
             agent = await session.get(Agent, agent_id)
@@ -84,6 +87,16 @@ class AgentRepository:
         statement = select(Agent).order_by(Agent.created_at, Agent.id)
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    async def delete(self, agent_id: uuid.UUID) -> bool:
+        """删除档案行（外部 Agent 自动注销用）；不存在返回 False。"""
+        async with self._session_factory() as session:
+            agent = await session.get(Agent, agent_id)
+            if agent is None:
+                return False
+            await session.delete(agent)
+            await session.commit()
+        return True
 
 
 __all__ = ["AgentRepository"]

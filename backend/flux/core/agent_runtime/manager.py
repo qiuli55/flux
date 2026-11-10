@@ -30,6 +30,11 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: 接入方式：local 由 Flux runtime 执行；external 只经 MCP 连接器接入，Flux 不执行也不展示。
+AGENT_KIND_LOCAL = "local"
+AGENT_KIND_EXTERNAL = "external"
+KNOWN_AGENT_KINDS: frozenset[str] = frozenset({AGENT_KIND_LOCAL, AGENT_KIND_EXTERNAL})
+
 
 @dataclass
 class AgentSpec:
@@ -49,6 +54,9 @@ class AgentSpec:
     #: （UI 需要看到"这个 Agent 由谁执行"，否则接入 CLI 后无法确认任务会走哪条路）——
     #: 属向后兼容的加字段，M0 冻结的既有字段语义不变。
     runtime: str = DEFAULT_RUNTIME
+    #: 接入方式（local / external，见 AGENT_KIND_*）：external 不进入前端列表，
+    #: 也不能被 Flux 执行或选为任务/补全模型。
+    kind: str = AGENT_KIND_LOCAL
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -59,6 +67,7 @@ class AgentSpec:
             "tools": list(self.tools),
             "permissions": sorted(str(p) for p in self.permissions),
             "runtime": self.runtime,
+            "kind": self.kind,
             # 客户端据此标注「非逐字流式」：这类 Agent 仍可正常绑定与执行，
             # 只是正文会在结尾整段到达（平台按分段回放兜底，不冒充原生逐 token）。
             "native_streaming": bool(RUNTIME_NATIVE_STREAMING.get(self.runtime, False)),
@@ -95,6 +104,7 @@ class AgentManager:
 
     async def create(self, spec: AgentSpec) -> AgentHandle:
         self._validate_runtime(spec.runtime)
+        self._validate_kind(spec.kind)
         handle = AgentHandle(spec=spec)
         self._agents[handle.id] = handle
         await self._transition(handle, AgentState.INITIALIZING)
@@ -144,11 +154,19 @@ class AgentManager:
             logger.warning("agent.find_by_name 命中多个同名档案 name=%s，取最早创建的一个", target)
         return min(matches, key=lambda h: h.id.int)
 
-    def list(self) -> list[AgentHandle]:
-        return list(self._agents.values())
+    def list(self, *, include_external: bool = False) -> list[AgentHandle]:
+        """列出档案；默认不含外部 Agent（外部 Agent 不显示在前端任何页面）。"""
+        handles = list(self._agents.values())
+        if include_external:
+            return handles
+        return [handle for handle in handles if handle.spec.kind != AGENT_KIND_EXTERNAL]
 
     def count(self) -> int:
         return len(self._agents)
+
+    def remove(self, agent_id: str | uuid.UUID) -> None:
+        """从内存注册表移除档案（注销外部 Agent 用；幂等）。"""
+        self._agents.pop(self._as_uuid(agent_id), None)
 
     async def load_from_db(self) -> list[AgentHandle]:
         """启动时用 agents 表重建内存注册表（canonical id 以库为准）。
@@ -197,6 +215,15 @@ class AgentManager:
                 runtime,
             )
 
+    @staticmethod
+    def _validate_kind(kind: str) -> None:
+        """校验接入方式；非法取值直接 422，不静默落成 local。"""
+        if kind not in KNOWN_AGENT_KINDS:
+            raise ValidationError(
+                f"未知的 Agent 接入方式：{kind}",
+                details={"kind": kind, "known": sorted(KNOWN_AGENT_KINDS)},
+            )
+
     async def _persist(self, handle: AgentHandle) -> None:
         """把档案落库（未装配仓储时跳过——纯内存用例仍可只用 AgentManager）。"""
         if self._repository is None:
@@ -211,6 +238,7 @@ class AgentManager:
             tools=tuple(handle.spec.tools),
             permissions=tuple(sorted(str(p) for p in handle.spec.permissions)),
             runtime=handle.spec.runtime,
+            kind=handle.spec.kind,
         )
 
     @staticmethod
@@ -225,6 +253,7 @@ class AgentManager:
             tools=tuple(config.get("tools") or ()),
             permissions=frozenset(Capability(str(p)) for p in (config.get("permissions") or ())),
             runtime=str(config.get("runtime") or DEFAULT_RUNTIME),
+            kind=str(config.get("kind") or AGENT_KIND_LOCAL),
         )
         return AgentHandle(
             spec=spec,

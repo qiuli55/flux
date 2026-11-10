@@ -19,6 +19,7 @@ from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
 from flux.container import Container
 from flux.core.agent_runtime.llm_stream_tap import llm_stream_tap
+from flux.core.agent_runtime.reaper import ExternalAgentReaper
 from flux.core.mcp.server import router as mcp_router
 from flux.logging import configure_logging
 from flux.version import VERSION
@@ -32,14 +33,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     memory_sync_task: asyncio.Task[None] | None = None
     billing_sync_task: asyncio.Task[None] | None = None
     context_sync_task: asyncio.Task[None] | None = None
+    agent_reaper_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        nonlocal log_upload_task, memory_sync_task, billing_sync_task, context_sync_task
+        nonlocal log_upload_task, memory_sync_task, billing_sync_task
+        nonlocal context_sync_task, agent_reaper_task
         # P3-16：Agent 档案的权威在 agents 表，启动时重建内存注册表（canonical UUID 不因重启而变），
         # 并把历史"自由字符串"令牌迁移到 canonical id 上。
         await container.agents.load_from_db()
         await container.agent_tokens.migrate_legacy_tokens()
+        # 外部 Agent 超过 30 天未通过 MCP 调用 Flux 即自动注销：启动先跑一次，之后周期对账。
+        agent_reaper = ExternalAgentReaper(
+            agents=container.agents,
+            repository=container.agent_repo,
+            tokens=container.agent_tokens,
+        )
+        agent_reaper_task = asyncio.create_task(agent_reaper.run_forever())
         # P0-1：对账上一轮进程被杀时中断的 Apply（按磁盘事实恢复，幂等），
         # 与 Run 的 startup_recovery 并列——崩在落盘中途的提案不能永远停在 applying。
         await container.workspace.recover_interrupted_applies()
@@ -92,6 +102,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             billing_sync_task.cancel()
         if context_sync_task is not None and not context_sync_task.done():
             context_sync_task.cancel()
+        if agent_reaper_task is not None and not agent_reaper_task.done():
+            agent_reaper.stop()
+            agent_reaper_task.cancel()
         # 先停助理 worker，再 dispose 容器：避免停库后仍有判断在写 outbox。
         await container.supervisor_worker.stop()
         # 知识库索引同样先停：索引事务不能在引擎 dispose 之后还在写。

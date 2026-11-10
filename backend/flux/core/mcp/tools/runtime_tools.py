@@ -23,6 +23,10 @@ import uuid
 from typing import Any
 
 from flux.config import Settings
+from flux.core.agent_runtime.model_catalog import (
+    default_model_for_runtime,
+    models_for_runtime,
+)
 from flux.core.agent_runtime.protocol import (
     FLUX_AGENT_PROTOCOL,
     FLUX_AGENT_PROTOCOL_VERSION,
@@ -31,12 +35,18 @@ from flux.core.agent_runtime.protocol import (
     RUNTIME_RULES,
 )
 from flux.core.mcp.context_packager import DEFAULT_BUDGET_CHARS, package_context
-from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
+from flux.core.mcp.tools.base import (
+    ToolContext,
+    ToolSpec,
+    optional_str,
+    reject_unknown,
+    require_str,
+)
 from flux.core.mcp.tools.memory_tools import memory_recall
 from flux.core.permissions.modes import boundary_for, normalize_mode
 from flux.core.task_engine.repository import TaskRepository
 from flux.enums import Capability, FluxCapability
-from flux.errors import AIOSError, ValidationError
+from flux.errors import AIOSError, NotFoundError, ValidationError
 from flux.models.agent_run import AgentRun
 from flux.models.task import Task
 from flux.version import VERSION
@@ -64,6 +74,34 @@ FLUX_CONTEXT_SCHEMA: dict[str, Any] = {
 }
 
 
+def _agent_view(ctx: ToolContext) -> dict[str, Any]:
+    """Agent 身份视图：注册名、本次连接自报名、运行时与当前支持的模型。"""
+    container = ctx.container
+    runtime = ""
+    agents = getattr(container, "agents", None)
+    if agents is not None:
+        try:
+            runtime = agents.get(ctx.identity.agent_id).spec.runtime
+        except (KeyError, NotFoundError):
+            runtime = ""
+    return {
+        "id": ctx.identity.agent_id,
+        # 注册表里的档案名（如 flux-builtin），不随连接自报名变化
+        "name": ctx.identity.name,
+        # 本次连接自报的名字；首次接入还没取名时回退到注册名
+        "display_name": ctx.identity.self_name or ctx.identity.name,
+        "name_chosen": bool(ctx.identity.self_name),
+        "runtime": runtime,
+        "adapter": None,
+        # 连接方上报的自己支持的模型（agent.report_models 写入）
+        "models": list(ctx.identity.reported_models),
+        "models_reported": bool(ctx.identity.reported_models),
+        # Flux 当前 runtime 能执行的模型（与连接方的模型清单分开）
+        "runtime_models": models_for_runtime(container.settings, runtime) if runtime else [],
+        "model": default_model_for_runtime(container.settings, runtime) if runtime else "",
+    }
+
+
 async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     """返回 Agent 当前所处的 Flux Runtime 上下文与可用能力（只读）。"""
     # project_id 由 Run/Task 推导，Agent 按执行指令一起带上时不能因此拒绝整次调用
@@ -88,7 +126,7 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         "run": _run_view(run),
         "task": _task_view(task),
         "workspace": _workspace_view(container, settings),
-        "agent": {"id": ctx.identity.agent_id, "adapter": None},
+        "agent": _agent_view(ctx),
         "policy": {
             # Full / 免审核模式允许直写工作区，提案不再是唯一完成路径
             "proposal_required": bool(settings.proposal_required)
@@ -154,6 +192,83 @@ async def context_boot(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         "note": (
             "三份上下文已一次取回；需要刷新某一份时再单独调 flux_context / context.get / "
             "memory.recall。context 是快照，动手前用 workspace.read 核对磁盘当前状态。"
+        ),
+    }
+
+
+AGENT_CHOOSE_NAME_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "你为自己选择的显示名，例如 Grok",
+        }
+    },
+    "required": ["name"],
+    "additionalProperties": False,
+}
+
+
+async def agent_choose_name(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """首次接入时给自己取名：写到当前令牌的 label 上，不改 Agent 注册名。"""
+    reject_unknown(params, {"name"})
+    name = require_str(params, "name")
+    if len(name) > 64:
+        raise ValidationError("名字最多 64 个字符", details={"param": "name"})
+    if any(ch in name for ch in "\r\n\t"):
+        raise ValidationError("名字不能包含换行或制表符", details={"param": "name"})
+    await ctx.container.agent_tokens.choose_name(token_id=ctx.identity.token_id, name=name)
+    return {
+        "agent": {
+            "id": ctx.identity.agent_id,
+            "name": ctx.identity.name,
+            "display_name": name,
+            "name_chosen": True,
+        },
+        "note": (
+            "名字已写入当前连接的令牌；之后 flux_context / context.boot 的 "
+            "agent.display_name 会返回它。只影响本次连接，不改内置 Agent 注册名。"
+        ),
+    }
+
+
+AGENT_REPORT_MODELS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "models": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 128},
+            "minItems": 1,
+            "maxItems": 32,
+            "description": '你当前支持的模型 id 列表，例如 ["grok-4", "grok-3"]',
+        }
+    },
+    "required": ["models"],
+    "additionalProperties": False,
+}
+
+
+async def agent_report_models(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
+    """首次接入时上报自己支持的模型：写到当前令牌，不动 Flux 的 runtime 模型。"""
+    reject_unknown(params, {"models"})
+    models = params.get("models")
+    if not isinstance(models, list) or not all(isinstance(item, str) for item in models):
+        raise ValidationError("参数 models 必须是字符串数组", details={"param": "models"})
+    reported = await ctx.container.agent_tokens.report_models(
+        token_id=ctx.identity.token_id, models=models
+    )
+    return {
+        "agent": {
+            "id": ctx.identity.agent_id,
+            "name": ctx.identity.name,
+            "models": list(reported),
+            "models_reported": True,
+        },
+        "note": (
+            "模型列表已写入当前连接的令牌；之后 flux_context / context.boot 的 "
+            "agent.models 会返回它。Flux 自己 runtime 能执行的模型见 agent.runtime_models。"
         ),
     }
 
@@ -262,5 +377,29 @@ def runtime_tools() -> tuple[ToolSpec, ...]:
             input_schema=FLUX_CONTEXT_SCHEMA,
             capability=Capability.FILE_READ,
             handler=flux_context,
+        ),
+        ToolSpec(
+            name="agent.choose_name",
+            title="给自己取一个名字",
+            description=(
+                "首次接入时调用：把你为自己选择的显示名写进当前连接的令牌。"
+                "之后 flux_context / context.boot 的 agent.display_name 会返回这个名字；"
+                "agent.name 仍是 Flux 注册表里的档案名（如 flux-builtin），不会被改掉。"
+            ),
+            input_schema=AGENT_CHOOSE_NAME_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=agent_choose_name,
+        ),
+        ToolSpec(
+            name="agent.report_models",
+            title="上报自己支持的模型",
+            description=(
+                "首次接入时调用：把你当前支持的模型 id 列表上报给 Flux，写到当前连接的令牌。"
+                "之后 flux_context / context.boot 的 agent.models 会返回它；"
+                "Flux 自己 runtime 能执行的模型在 agent.runtime_models，两者互不覆盖。"
+            ),
+            input_schema=AGENT_REPORT_MODELS_SCHEMA,
+            capability=Capability.FILE_READ,
+            handler=agent_report_models,
         ),
     )

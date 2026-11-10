@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL
 from flux.core.agent_runtime.run_repository import as_utc, utcnow
 from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.agent_runtime.trace import summarize_trace
@@ -162,6 +163,11 @@ async def create_task(
     if agent_id is not None:
         # Agent 注册表是 Agent 存在性的唯一权威：API 边界 fail-closed。
         agent = container.agents.get(payload.agent_id)
+        if agent.spec.kind == AGENT_KIND_EXTERNAL:
+            raise BadRequestError(
+                "外部接入的 Agent 不可通过 Flux 执行",
+                details={"agent_id": payload.agent_id, "kind": agent.spec.kind},
+            )
         runtime = str(getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME))
     model, key_id = await container.key_vault.resolve_selection(
         runtime=runtime, model=payload.model or "", key_id=payload.key_id
@@ -823,6 +829,12 @@ async def switch_task_agent(
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
     _parse_uuid(payload.agent_id, field="agent_id")
+    target = container.agents.get(payload.agent_id)
+    if target.spec.kind == AGENT_KIND_EXTERNAL:
+        raise BadRequestError(
+            "外部接入的 Agent 不可通过 Flux 执行",
+            details={"agent_id": payload.agent_id, "kind": target.spec.kind},
+        )
     result = await container.agent_switch.switch(task, payload.agent_id)
     body = {
         **_task_dict(result.task),
@@ -862,6 +874,11 @@ async def switch_task_model(
     runtime = DEFAULT_RUNTIME
     if task.agent_id is not None:
         agent = container.agents.get(str(task.agent_id))
+        if agent.spec.kind == AGENT_KIND_EXTERNAL:
+            raise BadRequestError(
+                "外部接入的 Agent 不可通过 Flux 执行",
+                details={"agent_id": str(task.agent_id), "kind": agent.spec.kind},
+            )
         runtime = getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME)
     model, key_id = await container.key_vault.resolve_selection(
         runtime=runtime, model=payload.model, key_id=payload.key_id

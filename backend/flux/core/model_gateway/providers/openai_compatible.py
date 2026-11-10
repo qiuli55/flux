@@ -174,6 +174,9 @@ class OpenAICompatibleProvider(ModelProviderBase):
         temperature = kwargs.get("temperature")
         if temperature is not None:
             payload["temperature"] = temperature
+        if kwargs.get("json_mode"):
+            # OpenAI 兼容协议的 JSON 模式；不支持的端点会忽略该字段
+            payload["response_format"] = {"type": "json_object"}
         return payload
 
 

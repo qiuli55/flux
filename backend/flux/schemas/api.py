@@ -35,6 +35,8 @@ class AgentCreateRequest(BaseModel):
     #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI（codex / opencode）。
     #: 取值在边界即校验（非法 → 422），并由 AgentManager 再校验一次（内部调用方同样受约束）。
     runtime: Literal["dsh", "codex", "opencode"] = "dsh"
+    #: 接入方式：local 由 Flux 执行并展示；external 只经 MCP 接入，不被 Flux 调用、不展示。
+    kind: Literal["local", "external"] = "local"
 
 
 class AgentTokenIssueRequest(BaseModel):
@@ -299,6 +301,13 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessageIn] = Field(min_length=1)
     model: str | None = None
     provider: ModelProvider | None = None
+    #: 指定 Agent 走 completion_resolver 的模型通道（Agent 原生模型或密钥库模型）。
+    agent_id: str | None = None
+    key_id: str | None = None
+    #: 让上游按 JSON 对象输出（OpenAI 兼容协议的 response_format=json_object）。
+    json_mode: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
     task_id: str | None = None
     project_id: str | None = None
 
