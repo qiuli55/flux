@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Callable, Iterator
 
 import httpx
@@ -14,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from flux.api.v1 import designs
 from flux.config import Settings
+from flux.core.design_preview import _CACHE_MAX_FILES, _cache_path, _prune_cache
 from flux.main import create_app
 
 PREFIX = "/api/v1"
@@ -513,3 +516,33 @@ def test_export_svg_missing_maps_to_not_found(design_client_app) -> None:
     response = test_client.get(f"{PREFIX}/designs/luma-home/export.svg", params={"screen": "99"})
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+def test_preview_cache_key_uses_version_then_content(tmp_path) -> None:
+    meta = {"id": "home"}
+    versioned = {"id": "d1", "version": 7}
+    unversioned = {"id": "d1"}
+
+    a = _cache_path(tmp_path, versioned, meta, 2.0, "<p>one</p>")
+    b = _cache_path(tmp_path, versioned, meta, 2.0, "<p>two</p>")
+    # 有版本号时文件名只认版本，内容不同也复用同一张
+    assert a.name == "d1-v7-home-x2.png"
+    assert a == b
+    c = _cache_path(tmp_path, unversioned, meta, 2.0, "<p>one</p>")
+    d = _cache_path(tmp_path, unversioned, meta, 2.0, "<p>two</p>")
+    # 没有版本号时用内容摘要兜底，改稿后不会命中旧图
+    assert c != d
+    assert c.name.startswith("d1-h")
+
+
+def test_prune_cache_drops_expired_and_overflow(tmp_path) -> None:
+    old = tmp_path / "old.png"
+    old.write_bytes(b"x")
+    os.utime(old, (time.time() - 30 * 24 * 3600, time.time() - 30 * 24 * 3600))
+    for index in range(_CACHE_MAX_FILES + 2):
+        (tmp_path / f"keep-{index}.png").write_bytes(b"x")
+
+    _prune_cache(tmp_path)
+
+    assert not old.exists()
+    assert len(list(tmp_path.glob("*.png"))) == _CACHE_MAX_FILES

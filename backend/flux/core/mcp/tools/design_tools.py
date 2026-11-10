@@ -2120,9 +2120,10 @@ async def design_preview(ctx: ToolContext, params: dict[str, Any]) -> dict[str, 
         "curl": f"curl -sS -o '{filename}' '{url}'",
         "filename": filename,
         "hint": (
-            "预览图是浏览器渲染的 PNG，MCP 只能回文本，所以在终端执行 curl 把图存到工作区，"
-            "再用读文件的方式看图。同机回环请求免令牌；没传 screen 时截第一块画板。"
-            "改稿后重新调本工具拿地址即可（版本变了缓存自动失效），要强制重截传 refresh=true。"
+            "只看这个地址看不到画布：必须真的在终端执行上面的 curl，把 PNG 存到工作区，"
+            "再用读文件的方式查看图片后才能判断效果。同机回环请求免令牌；没传 screen 时"
+            "截第一块画板。改稿后重新调本工具拿地址即可（版本变了缓存自动失效），"
+            "要强制重截传 refresh=true。"
         ),
     }
 

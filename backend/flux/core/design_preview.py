@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,10 @@ MAX_SCALE = 3.0
 
 #: 单次截图上限：正常 1–2 秒，留足冷启动余量。
 _CAPTURE_TIMEOUT_SECONDS = 20.0
+
+#: 缓存保留上限：7 天、最多 300 张，避免预览图无限堆积。
+_CACHE_TTL_SECONDS = 7 * 24 * 3600
+_CACHE_MAX_FILES = 300
 
 _BIN_NAMES = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome")
 _EXTRA_BIN_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"), Path("/snap/bin"))
@@ -80,7 +87,7 @@ async def render_preview_png(
         raise ValueError("没有这块画板")
     markup, meta = built
     target_dir = cache_dir or default_cache_dir()
-    png_path = _cache_path(target_dir, design, meta, scale)
+    png_path = _cache_path(target_dir, design, meta, scale, markup)
     if not refresh and png_path.is_file():
         return png_path.read_bytes(), {**meta, "scale": scale, "cached": True}
 
@@ -93,17 +100,44 @@ async def render_preview_png(
     tmp.write_bytes(png)
     # 原子替换：并发请求同一画板时不会读到半张图
     tmp.replace(png_path)
+    _prune_cache(target_dir)
     return png, {**meta, "scale": scale, "cached": False}
 
 
 def _cache_path(
-    cache_dir: Path, design: dict[str, Any], meta: dict[str, Any], scale: float
+    cache_dir: Path,
+    design: dict[str, Any],
+    meta: dict[str, Any],
+    scale: float,
+    markup: str,
 ) -> Path:
     design_id = _ID_SAFE_RE.sub("-", str(design.get("id") or "design")).strip("-") or "design"
     screen_id = _ID_SAFE_RE.sub("-", str(meta.get("id") or "0")).strip("-") or "0"
     version = design.get("version")
+    # 设计稿没有版本号时用渲染内容摘要兜底，避免改稿后永远命中旧图。
+    if version:
+        version_tag = f"v{version}"
+    else:
+        version_tag = f"h{hashlib.sha1(markup.encode('utf-8')).hexdigest()[:10]}"
     scale_tag = f"{scale:g}".replace(".", "_")
-    return cache_dir / f"{design_id}-v{version}-{screen_id}-x{scale_tag}.png"
+    return cache_dir / f"{design_id}-{version_tag}-{screen_id}-x{scale_tag}.png"
+
+
+def _prune_cache(cache_dir: Path) -> None:
+    """清理过期或超量的预览图；失败不影响本次出图。"""
+    try:
+        entries = sorted(
+            ((path.stat().st_mtime, path) for path in cache_dir.glob("*.png")),
+            reverse=True,
+        )
+    except OSError:
+        return
+    now = time.time()
+    for index, (mtime, path) in enumerate(entries):
+        if index < _CACHE_MAX_FILES and now - mtime <= _CACHE_TTL_SECONDS:
+            continue
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 async def _capture(
