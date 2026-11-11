@@ -46,7 +46,7 @@ def _service(tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response])
     service = GitHubService(settings, _FakeVault())  # type: ignore[arg-type]
     service._client = httpx.AsyncClient(
         base_url="https://api.github.com",
-        transport=handler,
+        transport=httpx.MockTransport(handler),
         headers={"Accept": "application/vnd.github+json"},
     )
     return service
