@@ -31,6 +31,9 @@ import top.qiuli55.flux.mobile.data.DeviceInfo
 import top.qiuli55.flux.mobile.data.FluxApi
 import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
+import top.qiuli55.flux.mobile.data.GitHubAccountStatus
+import top.qiuli55.flux.mobile.data.GitHubLoginSession
+import top.qiuli55.flux.mobile.data.GitHubRepo
 import top.qiuli55.flux.mobile.data.KeyProbeResult
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
@@ -99,6 +102,12 @@ data class V2AppState(
     val codexAccount: CodexAccountStatus? = null,
     val codexLogin: CodexLoginSession? = null,
     val codexLoading: Boolean = false,
+    /** GitHub 账号（仓库读写）；设置页打开时加载。 */
+    val githubAccount: GitHubAccountStatus? = null,
+    val githubLogin: GitHubLoginSession? = null,
+    val githubLoading: Boolean = false,
+    val githubRepos: List<GitHubRepo> = emptyList(),
+    val githubReposLoading: Boolean = false,
     /** 套餐额度（成本中心）；进首页时加载，失败不影响任务主流程。 */
     val billing: BillingOverview? = null,
     /** 官方 API 价目表；与额度一起加载，失败只是不展示。 */
@@ -136,6 +145,7 @@ class V2AppViewModel : FluxViewModel() {
     private var refreshJob: Job? = null
     private var pollingJob: Job? = null
     private var codexLoginJob: Job? = null
+    private var githubFlowJob: Job? = null
     private var billingJob: Job? = null
     private var groupListJob: Job? = null
     private var groupPollJob: Job? = null
@@ -805,6 +815,121 @@ class V2AppViewModel : FluxViewModel() {
                     codexAccount = refreshed ?: _state.value.codexAccount,
                     notice = if (next.status == "success") "ChatGPT 账号已连接" else _state.value.notice,
                 )
+                if (!next.isPending) return@launch
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ GitHub 账号（全仓库读写）
+
+    /** 设置页打开时读取 GitHub 账号态；有进行中的设备码登录就继续轮询。 */
+    fun loadGitHubAccount() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(githubLoading = true)
+            try {
+                val status = api().githubAccount()
+                val active = status.pendingLogin ?: _state.value.githubLogin?.takeIf { it.isPending }
+                _state.value = _state.value.copy(
+                    githubAccount = status,
+                    githubLogin = active,
+                    githubLoading = false,
+                )
+                if (active != null) pollGitHubLogin(active.flowId)
+                if (status.loggedIn && _state.value.githubRepos.isEmpty()) loadGitHubRepos()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(githubLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun startGitHubLogin() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(githubLoading = true, error = null)
+            try {
+                val session = api().startGitHubLogin()
+                _state.value = _state.value.copy(githubLogin = session, githubLoading = false)
+                if (session.isPending) pollGitHubLogin(session.flowId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(githubLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** PAT 回退通道：设备流被 GitHub App 关掉时用粘贴方式连接。 */
+    fun saveGitHubToken(token: String) {
+        if (token.isBlank()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(githubLoading = true, error = null)
+            try {
+                val status = api().saveGitHubToken(token)
+                _state.value = _state.value.copy(
+                    githubAccount = status,
+                    githubLogin = null,
+                    githubLoading = false,
+                    notice = "GitHub 账号已连接",
+                )
+                loadGitHubRepos()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(githubLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun logoutGitHubAccount() {
+        githubFlowJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(githubLoading = true, error = null)
+            try {
+                val result = api().logoutGitHub()
+                _state.value = _state.value.copy(
+                    githubAccount = result.status,
+                    githubLogin = null,
+                    githubRepos = emptyList(),
+                    githubLoading = false,
+                    notice = "已退出 GitHub 账号",
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(githubLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun loadGitHubRepos() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(githubReposLoading = true)
+            try {
+                val page = api().githubRepos(page = 1, perPage = 50)
+                _state.value = _state.value.copy(
+                    githubRepos = page.repos,
+                    githubReposLoading = false,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(githubReposLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** 设备码有效期 15 分钟：20 分钟内每 2 秒轮询，成功后刷新账号态与仓库列表。 */
+    private fun pollGitHubLogin(flowId: String) {
+        githubFlowJob?.cancel()
+        githubFlowJob = viewModelScope.launch {
+            repeat(600) {
+                delay(2000)
+                val current = _state.value.githubLogin ?: return@launch
+                if (current.flowId != flowId || !current.isPending) return@launch
+                val next = runCatching { api().githubLoginState(flowId) }.getOrNull()
+                    ?: return@launch
+                val refreshed = if (next.status == "success") {
+                    runCatching { api().githubAccount() }.getOrNull()
+                } else {
+                    null
+                }
+                _state.value = _state.value.copy(
+                    githubLogin = next,
+                    githubAccount = refreshed ?: _state.value.githubAccount,
+                    notice = if (next.status == "success") "GitHub 账号已连接" else _state.value.notice,
+                )
+                if (next.status == "success") loadGitHubRepos()
                 if (!next.isPending) return@launch
             }
         }

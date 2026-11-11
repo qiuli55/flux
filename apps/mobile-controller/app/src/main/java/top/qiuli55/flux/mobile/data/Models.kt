@@ -891,6 +891,62 @@ data class CodexLogoutResult(
     val status: CodexAccountStatus = CodexAccountStatus(),
 )
 
+/** GitHub 登录态；后端只下发展示字段与 scope，令牌永远不下发。 */
+@Serializable
+data class GitHubAccountStatus(
+    @SerialName("logged_in") val loggedIn: Boolean = false,
+    val login: String? = null,
+    val name: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    @SerialName("token_kind") val tokenKind: String? = null,
+    val scopes: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("device_flow_ready") val deviceFlowReady: Boolean = false,
+    @SerialName("pending_login") val pendingLogin: GitHubLoginSession? = null,
+)
+
+/** GitHub 设备码登录会话：user_code + verification_uri 给用户授权，status 供轮询。 */
+@Serializable
+data class GitHubLoginSession(
+    @SerialName("flow_id") val flowId: String = "",
+    /** pending / success / failed / expired / cancelled */
+    val status: String = "pending",
+    @SerialName("user_code") val userCode: String = "",
+    @SerialName("verification_uri") val verificationUri: String = "",
+    val message: String = "",
+    @SerialName("expires_in") val expiresIn: Int = 0,
+) {
+    val isPending: Boolean get() = status == "pending"
+}
+
+/** 一个 GitHub 仓库；私有仓库 isPrivate=true。 */
+@Serializable
+data class GitHubRepo(
+    @SerialName("full_name") val fullName: String = "",
+    val name: String = "",
+    val owner: String? = null,
+    @SerialName("private") val isPrivate: Boolean = false,
+    val description: String? = null,
+    @SerialName("default_branch") val defaultBranch: String = "main",
+    val language: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("html_url") val htmlUrl: String? = null,
+)
+
+@Serializable
+data class GitHubRepoPage(
+    val repos: List<GitHubRepo> = emptyList(),
+    val page: Int = 1,
+    @SerialName("per_page") val perPage: Int = 50,
+    val count: Int = 0,
+)
+
+@Serializable
+data class GitHubLogoutResult(
+    val removed: Boolean = false,
+    val status: GitHubAccountStatus = GitHubAccountStatus(),
+)
+
 class FluxApiException(
     val code: String,
     override val message: String,

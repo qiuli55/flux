@@ -1053,6 +1053,20 @@ fun FluxV2Root() {
                                 settingsOpen = false
                                 openInternalBrowser(url)
                             },
+                            githubAccount = app.githubAccount,
+                            githubLogin = app.githubLogin,
+                            githubLoading = app.githubLoading,
+                            githubRepos = app.githubRepos,
+                            githubReposLoading = app.githubReposLoading,
+                            onGitHubLogin = { vm.startGitHubLogin() },
+                            onGitHubLogout = { vm.logoutGitHubAccount() },
+                            onRefreshGitHub = { vm.loadGitHubAccount() },
+                            onOpenGitHubUrl = { url ->
+                                settingsOpen = false
+                                openInternalBrowser(url)
+                            },
+                            onSaveGitHubToken = { token -> vm.saveGitHubToken(token) },
+                            onLoadGitHubRepos = { vm.loadGitHubRepos() },
                             onManualConnect = {
                                 settingsOpen = false
                                 manualConnectOpen = true

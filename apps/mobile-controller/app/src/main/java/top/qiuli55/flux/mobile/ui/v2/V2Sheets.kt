@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,11 +23,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Info
@@ -56,10 +59,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +76,9 @@ import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.CodexLoginSession
+import top.qiuli55.flux.mobile.data.GitHubAccountStatus
+import top.qiuli55.flux.mobile.data.GitHubLoginSession
+import top.qiuli55.flux.mobile.data.GitHubRepo
 
 // ================================================================== 设置
 
@@ -97,6 +108,17 @@ fun SettingsSheet(
     onCodexLogout: () -> Unit,
     onRefreshCodex: () -> Unit,
     onOpenCodexUrl: (String) -> Unit,
+    githubAccount: GitHubAccountStatus?,
+    githubLogin: GitHubLoginSession?,
+    githubLoading: Boolean,
+    githubRepos: List<GitHubRepo>,
+    githubReposLoading: Boolean,
+    onGitHubLogin: () -> Unit,
+    onGitHubLogout: () -> Unit,
+    onRefreshGitHub: () -> Unit,
+    onOpenGitHubUrl: (String) -> Unit,
+    onSaveGitHubToken: (String) -> Unit,
+    onLoadGitHubRepos: () -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
     updateHint: String,
@@ -106,7 +128,10 @@ fun SettingsSheet(
 ) {
     val accountLine = account?.email?.takeIf { it.isNotBlank() } ?: "手动连接 · $deviceName"
     // 每次打开设置都拉一次账号态；有未完成的设备码登录会继续轮询
-    LaunchedEffect(Unit) { onRefreshCodex() }
+    LaunchedEffect(Unit) {
+        onRefreshCodex()
+        onRefreshGitHub()
+    }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         Column(
             Modifier
@@ -235,6 +260,50 @@ fun SettingsSheet(
                 if (codexLogin != null && (codexLogin.isPending || codexLogin.status == "failed")) {
                     ThinDivider(V2Colors.ink(.05f))
                     CodexLoginPanel(codexLogin, onOpenUrl = onOpenCodexUrl)
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            // GitHub 账号：用设备码授权或粘贴 PAT，读全部仓库（含私有）并提交
+            WhiteCard(Modifier.fillMaxWidth()) {
+                GitHubAccountHeader(
+                    account = githubAccount,
+                    login = githubLogin,
+                    loading = githubLoading,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                if (githubAccount?.loggedIn == true) {
+                    SettingsActionRow(
+                        icon = Icons.Outlined.Logout,
+                        title = "退出 GitHub 账号",
+                        description = "退出后 Agent 无法读写你的仓库",
+                        danger = true,
+                        onClick = onGitHubLogout,
+                    )
+                } else {
+                    SettingsActionRow(
+                        icon = Icons.Outlined.Link,
+                        title = if (githubLoading) "正在启动授权…" else "连接 GitHub",
+                        description = "设备码授权，可读取全部仓库（含私有）",
+                        danger = false,
+                        onClick = onGitHubLogin,
+                    )
+                }
+                if (githubLogin != null && (githubLogin.isPending || githubLogin.status == "failed")) {
+                    ThinDivider(V2Colors.ink(.05f))
+                    GitHubLoginPanel(githubLogin, onOpenUrl = onOpenGitHubUrl)
+                }
+                if (githubAccount?.loggedIn != true) {
+                    ThinDivider(V2Colors.ink(.05f))
+                    GitHubTokenField(onSubmit = onSaveGitHubToken)
+                }
+                if (githubAccount?.loggedIn == true) {
+                    ThinDivider(V2Colors.ink(.05f))
+                    GitHubRepoList(
+                        repos = githubRepos,
+                        loading = githubReposLoading,
+                        onRefresh = onLoadGitHubRepos,
+                    )
                 }
             }
 
@@ -963,5 +1032,247 @@ private fun CodexLoginPanel(session: CodexLoginSession, onOpenUrl: (String) -> U
         }
         Spacer(Modifier.height(10.dp))
         Label("授权完成后这里会自动更新，无需手动刷新", 9.5f, V2Colors.ink(.34f))
+    }
+}
+
+// ---------------------------------------------------------------- GitHub 账号
+
+@Composable
+private fun GitHubAccountHeader(
+    account: GitHubAccountStatus?,
+    login: GitHubLoginSession?,
+    loading: Boolean,
+) {
+    val loggedIn = account?.loggedIn == true
+    val subtitle = when {
+        loggedIn -> listOfNotNull(account?.login?.let { "@$it" }, account?.name).joinToString(" · ")
+            .ifBlank { "已连接 GitHub" }
+        login?.isPending == true -> "等待浏览器授权…"
+        loading -> "读取账号状态…"
+        account == null -> "账号状态暂不可用"
+        else -> "未连接 · 连接后可读写全部仓库"
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Code, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Label("GitHub 账号", 13.5f, V2Colors.ink(.90f))
+            Spacer(Modifier.height(2.dp))
+            Label(subtitle, 10f, V2Colors.ink(.36f), maxLines = 1)
+        }
+        if (loggedIn) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(V2Colors.accent.copy(alpha = .12f))
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            ) {
+                Label("已连接", 9.5f, V2Colors.accent, FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun GitHubLoginPanel(session: GitHubLoginSession, onOpenUrl: (String) -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(session.userCode) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        if (session.status == "failed" || session.status == "expired") {
+            Label(if (session.status == "expired") "设备码已过期" else "授权失败", 11f, V2Colors.rose, FontWeight.Medium)
+            Spacer(Modifier.height(4.dp))
+            Label(session.message.ifBlank { "请重新发起连接" }, 9.5f, V2Colors.ink(.38f))
+            return@Column
+        }
+        Label("1. 打开 GitHub 授权页", 10.5f, V2Colors.ink(.45f))
+        if (session.verificationUri.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(V2Colors.accent.copy(alpha = .10f))
+                    .clickable { onOpenUrl(session.verificationUri) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Language, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Label("打开授权页", 12f, V2Colors.accent, FontWeight.Medium, modifier = Modifier.weight(1f))
+                Icon(Icons.Outlined.KeyboardArrowRight, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (session.userCode.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Label("2. 输入设备码", 10.5f, V2Colors.ink(.45f))
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Label(
+                    session.userCode,
+                    22f,
+                    V2Colors.ink(.90f),
+                    FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    mono = true,
+                )
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(V2Colors.ink(.06f))
+                        .clickable {
+                            clipboard.setText(AnnotatedString(session.userCode))
+                            copied = true
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Label(if (copied) "已复制" else "复制", 10.5f, V2Colors.ink(.55f))
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Label("授权完成后这里会自动更新，无需手动刷新", 9.5f, V2Colors.ink(.34f))
+    }
+}
+
+@Composable
+private fun GitHubTokenField(onSubmit: (String) -> Unit) {
+    var token by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Label("或用个人访问令牌（PAT）", 10.5f, V2Colors.ink(.45f))
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .background(V2Colors.ink(.04f), RoundedCornerShape(12.dp))
+                .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (token.isEmpty()) {
+                Label("粘贴 ghp_… / github_pat_…", 12f, V2Colors.ink(.28f))
+            }
+            BasicTextField(
+                value = token,
+                onValueChange = { token = it },
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = V2Colors.ink(.90f),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                ),
+                cursorBrush = SolidColor(V2Colors.accent),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (token.isBlank()) V2Colors.ink(.05f) else V2Colors.accent.copy(alpha = .12f)
+                    )
+                    .clickable {
+                        if (token.isNotBlank()) {
+                            onSubmit(token.trim())
+                            token = ""
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+            ) {
+                Label(
+                    "保存令牌",
+                    11f,
+                    if (token.isBlank()) V2Colors.ink(.30f) else V2Colors.accent,
+                    FontWeight.SemiBold,
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Label("令牌只存放在服务端加密密钥库，不会回传到手机", 9.5f, V2Colors.ink(.34f))
+    }
+}
+
+@Composable
+private fun GitHubRepoList(
+    repos: List<GitHubRepo>,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label(
+                if (repos.isEmpty()) "我的仓库" else "我的仓库 · ${repos.size}",
+                10.5f,
+                V2Colors.ink(.45f),
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onRefresh)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Label(
+                    if (loading) "加载中…" else "刷新",
+                    10.5f,
+                    if (loading) V2Colors.ink(.30f) else V2Colors.accent,
+                    FontWeight.Medium,
+                )
+            }
+        }
+        when {
+            repos.isEmpty() && !loading -> {
+                Spacer(Modifier.height(8.dp))
+                Label("还没有读到仓库，点「刷新」重试", 10.5f, V2Colors.ink(.34f))
+            }
+            else -> repos.take(10).forEach { repo ->
+                Spacer(Modifier.height(9.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Label(
+                                repo.fullName.ifBlank { repo.name },
+                                12.5f,
+                                V2Colors.ink(.86f),
+                                FontWeight.Medium,
+                                modifier = Modifier.weight(1f, fill = false),
+                                maxLines = 1,
+                            )
+                            if (repo.isPrivate) {
+                                Spacer(Modifier.width(6.dp))
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(V2Colors.ink(.07f))
+                                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                                ) {
+                                    Label("私有", 8.5f, V2Colors.ink(.45f), FontWeight.Medium)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Label(
+                            listOfNotNull(
+                                repo.language?.takeIf { it.isNotBlank() },
+                                repo.defaultBranch.ifBlank { "main" },
+                            ).joinToString(" · "),
+                            9.5f,
+                            V2Colors.ink(.34f),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+        if (repos.size > 10) {
+            Spacer(Modifier.height(8.dp))
+            Label("仅显示最近更新的 10 个仓库", 9.5f, V2Colors.ink(.30f))
+        }
     }
 }

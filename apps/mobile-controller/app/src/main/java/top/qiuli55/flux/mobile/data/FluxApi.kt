@@ -700,6 +700,34 @@ class FluxApi(
     suspend fun logoutCodexAccount(): CodexLogoutResult =
         post("api/v1/codex-account/logout", buildJsonObject {})
 
+    // ---------------------------------------------------------- GitHub 账号（仓库读写）
+
+    suspend fun githubAccount(): GitHubAccountStatus = get("api/v1/github/status")
+
+    /** 发起设备码登录：返回授权地址与用户码。 */
+    suspend fun startGitHubLogin(): GitHubLoginSession =
+        post("api/v1/github/device/start", buildJsonObject {})
+
+    suspend fun githubLoginState(flowId: String): GitHubLoginSession =
+        get("api/v1/github/device/${Uri.encode(flowId)}")
+
+    /** Personal Access Token 回退：OAuth App 未开启设备码流程时用。 */
+    suspend fun saveGitHubToken(token: String): GitHubAccountStatus =
+        post(
+            "api/v1/github/token",
+            buildJsonObject {
+                put("token", token.trim())
+                put("kind", "pat")
+            },
+        )
+
+    suspend fun logoutGitHub(): GitHubLogoutResult =
+        post("api/v1/github/logout", buildJsonObject {})
+
+    /** 当前账号可见的全部仓库（含私有与组织仓库）。 */
+    suspend fun githubRepos(page: Int = 1, perPage: Int = 50): GitHubRepoPage =
+        get("api/v1/github/repos?page=$page&per_page=$perPage")
+
     // ---------------------------------------------------------- 助理（Supervisor）
 
     suspend fun supervisorOverview(limit: Int = 50): SupervisorOverview =
