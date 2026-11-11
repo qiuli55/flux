@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -74,7 +75,9 @@ async def test_save_token_stores_ciphertext_and_status_never_returns_it(tmp_path
         assert service.account_path.is_file()
         raw = service.account_path.read_text(encoding="utf-8")
         assert TOKEN not in raw
-        assert (service.account_path.stat().st_mode & 0o777) == 0o600
+        # Windows 没有 POSIX 权限位，只有类 Unix 系统才断言 0600。
+        if os.name == "posix":
+            assert (service.account_path.stat().st_mode & 0o777) == 0o600
 
         removed = service.logout()
         assert removed["removed"] is True
