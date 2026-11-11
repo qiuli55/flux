@@ -17,6 +17,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -96,22 +98,39 @@ fun KeyVaultSheet(
     }
 
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
-        SheetHeader(
-            title = "密钥库",
-            subtitle = "加密保存，只显示末 4 位；保存时用该 key 的模型请求一次端点校验可用性",
-            onClose = onDismiss,
-        )
         Column(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Label("模型与密钥", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Label(
+                        "加密保存，只显示末 4 位；保存时会用该 key 的模型请求一次端点校验可用性",
+                        12.5f,
+                        V2Colors.ink(.40f),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                RoundIconButton(
+                    icon = Icons.Outlined.Close,
+                    onClick = onDismiss,
+                    size = 30.dp,
+                    iconSize = 14.dp,
+                    background = V2Colors.ink(.05f),
+                    tint = V2Colors.ink(.55f),
+                    contentDescription = "关闭",
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Label(if (loading) "读取中…" else "共 ${keys.size} 条", 10.5f, V2Colors.ink(.40f))
+                Label(if (loading) "读取中…" else "共 ${keys.size} 条", 11.5f, V2Colors.ink(.40f))
                 Spacer(Modifier.weight(1f))
                 SmallPill("刷新", onClick = onRefresh)
                 Spacer(Modifier.width(8.dp))
@@ -119,61 +138,91 @@ fun KeyVaultSheet(
             }
 
             if (notice.isNotBlank()) {
-                Label(notice, 10.5f, V2Colors.emerald, maxLines = 2)
+                Spacer(Modifier.height(10.dp))
+                Label(notice, 11.5f, V2Colors.emerald, maxLines = 2)
             }
 
             if (!formOpen && keys.isEmpty() && !loading) {
+                Spacer(Modifier.height(12.dp))
                 WhiteCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Label("还没有密钥", 12.5f, V2Colors.ink(.80f), FontWeight.Medium)
+                        Label("还没有密钥", 15f, V2Colors.ink(.90f), FontWeight.Medium)
                         Label(
                             "添加一条 DeepSeek / OpenAI / 兼容端点 / Claude 的 key 后，登记模型会出现在对应 Agent 的模型下拉里。",
-                            10.5f,
+                            11.5f,
                             V2Colors.ink(.40f),
                         )
                     }
                 }
             }
 
-            keys.forEach { entry ->
+            if (keys.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
                 WhiteCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Label(entry.name, 12.5f, V2Colors.ink(.90f), FontWeight.Medium, Modifier.weight(1f), maxLines = 1)
-                            KeyPill(entry.providerTitle, V2Colors.cyan700)
-                            Spacer(Modifier.width(6.dp))
-                            KeyPill(if (entry.enabled) "启用" else "停用", if (entry.enabled) V2Colors.emerald else V2Colors.ink(.38f))
-                        }
-                        Label(
-                            "${entry.baseUrl.ifBlank { "默认地址" }} · ${entry.keyHint}",
-                            9.5f,
-                            V2Colors.ink(.38f),
-                            mono = true,
-                            maxLines = 1,
-                        )
-                        Label(entry.models.joinToString(" / "), 9.5f, V2Colors.ink(.52f), mono = true)
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Label("启用", 10f, V2Colors.ink(.45f))
-                            Spacer(Modifier.width(8.dp))
-                            LightSwitch(entry.enabled, onChange = { value ->
-                                onToggle(entry, value) { err ->
-                                    if (err.isNotBlank()) notice = err
+                    Column {
+                        keys.forEachIndexed { index, entry ->
+                            Column(Modifier.fillMaxWidth()) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { startForm(entry) }
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Label(entry.name, 15f, V2Colors.ink(.92f), FontWeight.Medium, maxLines = 1)
+                                            if (!entry.enabled) {
+                                                Spacer(Modifier.width(6.dp))
+                                                KeyPill("停用", V2Colors.ink(.42f))
+                                            }
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Label(
+                                            "${entry.providerTitle} · ${entry.baseUrl.ifBlank { "默认地址" }} · ${entry.keyHint}",
+                                            11.5f,
+                                            V2Colors.ink(.40f),
+                                            maxLines = 1,
+                                        )
+                                        if (entry.models.isNotEmpty()) {
+                                            Spacer(Modifier.height(2.dp))
+                                            Label(
+                                                entry.models.joinToString(" / "),
+                                                11.5f,
+                                                V2Colors.ink(.52f),
+                                                maxLines = 1,
+                                                mono = true,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    LightSwitch(entry.enabled, onChange = { value ->
+                                        onToggle(entry, value) { err ->
+                                            if (err.isNotBlank()) notice = err
+                                        }
+                                    })
                                 }
-                            })
-                            Spacer(Modifier.weight(1f))
-                            SmallPill("编辑") { startForm(entry) }
-                            Spacer(Modifier.width(8.dp))
-                            SmallPill("删除", danger = true) { deleteTarget = entry }
+                                if (index != keys.lastIndex) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 16.dp)
+                                            .height(1.dp)
+                                            .background(V2Colors.ink(.06f)),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
             deleteTarget?.let { entry ->
+                Spacer(Modifier.height(12.dp))
                 WhiteCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Label("删除「${entry.name}」？", 12f, V2Colors.rose, FontWeight.Medium)
-                        Label("引用它的任务会回到 Agent 默认模型，此操作不可撤销。", 10f, V2Colors.ink(.45f))
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Label("删除「${entry.name}」？", 15f, V2Colors.rose, FontWeight.Medium)
+                        Label("引用它的任务会回到 Agent 默认模型，此操作不可撤销。", 11.5f, V2Colors.ink(.45f))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             SmallPill("取消") { deleteTarget = null }
                             SmallPill("确认删除", danger = true) {
@@ -195,29 +244,30 @@ fun KeyVaultSheet(
             }
 
             if (formOpen) {
+                Spacer(Modifier.height(12.dp))
                 WhiteCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Label(if (editing != null) "编辑密钥" else "添加密钥", 13f, V2Colors.ink(.90f), FontWeight.SemiBold)
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Label(if (editing != null) "编辑密钥" else "添加密钥", 15f, V2Colors.ink(.92f), FontWeight.SemiBold)
 
                         KeyField("名称", name, { name = it }, "DeepSeek 官方")
                         Column {
-                            Label("供应商", 9.5f, V2Colors.ink(.45f))
-                            Spacer(Modifier.height(5.dp))
+                            Label("供应商", 11f, V2Colors.ink(.45f))
+                            Spacer(Modifier.height(6.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 keyProviders.forEach { item ->
                                     val active = provider == item.value
                                     Box(
                                         Modifier
                                             .weight(1f)
-                                            .height(30.dp)
+                                            .height(32.dp)
                                             .background(
-                                                if (active) V2Colors.cyan500.copy(alpha = .14f) else V2Colors.surface(.6f),
-                                                RoundedCornerShape(9.dp),
+                                                if (active) V2Colors.ink(.08f) else V2Colors.ink(.03f),
+                                                RoundedCornerShape(10.dp),
                                             )
                                             .border(
                                                 1.dp,
-                                                if (active) V2Colors.accent.copy(alpha = .35f) else V2Colors.ink(.10f),
-                                                RoundedCornerShape(9.dp),
+                                                if (active) V2Colors.ink(.20f) else V2Colors.ink(.06f),
+                                                RoundedCornerShape(10.dp),
                                             )
                                             .clickable {
                                                 provider = item.value
@@ -225,7 +275,7 @@ fun KeyVaultSheet(
                                             },
                                         contentAlignment = Alignment.Center,
                                     ) {
-                                        Label(item.label, 9.5f, if (active) V2Colors.cyan800 else V2Colors.ink(.50f))
+                                        Label(item.label, 11f, if (active) V2Colors.ink(.88f) else V2Colors.ink(.48f))
                                     }
                                 }
                             }
@@ -254,8 +304,8 @@ fun KeyVaultSheet(
 
                         if (provider == "openai_compatible") {
                             Column {
-                                Label("wire_api", 9.5f, V2Colors.ink(.45f))
-                                Spacer(Modifier.height(5.dp))
+                                Label("wire_api", 11f, V2Colors.ink(.45f))
+                                Spacer(Modifier.height(6.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     listOf("" to "自动", "chat" to "chat", "responses" to "responses").forEach { (value, text) ->
                                         val active = wireApi == value
@@ -266,21 +316,30 @@ fun KeyVaultSheet(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Label("启用", 10f, V2Colors.ink(.45f))
+                            Label("启用", 13f, V2Colors.ink(.70f))
                             Spacer(Modifier.width(8.dp))
                             LightSwitch(enabled, onChange = { enabled = it })
                         }
 
                         if (error.isNotBlank()) {
-                            Label(error, 10f, V2Colors.rose, maxLines = 3)
+                            Label(error, 11f, V2Colors.rose, maxLines = 3)
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (editing != null) {
+                                SmallPill("删除", danger = true) {
+                                    deleteTarget = keys.firstOrNull { it.id == editing?.id }
+                                    formOpen = false
+                                    editing = null
+                                }
+                            }
+                            Spacer(Modifier.weight(1f))
                             SmallPill("取消") {
                                 formOpen = false
                                 editing = null
                                 error = ""
                             }
+                            Spacer(Modifier.width(8.dp))
                             SmallPill(if (editing != null) "保存修改" else "创建", primary = true, enabled = !saving) {
                                 val cleanName = name.trim()
                                 val models = modelsText
@@ -337,19 +396,19 @@ private fun KeyField(
     singleLine: Boolean = true,
 ) {
     Column {
-        Label(label, 9.5f, V2Colors.ink(.45f))
-        Spacer(Modifier.height(5.dp))
+        Label(label, 11f, V2Colors.ink(.45f))
+        Spacer(Modifier.height(6.dp))
         Box(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = if (singleLine) 38.dp else 84.dp)
-                .background(V2Colors.surface(.65f), RoundedCornerShape(10.dp))
-                .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 10.dp, vertical = 10.dp),
+                .heightIn(min = if (singleLine) 44.dp else 88.dp)
+                .background(V2Colors.ink(.04f), RoundedCornerShape(12.dp))
+                .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart,
         ) {
             if (value.isEmpty()) {
-                Label(placeholder, 10.5f, V2Colors.ink(.28f))
+                Label(placeholder, 13f, V2Colors.ink(.28f))
             }
             BasicTextField(
                 value = value,
@@ -357,7 +416,7 @@ private fun KeyField(
                 singleLine = singleLine,
                 textStyle = TextStyle(
                     color = V2Colors.ink(.90f),
-                    fontSize = 11.5.sp,
+                    fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,
                 ),
                 cursorBrush = SolidColor(V2Colors.accent),
@@ -382,33 +441,32 @@ private fun SmallPill(
     onClick: () -> Unit,
 ) {
     val background = when {
-        !enabled -> V2Colors.ink(.06f)
-        primary -> V2Colors.cyan400
-        active -> V2Colors.cyan500.copy(alpha = .14f)
+        !enabled -> V2Colors.ink(.04f)
+        primary -> V2Colors.accent
+        active -> V2Colors.ink(.08f)
         danger -> V2Colors.rose.copy(alpha = .10f)
-        else -> V2Colors.surface(.65f)
+        else -> V2Colors.ink(.05f)
     }
     val color = when {
-        !enabled -> V2Colors.ink(.30f)
+        !enabled -> V2Colors.ink(.28f)
         primary -> V2Colors.actionInk
-        active -> V2Colors.cyan800
         danger -> V2Colors.rose
-        else -> V2Colors.ink(.58f)
+        else -> V2Colors.ink(.62f)
     }
     Box(
         Modifier
-            .height(30.dp)
-            .background(background, RoundedCornerShape(9.dp))
+            .height(32.dp)
+            .background(background, RoundedCornerShape(10.dp))
             .border(
                 1.dp,
-                if (active) V2Colors.accent.copy(alpha = .30f) else V2Colors.ink(.08f),
-                RoundedCornerShape(9.dp),
+                if (active) V2Colors.ink(.18f) else Color.Transparent,
+                RoundedCornerShape(10.dp),
             )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 11.dp),
+            .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Label(text, 9.5f, color, if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+        Label(text, 11.5f, color, if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
     }
 }
 
@@ -419,6 +477,6 @@ private fun KeyPill(text: String, tint: Color) {
             .background(tint.copy(alpha = .10f), RoundedCornerShape(6.dp))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
-        Label(text, 8.5f, tint, maxLines = 1)
+        Label(text, 10f, tint, maxLines = 1)
     }
 }

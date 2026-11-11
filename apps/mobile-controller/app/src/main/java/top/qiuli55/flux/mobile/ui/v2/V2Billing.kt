@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,10 +8,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,7 +29,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -104,6 +113,21 @@ fun BillingSheet(
                 return@Column
             }
 
+            // 顶部环形总览：取各套餐官方占用率里最高的一个，一眼看还剩多少
+            val topPercent = overview.plans
+                .flatMap { plan -> plan.windows }
+                .mapNotNull { it.official?.percent }
+                .maxOrNull()
+            val topLevel = overview.plans.firstOrNull()?.gate?.level ?: "ok"
+            if (topPercent != null) {
+                QuotaGauge(
+                    percent = topPercent,
+                    tint = levelTint(topLevel),
+                    caption = levelLabel(topLevel),
+                    enabled = overview.enabled,
+                )
+            }
+
             WhiteCard(Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.fillMaxWidth().padding(14.dp),
@@ -124,6 +148,52 @@ fun BillingSheet(
             if (prices != null && prices.prices.isNotEmpty()) {
                 PriceBookCard(prices)
             }
+        }
+    }
+}
+
+/** 环形额度总览：一个百分比 + 状态文案，与设计稿 12 一致。 */
+@Composable
+private fun QuotaGauge(percent: Double, tint: Color, caption: String, enabled: Boolean) {
+    val fraction = (percent / 100.0).coerceIn(0.0, 1.0).toFloat()
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.size(140.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize()) {
+                val stroke = 10.dp.toPx()
+                val inset = stroke / 2f
+                val arcSize = Size(size.width - stroke, size.height - stroke)
+                drawArc(
+                    color = V2Colors.ink(.07f),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+                drawArc(
+                    color = tint,
+                    startAngle = -90f,
+                    sweepAngle = 360f * fraction,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Label("${percent.roundToInt()}%", 30f, V2Colors.ink(.92f), FontWeight.Bold)
+                if (!enabled) Label("计费已关闭", 10f, V2Colors.ink(.35f))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(tint))
+            Spacer(Modifier.width(6.dp))
+            Label(caption, 12f, tint, FontWeight.Medium)
         }
     }
 }

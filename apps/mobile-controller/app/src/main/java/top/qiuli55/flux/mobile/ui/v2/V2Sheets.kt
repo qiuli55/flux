@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Info
@@ -102,14 +104,10 @@ fun SettingsSheet(
     onCheckUpdate: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val displayName = account?.displayName?.takeIf { it.isNotBlank() }
-        ?: account?.username?.takeIf { it.isNotBlank() }
-        ?: "本机连接"
     val accountLine = account?.email?.takeIf { it.isNotBlank() } ?: "手动连接 · $deviceName"
     // 每次打开设置都拉一次账号态；有未完成的设备码登录会继续轮询
     LaunchedEffect(Unit) { onRefreshCodex() }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
-        SheetHeader(title = "我的", onClose = onDismiss, centered = true)
         Column(
             Modifier
                 .weight(1f)
@@ -118,33 +116,84 @@ fun SettingsSheet(
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 20.dp),
         ) {
-            Column(Modifier.fillMaxWidth().padding(bottom = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    Modifier
-                        .size(84.dp)
-                        .clip(CircleShape)
-                        .background(V2Colors.avatarBlue),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.Person, null, tint = V2Colors.avatarInk, modifier = Modifier.size(44.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Label("通知与偏好", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Label("本机提醒、动效与账号连接方式", 12.5f, V2Colors.ink(.40f))
                 }
-                Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Label(displayName, 19f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(V2Colors.ink(.05f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                    ) {
-                        Label(if (account != null) "云账号" else "直连", 9.5f, V2Colors.ink(.45f))
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                Label(accountLine, 11.5f, V2Colors.ink(.40f), maxLines = 1)
+                Spacer(Modifier.width(12.dp))
+                RoundIconButton(
+                    icon = Icons.Outlined.Close,
+                    onClick = onDismiss,
+                    size = 30.dp,
+                    iconSize = 14.dp,
+                    background = V2Colors.ink(.05f),
+                    tint = V2Colors.ink(.55f),
+                    contentDescription = "关闭",
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+
+            WhiteCard(Modifier.fillMaxWidth()) {
+                ToggleRow(
+                    icon = Icons.Outlined.Notifications,
+                    title = "决策提醒",
+                    description = "新决策到达时弹出顶部提示",
+                    checked = decisionAlerts,
+                    onChange = onDecisionAlerts,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                ToggleRow(
+                    icon = Icons.Outlined.Verified,
+                    title = "任务完成提醒",
+                    description = "队列中的任务执行完成时提示",
+                    checked = taskAlerts,
+                    onChange = onTaskAlerts,
+                )
             }
 
+            Spacer(Modifier.height(12.dp))
+            WhiteCard(Modifier.fillMaxWidth()) {
+                ToggleRow(
+                    icon = Icons.Outlined.Vibration,
+                    title = "触感反馈",
+                    description = "按操作结果给出不同强度的振动",
+                    checked = haptics,
+                    onChange = onHaptics,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                ToggleRow(
+                    icon = Icons.Outlined.Waves,
+                    title = "减少动态",
+                    description = "关闭位移、弹性与脉冲动画",
+                    checked = reduceMotion,
+                    onChange = onReduceMotion,
+                )
+                ThinDivider(V2Colors.ink(.05f))
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        V2IconTile(Icons.Outlined.Security)
+                        Spacer(Modifier.width(12.dp))
+                        Label("确认强度", 15f, V2Colors.ink(.92f), weight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                        Label(if (strict) "1.6 秒" else "0.8 秒", 13f, V2Colors.ink(.38f))
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(V2Colors.ink(.05f))
+                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp))
+                            .padding(4.dp),
+                    ) {
+                        StrengthOption("标准 · 0.8 秒", !strict, Modifier.weight(1f)) { onStrict(false) }
+                        StrengthOption("严格 · 1.6 秒", strict, Modifier.weight(1f)) { onStrict(true) }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
             WhiteCard(Modifier.fillMaxWidth()) {
                 SettingsValueRow(Icons.Outlined.Person, "账号", accountLine)
                 ThinDivider(V2Colors.ink(.05f))
@@ -244,65 +293,6 @@ fun SettingsSheet(
 
             Spacer(Modifier.height(12.dp))
             WhiteCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Security, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Label("确认强度", 13.5f, V2Colors.ink(.90f), modifier = Modifier.weight(1f))
-                        Label(if (strict) "1.6 秒" else "0.8 秒", 11f, V2Colors.ink(.35f))
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(V2Colors.ink(.05f))
-                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp))
-                            .padding(4.dp),
-                    ) {
-                        StrengthOption("标准 · 0.8 秒", !strict, Modifier.weight(1f)) { onStrict(false) }
-                        StrengthOption("严格 · 1.6 秒", strict, Modifier.weight(1f)) { onStrict(true) }
-                    }
-                }
-                ThinDivider(V2Colors.ink(.05f))
-                ToggleRow(
-                    icon = Icons.Outlined.Vibration,
-                    title = "触感反馈",
-                    description = "按操作结果给出不同强度的振动",
-                    checked = haptics,
-                    onChange = onHaptics,
-                )
-                ThinDivider(V2Colors.ink(.05f))
-                ToggleRow(
-                    icon = Icons.Outlined.Waves,
-                    title = "减少动态",
-                    description = "关闭位移、弹性与脉冲动画",
-                    checked = reduceMotion,
-                    onChange = onReduceMotion,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            WhiteCard(Modifier.fillMaxWidth()) {
-                ToggleRow(
-                    icon = Icons.Outlined.Notifications,
-                    title = "决策提醒",
-                    description = "新决策到达时弹出顶部提示",
-                    checked = decisionAlerts,
-                    onChange = onDecisionAlerts,
-                )
-                ThinDivider(V2Colors.ink(.05f))
-                ToggleRow(
-                    icon = Icons.Outlined.Verified,
-                    title = "任务完成提醒",
-                    description = "队列中的任务执行完成时提示",
-                    checked = taskAlerts,
-                    onChange = onTaskAlerts,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            WhiteCard(Modifier.fillMaxWidth()) {
                 SettingsValueRow(Icons.Outlined.Info, "版本", "v${BuildConfig.VERSION_NAME}")
                 ThinDivider(V2Colors.ink(.05f))
                 SettingsActionRow(
@@ -330,13 +320,14 @@ fun SettingsSheet(
 @Composable
 private fun SettingsValueRow(icon: ImageVector, title: String, value: String) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
+        V2IconTile(icon)
         Spacer(Modifier.width(12.dp))
-        Label(title, 13.5f, V2Colors.ink(.90f), modifier = Modifier.weight(1f))
-        Label(value, 12f, V2Colors.ink(.40f), maxLines = 1)
+        Label(title, 15f, V2Colors.ink(.92f), FontWeight.Medium, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        Label(value, 13f, V2Colors.ink(.38f), maxLines = 1)
     }
 }
 
@@ -349,15 +340,15 @@ private fun ToggleRow(
     onChange: (Boolean) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
+        V2IconTile(icon)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Label(title, 13.5f, V2Colors.ink(.90f))
-            Spacer(Modifier.height(2.dp))
-            Label(description, 10f, V2Colors.ink(.35f))
+            Label(title, 15f, V2Colors.ink(.92f), FontWeight.Medium)
+            Spacer(Modifier.height(3.dp))
+            Label(description, 11.5f, V2Colors.ink(.40f))
         }
         Spacer(Modifier.width(10.dp))
         LightSwitch(checked, onChange)
@@ -374,29 +365,25 @@ private fun SettingsActionRow(
     onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            icon,
-            null,
-            tint = if (danger) V2Colors.rose.copy(alpha = .8f) else V2Colors.ink(.55f),
-            modifier = Modifier.size(17.dp),
-        )
+        V2IconTile(icon, tint = if (danger) V2Colors.rose.copy(alpha = .8f) else V2Colors.ink(.70f))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Label(title, 13.5f, if (danger) V2Colors.rose else V2Colors.ink(.90f))
-            Spacer(Modifier.height(2.dp))
-            Label(description, 10f, V2Colors.ink(.35f))
+            Label(title, 15f, if (danger) V2Colors.rose else V2Colors.ink(.92f), FontWeight.Medium)
+            Spacer(Modifier.height(3.dp))
+            Label(description, 11.5f, V2Colors.ink(.40f))
         }
         if (badge) {
             Box(Modifier.size(7.dp).background(V2Colors.rose, CircleShape))
             Spacer(Modifier.width(8.dp))
         }
+        Spacer(Modifier.width(6.dp))
         Icon(
-            Icons.Outlined.KeyboardArrowRight,
+            Icons.Outlined.ChevronRight,
             null,
-            tint = V2Colors.ink(.25f),
+            tint = V2Colors.ink(.22f),
             modifier = Modifier.size(16.dp),
         )
     }
@@ -747,104 +734,110 @@ fun AgentPickerSheet(
     onPick: (agentId: String, model: V2ModelOption) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var expandedAgent by remember(chat.agentId) { mutableStateOf(chat.agentId) }
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
-        SheetHeader(
-            title = "切换 Agent 与模型",
-            subtitle = "仅列出当前设备（${chat.device}）已配置的 Agent 与可用模型",
-            onClose = onDismiss,
-        )
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .86f) {
         Column(
             Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 20.dp)
+                .padding(top = 8.dp, bottom = 24.dp),
         ) {
+            // 标题：左对齐大标题 + 一句说明，与设计稿一致
+            Label("切换 Agent 与模型", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Label("点一下即生效，历史消息保留", 12.5f, V2Colors.ink(.40f))
+            Spacer(Modifier.height(18.dp))
+
             options.forEach { option ->
                 val agent = option.agent
                 val selectedAgent = agent.id == chat.agentId
+                // 分组头：Agent 名 + 当前胶囊 + 角色说明
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Label(agent.name, 15f, V2Colors.ink(.92f), FontWeight.SemiBold)
+                    Spacer(Modifier.width(8.dp))
+                    if (selectedAgent) {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(V2Colors.emerald.copy(alpha = .14f))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                        ) {
+                            Label("当前", 10f, V2Colors.emerald700, FontWeight.Medium)
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Label(agent.role, 12f, V2Colors.ink(.42f), maxLines = 1)
+                }
+                Spacer(Modifier.height(8.dp))
+                // 模型清单：浅灰圆角块，选中的直接打勾，点一下即生效
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (selectedAgent) V2Colors.cyan500.copy(alpha = .06f) else V2Colors.surface(.55f))
-                        .border(
-                            1.dp,
-                            if (selectedAgent) V2Colors.accent.copy(alpha = .28f) else V2Colors.ink(.07f),
-                            RoundedCornerShape(16.dp),
-                        )
-                        .clickable { expandedAgent = agent.id }
-                        .padding(14.dp),
+                        .background(V2Colors.ink(.05f)),
                 ) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Box(
+                    option.models.forEachIndexed { index, model ->
+                        val selected = selectedAgent &&
+                            model.model == chat.model &&
+                            model.keyId == chat.modelKeyId
+                        Row(
                             Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(agent.tint.copy(alpha = .10f))
-                                .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(12.dp)),
-                            contentAlignment = Alignment.Center,
+                                .fillMaxWidth()
+                                .clickable { onPick(agent.id, model) }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(Icons.Outlined.SmartToy, null, tint = agent.tint, modifier = Modifier.size(16.dp))
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Label(agent.name, 12.5f, V2Colors.ink(.90f), FontWeight.Medium)
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Label(model.label, 14f, V2Colors.ink(.90f), mono = true, maxLines = 1)
+                                    if (model.keyId != null) {
+                                        Spacer(Modifier.width(7.dp))
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(V2Colors.ink(.07f))
+                                                .padding(horizontal = 7.dp, vertical = 2.dp),
+                                        ) {
+                                            Label("密钥库", 9.5f, V2Colors.ink(.42f))
+                                        }
+                                    }
+                                }
                                 if (!agent.nativeStreaming) {
-                                    Spacer(Modifier.width(5.dp))
-                                    NonStreamingBadge()
+                                    Spacer(Modifier.height(2.dp))
+                                    Label("非逐字流式", 10.5f, V2Colors.ink(.35f))
                                 }
                             }
-                            Spacer(Modifier.height(2.dp))
-                            Label("${agent.role} · 运行 ${agent.running} 个任务", 10f, V2Colors.ink(.36f))
-                        }
-                        if (selectedAgent) {
-                            Icon(Icons.Outlined.Check, null, tint = V2Colors.cyan700, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                    if (expandedAgent == agent.id) {
-                        Spacer(Modifier.height(10.dp))
-                        Label("可用模型", 9.5f, V2Colors.ink(.38f))
-                        Spacer(Modifier.height(6.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            option.models.forEach { model ->
-                                val selectedModel =
-                                    selectedAgent && model.model == chat.model && model.keyId == chat.modelKeyId
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(if (selectedModel) V2Colors.accent else V2Colors.surface(.55f))
-                                        .border(
-                                            1.dp,
-                                            if (selectedModel) V2Colors.accent else V2Colors.ink(.08f),
-                                            RoundedCornerShape(10.dp),
-                                        )
-                                        .clickable { onPick(agent.id, model) }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Label(
-                                        model.label,
-                                        11f,
-                                        if (selectedModel) V2Colors.actionInk else V2Colors.ink(.65f),
-                                        if (selectedModel) FontWeight.Medium else FontWeight.Normal,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Label(
-                                        if (selectedModel) "使用中" else "选择",
-                                        9.5f,
-                                        if (selectedModel) V2Colors.actionInk.copy(alpha = .8f) else V2Colors.ink(.35f),
-                                    )
-                                }
+                            if (selected) {
+                                Icon(
+                                    Icons.Outlined.Check,
+                                    contentDescription = "使用中",
+                                    tint = V2Colors.ink(.85f),
+                                    modifier = Modifier.size(18.dp),
+                                )
                             }
+                        }
+                        if (index != option.models.lastIndex) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp)
+                                    .height(1.dp)
+                                    .background(V2Colors.ink(.06f)),
+                            )
                         }
                     }
                 }
+                Spacer(Modifier.height(16.dp))
             }
+
+            // 生效时机说明：执行中换 Agent 要等本轮结束
+            Label(
+                "Agent 正在执行时：换 Agent 本轮结束后生效",
+                11.5f,
+                V2Colors.ink(.32f),
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }

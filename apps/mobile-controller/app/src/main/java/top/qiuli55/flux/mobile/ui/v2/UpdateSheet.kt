@@ -76,7 +76,7 @@ fun UpdateSheet(
                         Modifier
                             .padding(top = 6.dp)
                             .size(5.dp)
-                            .background(V2Colors.cyan500, CircleShape),
+                            .background(V2Colors.ink(.35f), CircleShape),
                     )
                     Spacer(Modifier.width(8.dp))
                     Label(note, 12f, V2Colors.ink(.90f), modifier = Modifier.weight(1f))
@@ -89,7 +89,7 @@ fun UpdateSheet(
                     Modifier.fillMaxWidth().padding(top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Label("${state.progress}%", 10.5f, V2Colors.cyan700, FontWeight.SemiBold)
+                    Label("${state.progress}%", 10.5f, V2Colors.ink(.80f), FontWeight.SemiBold)
                     Spacer(Modifier.width(8.dp))
                     Label(
                         if (state.kind == UpdateKind.READY) {
@@ -162,11 +162,11 @@ private fun UpdateHeader(manifest: UpdateManifest, onClose: () -> Unit) {
             Modifier
                 .size(42.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .background(V2Colors.cyan500.copy(alpha = .12f))
-                .border(1.dp, V2Colors.cyan700.copy(alpha = .18f), RoundedCornerShape(14.dp)),
+                .background(V2Colors.ink(.05f))
+                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Outlined.ArrowUpward, null, tint = V2Colors.cyan700, modifier = Modifier.size(20.dp))
+            Icon(Icons.Outlined.ArrowUpward, null, tint = V2Colors.ink(.65f), modifier = Modifier.size(20.dp))
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

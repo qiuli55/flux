@@ -88,33 +88,34 @@ fun V2LoginScreen(
             Modifier
                 .align(Alignment.Center)
                 .then(Modifier.statusBarsPadding().navigationBarsPadding())
-                .widthIn(max = if (tablet) 460.dp else 520.dp)
+                .widthIn(max = if (tablet) 420.dp else 520.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 28.dp),
+                .padding(horizontal = 26.dp, vertical = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(
                 Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(V2Colors.accent.copy(alpha = .12f))
-                    .border(1.dp, V2Colors.accent.copy(alpha = .18f), RoundedCornerShape(18.dp)),
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(V2Colors.accent),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     painter = painterResource(R.drawable.ic_flux_mark),
                     contentDescription = "Flux",
-                    tint = V2Colors.cyan700,
-                    modifier = Modifier.size(32.dp),
+                    tint = V2Colors.actionInk,
+                    modifier = Modifier.size(34.dp),
                 )
             }
-            Spacer(Modifier.height(18.dp))
-            Label("登录 Flux", 24f, V2Colors.ink(.95f), FontWeight.SemiBold)
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(20.dp))
+            Label("登录 Flux", 27f, V2Colors.ink(.95f), FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
             Label(
-                "登录后，同一个账号下的电脑和服务器都会出现在设备列表里。",
-                11.5f,
-                V2Colors.ink(.45f),
+                "同一个账号下的电脑和服务器都会自动连接",
+                12f,
+                V2Colors.ink(.42f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
 
             if (hint != null) {
@@ -131,47 +132,34 @@ fun V2LoginScreen(
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
-            WhiteCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    V2Field(
-                        label = "账号",
-                        value = state.identifier,
-                        placeholder = "邮箱或用户名",
-                        onValueChange = vm::onIdentifierChange,
-                        keyboardType = KeyboardType.Email,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    V2Field(
-                        label = "密码",
-                        value = state.password,
-                        placeholder = "登录密码",
-                        onValueChange = vm::onPasswordChange,
-                        password = true,
-                        keyboardType = KeyboardType.Password,
-                    )
-                    if (state.error != null) {
-                        Spacer(Modifier.height(10.dp))
-                        Label(state.error.orEmpty(), 11f, V2Colors.rose700)
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    PrimaryButton(
-                        text = if (state.busy) "登录中…" else "登录",
-                        onClick = { vm.login(onSignedIn) },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.busy,
-                    )
-                }
+            Spacer(Modifier.height(26.dp))
+            V2LoginField(
+                value = state.identifier,
+                placeholder = "邮箱或用户名",
+                onValueChange = vm::onIdentifierChange,
+                keyboardType = KeyboardType.Email,
+            )
+            Spacer(Modifier.height(10.dp))
+            V2LoginField(
+                value = state.password,
+                placeholder = "密码",
+                onValueChange = vm::onPasswordChange,
+                password = true,
+                keyboardType = KeyboardType.Password,
+            )
+            if (state.error != null) {
+                Spacer(Modifier.height(10.dp))
+                Label(state.error.orEmpty(), 11f, V2Colors.rose700)
             }
+            Spacer(Modifier.height(16.dp))
+            PrimaryButton(
+                text = if (state.busy) "登录中…" else "登录",
+                onClick = { vm.login(onSignedIn) },
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                enabled = !state.busy,
+            )
 
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f).height(1.dp).background(V2Colors.line))
-                Label("或", 10f, V2Colors.ink(.30f), modifier = Modifier.padding(horizontal = 10.dp))
-                Box(Modifier.weight(1f).height(1.dp).background(V2Colors.line))
-            }
-            Spacer(Modifier.height(18.dp))
-
+            Spacer(Modifier.height(10.dp))
             GhostButton(
                 text = "使用 GitHub 登录",
                 onClick = {
@@ -179,22 +167,25 @@ fun V2LoginScreen(
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(vm.githubUrl())))
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
                 enabled = !state.busy,
             )
-            Spacer(Modifier.height(10.dp))
-            GhostButton(
-                text = "手动连接服务器",
-                onClick = { manualOpen = true },
-                modifier = Modifier.fillMaxWidth(),
-            )
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(22.dp))
+            Label(
+                "手动连接服务器",
+                12f,
+                V2Colors.ink(.42f),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable { manualOpen = true }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+            Spacer(Modifier.height(18.dp))
             Label(
                 "Flux Mobile v${BuildConfig.VERSION_NAME}",
                 10f,
-                V2Colors.ink(.28f),
-                modifier = Modifier.fillMaxWidth(),
+                V2Colors.ink(.26f),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
@@ -231,7 +222,7 @@ fun V2DeviceScreen(
         Spacer(Modifier.height(22.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Label("选择设备", 24f, V2Colors.ink(.95f), FontWeight.SemiBold)
+                Label("设备与连接", 21f, V2Colors.ink(.95f), FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Label(
                     if (account != null) {
@@ -241,8 +232,8 @@ fun V2DeviceScreen(
                     } else {
                         "手动连接模式"
                     },
-                    11f,
-                    V2Colors.ink(.42f),
+                    12.5f,
+                    V2Colors.ink(.40f),
                 )
             }
             RoundIconButton(
@@ -459,6 +450,40 @@ fun ManualConnectSheet(
             )
             Spacer(Modifier.height(8.dp))
         }
+    }
+}
+
+/** 登录输入：浅灰填充块、无标签，与设计稿 10 一致。 */
+@Composable
+private fun V2LoginField(
+    value: String,
+    placeholder: String,
+    onValueChange: (String) -> Unit,
+    password: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(V2Colors.ink(.05f))
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (value.isEmpty()) {
+            Label(placeholder, 13f, V2Colors.ink(.32f), maxLines = 1)
+        }
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = TextStyle(fontSize = 13.sp, color = V2Colors.ink(.9f)),
+            cursorBrush = SolidColor(V2Colors.accent),
+            visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        )
     }
 }
 

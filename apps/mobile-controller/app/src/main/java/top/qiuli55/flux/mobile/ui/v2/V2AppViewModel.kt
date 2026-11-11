@@ -1395,6 +1395,8 @@ internal fun Task.toV2Conversation(device: String): V2Conversation = V2Conversat
     updated = relativeTime(createdAt),
     unread = if (pendingDecision != null) 1 else 0,
     messages = emptyList(),
+    status = status.takeIf { it.isNotBlank() }?.toV2TaskStatus(),
+    statusNote = resultSummary(),
 )
 
 internal fun Task.toV2Task(): V2Task {

@@ -167,6 +167,10 @@ data class V2Conversation(
     val updated: String,
     val unread: Int,
     val messages: List<V2Message>,
+    /** 最近一轮任务状态；为空时列表只显示设备与 Agent。 */
+    val status: V2TaskStatus? = null,
+    /** 状态副行文案（如「已完成，改动已落盘」）；为空时按 [status] 兜底。 */
+    val statusNote: String? = null,
 )
 
 enum class V2Risk { HIGH, MEDIUM, LOW }

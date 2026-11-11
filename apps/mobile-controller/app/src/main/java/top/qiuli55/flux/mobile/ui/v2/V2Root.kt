@@ -25,10 +25,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddComment
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Publish
 import androidx.compose.material.icons.outlined.ShowChart
-import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -59,6 +59,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.R
+import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.update.UpdateCenter
@@ -70,6 +71,8 @@ private sealed interface V2Route {
     data object Home : V2Route
     data object Assistant : V2Route
     data object Designs : V2Route
+    /** 「我的」：账号与全部管理入口（设备、终端、密钥、额度、记忆、偏好）。 */
+    data object Profile : V2Route
     data object DesignCanvas : V2Route
 
     /**
@@ -101,8 +104,8 @@ private sealed interface V2Route {
     data class Terminal(val sessionId: String) : V2Route
 }
 
-/** 平板左侧主导航的入口。 */
-private enum class V2RailItem { CHATS, ASSISTANT }
+/** 平板左侧主导航的入口（与手机底部三个 Tab 一致）。 */
+private enum class V2RailItem { CHATS, DESIGNS, PROFILE }
 
 private val clockFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
@@ -202,6 +205,7 @@ fun FluxV2Root() {
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
+                V2Route.Profile -> vm.loadMemories()
                 else -> Unit
             }
         }
@@ -497,12 +501,7 @@ fun FluxV2Root() {
                             conversations = app.conversations,
                             groups = app.groupChat.groups,
                             groupsLoading = app.groupChat.loadingGroups,
-                            billingHeadline = app.billing?.headline ?: "暂无额度数据",
                             extraTop = extraTop,
-                            onOpenBilling = {
-                                billingOpen = true
-                                vm.loadBilling()
-                            },
                             onOpenDesigns = { route = V2Route.Designs },
                             onOpenAssistant = { openAssistant() },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
@@ -512,7 +511,6 @@ fun FluxV2Root() {
                             },
                             onOpenGroup = { route = V2Route.GroupChat(it.id) },
                             onCreateGroup = { createGroupOpen = true },
-                            onOpenSettings = { settingsOpen = true },
                             onNewChat = { newChatOpen = true },
                             onRefresh = {
                                 vm.refresh(quiet = true)
@@ -623,6 +621,35 @@ fun FluxV2Root() {
                                 designVm.exportDesignSvg(designId, onReady = onReady)
                             },
                             onDismissMessages = { designVm.clearMessages() },
+                        )
+
+                        V2Route.Profile -> V2ProfileScreen(
+                            accountName = app.account?.displayName?.takeIf { it.isNotBlank() }
+                                ?: app.account?.username?.takeIf { it.isNotBlank() }
+                                ?: "未登录",
+                            deviceName = app.account?.deviceName?.takeIf { it.isNotBlank() }
+                                ?: app.deviceLabel,
+                            deviceCount = if (app.account != null) app.devices.size else 1,
+                            memoryCount = app.memories.size,
+                            billingNote = if (app.billingError != null) "刷新失败" else "额度正常",
+                            version = BuildConfig.VERSION_NAME,
+                            extraTop = extraTop,
+                            onOpenDevices = { vm.showDevices() },
+                            onOpenTerminals = { route = V2Route.Terminals },
+                            onOpenKeys = {
+                                keyVaultOpen = true
+                                vm.loadKeys()
+                            },
+                            onOpenBilling = {
+                                billingOpen = true
+                                vm.loadBilling()
+                            },
+                            onOpenMemories = {
+                                memoryOpen = true
+                                vm.loadMemories()
+                            },
+                            onOpenSettings = { settingsOpen = true },
+                            onCheckUpdate = { UpdateCenter.checkManually() },
                         )
 
                         V2Route.DesignCanvas -> DesignCanvasScreen(
@@ -820,6 +847,7 @@ fun FluxV2Root() {
                             onRequestDesigns = { designVm.loadDesigns(quiet = true) },
                             // 助理对话右上角可回到进度看板；普通对话不给这个入口
                             onOpenAssistantBoard = { route = V2Route.Assistant },
+                            onOpenChanges = { route = V2Route.Changes(current.taskId) },
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
@@ -877,31 +905,19 @@ fun FluxV2Root() {
                     if (tablet) {
                         Row(Modifier.fillMaxSize().then(insets)) {
                             V2NavRail(
-                                selected = when (val current = route) {
-                                    V2Route.Assistant -> V2RailItem.ASSISTANT
-                                    // 助理对话（真实任务或还没落成任务的草稿）也算在助理入口下
-                                    is V2Route.TaskChat -> if (
-                                        app.tasks.firstOrNull { it.id == current.taskId }?.origin == "assistant"
-                                    ) {
-                                        V2RailItem.ASSISTANT
-                                    } else {
-                                        V2RailItem.CHATS
-                                    }
-                                    V2Route.Chat -> if (chat?.isAssistant == true) {
-                                        V2RailItem.ASSISTANT
-                                    } else {
-                                        V2RailItem.CHATS
-                                    }
+                                selected = when (route) {
+                                    V2Route.Designs, V2Route.DesignCanvas -> V2RailItem.DESIGNS
+                                    V2Route.Profile -> V2RailItem.PROFILE
                                     else -> V2RailItem.CHATS
                                 },
                                 onSelect = { item ->
                                     when (item) {
                                         V2RailItem.CHATS -> route = V2Route.Home
-                                        V2RailItem.ASSISTANT -> openAssistant()
+                                        V2RailItem.DESIGNS -> route = V2Route.Designs
+                                        V2RailItem.PROFILE -> route = V2Route.Profile
                                     }
                                 },
                                 onOpenLogs = { logsOpen = true },
-                                onOpenSettings = { settingsOpen = true },
                             )
                             Box(Modifier.width(1.dp).fillMaxHeight().background(V2Colors.ink(.07f)))
                             Box(
@@ -919,12 +935,48 @@ fun FluxV2Root() {
                             }
                         }
                     } else {
+                        // 手机：三个一级页面（对话 / 设计 / 我的）带底部 Tab，二三级页面全屏
+                        val topTab = when (route) {
+                            V2Route.Home -> V2TopTab.CHATS
+                            V2Route.Designs -> V2TopTab.DESIGNS
+                            V2Route.Profile -> V2TopTab.PROFILE
+                            else -> null
+                        }
                         Column(Modifier.fillMaxSize().then(insets)) {
-                            V2PageTransition(
-                                target = route,
-                                depthOf = { v2RouteDepth(it as V2Route) },
-                            ) { page ->
-                                renderContent(page as V2Route, 0.dp, true)
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                V2PageTransition(
+                                    target = route,
+                                    depthOf = { v2RouteDepth(it as V2Route) },
+                                ) { page ->
+                                    val current = page as V2Route
+                                    renderContent(
+                                        current,
+                                        0.dp,
+                                        current != V2Route.Home &&
+                                            current != V2Route.Designs &&
+                                            current != V2Route.Profile,
+                                    )
+                                }
+                            }
+                            if (topTab != null) {
+                                V2BottomTabBar(
+                                    selected = topTab,
+                                    onSelect = { tab ->
+                                        when (tab) {
+                                            V2TopTab.CHATS -> if (route != V2Route.Home) {
+                                                chat = null
+                                                chatMessages.clear()
+                                                route = V2Route.Home
+                                            }
+                                            V2TopTab.DESIGNS -> if (route != V2Route.Designs) {
+                                                route = V2Route.Designs
+                                            }
+                                            V2TopTab.PROFILE -> if (route != V2Route.Profile) {
+                                                route = V2Route.Profile
+                                            }
+                                        }
+                                    },
+                                )
                             }
                         }
                     }
@@ -1243,7 +1295,6 @@ private fun V2NavRail(
     selected: V2RailItem,
     onSelect: (V2RailItem) -> Unit,
     onOpenLogs: () -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
     Column(
         Modifier
@@ -1274,10 +1325,16 @@ private fun V2NavRail(
         }
         Spacer(Modifier.height(4.dp))
         RailButton(
-            icon = Icons.Outlined.SmartToy,
-            label = "助理",
-            selected = selected == V2RailItem.ASSISTANT,
-        ) { onSelect(V2RailItem.ASSISTANT) }
+            icon = Icons.Outlined.Edit,
+            label = "设计",
+            selected = selected == V2RailItem.DESIGNS,
+        ) { onSelect(V2RailItem.DESIGNS) }
+        Spacer(Modifier.height(4.dp))
+        RailButton(
+            icon = Icons.Outlined.Person,
+            label = "我的",
+            selected = selected == V2RailItem.PROFILE,
+        ) { onSelect(V2RailItem.PROFILE) }
 
         Spacer(Modifier.weight(1f))
 
@@ -1288,12 +1345,12 @@ private fun V2NavRail(
                 .size(38.dp)
                 .clip(CircleShape)
                 .background(V2Colors.avatarBlue)
-                .clickable(onClick = onOpenSettings),
+                .clickable { onSelect(V2RailItem.PROFILE) },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 Icons.Outlined.Person,
-                contentDescription = "打开账户与设置",
+                contentDescription = "打开我的",
                 tint = V2Colors.avatarInk,
                 modifier = Modifier.size(19.dp),
             )
@@ -1373,8 +1430,8 @@ private fun RailButton(
 
 /** 页面层级：用于判断转场方向（前进 / 返回）。 */
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
-    V2Route.Home -> 0
-    V2Route.Assistant, V2Route.Designs, V2Route.Terminals, V2Route.Chat -> 1
+    V2Route.Home, V2Route.Designs, V2Route.Profile -> 0
+    V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2
     V2Route.DesignCanvas -> 2

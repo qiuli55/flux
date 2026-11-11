@@ -23,9 +23,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Autorenew
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,21 +50,16 @@ import top.qiuli55.flux.mobile.data.SupervisorTicket
 import top.qiuli55.flux.mobile.data.SupervisorTimelineItem
 import top.qiuli55.flux.mobile.data.SupervisorTrigger
 
-/** 工单看板筛选。 */
-private enum class AssistantTicketFilter(val label: String) {
-    ALL("全部"),
-    TODO("待派发"),
-    DOING("进行中"),
-    REVIEW("待验收"),
-    ENDED("已结束"),
+/** 项目进度三个分段：在做的事、做完的事、子 Agent 交回来的报告。 */
+private enum class AssistantTab(val label: String) {
+    WORK("工作"),
+    HISTORY("历史"),
+    REPORTS("报告"),
 }
 
-private fun ticketFilterOf(stage: String): AssistantTicketFilter = when (stage) {
-    "intake", "planned" -> AssistantTicketFilter.TODO
-    "running", "waiting" -> AssistantTicketFilter.DOING
-    "reviewing" -> AssistantTicketFilter.REVIEW
-    "done", "stopped" -> AssistantTicketFilter.ENDED
-    else -> AssistantTicketFilter.ALL
+private fun ticketTabOf(stage: String): AssistantTab = when (stage) {
+    "done", "stopped" -> AssistantTab.HISTORY
+    else -> AssistantTab.WORK
 }
 
 private fun stageTone(stage: String): Color = when (stage) {
@@ -119,7 +115,9 @@ fun V2AssistantScreen(
     onCloseDetail: () -> Unit,
     onDismissMessages: () -> Unit = {},
 ) {
-    var filter by remember { mutableStateOf(AssistantTicketFilter.ALL) }
+    var tab by remember { mutableStateOf(AssistantTab.WORK) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.error, state.notice) {
         if (state.error != null || state.notice != null) {
@@ -129,68 +127,89 @@ fun V2AssistantScreen(
     }
 
     val counts = state.counts
-    val todo = (counts["intake"] ?: 0) + (counts["planned"] ?: 0)
-    val doing = (counts["running"] ?: 0) + (counts["waiting"] ?: 0)
-    val review = counts["reviewing"] ?: 0
-    val ended = (counts["done"] ?: 0) + (counts["stopped"] ?: 0)
-    val visibleTickets = remember(state.tickets, filter) {
-        state.tickets
-            .filter { filter == AssistantTicketFilter.ALL || ticketFilterOf(it.stage) == filter }
-            .sortedBy { it.sequence }
+    val running = counts["running"] ?: 0
+    val waitReview = (counts["reviewing"] ?: 0) + (counts["waiting"] ?: 0)
+    val doneCount = counts["done"] ?: 0
+    val workTickets = remember(state.tickets) {
+        state.tickets.filter { ticketTabOf(it.stage) == AssistantTab.WORK }.sortedBy { it.sequence }
+    }
+    val historyTickets = remember(state.tickets) {
+        state.tickets.filter { ticketTabOf(it.stage) == AssistantTab.HISTORY }.sortedByDescending { it.updatedAt }
     }
 
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 10.dp + extraTop)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 6.dp + extraTop)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (showBack) {
                     RoundIconButton(
                         Icons.Outlined.ArrowBack,
                         onBack,
-                        size = 32.dp,
-                        iconSize = 16.dp,
+                        size = 34.dp,
+                        iconSize = 18.dp,
                         contentDescription = "返回",
                     )
-                    Spacer(Modifier.width(10.dp))
+                } else {
+                    Spacer(Modifier.width(34.dp))
                 }
-                Column(Modifier.weight(1f)) {
-                    Label("助理", 23f, V2Colors.ink(.95f), FontWeight.SemiBold)
-                    Spacer(Modifier.height(2.dp))
+                Column(
+                    Modifier.weight(1f).padding(horizontal = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Label(
-                        "观察 · 判定 · 拆单 · 派活",
-                        11f,
-                        V2Colors.ink(.38f),
+                        "项目进度",
+                        16f,
+                        V2Colors.ink(.95f),
+                        FontWeight.SemiBold,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
                     )
                 }
-                RoundIconButton(
-                    icon = Icons.Outlined.PlayArrow,
-                    onClick = onProcess,
-                    size = 32.dp,
-                    iconSize = 15.dp,
-                    background = V2Colors.surface(.55f),
-                    tint = V2Colors.cyan700.copy(alpha = .85f),
-                    contentDescription = "推进队列",
-                )
-                Spacer(Modifier.width(6.dp))
-                RoundIconButton(
-                    icon = Icons.Outlined.Autorenew,
-                    onClick = onWatchdog,
-                    size = 32.dp,
-                    iconSize = 15.dp,
-                    background = V2Colors.surface(.55f),
-                    tint = V2Colors.amber700.copy(alpha = .9f),
-                    contentDescription = "超时回收",
-                )
-                Spacer(Modifier.width(6.dp))
-                RoundIconButton(
-                    icon = Icons.Outlined.Refresh,
-                    onClick = onRefresh,
-                    size = 32.dp,
-                    iconSize = 15.dp,
-                    contentDescription = "刷新",
-                )
+                Box {
+                    RoundIconButton(
+                        Icons.Outlined.MoreHoriz,
+                        onClick = { menuOpen = true },
+                        size = 34.dp,
+                        iconSize = 18.dp,
+                        contentDescription = "更多",
+                    )
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                        modifier = Modifier.background(V2Colors.surface),
+                    ) {
+                        DropdownMenuItem(
+                            text = { Label("推进队列", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                menuOpen = false
+                                onProcess()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Label("超时回收", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                menuOpen = false
+                                onWatchdog()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Label("刷新", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                menuOpen = false
+                                onRefresh()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Label("运行设置", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                menuOpen = false
+                                settingsOpen = true
+                            },
+                        )
+                    }
+                }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
 
             val flash = state.error ?: state.notice
             if (flash != null) {
@@ -207,6 +226,23 @@ fun V2AssistantScreen(
                 Spacer(Modifier.height(4.dp))
                 Label("确认后端已开启 Supervisor，并接入了平台事件。", 10.5f, V2Colors.ink(.32f))
             } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    AssistantStat("运行中", running, V2Colors.emerald700, Modifier.weight(1f))
+                    AssistantStat("待审核", waitReview, V2Colors.amber700, Modifier.weight(1f))
+                    AssistantStat("已完成", doneCount, V2Colors.ink(.85f), Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    AssistantTab.entries.forEach { item ->
+                        AssistantTabButton(
+                            label = item.label,
+                            selected = tab == item,
+                            onClick = { tab = item },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+
                 V2PullRefresh(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     onRefresh = {
@@ -217,100 +253,85 @@ fun V2AssistantScreen(
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(bottom = 24.dp),
+                        contentPadding = PaddingValues(top = 2.dp, bottom = 24.dp),
                     ) {
-                        item(key = "settings") {
-                            AssistantSettingsCard(
-                                state = state,
-                                onSave = onSaveSettings,
-                            )
-                        }
-                        item(key = "stats") {
-                            AssistantStats(
-                                todo = todo,
-                                doing = doing,
-                                review = review,
-                                ended = ended,
-                                pendingOutbox = state.pendingOutbox,
-                            )
-                        }
-
-                        item(key = "obs-title") {
-                            SectionTitle("观察事件", "${state.observations.size} 条")
-                        }
-                        if (state.observations.isEmpty()) {
-                            item(key = "obs-empty") { EmptyHint("还没有观察事件；接入平台事件后会出现在这里") }
-                        } else {
-                            items(state.observations, key = { "obs-${it.id}" }) { trigger ->
-                                ObservationCard(
-                                    trigger = trigger,
-                                    busy = state.busyAction != null,
-                                    onAssess = { onAssess(trigger.id) },
-                                    onPlan = { dispatch -> onPlan(trigger.id, dispatch) },
-                                )
-                            }
-                        }
-
-                        item(key = "tickets-title") {
-                            SectionTitle("工单看板", "${state.tickets.size} 张")
-                        }
-                        item(key = "tickets-filter") {
-                            Row(
-                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                AssistantTicketFilter.entries.forEach { item ->
-                                    AssistantFilterChip(
-                                        label = item.label,
-                                        count = when (item) {
-                                            AssistantTicketFilter.ALL -> state.tickets.size
-                                            AssistantTicketFilter.TODO -> todo
-                                            AssistantTicketFilter.DOING -> doing
-                                            AssistantTicketFilter.REVIEW -> review
-                                            AssistantTicketFilter.ENDED -> ended
-                                        },
-                                        selected = filter == item,
-                                        onClick = { filter = item },
-                                    )
+                        when (tab) {
+                            AssistantTab.WORK -> {
+                                if (state.observations.isNotEmpty()) {
+                                    item(key = "obs-title") {
+                                        SectionTitle("观察事件", "${state.observations.size} 条")
+                                    }
+                                    items(state.observations, key = { "obs-${it.id}" }) { trigger ->
+                                        ObservationCard(
+                                            trigger = trigger,
+                                            busy = state.busyAction != null,
+                                            onAssess = { onAssess(trigger.id) },
+                                            onPlan = { dispatch -> onPlan(trigger.id, dispatch) },
+                                        )
+                                    }
+                                }
+                                if (workTickets.isEmpty() && state.observations.isEmpty()) {
+                                    item(key = "work-empty") { EmptyHint("当前没有在推进的项目") }
+                                } else {
+                                    items(workTickets, key = { "ticket-${it.id}" }) { ticket ->
+                                        TicketCard(
+                                            ticket = ticket,
+                                            busy = state.busyAction != null,
+                                            onOpen = { onOpenDetail(ticket.id) },
+                                            onDispatch = { onDispatch(ticket.id) },
+                                            onRetry = { onRetry(ticket.id) },
+                                            onStop = { onStop(ticket.id) },
+                                        )
+                                    }
                                 }
                             }
-                        }
-                        if (visibleTickets.isEmpty()) {
-                            item(key = "tickets-empty") { EmptyHint("这个分区还没有工单") }
-                        } else {
-                            items(visibleTickets, key = { "ticket-${it.id}" }) { ticket ->
-                                TicketCard(
-                                    ticket = ticket,
-                                    busy = state.busyAction != null,
-                                    onOpen = { onOpenDetail(ticket.id) },
-                                    onDispatch = { onDispatch(ticket.id) },
-                                    onRetry = { onRetry(ticket.id) },
-                                    onStop = { onStop(ticket.id) },
-                                )
-                            }
-                        }
 
-                        item(key = "reports-title") {
-                            SectionTitle("最近报告", "${state.reports.size} 条")
-                        }
-                        if (state.reports.isEmpty()) {
-                            item(key = "reports-empty") { EmptyHint("子 Agent 还没交回报告") }
-                        } else {
-                            items(state.reports.take(10), key = { "report-${it.id}" }) { report ->
-                                ReportCard(report)
+                            AssistantTab.HISTORY -> {
+                                if (historyTickets.isEmpty()) {
+                                    item(key = "history-empty") { EmptyHint("还没有已完成的项目") }
+                                } else {
+                                    items(historyTickets, key = { "ticket-${it.id}" }) { ticket ->
+                                        TicketCard(
+                                            ticket = ticket,
+                                            busy = state.busyAction != null,
+                                            onOpen = { onOpenDetail(ticket.id) },
+                                            onDispatch = { onDispatch(ticket.id) },
+                                            onRetry = { onRetry(ticket.id) },
+                                            onStop = { onStop(ticket.id) },
+                                        )
+                                    }
+                                }
                             }
-                        }
 
-                        item(key = "timeline-title") { SectionTitle("最近动态", "") }
-                        if (state.timeline.isEmpty()) {
-                            item(key = "timeline-empty") { EmptyHint("暂无动态") }
-                        } else {
-                            items(state.timeline.take(20), key = { "tl-${it.kind}-${it.id}-${it.at}" }) { item ->
-                                TimelineRow(item)
+                            AssistantTab.REPORTS -> {
+                                if (state.reports.isEmpty()) {
+                                    item(key = "reports-empty") { EmptyHint("子 Agent 还没交回报告") }
+                                } else {
+                                    items(state.reports.take(10), key = { "report-${it.id}" }) { report ->
+                                        ReportCard(report)
+                                    }
+                                }
+                                item(key = "timeline-title") { SectionTitle("最近动态", "") }
+                                if (state.timeline.isEmpty()) {
+                                    item(key = "timeline-empty") { EmptyHint("暂无动态") }
+                                } else {
+                                    items(state.timeline.take(20), key = { "tl-${it.kind}-${it.id}-${it.at}" }) { item ->
+                                        TimelineRow(item)
+                                    }
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        if (settingsOpen) {
+            SheetFrame(onDismiss = { settingsOpen = false }) {
+                AssistantSettingsCard(
+                    state = state,
+                    onSave = onSaveSettings,
+                )
             }
         }
 
@@ -367,7 +388,7 @@ private fun AssistantSettingsCard(
     state: V2AssistantState,
     onSave: (String, String, String, Int, Int, Int) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(true) }
     var mode by remember(state.settings.acceptMode) { mutableStateOf(state.settings.acceptMode) }
     var provider by remember(state.settings.modelProvider) { mutableStateOf(state.settings.modelProvider) }
     var modelName by remember(state.settings.modelName) { mutableStateOf(state.settings.modelName) }
@@ -476,30 +497,31 @@ private fun AssistantModeChip(label: String, selected: Boolean, onClick: () -> U
 }
 
 @Composable
-private fun AssistantFilterChip(
+private fun AssistantTabButton(
     label: String,
-    count: Int,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    Row(
+    Column(
         Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .14f) else V2Colors.surface(.55f))
-            .border(
-                1.dp,
-                if (selected) V2Colors.cyan500.copy(alpha = .36f) else V2Colors.ink(.08f),
-                RoundedCornerShape(999.dp),
-            )
             .v2Pressable(pressScale = .97f, onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Label(label, 10.5f, if (selected) V2Colors.cyan800 else V2Colors.ink(.5f), FontWeight.Medium)
-        if (count > 0) {
-            Spacer(Modifier.width(5.dp))
-            Label("$count", 9.5f, if (selected) V2Colors.cyan700 else V2Colors.ink(.32f))
-        }
+        Label(
+            label,
+            if (selected) 15f else 14f,
+            if (selected) V2Colors.ink(.92f) else V2Colors.ink(.42f),
+            if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
+        Spacer(Modifier.height(5.dp))
+        Box(
+            Modifier
+                .width(16.dp)
+                .height(2.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(if (selected) V2Colors.ink(.88f) else Color.Transparent),
+        )
     }
 }
 
@@ -539,40 +561,11 @@ private fun AssistantField(
 }
 
 @Composable
-private fun AssistantStats(
-    todo: Int,
-    doing: Int,
-    review: Int,
-    ended: Int,
-    pendingOutbox: Int,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistantStat("待派发", todo, V2Colors.indigo, Modifier.weight(1f))
-            AssistantStat("进行中", doing, V2Colors.cyan700, Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistantStat("待验收", review, V2Colors.violet, Modifier.weight(1f))
-            AssistantStat("已结束", ended, V2Colors.emerald700, Modifier.weight(1f))
-        }
-        if (pendingOutbox > 0) {
-            Label("事件队列还有 $pendingOutbox 条待推进，点右上角 ▶ 处理", 9.5f, V2Colors.amber700)
-        }
-    }
-}
-
-@Composable
 private fun AssistantStat(label: String, value: Int, tone: Color, modifier: Modifier = Modifier) {
-    Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(V2Colors.surface(.55f))
-            .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Label("$value", 19f, tone, FontWeight.SemiBold)
-        Spacer(Modifier.height(1.dp))
-        Label(label, 9.5f, V2Colors.ink(.42f))
+    Column(modifier) {
+        Label("$value", 26f, tone, FontWeight.Bold)
+        Spacer(Modifier.height(2.dp))
+        Label(label, 11f, V2Colors.ink(.42f))
     }
 }
 

@@ -125,38 +125,58 @@ private fun DetailHeader(
     onBack: () -> Unit,
     onRefresh: (() -> Unit)? = null,
 ) {
+    // 设计稿：标题居中、副标题紧随其下，左右各一个圆形按钮
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp + extraTop, bottom = 8.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp + extraTop, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showBack) {
             RoundIconButton(
                 Icons.Outlined.ArrowBack,
                 onBack,
-                size = 32.dp,
-                iconSize = 16.dp,
+                size = 34.dp,
+                iconSize = 18.dp,
                 contentDescription = "返回",
             )
-            Spacer(Modifier.width(10.dp))
+        } else {
+            Spacer(Modifier.width(34.dp))
         }
-        Column(Modifier.weight(1f)) {
-            Label(title, 20f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
+        Column(
+            Modifier.weight(1f).padding(horizontal = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Label(
+                title,
+                16f,
+                V2Colors.ink(.95f),
+                FontWeight.SemiBold,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+            )
             if (subtitle != null) {
                 Spacer(Modifier.height(2.dp))
-                Label(subtitle, 9.5f, V2Colors.ink(.36f), maxLines = 1, mono = true)
+                Label(
+                    subtitle,
+                    11f,
+                    V2Colors.ink(.40f),
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
         if (onRefresh != null) {
             RoundIconButton(
                 icon = Icons.Outlined.Refresh,
                 onClick = onRefresh,
-                size = 32.dp,
-                iconSize = 14.dp,
-                background = V2Colors.surface(.55f),
-                tint = V2Colors.cyan700.copy(alpha = .8f),
+                size = 34.dp,
+                iconSize = 16.dp,
+                background = V2Colors.surface(.6f),
+                tint = V2Colors.ink(.55f),
             )
+        } else {
+            Spacer(Modifier.width(34.dp))
         }
     }
 }
@@ -529,6 +549,8 @@ fun V2TaskChatScreen(
     onRequestDesigns: () -> Unit = {},
     /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
     onOpenAssistantBoard: (() -> Unit)? = null,
+    /** 对话末尾待审核卡：跳到本次任务的文件改动列表。 */
+    onOpenChanges: () -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -717,6 +739,16 @@ fun V2TaskChatScreen(
             // 下拉刷新：重新拉任务与历史消息（真实数据，不是假骨架）
             onRefresh = { vm.refresh(quiet = true) },
             onOpenAssistantBoard = onOpenAssistantBoard?.takeIf { task?.origin == "assistant" },
+            // 标题副标题：任务状态 + 最近一条消息时间（与设计稿一致）
+            headerStatus = task?.let { t ->
+                "${t.status.toV2TaskStatus().label} · " +
+                    (messages.lastOrNull()?.time?.takeIf { it.isNotBlank() } ?: clockLabel(t.createdAt))
+            },
+            // 待审核卡：只算还没处理的改动，点一下进文件改动页
+            pendingChangeCount = state.changes.count { it.status == "pending" },
+            pendingChangeAdded = state.changes.filter { it.status == "pending" }.sumOf { it.addedLines },
+            pendingChangeRemoved = state.changes.filter { it.status == "pending" }.sumOf { it.removedLines },
+            onOpenChanges = onOpenChanges,
         )
         // 执行详情弹层：概览 → 思考过程 → 命令与输出（与内容平级叠放，避免拿不到高度）
         val traceRunId = state.traceRunId
@@ -1120,6 +1152,7 @@ fun V2ChangesScreen(
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
     var bulk by remember { mutableStateOf<String?>(null) }
+    var filter by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(taskId) {
         // 任务详情页留下的提示不带进变更页；本页操作产生的提示会在下方正常展示。
@@ -1128,11 +1161,17 @@ fun V2ChangesScreen(
     }
 
     val pending = state.changes.count { it.status == "pending" }
+    // 三段筛选：全部 / 待审核 / 已批准（已批准含已落盘）
+    val visible = when (filter) {
+        1 -> state.changes.filter { it.status == "pending" }
+        2 -> state.changes.filter { it.status == "accepted" || it.status == "applied" }
+        else -> state.changes
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             DetailHeader(
-                title = "变更",
+                title = "文件改动",
                 subtitle = "${state.changes.size} 个文件 · 待审核 $pending",
                 extraTop = extraTop,
                 showBack = showBack,
@@ -1140,9 +1179,21 @@ fun V2ChangesScreen(
                 onRefresh = { vm.refresh() },
             )
 
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                SegmentChip("全部 ${state.changes.size}", filter == 0) { filter = 0 }
+                SegmentChip("待审核 $pending", filter == 1) { filter = 1 }
+                SegmentChip(
+                    "已批准 ${state.changes.count { it.status == "accepted" || it.status == "applied" }}",
+                    filter == 2,
+                ) { filter = 2 }
+            }
+
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 16.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 val error = state.error
@@ -1164,7 +1215,11 @@ fun V2ChangesScreen(
                     }
                     return@LazyColumn
                 }
-                items(state.changes, key = { it.id }) { change ->
+                if (visible.isEmpty()) {
+                    item { Label("这个分组里还没有文件", 11f, V2Colors.ink(.35f)) }
+                    return@LazyColumn
+                }
+                items(visible, key = { it.id }) { change ->
                     ChangeCard(change = change, onClick = { onOpenChange(change.id) })
                 }
             }
@@ -1224,20 +1279,27 @@ fun V2ChangesScreen(
 @Composable
 private fun ChangeCard(change: Change, onClick: () -> Unit) {
     val (label, color) = changeStatusLabel(change.status)
-    GlassCard(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(V2Colors.surface)
+            .border(1.dp, V2Colors.line, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Label(change.filePath, 11.5f, V2Colors.ink(.85f), FontWeight.Medium, maxLines = 1, mono = true)
-                Spacer(Modifier.height(3.dp))
-                Label(
-                    "${change.kindLabel} · +${change.addedLines} / -${change.removedLines}",
-                    9.5f,
-                    V2Colors.ink(.35f),
-                    mono = true,
-                )
+                Label(change.filePath, 13.5f, V2Colors.ink(.90f), FontWeight.Medium, maxLines = 1, mono = true)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Label(change.kindLabel, 11f, V2Colors.ink(.42f))
+                    Spacer(Modifier.width(8.dp))
+                    Label("+${change.addedLines}", 11f, V2Colors.emerald700, mono = true)
+                    Spacer(Modifier.width(5.dp))
+                    Label("−${change.removedLines}", 11f, V2Colors.rose, mono = true)
+                }
             }
             Spacer(Modifier.width(8.dp))
             StatusChipFor(label, color)
@@ -1245,8 +1307,8 @@ private fun ChangeCard(change: Change, onClick: () -> Unit) {
         val summary = change.summary?.takeIf { it.isNotBlank() }
             ?: change.reason?.takeIf { it.isNotBlank() }
         if (summary != null) {
-            Spacer(Modifier.height(6.dp))
-            Label(summary, 9.5f, V2Colors.ink(.42f), maxLines = 2)
+            Spacer(Modifier.height(7.dp))
+            Label(summary, 10.5f, V2Colors.ink(.42f), maxLines = 2)
         }
         if (change.applyError != null) {
             Spacer(Modifier.height(6.dp))
@@ -1275,8 +1337,10 @@ fun V2DiffScreen(
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         DetailHeader(
-            title = "提案详情",
-            subtitle = change?.filePath ?: changeId.take(12),
+            title = change?.filePath ?: changeId.take(12),
+            subtitle = change?.let {
+                "${it.kindLabel} · +${it.addedLines} −${it.removedLines}"
+            },
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
@@ -1471,16 +1535,16 @@ private fun SegmentChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
-            .border(
-                1.dp,
-                if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
-                RoundedCornerShape(999.dp),
-            )
+            .background(if (selected) V2Colors.accent else V2Colors.ink(.05f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 13.dp, vertical = 7.dp),
     ) {
-        Label(label, 10.5f, if (selected) V2Colors.ink(.95f) else V2Colors.ink(.40f))
+        Label(
+            label,
+            11.5f,
+            if (selected) V2Colors.actionInk else V2Colors.ink(.48f),
+            if (selected) FontWeight.Medium else FontWeight.Normal,
+        )
     }
 }
 
@@ -1642,7 +1706,7 @@ fun V2TerminalListScreen(
 
     Column(Modifier.fillMaxSize()) {
         DetailHeader(
-            title = "终端",
+            title = "终端会话",
             subtitle = "在服务端工作区执行命令",
             extraTop = extraTop,
             showBack = showBack,
@@ -1667,46 +1731,91 @@ fun V2TerminalListScreen(
             if (error != null) item { V2Banner(error, V2Colors.rose) }
 
             if (state.loading && state.sessions.isEmpty()) {
-                item { Label("正在读取会话…", 11f, V2Colors.ink(.35f)) }
+                item { Label("正在读取会话…", 12f, V2Colors.ink(.35f)) }
                 return@LazyColumn
             }
             if (state.sessions.isEmpty()) {
-                item { Label("还没有终端会话。点上面的「新建终端会话」开一个。", 11f, V2Colors.ink(.35f)) }
+                item {
+                    WhiteCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Label("还没有终端会话", 15f, V2Colors.ink(.90f), FontWeight.Medium)
+                            Label("点上面的「新建终端会话」开一个，命令输出会实时回流到这里。", 11.5f, V2Colors.ink(.40f))
+                        }
+                    }
+                }
                 return@LazyColumn
             }
-            items(state.sessions, key = { it.id }) { session ->
-                TerminalSessionCard(session) { onOpenSession(session.id) }
+            item {
+                WhiteCard(Modifier.fillMaxWidth()) {
+                    Column {
+                        state.sessions.forEachIndexed { index, session ->
+                            TerminalSessionRow(
+                                session = session,
+                                showDivider = index != state.sessions.lastIndex,
+                            ) { onOpenSession(session.id) }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TerminalSessionCard(session: TerminalSession, onClick: () -> Unit) {
-    val (label, color) = when (session.status) {
-        "active" -> "进行中" to V2Colors.cyan500
-        "stopped" -> "已停止" to V2Colors.ink(.30f)
-        "closed" -> "已关闭" to V2Colors.ink(.30f)
-        else -> session.status to V2Colors.ink(.35f)
+private fun TerminalSessionRow(
+    session: TerminalSession,
+    showDivider: Boolean,
+    onClick: () -> Unit,
+) {
+    val active = session.status == "active"
+    val statusText = when (session.status) {
+        "active" -> "进行中"
+        "stopped" -> "已停止"
+        "closed" -> "已关闭"
+        else -> session.status
     }
-    GlassCard(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            if (session.status == "active") LiveDot(V2Colors.cyan500) else Box(Modifier.size(6.dp).background(color, CircleShape))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Label(session.id.take(10), 11.5f, V2Colors.ink(.85f), FontWeight.Medium, mono = true)
-                Spacer(Modifier.height(2.dp))
-                Label(session.workspaceRoot ?: "（未配置工作区）", 9.5f, V2Colors.ink(.35f), maxLines = 1, mono = true)
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (active) {
+                LiveDot(V2Colors.emerald)
+            } else {
+                Box(Modifier.size(7.dp).background(V2Colors.ink(.22f), CircleShape))
             }
-            Spacer(Modifier.width(8.dp))
-            StatusChipFor(label, color)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Label(session.id.take(10), 15f, V2Colors.ink(.92f), FontWeight.Medium, mono = true)
+                Spacer(Modifier.height(3.dp))
+                Label(
+                    session.workspaceRoot ?: "（未配置工作区）",
+                    11.5f,
+                    V2Colors.ink(.40f),
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Label(statusText, 11.5f, if (active) V2Colors.emerald else V2Colors.ink(.38f), maxLines = 1)
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = V2Colors.ink(.22f),
+                modifier = Modifier.size(16.dp),
+            )
         }
-        if (!session.createdAt.isNullOrBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Label("创建于 ${relativeTime(session.createdAt)}", 9f, V2Colors.ink(.28f), mono = true)
+        if (showDivider) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp)
+                    .height(1.dp)
+                    .background(V2Colors.ink(.06f)),
+            )
         }
     }
 }

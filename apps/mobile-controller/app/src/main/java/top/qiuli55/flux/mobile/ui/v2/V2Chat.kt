@@ -10,7 +10,6 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -51,6 +50,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -66,8 +67,10 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Timer
@@ -238,6 +241,14 @@ fun V2ChatScreen(
     secureInputBusy: Boolean = false,
     /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
     onOpenAssistantBoard: (() -> Unit)? = null,
+    /** 标题栏副标题：任务状态 + 最近一条消息时间；为空时显示设备名。 */
+    headerStatus: String? = null,
+    /** 待审核的文件改动；count = 0 时不显示「去审核」卡片。 */
+    pendingChangeCount: Int = 0,
+    pendingChangeAdded: Int = 0,
+    pendingChangeRemoved: Int = 0,
+    /** 打开文件改动页（待审核卡片的「去审核」）。 */
+    onOpenChanges: (() -> Unit)? = null,
 ) {
     val agent = demoAgent(chat.agentId)
     val currentModelOption = modelOptions.firstOrNull {
@@ -248,6 +259,7 @@ fun V2ChatScreen(
     var input by remember(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
+    var headerMenuOpen by remember { mutableStateOf(false) }
     var modeSheetOpen by remember { mutableStateOf(false) }
     var designSheetOpen by remember { mutableStateOf(false) }
     // 执行轨迹的展开状态按对话记忆：用户收起后，流式新增的思考/命令不再把它顶开
@@ -268,11 +280,6 @@ fun V2ChatScreen(
     var inputFocused by remember { mutableStateOf(false) }
     var bubbleMenu by remember { mutableStateOf<BubbleMenuTarget?>(null) }
 
-    val composerMinHeight by animateDpAsState(
-        targetValue = if (inputFocused || input.isNotBlank()) 56.dp else 44.dp,
-        animationSpec = tween(160),
-        label = "chat-composer-height",
-    )
     val composerBorder by animateColorAsState(
         targetValue = if (inputFocused) V2Colors.accent.copy(alpha = .45f) else V2Colors.line,
         animationSpec = tween(160),
@@ -284,6 +291,7 @@ fun V2ChatScreen(
     // 不能依赖 layoutInfo（首帧还没量出来，会得到 0 并停在最早的消息）。
     val bottomIndex = messages.size +
         (if (!chat.pendingSummary.isNullOrBlank()) 1 else 0) +
+        (if (!messages.firstOrNull()?.time.isNullOrBlank()) 1 else 0) +
         (if (runItems.isNotEmpty()) 1 else 0) +
         (if (liveActive && (runItems.isEmpty() || liveText.isNotBlank())) 1 else 0) +
         (if (!liveActive && sending) 1 else 0) - 1
@@ -312,234 +320,95 @@ fun V2ChatScreen(
     }
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp + extraTop, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp + extraTop, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 新建对话还没聊过：左上角是关闭（×），与设计稿 07 一致
+            val isNewChat = chat.conversationId == null && messages.isEmpty()
             if (showBack) {
                 RoundIconButton(
-                    Icons.Outlined.ArrowBack,
+                    if (isNewChat) Icons.Outlined.Close else Icons.Outlined.ArrowBack,
                     onBack,
-                    size = 32.dp,
-                    iconSize = 16.dp,
-                    contentDescription = "返回",
+                    size = 34.dp,
+                    iconSize = 18.dp,
+                    contentDescription = if (isNewChat) "关闭" else "返回",
                 )
-                Spacer(Modifier.width(10.dp))
+            } else {
+                Spacer(Modifier.width(34.dp))
             }
-            Box(Modifier.weight(1f)) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = canSwitchAgent) {
-                            // 任务对话：就地下拉切换执行 Agent；新建对话：打开 Agent 与模型选择面板。
-                            if (agentOptions.isNotEmpty()) agentMenuOpen = true else onOpenAgentPicker()
+            val headerSubtitle = headerStatus ?: if (chat.conversationId == null) null else chat.device
+            Column(
+                Modifier.weight(1f).padding(horizontal = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Label(
+                    chat.title.ifBlank { if (chat.conversationId == null) "新对话" else "对话" },
+                    16f,
+                    V2Colors.ink(.95f),
+                    FontWeight.SemiBold,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+                if (!headerSubtitle.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Label(
+                        headerSubtitle,
+                        11f,
+                        V2Colors.ink(.40f),
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+            Box {
+                RoundIconButton(
+                    Icons.Outlined.MoreHoriz,
+                    onClick = { headerMenuOpen = true },
+                    size = 34.dp,
+                    iconSize = 18.dp,
+                    contentDescription = "更多",
+                )
+                DropdownMenu(
+                    expanded = headerMenuOpen,
+                    onDismissRequest = { headerMenuOpen = false },
+                    modifier = Modifier.background(V2Colors.surface),
+                ) {
+                    val board = onOpenAssistantBoard
+                    if (board != null) {
+                        DropdownMenuItem(
+                            text = { Label("助理进度", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                headerMenuOpen = false
+                                board()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Label("执行日志", 12f, V2Colors.ink(.88f)) },
+                        onClick = {
+                            headerMenuOpen = false
+                            onOpenLogs()
                         },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Avatar(tint = agent.tint, size = 36.dp, icon = Icons.Outlined.SmartToy)
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Label(agent.name, 15f, V2Colors.ink(.95f), FontWeight.SemiBold, maxLines = 1)
-                            if (!agent.nativeStreaming) {
-                                Spacer(Modifier.width(5.dp))
-                                NonStreamingBadge()
-                            }
-                            if (canSwitchAgent) {
-                                Icon(
-                                    Icons.Outlined.KeyboardArrowDown,
-                                    null,
-                                    tint = V2Colors.ink(.32f),
-                                    modifier = Modifier.padding(start = 3.dp).size(12.dp),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(2.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
-                            Spacer(Modifier.width(4.dp))
-                            Label(
-                                "${chat.title} · ${chat.device}",
-                                10.5f,
-                                V2Colors.ink(.40f),
-                                maxLines = 1,
-                                modifier = Modifier.weight(1f, fill = false),
-                            )
-                            if (canSwitchModel && modelOptions.isNotEmpty()) {
-                                Spacer(Modifier.width(6.dp))
-                                Row(
-                                    Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .background(V2Colors.cyan500.copy(alpha = .10f))
-                                        .border(
-                                            1.dp,
-                                            V2Colors.accent.copy(alpha = .20f),
-                                            RoundedCornerShape(999.dp),
-                                        )
-                                        .clickable {
-                                            agentMenuOpen = false
-                                            modelMenuOpen = true
-                                        }
-                                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Label(
-                                        currentModelLabel,
-                                        9.5f,
-                                        V2Colors.cyan800,
-                                        mono = true,
-                                        maxLines = 1,
-                                    )
-                                    Icon(
-                                        Icons.Outlined.KeyboardArrowDown,
-                                        null,
-                                        tint = V2Colors.cyan800.copy(alpha = .7f),
-                                        modifier = Modifier.padding(start = 2.dp).size(10.dp),
-                                    )
-                                }
-                            }
-                            // 已排队的 Agent 切换：告诉用户当前这轮还是原 Agent，结束后才换人
-                            if (pendingAgentLabel != null) {
-                                Spacer(Modifier.width(6.dp))
-                                Row(
-                                    Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .background(V2Colors.amber.copy(alpha = .12f))
-                                        .border(
-                                            1.dp,
-                                            V2Colors.amber.copy(alpha = .30f),
-                                            RoundedCornerShape(999.dp),
-                                        )
-                                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Label(
-                                        "→ $pendingAgentLabel · 本轮结束后",
-                                        8.5f,
-                                        V2Colors.amber700,
-                                        maxLines = 1,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                DropdownMenu(
-                    expanded = agentMenuOpen && agentOptions.isNotEmpty(),
-                    onDismissRequest = { agentMenuOpen = false },
-                    modifier = Modifier.background(V2Colors.surface),
-                ) {
-                    agentOptions.forEach { option ->
-                        val selected = option.agent.id == chat.agentId
+                    )
+                    if (canSwitchAgent) {
                         DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Label(option.agent.name, 12f, V2Colors.ink(.90f), FontWeight.Medium)
-                                        if (!option.agent.nativeStreaming) {
-                                            Spacer(Modifier.width(5.dp))
-                                            NonStreamingBadge()
-                                        }
-                                        if (selected) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Icon(
-                                                Icons.Outlined.Check,
-                                                null,
-                                                tint = V2Colors.cyan700,
-                                                modifier = Modifier.size(13.dp),
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(2.dp))
-                                    Label(
-                                        option.models.firstOrNull()
-                                            ?.let { "${option.agent.role} · ${it.label}" }
-                                            ?: option.agent.role,
-                                        9.5f,
-                                        V2Colors.ink(.40f),
-                                        maxLines = 1,
-                                    )
-                                    if (option.agent.id == pendingAgentId) {
-                                        Spacer(Modifier.height(2.dp))
-                                        Label(
-                                            "本轮结束后切换",
-                                            8.5f,
-                                            V2Colors.amber700,
-                                            mono = true,
-                                        )
-                                    }
-                                }
-                            },
+                            text = { Label("切换 Agent 与模型", 12f, V2Colors.ink(.88f)) },
                             onClick = {
-                                agentMenuOpen = false
-                                // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
-                                if (!selected || pendingAgentId != null) onSwitchAgent(option.agent.id)
+                                headerMenuOpen = false
+                                onOpenAgentPicker()
+                            },
+                        )
+                    }
+                    if (showDelete) {
+                        DropdownMenuItem(
+                            text = { Label("删除对话", 12f, V2Colors.rose) },
+                            onClick = {
+                                headerMenuOpen = false
+                                onDelete()
                             },
                         )
                     }
                 }
-
-                DropdownMenu(
-                    expanded = modelMenuOpen && modelOptions.isNotEmpty(),
-                    onDismissRequest = { modelMenuOpen = false },
-                    modifier = Modifier.background(V2Colors.surface),
-                ) {
-                    modelOptions.forEach { option ->
-                        val selected = option.model == chat.model && option.keyId == chat.modelKeyId
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Label(option.label, 12f, V2Colors.ink(.88f), mono = true)
-                                    if (selected) {
-                                        Spacer(Modifier.width(6.dp))
-                                        Icon(
-                                            Icons.Outlined.Check,
-                                            null,
-                                            tint = V2Colors.cyan700,
-                                            modifier = Modifier.size(13.dp),
-                                        )
-                                    }
-                                }
-                            },
-                            onClick = {
-                                modelMenuOpen = false
-                                if (!selected) onSwitchModel(option)
-                            },
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.width(6.dp))
-            if (onOpenAssistantBoard != null) {
-                RoundIconButton(
-                    icon = Icons.Outlined.Dashboard,
-                    onClick = onOpenAssistantBoard,
-                    size = 32.dp,
-                    iconSize = 14.dp,
-                    background = V2Colors.surface(.55f),
-                    tint = V2Colors.cyan700.copy(alpha = .8f),
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-            RoundIconButton(
-                icon = Icons.Outlined.ShowChart,
-                onClick = onOpenLogs,
-                size = 32.dp,
-                iconSize = 14.dp,
-                background = V2Colors.surface(.55f),
-                tint = V2Colors.cyan700.copy(alpha = .8f),
-            )
-            if (showDelete) {
-                Spacer(Modifier.width(6.dp))
-                RoundIconButton(
-                    icon = Icons.Outlined.Delete,
-                    onClick = onDelete,
-                    size = 32.dp,
-                    iconSize = 14.dp,
-                    background = V2Colors.surface(.55f),
-                    tint = V2Colors.rose.copy(alpha = .7f),
-                )
             }
         }
 
@@ -591,6 +460,19 @@ fun V2ChatScreen(
                 if (!chat.pendingSummary.isNullOrBlank()) {
                     // 新对话开篇：只带上一段对话的摘要，不搬旧消息
                     item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一段对话接手") }
+                } else if (messages.isEmpty() && chat.conversationId == null) {
+                    // 新对话空态：居中提示可以做什么（设计稿 07）
+                    item(key = "new-chat-hero") {
+                        Box(
+                            Modifier.fillMaxWidth().fillParentMaxHeight(.68f),
+                            contentAlignment = Alignment.Center,
+                        ) { NewChatHero() }
+                    }
+                }
+                val firstTime = messages.firstOrNull()?.time
+                if (!firstTime.isNullOrBlank()) {
+                    // 日期分隔：与设计稿一致，只在首条消息上方标一次时间
+                    item(key = "date-separator") { ChatDateSeparator(firstTime) }
                 }
                 itemsIndexed(messages) { index, message ->
                     // 不做入场动画：像微信一样，消息直接出现。
@@ -601,6 +483,7 @@ fun V2ChatScreen(
                     MessageRow(
                         message = message,
                         run = runSummaries[message.runId],
+                        agentName = agent.name,
                         onOpenRunTrace = onOpenRunTrace,
                         onOpenUrl = onOpenUrl,
                         onOpenDesign = onOpenDesign,
@@ -609,6 +492,17 @@ fun V2ChatScreen(
                         onSubmitSecureInput = onSubmitSecureInput,
                         secureInputBusy = secureInputBusy,
                     )
+                }
+                val openChanges = onOpenChanges
+                if (pendingChangeCount > 0 && openChanges != null) {
+                    item(key = "pending-changes") {
+                        PendingChangesCard(
+                            count = pendingChangeCount,
+                            added = pendingChangeAdded,
+                            removed = pendingChangeRemoved,
+                            onClick = openChanges,
+                        )
+                    }
                 }
                 if (runItems.isNotEmpty()) {
                     // codex 式的执行轨迹：思考与命令单独成卡，最终答复仍是下面的助手消息。
@@ -647,7 +541,8 @@ fun V2ChatScreen(
             }
         }
 
-        if (suggestions.isNotEmpty() && !locked) {
+        // 建议只在新对话里出现；老对话直接继续聊，不再占一行
+        if (suggestions.isNotEmpty() && !locked && chat.conversationId == null) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -688,10 +583,7 @@ fun V2ChatScreen(
             Spacer(Modifier.height(2.dp))
         }
 
-        // 对话权限模式：常驻胶囊，点开四选一面板；只影响后续消息
-        PermissionModePill(chat.permissionMode, enabled = !locked) { modeSheetOpen = true }
-        Spacer(Modifier.height(2.dp))
-
+        // 权限模式收进输入卡里的盾牌按钮，不再单独占一行
         if (chat.conversationId == null) {
             Row(
                 Modifier
@@ -750,45 +642,28 @@ fun V2ChatScreen(
             Spacer(Modifier.height(6.dp))
         }
 
-        val composerShape = RoundedCornerShape(16.dp)
-        Row(
+        // 输入卡：第一行正文，第二行工具条（附件 / Agent·模型 / 权限 / 发送）
+        val composerShape = RoundedCornerShape(26.dp)
+        Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
-                .heightIn(min = composerMinHeight)
                 .clip(composerShape)
-                .background(
-                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                        listOf(V2Colors.surface(.86f), V2Colors.surface(.64f)),
-                    ),
-                )
-                .innerGlow(composerShape, alpha = .26f)
+                .background(V2Colors.surface)
                 .border(1.dp, composerBorder, composerShape)
-                .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 10.dp),
         ) {
-            AttachmentPickerButton(
-                enabled = canPickFiles,
-                onPicked = onAddAttachments,
-                onPickDesign = if (designOptions != null) {
-                    {
-                        onRequestDesigns()
-                        designSheetOpen = true
-                    }
-                } else {
-                    null
-                },
-            )
-            Spacer(Modifier.width(8.dp))
-            Box(Modifier.weight(1f)) {
+            Box(Modifier.fillMaxWidth().heightIn(min = 22.dp)) {
                 if (input.isEmpty()) {
                     Label(
-                        if (locked) "正在加载对话…"
-                        else if (uploading) "附件上传中…"
-                        else if (sending) "等待 ${agent.name} 回复…"
-                        else if (chat.permissionMode == "plan") "让 Agent 先出计划，不动手…"
-                        else "继续向 ${agent.name} 发送",
-                        14f,
+                        when {
+                            locked -> "正在加载对话…"
+                            uploading -> "附件上传中…"
+                            sending -> "等待 ${agent.name} 回复…"
+                            chat.permissionMode == "plan" -> "让 Agent 先出计划，不动手…"
+                            else -> "继续说…"
+                        },
+                        14.5f,
                         V2Colors.ink(.30f),
                     )
                 }
@@ -800,26 +675,177 @@ fun V2ChatScreen(
                         .focusRequester(inputFocus)
                         .onFocusChanged { inputFocused = it.isFocused },
                     enabled = inputEnabled,
-                    textStyle = TextStyle(fontSize = 14.sp, lineHeight = 21.sp, color = V2Colors.ink(.88f)),
+                    textStyle = TextStyle(fontSize = 14.5.sp, lineHeight = 21.sp, color = V2Colors.ink(.90f)),
                     cursorBrush = SolidColor(V2Colors.accent),
-                    maxLines = 4,
+                    maxLines = 5,
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
-            // 发送 / 停止共用同一个按钮：任务执行时就地变成停止，不用再找别处
-            V2ComposerActionButton(
-                running = taskRunning,
-                sendEnabled = enabled,
-                focused = inputFocused,
-                stopping = stopping,
-                onSend = {
-                    val text = input.trim()
-                    input = ""
-                    onSend(text)
-                },
-                onStop = onStopTask,
-            )
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AttachmentPickerButton(
+                    enabled = canPickFiles,
+                    onPicked = onAddAttachments,
+                    onPickDesign = if (designOptions != null) {
+                        {
+                            onRequestDesigns()
+                            designSheetOpen = true
+                        }
+                    } else {
+                        null
+                    },
+                )
+                Spacer(Modifier.width(8.dp))
+                // Agent · 模型：任务对话就地展开，新对话打开完整选择面板
+                Box {
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(V2Colors.ink(.05f))
+                            .clickable {
+                                if (agentOptions.isNotEmpty()) agentMenuOpen = true else onOpenAgentPicker()
+                            }
+                            .padding(start = 9.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(V2Colors.emerald))
+                        Spacer(Modifier.width(5.dp))
+                        Label(
+                            buildString {
+                                append(agent.name)
+                                if (currentModelLabel.isNotBlank()) append(" · $currentModelLabel")
+                                if (pendingAgentLabel != null) append(" → $pendingAgentLabel")
+                            },
+                            11f,
+                            V2Colors.ink(.62f),
+                            maxLines = 1,
+                        )
+                        Icon(
+                            Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = "切换 Agent 与模型",
+                            tint = V2Colors.ink(.38f),
+                            modifier = Modifier.padding(start = 3.dp).size(15.dp),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = agentMenuOpen && agentOptions.isNotEmpty(),
+                        onDismissRequest = { agentMenuOpen = false },
+                        modifier = Modifier.background(V2Colors.surface),
+                    ) {
+                        agentOptions.forEach { option ->
+                            val selected = option.agent.id == chat.agentId
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Label(option.agent.name, 12f, V2Colors.ink(.90f), FontWeight.Medium)
+                                            if (!option.agent.nativeStreaming) {
+                                                Spacer(Modifier.width(5.dp))
+                                                NonStreamingBadge()
+                                            }
+                                            if (selected) {
+                                                Spacer(Modifier.width(6.dp))
+                                                Icon(
+                                                    Icons.Outlined.Check,
+                                                    null,
+                                                    tint = V2Colors.cyan700,
+                                                    modifier = Modifier.size(13.dp),
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.height(2.dp))
+                                        Label(
+                                            option.models.firstOrNull()
+                                                ?.let { "${option.agent.role} · ${it.label}" }
+                                                ?: option.agent.role,
+                                            9.5f,
+                                            V2Colors.ink(.40f),
+                                            maxLines = 1,
+                                        )
+                                        if (option.agent.id == pendingAgentId) {
+                                            Spacer(Modifier.height(2.dp))
+                                            Label("本轮结束后切换", 8.5f, V2Colors.amber700, mono = true)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    agentMenuOpen = false
+                                    // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
+                                    if (!selected || pendingAgentId != null) onSwitchAgent(option.agent.id)
+                                },
+                            )
+                        }
+                        if (canSwitchModel && modelOptions.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Label("模型 · $currentModelLabel", 10.5f, V2Colors.ink(.44f), mono = true) },
+                                onClick = {
+                                    agentMenuOpen = false
+                                    modelMenuOpen = true
+                                },
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = modelMenuOpen && modelOptions.isNotEmpty(),
+                        onDismissRequest = { modelMenuOpen = false },
+                        modifier = Modifier.background(V2Colors.surface),
+                    ) {
+                        modelOptions.forEach { option ->
+                            val selected = option.model == chat.model && option.keyId == chat.modelKeyId
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Label(option.label, 12f, V2Colors.ink(.88f), mono = true)
+                                        if (selected) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Icon(
+                                                Icons.Outlined.Check,
+                                                null,
+                                                tint = V2Colors.cyan700,
+                                                modifier = Modifier.size(13.dp),
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    modelMenuOpen = false
+                                    if (!selected) onSwitchModel(option)
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, V2Colors.ink(.14f), CircleShape)
+                        .clickable(enabled = !locked) { modeSheetOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Security,
+                        contentDescription = "对话权限模式",
+                        tint = if (locked) V2Colors.ink(.22f) else V2Colors.ink(.55f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
+                // 发送 / 停止共用同一个圆钮：执行中就地变成停止
+                ChatSendButton(
+                    running = taskRunning,
+                    sendEnabled = enabled,
+                    stopping = stopping,
+                    onSend = {
+                        val text = input.trim()
+                        input = ""
+                        onSend(text)
+                    },
+                    onStop = onStopTask,
+                )
+            }
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -937,6 +963,141 @@ private fun BubbleMenuItem(icon: ImageVector, label: String, enabled: Boolean, o
         )
         Spacer(Modifier.width(10.dp))
         Label(label, 12f, V2Colors.ink(if (enabled) .78f else .22f))
+    }
+}
+
+@Composable
+private fun ChatDateSeparator(time: String) {
+    Box(
+        Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Label("今天 $time", 10.5f, V2Colors.ink(.30f))
+    }
+}
+
+/** 新对话空态：一个图标 + 一句引导，等用户把需求说出来。 */
+@Composable
+private fun NewChatHero() {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(54.dp).clip(CircleShape).background(V2Colors.ink(.05f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                tint = V2Colors.ink(.34f),
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Label("想让 Agent 做什么？", 21f, V2Colors.ink(.92f), FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Label(
+            "说说项目、贴一段报错，或直接描述想改哪里",
+            12f,
+            V2Colors.ink(.40f),
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/** 对话末尾的待审核卡：一眼看到改了多少，点进去审核。 */
+@Composable
+private fun PendingChangesCard(
+    count: Int,
+    added: Int,
+    removed: Int,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(V2Colors.surface)
+            .border(1.dp, V2Colors.line, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(V2Colors.amber500.copy(alpha = .16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Description,
+                contentDescription = null,
+                tint = V2Colors.amber700,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Label("$count 个文件改动待审核", 14f, V2Colors.ink(.90f), FontWeight.SemiBold, maxLines = 1)
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Label("+$added", 11.5f, V2Colors.emerald700, mono = true)
+                Spacer(Modifier.width(6.dp))
+                Label("−$removed", 11.5f, V2Colors.rose, mono = true)
+            }
+        }
+        Label("去审核", 13f, V2Colors.ink(.86f), FontWeight.Medium)
+        Icon(
+            Icons.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = V2Colors.ink(.55f),
+            modifier = Modifier.size(17.dp),
+        )
+    }
+}
+
+/** 输入卡上的圆形发送钮：执行中就地变成停止。 */
+@Composable
+private fun ChatSendButton(
+    running: Boolean,
+    sendEnabled: Boolean,
+    stopping: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val enabled = running || sendEnabled
+    val background = when {
+        running -> V2Colors.rose
+        sendEnabled -> V2Colors.accent
+        else -> V2Colors.ink(.12f)
+    }
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(enabled = enabled) { if (running) onStop() else onSend() },
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            running && stopping -> CircularProgressIndicator(
+                color = V2Colors.actionInk,
+                strokeWidth = 1.6.dp,
+                modifier = Modifier.size(14.dp),
+            )
+            running -> Box(
+                Modifier
+                    .size(11.dp)
+                    .clip(RoundedCornerShape(2.5.dp))
+                    .background(V2Colors.actionInk),
+            )
+            else -> Icon(
+                Icons.Outlined.ArrowUpward,
+                contentDescription = "发送",
+                tint = if (sendEnabled) V2Colors.actionInk else V2Colors.ink(.32f),
+                modifier = Modifier.size(19.dp),
+            )
+        }
     }
 }
 
@@ -1251,6 +1412,8 @@ private fun StreamingRow(
 private fun MessageRow(
     message: V2Message,
     run: TaskRunSummary? = null,
+    /** Agent 名行：设计稿里每条回复上方都标一行「Codex」 */
+    agentName: String = "",
     onOpenRunTrace: (String) -> Unit = {},
     onOpenUrl: (String) -> Unit = {},
     onOpenDesign: (String) -> Unit = {},
@@ -1336,54 +1499,65 @@ private fun MessageRow(
             }
         }
         V2MessageRole.AGENT -> {
-            val shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 6.dp)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                Column(
-                    Modifier
-                        .widthIn(max = 344.dp)
-                        .clip(shape)
-                        .background(V2Colors.surface(.75f))
-                        .innerGlow(shape)
-                        .border(1.dp, V2Colors.ink(.08f), shape)
-                        .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
-                        .v2CombinedPressable(pressScale = .98f, onLongClick = { onLongPress(message, bubbleBounds) }) {}
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
-                ) {
-                    if (run != null) RunDurationRow(run) { onOpenRunTrace(run.runId) }
-                    RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
-                    Spacer(Modifier.height(4.dp))
+            // 设计稿：Agent 名行 + 执行耗时胶囊 + 纯文本正文（不再套气泡）
+            Column(Modifier.fillMaxWidth().padding(end = 20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(V2Colors.accent),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.AutoAwesome,
+                            contentDescription = null,
+                            tint = V2Colors.actionInk,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Label(
-                        message.time,
-                        8.5f,
-                        V2Colors.ink(.22f),
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.End,
+                        agentName.ifBlank { "Agent" },
+                        12f,
+                        V2Colors.ink(.45f),
+                        maxLines = 1,
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+                if (run != null) {
+                    RunDurationRow(run) { onOpenRunTrace(run.runId) }
+                }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
+                        .v2CombinedPressable(
+                            pressScale = .99f,
+                            onLongClick = { onLongPress(message, bubbleBounds) },
+                        ) {},
+                ) {
+                    RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
                 }
             }
         }
         V2MessageRole.USER -> {
-            val shape = RoundedCornerShape(16.dp, 16.dp, 6.dp, 16.dp)
+            val shape = RoundedCornerShape(20.dp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Column(
                     Modifier
-                        .widthIn(max = 344.dp)
+                        .widthIn(max = 320.dp)
                         .clip(shape)
                         .background(V2Colors.accent)
-                        .innerGlow(shape, color = V2Colors.actionInk, alpha = .34f)
+                        .innerGlow(shape, color = V2Colors.actionInk, alpha = .24f)
                         .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
-                        .v2CombinedPressable(pressScale = .98f, onLongClick = { onLongPress(message, bubbleBounds) }) {}
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                        .v2CombinedPressable(
+                            pressScale = .98f,
+                            onLongClick = { onLongPress(message, bubbleBounds) },
+                        ) {}
+                        .padding(horizontal = 16.dp, vertical = 13.dp),
                 ) {
                     Label(message.text, 15f, V2Colors.actionInk)
-                    Spacer(Modifier.height(4.dp))
-                    Label(
-                        message.time,
-                        8.5f,
-                        V2Colors.actionInk.copy(alpha = .55f),
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.End,
-                    )
                 }
             }
         }
@@ -1645,42 +1819,55 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
  */
 @Composable
 private fun RunDurationRow(run: TaskRunSummary, onClick: () -> Unit) {
-    val tone = when (run.status) {
-        "failed" -> V2Colors.rose
-        "cancelled" -> V2Colors.amber700
-        else -> V2Colors.ink(.40f)
+    val failed = run.status == "failed"
+    val cancelled = run.status == "cancelled"
+    val tone = when {
+        failed -> V2Colors.rose
+        cancelled -> V2Colors.amber700
+        else -> V2Colors.ink(.58f)
     }
-    val suffix = when (run.status) {
-        "failed" -> " · 失败"
-        "cancelled" -> " · 已取消"
+    val steps = run.commands + run.filesRead + run.filesChanged
+    val suffix = when {
+        failed -> " · 失败"
+        cancelled -> " · 已取消"
         else -> ""
     }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Outlined.Timer,
-            contentDescription = null,
-            tint = tone,
-            modifier = Modifier.size(11.dp),
-        )
-        Spacer(Modifier.width(5.dp))
-        Label("任务耗时 ${formatRunDuration(run.durationMs)}$suffix", 9f, tone, mono = true)
-        Spacer(Modifier.weight(1f))
-        Label("详情", 8.5f, V2Colors.cyan700)
-        Icon(
-            Icons.Outlined.KeyboardArrowRight,
-            contentDescription = null,
-            tint = V2Colors.cyan700,
-            modifier = Modifier.size(12.dp),
-        )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(V2Colors.surface)
+                .border(1.dp, V2Colors.line, RoundedCornerShape(999.dp))
+                .clickable(onClick = onClick)
+                .padding(start = 12.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Timer,
+                contentDescription = null,
+                tint = tone.copy(alpha = .8f),
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Label(
+                if (steps > 0) {
+                    "已执行 $steps 步 · 用时 ${formatRunDuration(run.durationMs)}$suffix"
+                } else {
+                    "用时 ${formatRunDuration(run.durationMs)}$suffix"
+                },
+                12f,
+                tone,
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.Outlined.KeyboardArrowRight,
+                contentDescription = "执行详情",
+                tint = tone.copy(alpha = .6f),
+                modifier = Modifier.size(15.dp),
+            )
+        }
     }
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(10.dp))
 }
 
 /** 耗时展示：1 分 10 秒 → 「1分10秒」；不足 1 秒单独说明，避免显示成 0 秒。 */

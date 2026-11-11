@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,10 +37,15 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Laptop
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Smartphone
@@ -925,3 +931,192 @@ fun HoldToConfirm(
 }
 
 fun Float.toDp(density: Float): Dp = (this / density).dp
+
+// ------------------------------------------------------------------ 页面骨架
+
+/** 一级页面大标题：左对齐 30sp 粗体，可选副标题与右侧操作。 */
+@Composable
+fun V2PageTitle(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    trailing: @Composable RowScope.() -> Unit = {},
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 16.dp, top = 6.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = V2Colors.ink(.96f),
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 36.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (subtitle != null) {
+                Spacer(Modifier.height(3.dp))
+                Label(subtitle, 13f, V2Colors.ink(.40f))
+            }
+        }
+        trailing()
+    }
+}
+
+/** 设置项左侧的浅灰圆角图标块。 */
+@Composable
+fun V2IconTile(
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    size: Dp = 36.dp,
+    tint: Color = V2Colors.ink(.70f),
+) {
+    Box(
+        modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(V2Colors.ink(.05f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(size * .50f))
+    }
+}
+
+/** 设置分组白卡：行与行之间用左缩进的发丝线分隔。 */
+@Composable
+fun V2SettingsCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    WhiteCard(modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Column(Modifier.padding(vertical = 4.dp), content = content)
+    }
+}
+
+/** 设置行：图标块 + 标题 + 右侧灰色值 + 细箭头。 */
+@Composable
+fun V2SettingRow(
+    icon: ImageVector,
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+    showDivider: Boolean = false,
+) {
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            V2IconTile(icon)
+            Spacer(Modifier.width(12.dp))
+            Label(title, 15f, V2Colors.ink(.92f), FontWeight.Medium, modifier = Modifier.weight(1f))
+            if (value != null) {
+                Label(value, 13f, V2Colors.ink(.38f))
+                Spacer(Modifier.width(6.dp))
+            }
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = V2Colors.ink(.22f),
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (showDivider) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 64.dp, end = 16.dp)
+                    .height(1.dp)
+                    .background(V2Colors.lineSoft),
+            )
+        }
+    }
+}
+
+/** 小标题（如「最近」）。 */
+@Composable
+fun V2SectionLabel(text: String, modifier: Modifier = Modifier) {
+    Label(
+        text,
+        13f,
+        V2Colors.ink(.42f),
+        FontWeight.Medium,
+        modifier = modifier.padding(start = 24.dp, top = 14.dp, bottom = 8.dp),
+    )
+}
+
+// ------------------------------------------------------------------ 底部 Tab
+
+/** 三个一级页面：对话 / 设计 / 我的。 */
+enum class V2TopTab(val label: String, val icon: ImageVector) {
+    CHATS("对话", Icons.Outlined.ChatBubbleOutline),
+    DESIGNS("设计", Icons.Outlined.Edit),
+    PROFILE("我的", Icons.Outlined.Person),
+}
+
+/** 手机底部三 Tab：选中黑、未选灰，顶部一条发丝线。 */
+@Composable
+fun V2BottomTabBar(
+    selected: V2TopTab,
+    onSelect: (V2TopTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth().background(V2Colors.bg)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(V2Colors.lineSoft))
+        Row(Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 8.dp)) {
+            V2TopTab.values().forEach { tab ->
+                val active = tab == selected
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable { onSelect(tab) }
+                        .padding(vertical = 3.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        tab.icon,
+                        contentDescription = tab.label,
+                        tint = if (active) V2Colors.ink(.92f) else V2Colors.ink(.32f),
+                        modifier = Modifier.size(23.dp),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Label(
+                        tab.label,
+                        11f,
+                        if (active) V2Colors.ink(.92f) else V2Colors.ink(.36f),
+                        if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 一级页面右下角的黑色圆形新建按钮。 */
+@Composable
+fun V2Fab(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector = Icons.Outlined.Add,
+    contentDescription: String = "新建",
+) {
+    Box(
+        modifier
+            .size(56.dp)
+            .shadow(14.dp, CircleShape)
+            .clip(CircleShape)
+            .background(V2Colors.accent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, tint = V2Colors.actionInk, modifier = Modifier.size(24.dp))
+    }
+}

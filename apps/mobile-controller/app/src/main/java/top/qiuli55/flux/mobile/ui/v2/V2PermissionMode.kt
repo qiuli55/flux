@@ -24,7 +24,6 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Security
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,57 +35,41 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-/** 三种权限模式的展示元数据：颜色、图标、一句话说明与能力标签。 */
+/** 权限模式的展示元数据：颜色与一句话说明。 */
 internal data class PermissionModeMeta(
     val mode: String,
     val name: String,
-    val tag: String,
     val subtitle: String,
     val color: Color,
-    val icon: ImageVector,
-    val chips: List<String>,
 )
 
 internal fun permissionModeMeta(mode: String): PermissionModeMeta = when (mode) {
     "plan" -> PermissionModeMeta(
         mode = "plan",
         name = "Plan 模式",
-        tag = "只读",
-        subtitle = "只读代码与设计稿，产出计划文档；不执行 shell、不改代码",
+        subtitle = "只读代码与设计稿，产出计划文档；禁 shell、禁设计写入",
         color = V2Colors.indigo,
-        icon = Icons.Outlined.Description,
-        chips = listOf("读工具", "计划文档", "禁 shell", "禁设计写入"),
     )
     "unattended" -> PermissionModeMeta(
         mode = "unattended",
         name = "免审核",
-        tag = "无人值守",
-        subtitle = "高风险命令与受保护操作全部自动放行，不再打断你；适合离开设备时让任务自己跑完",
+        subtitle = "全部自动放行，适合无人值守长任务；选前请确认任务范围可控",
         color = V2Colors.rose700,
-        icon = Icons.Outlined.Terminal,
-        chips = listOf("全部工具", "直写工作区", "自动放行", "无审批打断"),
     )
     "full" -> PermissionModeMeta(
         mode = "full",
         name = "完全访问",
-        tag = "风险自负",
         subtitle = "跳过逐步审批，可直写工作区与执行命令；受保护对象仍需你逐次点头",
         color = V2Colors.rose,
-        icon = Icons.Outlined.Terminal,
-        chips = listOf("全部工具", "直写工作区", "git 提交", "受保护仍问"),
     )
     else -> PermissionModeMeta(
         mode = "normal",
         name = "正常模式",
-        tag = "默认",
-        subtitle = "正常执行任务；低风险命令自动放行，高风险命令停下来等你允许",
+        subtitle = "低风险命令自动放行，高风险命令会停下来等你允许",
         color = V2Colors.accent,
-        icon = Icons.Outlined.Security,
-        chips = listOf("读工具", "低风险自动", "高风险审批", "受保护仍问"),
     )
 }
 
@@ -159,7 +142,7 @@ internal fun FullAccessNotice(mode: String = "full") {
     }
 }
 
-/** 四选一面板：玻璃底、固定底部说明受保护对象的边界。 */
+/** 四选一面板：大标题 + 单选列表 + 底部说明受保护对象的边界。 */
 @Composable
 internal fun PermissionModeSheet(
     mode: String,
@@ -167,50 +150,34 @@ internal fun PermissionModeSheet(
     onDismiss: () -> Unit,
 ) {
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .88f) {
-        SheetHeader(
-            title = "对话模式",
-            subtitle = "切换只影响后续消息，正在跑的一轮按原模式跑完",
-            onClose = onDismiss,
-        )
         Column(
             Modifier
                 .weight(1f, fill = false)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 20.dp),
         ) {
-            listOf("plan", "normal", "full", "unattended").forEach { item ->
+            Spacer(Modifier.height(6.dp))
+            Label("权限模式", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Label("只影响后续消息；正在跑的一轮按原模式跑完", 12.5f, V2Colors.ink(.40f))
+            Spacer(Modifier.height(10.dp))
+            listOf("plan", "normal", "full", "unattended").forEachIndexed { index, item ->
                 PermissionModeOption(
                     meta = permissionModeMeta(item),
                     selected = item == mode,
                     onClick = { onSelect(item) },
                 )
+                if (index != 3) ThinDivider(V2Colors.ink(.06f))
             }
-            Spacer(Modifier.height(4.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(V2Colors.ink(.04f))
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-            ) {
-                Icon(
-                    Icons.Outlined.Security,
-                    null,
-                    tint = V2Colors.ink(.40f),
-                    modifier = Modifier.padding(top = 1.dp).size(12.dp),
-                )
-                Spacer(Modifier.width(7.dp))
-                Label(
-                    "Plan / 正常 / 完全访问模式下，受保护对象（.env、*.pem、SSH 私钥、" +
-                        "systemctl / service / reboot 等系统服务）都要你逐次允许，上一次允许不会自动延续。" +
-                        "只有免审核模式会连受保护对象一起自动放行，选它前请确认任务范围可控。",
-                    9f,
-                    V2Colors.ink(.45f),
-                )
-            }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(14.dp))
+            Label(
+                "Plan / 正常 / 完全访问模式下，受保护对象（.env、*.pem、SSH 私钥、系统服务）都要你逐次允许，" +
+                    "上一次允许不会自动延续。只有免审核模式会连受保护对象一起自动放行，选它前请确认任务范围可控。",
+                10.5f,
+                V2Colors.ink(.42f),
+            )
+            Spacer(Modifier.height(28.dp))
         }
     }
 }
@@ -221,62 +188,27 @@ private fun PermissionModeOption(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) meta.color.copy(alpha = .09f) else V2Colors.surface(.72f))
-            .border(
-                1.dp,
-                if (selected) meta.color.copy(alpha = .42f) else V2Colors.line,
-                RoundedCornerShape(16.dp),
-            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 11.dp),
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(meta.color.copy(alpha = .13f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(meta.icon, null, tint = meta.color, modifier = Modifier.size(16.dp))
-            }
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Label(meta.name, 12.5f, V2Colors.ink(.90f), weight = FontWeight.SemiBold)
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Label(meta.name, 15f, V2Colors.ink(.92f), weight = FontWeight.Medium)
+                if (meta.mode == "unattended") {
                     Spacer(Modifier.width(6.dp))
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(meta.color.copy(alpha = .12f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    ) {
-                        Label(meta.tag, 8f, meta.color, mono = true)
-                    }
+                    Label("风险自负", 11f, V2Colors.rose, weight = FontWeight.Medium)
                 }
-                Spacer(Modifier.height(2.dp))
-                Label(meta.subtitle, 9f, V2Colors.ink(.45f))
             }
-            if (selected) {
-                Icon(Icons.Outlined.Check, null, tint = meta.color, modifier = Modifier.size(15.dp))
-            }
+            Spacer(Modifier.height(3.dp))
+            Label(meta.subtitle, 11.5f, V2Colors.ink(.42f))
         }
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            meta.chips.forEach { chip ->
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(V2Colors.ink(.04f))
-                        .padding(horizontal = 7.dp, vertical = 2.dp),
-                ) {
-                    Label(chip, 8f, V2Colors.ink(.46f), mono = true)
-                }
-            }
+        if (selected) {
+            Spacer(Modifier.width(12.dp))
+            Icon(Icons.Outlined.Check, null, tint = V2Colors.ink(.85f), modifier = Modifier.size(18.dp))
         }
     }
 }

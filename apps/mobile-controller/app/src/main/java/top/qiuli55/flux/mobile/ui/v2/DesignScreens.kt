@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +36,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -60,6 +64,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Redo
 import androidx.compose.material.icons.outlined.Refresh
@@ -146,6 +151,7 @@ fun DesignStudioListScreen(
     onDismissMessages: () -> Unit,
 ) {
     var newOpen by remember { mutableStateOf(false) }
+    var moreOpen by remember { mutableStateOf(false) }
     var actionTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
     var renameTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
     var deleteTarget by remember { mutableStateOf<top.qiuli55.flux.mobile.data.DesignSummary?>(null) }
@@ -187,41 +193,53 @@ fun DesignStudioListScreen(
     // 根容器必须是 Box：弹层与内容平级叠放，放进父级 Column 会被内容挤成 0 高度
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            DesignHeader(
-                title = "设计工作室",
-                subtitle = "Flux 项目设计稿 · 手机轻编辑",
-                extraTop = extraTop,
-                showBack = showBack,
-                onBack = onBack,
-                actions = {
-                    RoundIconButton(Icons.Outlined.Refresh, onReload, size = 34.dp, iconSize = 15.dp)
-                    Spacer(Modifier.width(8.dp))
-                    if (state.importing) {
-                        Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(
-                                Modifier.size(15.dp),
-                                strokeWidth = 1.6.dp,
-                                color = V2Colors.cyan700,
-                            )
-                        }
-                    } else {
+            V2PageTitle(
+                title = "设计",
+                modifier = Modifier.padding(top = extraTop),
+                subtitle = when {
+                    state.loading && state.designs.isEmpty() -> "正在读取设计稿…"
+                    state.designs.isEmpty() -> "还没有设计稿"
+                    else -> "${state.designs.size} 份设计稿"
+                },
+                trailing = {
+                    if (showBack) {
                         RoundIconButton(
-                            Icons.Outlined.FileUpload,
-                            onClick = { importPicker.launch(arrayOf("*/*")) },
+                            Icons.Outlined.ArrowBack,
+                            onBack,
                             size = 34.dp,
                             iconSize = 16.dp,
-                            contentDescription = "导入设计稿",
+                            contentDescription = "返回",
                         )
+                        Spacer(Modifier.width(8.dp))
                     }
-                    Spacer(Modifier.width(8.dp))
-                    RoundIconButton(
-                        Icons.Outlined.Add,
-                        onClick = { newOpen = true },
-                        size = 34.dp,
-                        iconSize = 17.dp,
-                        background = V2Colors.accent,
-                        tint = V2Colors.actionInk,
-                    )
+                    Box {
+                        RoundIconButton(
+                            Icons.Outlined.MoreHoriz,
+                            onClick = { moreOpen = true },
+                            size = 34.dp,
+                            iconSize = 18.dp,
+                            contentDescription = "更多",
+                        )
+                        DropdownMenu(
+                            expanded = moreOpen,
+                            onDismissRequest = { moreOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Label("导入设计稿", 12f, V2Colors.ink(.88f)) },
+                                onClick = {
+                                    moreOpen = false
+                                    importPicker.launch(arrayOf("*/*"))
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Label("刷新列表", 12f, V2Colors.ink(.88f)) },
+                                onClick = {
+                                    moreOpen = false
+                                    onReload()
+                                },
+                            )
+                        }
+                    }
                 },
             )
 
@@ -229,13 +247,16 @@ fun DesignStudioListScreen(
 
             when {
                 state.loading && state.designs.isEmpty() -> DesignEmpty("正在读取设计稿…")
-                state.designs.isEmpty() -> DesignEmpty("还没有设计稿\n点右上角 + 新建一份")
-                else -> LazyColumn(
-                    Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp),
+                state.designs.isEmpty() -> DesignEmpty("还没有设计稿\n点右下角 + 新建一份")
+                else -> LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(state.designs, key = { it.id }) { design ->
-                        DesignCard(
+                    gridItems(state.designs, key = { it.id }) { design ->
+                        DesignGridCard(
                             summary = design,
                             opening = state.openingId == design.id,
                             onClick = { onOpen(design.id) },
@@ -248,6 +269,14 @@ fun DesignStudioListScreen(
                 }
             }
         }
+
+        V2Fab(
+            onClick = { newOpen = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 20.dp, bottom = 24.dp),
+            contentDescription = "新建设计稿",
+        )
 
         if (newOpen) {
             NewDesignSheet(
@@ -518,7 +547,7 @@ private fun DesignDeleteSheet(
 }
 
 @Composable
-private fun DesignCard(
+private fun DesignGridCard(
     summary: top.qiuli55.flux.mobile.data.DesignSummary,
     opening: Boolean,
     onClick: () -> Unit,
@@ -527,7 +556,6 @@ private fun DesignCard(
     WhiteCard(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 6.dp)
             .pointerInput(summary.id) {
                 detectTapGestures(
                     onTap = { onClick() },
@@ -535,49 +563,48 @@ private fun DesignCard(
                 )
             },
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(8.dp)) {
             DesignPreviewThumb(
-                modifier = Modifier.size(width = 86.dp, height = 168.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(.72f),
                 summary = summary,
             )
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Label(
-                        summary.name,
-                        15f,
-                        V2Colors.ink(.92f),
-                        FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                    )
-                    if (opening) {
-                        Label("打开中", 10f, V2Colors.cyan700)
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                Label(
-                    summary.project.ifBlank { summary.description.ifBlank { "未绑定项目" } },
-                    10.5f,
-                    V2Colors.ink(.40f),
-                    maxLines = 1,
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    V2Chip("${summary.screenCount} 画板", V2Colors.cyan700)
-                    V2Chip("${summary.layerCount} 图层", V2Colors.indigo)
-                }
-                Spacer(Modifier.height(10.dp))
-                Label(
-                    "v${summary.version} · ${summary.updatedAt.replace("T", " ").take(16)}",
-                    9.5f,
-                    V2Colors.ink(.30f),
-                    maxLines = 1,
-                    mono = true,
-                )
-            }
+            Spacer(Modifier.height(8.dp))
+            Label(
+                summary.name.ifBlank { "未命名设计稿" },
+                13.5f,
+                V2Colors.ink(.92f),
+                FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 2.dp),
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(3.dp))
+            Label(
+                "${summary.screenCount} 个页面",
+                11f,
+                V2Colors.ink(.42f),
+                modifier = Modifier.padding(horizontal = 2.dp),
+                maxLines = 1,
+            )
+            Label(
+                if (opening) "打开中…" else "已保存 · ${designSavedDate(summary.updatedAt)}",
+                11f,
+                V2Colors.ink(.32f),
+                modifier = Modifier.padding(horizontal = 2.dp),
+                maxLines = 1,
+            )
         }
     }
+}
+
+/** 把 ISO 时间裁成「8月28日」；解析失败时退回原始日期片段。 */
+private fun designSavedDate(updatedAt: String): String {
+    val date = updatedAt.take(10)
+    if (date.length < 10) return date.ifBlank { "—" }
+    val month = date.substring(5, 7).toIntOrNull()
+    val day = date.substring(8, 10).toIntOrNull()
+    return if (month != null && day != null) "${month}月${day}日" else date
 }
 
 /** 列表里的缩略画布：用列表接口带回的第一屏节点离线渲染。 */
