@@ -1307,6 +1307,119 @@
         "title": "GitDiffRequest",
         "type": "object"
       },
+      "GitHubCommitRequest": {
+        "description": "把一组文件提交到指定分支（Contents API，逐文件提交）。",
+        "properties": {
+          "branch": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Branch",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/GitHubFileWrite"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Files",
+            "type": "array"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "message",
+          "files"
+        ],
+        "title": "GitHubCommitRequest",
+        "type": "object"
+      },
+      "GitHubFileWrite": {
+        "description": "一次提交里的单个文件。",
+        "properties": {
+          "content": {
+            "maxLength": 2000000,
+            "title": "Content",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "GitHubFileWrite",
+        "type": "object"
+      },
+      "GitHubPullRequestCreate": {
+        "description": "创建 Pull Request。",
+        "properties": {
+          "base": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Base",
+            "type": "string"
+          },
+          "body": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Body",
+            "type": "string"
+          },
+          "head": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "head",
+          "base"
+        ],
+        "title": "GitHubPullRequestCreate",
+        "type": "object"
+      },
+      "GitHubTokenRequest": {
+        "description": "手工保存 GitHub 令牌（Device Flow 不可用时的回退路径）。",
+        "properties": {
+          "kind": {
+            "default": "pat",
+            "maxLength": 32,
+            "title": "Kind",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "GitHubTokenRequest",
+        "type": "object"
+      },
       "GitPathsRequest": {
         "properties": {
           "paths": {
@@ -5016,6 +5129,659 @@
         "summary": "Git Unstage",
         "tags": [
           "git"
+        ]
+      }
+    },
+    "/api/v1/github/device/start": {
+      "post": {
+        "description": "申请设备码：返回授权地址与用户码，前端引导用户去浏览器授权。",
+        "operationId": "start_device_login_api_v1_github_device_start_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Device Login Api V1 Github Device Start Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Start Device Login",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/device/{flow_id}": {
+      "get": {
+        "description": "轮询设备码登录结果：pending / success / failed / expired / cancelled。",
+        "operationId": "device_login_state_api_v1_github_device__flow_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "flow_id",
+            "required": true,
+            "schema": {
+              "title": "Flow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Device Login State Api V1 Github Device  Flow Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Device Login State",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/logout": {
+      "post": {
+        "description": "退出 GitHub 账号：删除本地加密登录态。",
+        "operationId": "logout_api_v1_github_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Logout Api V1 Github Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Logout",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos": {
+      "get": {
+        "description": "列出当前账号可见的全部仓库（含私有 / 组织仓库）。",
+        "operationId": "list_repos_api_v1_github_repos_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Repos Api V1 Github Repos Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Repos",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}": {
+      "get": {
+        "operationId": "get_repo_api_v1_github_repos__owner___repo__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Repo Api V1 Github Repos  Owner   Repo  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Repo",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}/branches": {
+      "get": {
+        "operationId": "list_branches_api_v1_github_repos__owner___repo__branches_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Branches Api V1 Github Repos  Owner   Repo  Branches Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Branches",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}/commit": {
+      "post": {
+        "description": "把一组文件提交到指定分支（逐个文件走 Contents API）。",
+        "operationId": "commit_files_api_v1_github_repos__owner___repo__commit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Commit Files Api V1 Github Repos  Owner   Repo  Commit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Commit Files",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}/file": {
+      "get": {
+        "operationId": "read_file_api_v1_github_repos__owner___repo__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read File Api V1 Github Repos  Owner   Repo  File Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read File",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}/pulls": {
+      "get": {
+        "operationId": "list_pull_requests_api_v1_github_repos__owner___repo__pulls_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "open",
+              "title": "State",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Pull Requests Api V1 Github Repos  Owner   Repo  Pulls Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Pull Requests",
+        "tags": [
+          "github"
+        ]
+      },
+      "post": {
+        "operationId": "create_pull_request_api_v1_github_repos__owner___repo__pulls_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "title": "Repo",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubPullRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Pull Request Api V1 Github Repos  Owner   Repo  Pulls Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Pull Request",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/status": {
+      "get": {
+        "description": "当前 GitHub 登录态（不含令牌）。",
+        "operationId": "github_status_api_v1_github_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Github Status Api V1 Github Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Github Status",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/v1/github/token": {
+      "post": {
+        "description": "保存手工提供的令牌（Personal Access Token 回退路径）。",
+        "operationId": "save_token_api_v1_github_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Token Api V1 Github Token Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save Token",
+        "tags": [
+          "github"
         ]
       }
     },
