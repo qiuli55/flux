@@ -34,6 +34,8 @@ PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "design.list",
         "design.get",
         "design.revisions",
+        "github.list_repos",
+        "github.read_file",
         "plan.write",
     }
 )
@@ -54,16 +56,19 @@ _MODE_SCOPES: dict[str, tuple[Capability, ...]] = {
         Capability.FILE_READ,
         Capability.FILE_WRITE,
         Capability.TERMINAL_EXECUTE,
+        Capability.GITHUB_CREATE_PR,
     ),
     PermissionMode.FULL.value: (
         Capability.FILE_READ,
         Capability.FILE_WRITE,
         Capability.TERMINAL_EXECUTE,
+        Capability.GITHUB_CREATE_PR,
     ),
     PermissionMode.UNATTENDED.value: (
         Capability.FILE_READ,
         Capability.FILE_WRITE,
         Capability.TERMINAL_EXECUTE,
+        Capability.GITHUB_CREATE_PR,
     ),
 }
 
@@ -75,11 +80,13 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
         "can": [
             "workspace.read/search/tree/diff",
             "design.list/get/revisions",
+            "github.list_repos / github.read_file",
             "plan.write",
             "memory.remember",
         ],
         "cannot": [
             "terminal.execute",
+            "github.commit / github.create_pr",
             "proposal.create/preview",
             "design.create/update/ai/revert/share/icon_create",
         ],
@@ -87,7 +94,12 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
     PermissionMode.NORMAL.value: {
         "label": "正常模式",
         "summary": "正常执行任务；低风险命令自动放行，高风险命令停下来等你允许。",
-        "can": ["全部只读工具", "proposal.create/preview", "design.*"],
+        "can": [
+            "全部只读工具",
+            "proposal.create/preview",
+            "design.*",
+            "github.list_repos / read_file / commit / create_pr",
+        ],
         "cannot": ["未经允许的高风险命令", "任何模式的受保护对象"],
     },
     PermissionMode.FULL.value: {

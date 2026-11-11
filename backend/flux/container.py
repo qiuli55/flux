@@ -40,6 +40,7 @@ from flux.core.context.trust import VerificationLedger
 from flux.core.event.bus import EventBus, Events
 from flux.core.git_integration.client import GitClient
 from flux.core.git_integration.service import GitService
+from flux.core.github import GitHubService
 from flux.core.group.orchestrator import GroupOrchestrator
 from flux.core.group.repository import GroupRepository
 from flux.core.ide_completion import (
@@ -124,6 +125,8 @@ class Container:
     human_pty: HumanPtyService = field(init=False)
     git_client: GitClient = field(init=False)
     git: GitService = field(init=False)
+    #: GitHub 账号（OAuth App 设备码授权）：仓库浏览 / 提交 / PR，令牌加密落盘
+    github: GitHubService = field(init=False)
     scanner: ProjectScanner = field(init=False)
     files: WorkspaceFileExplorer = field(init=False)
     #: 代码智能（IDE 补全）：LSP 语言服务器进程池 + WebSocket 网关，按工作区根复用
@@ -207,6 +210,8 @@ class Container:
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
         # 密钥库：Agent 模型通道的 API Key（加密落库），与任务级 model / api_key_id 配合解析
         self.key_vault = KeyVaultService(self.session_factory, self.settings)  # type: ignore[attr-defined]
+        # GitHub 账号：设备码授权 + 仓库读写；令牌复用密钥库主密钥加密落盘
+        self.github = GitHubService(self.settings, self.key_vault)
         # 提案的权威存储在 virtual_changes 表（实施计划 ④），进程重启后审核队列不丢
         self.proposal_repo = ProposalRepository(self.session_factory)  # type: ignore[attr-defined]
         # Apply 批日志（P0-1）：每次 apply_many 一行，先于磁盘操作落库；
@@ -617,6 +622,7 @@ class Container:
         # 知识库 embedding 客户端同样持有连接池（未启用时是空操作）
         await self.knowledge_embedder.aclose()
         await self.dsh.shutdown()
+        await self.github.aclose()
         await self.engine.dispose()
 
 

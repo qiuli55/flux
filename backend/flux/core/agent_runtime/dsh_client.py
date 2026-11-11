@@ -81,7 +81,14 @@ class _SupervisedDeepSeekHarness(DeepSeekHarness):
 #: 内置 Agent 令牌的能力：读项目 + 提提案 + 经 Flux 终端执行命令（Agent Terminal Console §4）。
 #: 命令不是"任意 shell"：它必须走 Flux 的 Terminal Session，命令与输出落成终端事件供人
 #: 实时观察并 Stop，输出只回摘要。apply / git / secret 仍不在 MCP 面上。
-MCP_TOKEN_SCOPES = (Capability.FILE_READ, Capability.FILE_WRITE, Capability.TERMINAL_EXECUTE)
+MCP_TOKEN_SCOPES = (
+    Capability.FILE_READ,
+    Capability.FILE_WRITE,
+    Capability.TERMINAL_EXECUTE,
+    # 远端 GitHub 写操作（commit / PR）：审批闸门在工具层（approval_capable），
+    # 令牌层只负责"这类操作在面内"，不在这里做模式区分。
+    Capability.GITHUB_CREATE_PR,
+)
 
 #: DSH 运行库 finish_reason → Run 终态（P1：Agent 失败不能显示为成功）。
 #: `harness.run()` 正常返回只代表"调用结束"，失败结论在 result.finish_reason 里；

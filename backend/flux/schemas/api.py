@@ -429,6 +429,37 @@ class ProjectCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GitHubTokenRequest(BaseModel):
+    """手工保存 GitHub 令牌（Device Flow 不可用时的回退路径）。"""
+
+    token: str = Field(min_length=1, max_length=1024)
+    kind: str = Field(default="pat", max_length=32)
+
+
+class GitHubFileWrite(BaseModel):
+    """一次提交里的单个文件。"""
+
+    path: str = Field(min_length=1, max_length=1024)
+    content: str = Field(max_length=2_000_000)
+
+
+class GitHubCommitRequest(BaseModel):
+    """把一组文件提交到指定分支（Contents API，逐文件提交）。"""
+
+    branch: str = Field(min_length=1, max_length=255)
+    message: str = Field(min_length=1, max_length=2000)
+    files: list[GitHubFileWrite] = Field(min_length=1, max_length=50)
+
+
+class GitHubPullRequestCreate(BaseModel):
+    """创建 Pull Request。"""
+
+    title: str = Field(min_length=1, max_length=256)
+    head: str = Field(min_length=1, max_length=255)
+    base: str = Field(min_length=1, max_length=255)
+    body: str = Field(default="", max_length=20000)
+
+
 class MemoryWriteRequest(BaseModel):
     """写一条项目记忆。分区语义见 flux.enums.BrainSection。"""
 

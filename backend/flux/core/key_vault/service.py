@@ -347,6 +347,17 @@ class KeyVaultService:
                 details={"policy": "key_vault decrypt failed"},
             ) from exc
 
+    # 供其他模块复用同一把主密钥加密自己的凭据（如 GitHub 令牌落盘），
+    # 不复制主密钥读取/生成逻辑，避免出现第二套加密实现。
+
+    def seal_text(self, text: str) -> bytes:
+        """用密钥库主密钥加密一段文本。"""
+        return self._seal(text)
+
+    def open_text(self, ciphertext: bytes) -> str:
+        """解密 `seal_text` 的产物；密钥不符时抛 `ConfigurationError`。"""
+        return self._open(ciphertext)
+
 
 def _entry_of(row: ApiKey) -> KeyEntry:
     return KeyEntry(

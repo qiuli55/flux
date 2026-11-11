@@ -92,6 +92,7 @@ CLI_TOKEN_SCOPES: tuple[Capability, ...] = (
     Capability.FILE_READ,
     Capability.FILE_WRITE,
     Capability.TERMINAL_EXECUTE,
+    Capability.GITHUB_CREATE_PR,
 )
 
 #: 事件流结束哨兵

@@ -190,6 +190,19 @@ class Settings(BaseSettings):
     # Flux 只读模型 id，不复制清单；文件不存在 = 不提供切换，沿用 opencode 自带默认。
     opencode_config_file: str = "~/.config/opencode/opencode.json"
 
+    # --- GitHub 账号（OAuth App 设备码授权 + 仓库读写）---
+    # client_id 是公开值，可安全入库；设备码流程不消费 client_secret。
+    # 该 OAuth App 必须勾选 "Enable Device Flow"，否则 GitHub 会返回 device_flow_disabled
+    # （此时仍可退回到粘贴 Personal Access Token 的方式）。
+    github_client_id: str = "Ov23li4zYbYUuu07mqB0"
+    # repo = 全部仓库（含私有）读写；read:org = 读取组织归属（列仓库时需要）
+    github_scopes: str = "repo read:org"
+    # GitHub REST 根地址；GitHub Enterprise 可改成 https://<host>/api/v3
+    github_api_base: str = "https://api.github.com"
+    # 令牌落盘文件（SecretBox 信封加密 + 0600）；留空 = ~/.flux/github/account.json
+    github_account_file: str | None = None
+    github_http_timeout_seconds: float = 30.0
+
     # --- 计费与套餐额度（本地账本 + 官方快照对账）---
     # 关掉后不再写 usage_records / usage_snapshots，闸门整体失效
     billing_enabled: bool = True
@@ -429,6 +442,15 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "key-vault.key"
+
+    @property
+    def github_account_path(self) -> Path:
+        """GitHub 令牌落盘文件；未配置时为 ~/.flux/github/account.json。"""
+        raw = (self.github_account_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "github" / "account.json"
 
     def agent_limits(self, runtime_id: str):
         """取某个 runtime 的生效执行时限（能力表默认值 + 本类覆盖项）。
