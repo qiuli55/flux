@@ -17,9 +17,9 @@ android {
         minSdk = 26
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装。
-        // 已发布过 0.9.9（vc66），本次全局 UI 重做提到 vc67，保证同签名直接覆盖升级。
-        versionCode = 67
-        versionName = "0.9.10"
+        // 已发布过 0.9.10（vc67），本次提升到 vc69，保证同签名直接覆盖升级。
+        versionCode = 69
+        versionName = "0.9.12"
     }
 
     buildFeatures {
