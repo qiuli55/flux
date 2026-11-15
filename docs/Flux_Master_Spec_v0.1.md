@@ -1449,6 +1449,7 @@ GitHub Discussions、技术文章、开发者社区、开源贡献；提供 Issu
 | F4 | Anthropic 默认模型 id | `claude-sonnet-5-5`（$2 / $10 每百万 token） | `platform.claude.com/docs/en/models/opus-5/overview` 的官方模型对比表 | 2026-09-30 |
 | F5 | DeepSeek 端点 | `POST https://api.deepseek.com/chat/completions`，头 `Authorization: Bearer`，生成上限参数名为 `max_tokens`；另有 Anthropic 兼容端点 `https://api.deepseek.com/anthropic` | `api-docs.deepseek.com/`、`api-docs.deepseek.com/api/create-chat-completion` | 2026-09-30 |
 | F6 | DeepSeek 默认模型 id | `deepseek-flash`（2026-09-10 起等同 DeepSeek-V4.1-Flash；旧名 `deepseek-v4-flash` 已下线） | `api-docs.deepseek.com/updates/` Change Log | 2026-09-30 |
+| F7 | Claude Code CLI 接入事实 | 版本 `2.1.323 (Claude Code)`；探测 `claude --version`、`claude auth status --json`（`loggedIn` / `authMethod` / `apiKeySource`）；非交互双向流 `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --permission-mode <mode> [--model M] [--resume ID] --mcp-config <file> --allowed-tools mcp__flux [--add-dir DIR]`；stdin 先发 `control_request/initialize` 再发 `user` 消息；工具授权由 stdout 的 `control_request`（`subtype=can_use_tool`）询问，宿主回 `control_response` 的 `behavior=allow/deny`；stdout 事件含 `system/init`、`stream_event`（`content_block_delta` 文本/思考增量、`message_delta.usage`）、`assistant`、`user/tool_result`、`result`；收到 `result` 后关闭 stdin，进程自行退出；`total_cost_usd` 按 Anthropic 官方价估算，接第三方端点时不可用于记账 | 本机 `claude --help` 与实测 | 2026-11-16 |
 
 ## 附录 B　源文档 → 章节对照
 

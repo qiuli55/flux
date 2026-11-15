@@ -63,6 +63,14 @@ Adapter 用统一的薄 HTTP 层调用上游 API，不引入各家官方 SDK—�
 >
 > **成本计价**：Provider 不内置价格表，`pricing=None` 时 `cost` 为 `null`——绝不用猜测值填充成本，真实计价属 M6。
 
+**2026-11-16 进展｜Claude Code 成为一等运行时**：新增 `claude-code`（Adapter、`CliRuntime`、
+`ClaudeCodeSession`），与 codex / opencode 共用 `RunSupervisor`、令牌与 `_finalize` 生命周期。
+非交互模式用 `claude -p --input-format stream-json --output-format stream-json
+--include-partial-messages` 拿真增量；原生工具授权经 `--permission-prompt-tool stdio` 回到
+Flux（Plan 全拒、Bash 走同一套风险分类与审批卡、编辑类工具限制在工作区/附件目录内），Flux
+能力仍走同一个 MCP 面与一次性令牌。Adapter 只发现 `claude auth status --json` /
+`~/.claude/settings.json` 的凭据事实，不自动安装、不改用户环境。
+
 ## 4. 能力面：Flux MCP Server
 
 Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），同时服务内置 agent、桌面端与外部 agent（codex / claude-code / opencode …）。工具面的**唯一真源**是 `backend/flux/core/mcp/tools/__init__.py` 的 `TOOLS` 表——`tools/list` 返回什么、调用时要求什么能力，全部由它决定。
