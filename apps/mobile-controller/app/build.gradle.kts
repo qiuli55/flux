@@ -1,3 +1,5 @@
+import java.util.Properties
+
 // app 模块：Flux 手机端（原生 Android，Kotlin + Jetpack Compose）。
 //
 // 版本说明见根 build.gradle.kts 注释；所有版本号都是固定值，不用动态版本（+）。
@@ -27,27 +29,68 @@ android {
         buildConfig = true
     }
 
-    // 固定的分发签名：历史 APK 全部用 A 机的 debug keystore（证书 SHA-256 ec560d8d…）签名，
-    // 若不固定，各机器会用各自的 ~/.android/debug.keystore，导致升级时报签名冲突。
-    // 口令优先读环境变量（CI 由 secrets 注入），本地未设置时回落到历史默认值，保证 OTA 签名一致。
-    // keystore 不进仓库（*.jks 已忽略）：CI 通过 FLUX_KEYSTORE_BASE64 注入；未注入时回落到
-    // AGP 默认 debug 签名，仅用于编译验证，该产物不可用于分发。
-    fun envOr(name: String, fallback: String): String =
-        System.getenv(name)?.takeIf { it.isNotBlank() } ?: fallback
+    // 固定的分发签名：历史 APK（含 vc57 / 0.9.0）全部用 A 机的 debug keystore
+    // （证书 SHA-256 ec560d8d…）签名，若不固定，各机器会用各自的 ~/.android/debug.keystore，
+    // 导致 OTA 升级时报签名冲突。
+    //
+    // 解析顺序（前者优先）：
+    //   1. 环境变量 FLUX_KEYSTORE_PATH / FLUX_KEYSTORE_PASSWORD / FLUX_KEY_ALIAS / FLUX_KEY_PASSWORD
+    //      （CI 由 secrets 注入）
+    //   2. 本地 gitignored 的 signing.properties（storeFile / storePassword / keyAlias / keyPassword），
+    //      路径可用 FLUX_SIGNING_PROPERTIES 覆盖；该文件永不入库
+    //   3. keystore/flux-release.jks + 历史默认口令（仅当文件存在时生效）
+    // keystore 本身不进仓库（*.jks 已忽略）；CI 通过 FLUX_KEYSTORE_BASE64 还原到 keystore/flux-release.jks。
+    // 找不到分发 keystore 时明确告警并回落 AGP 默认 debug 签名（仅编译验证，不可用于分发/OTA），
+    // 绝不静默换签名。
+    val signingPropertiesFile = rootProject.file(
+        System.getenv("FLUX_SIGNING_PROPERTIES")?.takeIf { it.isNotBlank() } ?: "signing.properties"
+    )
+    val signingProperties = Properties().apply {
+        if (signingPropertiesFile.isFile) {
+            signingPropertiesFile.inputStream().use { load(it) }
+            logger.lifecycle("[FluxUx] loaded signing config from ${signingPropertiesFile.absolutePath}")
+        }
+    }
 
-    val releaseKeystore = rootProject.file("keystore/flux-release.jks")
+    fun signingValue(envName: String, propertyName: String, fallback: String): String =
+        System.getenv(envName)?.takeIf { it.isNotBlank() }
+            ?: signingProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+            ?: fallback
+
+    val defaultKeystore = rootProject.file("keystore/flux-release.jks")
+    val releaseKeystore = rootProject.file(
+        signingValue("FLUX_KEYSTORE_PATH", "storeFile", defaultKeystore.path)
+    )
+    val releaseKeyAlias = signingValue("FLUX_KEY_ALIAS", "keyAlias", "androiddebugkey")
+    val releaseStorePassword = signingValue("FLUX_KEYSTORE_PASSWORD", "storePassword", "android")
+    val releaseKeyPassword = signingValue("FLUX_KEY_PASSWORD", "keyPassword", "android")
+
     signingConfigs {
         create("flux") {
-            if (releaseKeystore.exists()) {
+            if (releaseKeystore.isFile) {
                 storeFile = releaseKeystore
-                storePassword = envOr("FLUX_KEYSTORE_PASSWORD", "android")
-                keyAlias = envOr("FLUX_KEY_ALIAS", "androiddebugkey")
-                keyPassword = envOr("FLUX_KEY_PASSWORD", "android")
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
     val distributionSigning =
-        if (releaseKeystore.exists()) signingConfigs.getByName("flux") else null
+        if (releaseKeystore.isFile) signingConfigs.getByName("flux") else null
+    if (distributionSigning != null) {
+        logger.lifecycle(
+            "[FluxUx] distribution signing enabled: keystore=${releaseKeystore.absolutePath} " +
+                "alias=${releaseKeyAlias}"
+        )
+    } else {
+        logger.warn(
+            "[FluxUx] distribution signing DISABLED: keystore not found at " +
+                "${releaseKeystore.absolutePath}. Falling back to the AGP default debug keystore " +
+                "(usually ~/.android/debug.keystore, generated on demand); such an APK can NOT " +
+                "install as an in-place OTA update. Provide signing.properties or FLUX_KEYSTORE_* " +
+                "env vars to sign with the historically distributed certificate."
+        )
+    }
 
     buildTypes {
         debug {

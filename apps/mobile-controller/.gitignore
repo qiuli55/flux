@@ -14,3 +14,5 @@ remote-artifacts/
 # 签名材料：本仓库不存放任何签名密钥（红线：密钥不入库）
 *.jks
 *.keystore
+# 本地签名参数（keystore 路径/口令），机器相关，禁止入库
+signing.properties
