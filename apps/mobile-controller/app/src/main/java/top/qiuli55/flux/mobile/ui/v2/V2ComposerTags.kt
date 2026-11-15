@@ -20,3 +20,11 @@ internal object V2ComposerTags {
 
 /** 交互类修复统一使用的日志 tag。 */
 internal const val FLUX_UX_LOG_TAG = "FluxUx"
+
+/** 触摸目标相关的稳定测试锚点（密集小胶囊）。 */
+internal object V2UxTags {
+    const val LOG_FILTER_PREFIX = "v2_log_filter_"
+    const val LOG_FOLLOW = "v2_log_follow"
+    const val LOG_CLEAR = "v2_log_clear"
+    const val MEMORY_PILL_PREFIX = "v2_memory_pill_"
+}

@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -7,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -127,6 +130,8 @@ fun SettingsSheet(
     onDismiss: () -> Unit,
 ) {
     val accountLine = account?.email?.takeIf { it.isNotBlank() } ?: "手动连接 · $deviceName"
+    // 退出登录会清掉本机令牌，属于不可撤销操作：先确认再执行。
+    var logoutConfirmOpen by remember { mutableStateOf(false) }
     // 每次打开设置都拉一次账号态；有未完成的设备码登录会继续轮询
     LaunchedEffect(Unit) {
         onRefreshCodex()
@@ -356,7 +361,10 @@ fun SettingsSheet(
                     title = "退出登录",
                     description = "清除本机保存的账号与令牌",
                     danger = true,
-                    onClick = onLogout,
+                    onClick = {
+                        Log.i(FLUX_UX_LOG_TAG, "logout tapped: ask for confirmation")
+                        logoutConfirmOpen = true
+                    },
                 )
             }
 
@@ -383,6 +391,23 @@ fun SettingsSheet(
                 textAlign = TextAlign.Center,
             )
         }
+    }
+    if (logoutConfirmOpen) {
+        FluxConfirmDialog(
+            title = "退出登录？",
+            message = "会清除本机保存的账号与令牌，下次需要重新登录或手动连接。",
+            confirmLabel = "退出登录",
+            dismissLabel = "取消",
+            onConfirm = {
+                Log.i(FLUX_UX_LOG_TAG, "logout confirmed by user")
+                logoutConfirmOpen = false
+                onLogout()
+            },
+            onDismiss = {
+                Log.i(FLUX_UX_LOG_TAG, "logout cancelled; stay signed in")
+                logoutConfirmOpen = false
+            },
+        )
     }
 }
 
@@ -488,6 +513,8 @@ fun LogsSheet(
 ) {
     var filter by remember { mutableStateOf(LogFilter.ALL) }
     var following by remember { mutableStateOf(true) }
+    // 清空日志不可撤销：先确认，避免误触抹掉排障信息。
+    var clearConfirmOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(following) {
@@ -530,31 +557,54 @@ fun LogsSheet(
                 Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                FilterPill("全部", logs.size, filter == LogFilter.ALL) { filter = LogFilter.ALL }
-                FilterPill("信息", logs.count { it.level == V2LogLevel.INFO }, filter == LogFilter.INFO) { filter = LogFilter.INFO }
-                FilterPill("警告", logs.count { it.level == V2LogLevel.WARN }, filter == LogFilter.WARN) { filter = LogFilter.WARN }
-                FilterPill("错误", logs.count { it.level == V2LogLevel.ERROR }, filter == LogFilter.ERROR) { filter = LogFilter.ERROR }
+                FilterPill("全部", logs.size, filter == LogFilter.ALL) {
+                    Log.i(FLUX_UX_LOG_TAG, "log filter=ALL")
+                    filter = LogFilter.ALL
+                }
+                FilterPill("信息", logs.count { it.level == V2LogLevel.INFO }, filter == LogFilter.INFO) {
+                    Log.i(FLUX_UX_LOG_TAG, "log filter=INFO")
+                    filter = LogFilter.INFO
+                }
+                FilterPill("警告", logs.count { it.level == V2LogLevel.WARN }, filter == LogFilter.WARN) {
+                    Log.i(FLUX_UX_LOG_TAG, "log filter=WARN")
+                    filter = LogFilter.WARN
+                }
+                FilterPill("错误", logs.count { it.level == V2LogLevel.ERROR }, filter == LogFilter.ERROR) {
+                    Log.i(FLUX_UX_LOG_TAG, "log filter=ERROR")
+                    filter = LogFilter.ERROR
+                }
             }
             Spacer(Modifier.width(8.dp))
-            Row(
+            // 视觉上仍是原来的小胶囊，但可点区域扩到 48dp，避免点到旁边。
+            Box(
                 Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(if (following) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.ink(.06f))
-                    .clickable { following = !following }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .defaultMinSize(48.dp, 48.dp)
+                    .testTag(V2UxTags.LOG_FOLLOW)
+                    .clickable {
+                        following = !following
+                        Log.i(FLUX_UX_LOG_TAG, "log follow toggled following=$following")
+                    },
+                contentAlignment = Alignment.Center,
             ) {
-                Box(
+                Row(
                     Modifier
-                        .size(6.dp)
-                        .background(if (following) V2Colors.cyan500 else V2Colors.ink(.30f), CircleShape),
-                )
-                Spacer(Modifier.width(4.dp))
-                Label(
-                    if (following) "跟随" else "暂停",
-                    10f,
-                    if (following) V2Colors.cyan700 else V2Colors.ink(.40f),
-                )
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (following) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.ink(.06f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .background(if (following) V2Colors.cyan500 else V2Colors.ink(.30f), CircleShape),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Label(
+                        if (following) "跟随" else "暂停",
+                        10f,
+                        if (following) V2Colors.cyan700 else V2Colors.ink(.40f),
+                    )
+                }
             }
         }
         Row(
@@ -568,13 +618,22 @@ fun LogsSheet(
                 mono = true,
                 modifier = Modifier.weight(1f),
             )
-            Row(
-                Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClear).padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            Box(
+                Modifier
+                    .defaultMinSize(48.dp, 48.dp)
+                    .testTag(V2UxTags.LOG_CLEAR)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        Log.i(FLUX_UX_LOG_TAG, "log clear tapped: ask for confirmation")
+                        clearConfirmOpen = true
+                    },
+                contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Outlined.DeleteSweep, null, tint = V2Colors.ink(.40f), modifier = Modifier.size(12.dp))
-                Spacer(Modifier.width(4.dp))
-                Label("清空", 10f, V2Colors.ink(.40f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.DeleteSweep, null, tint = V2Colors.ink(.40f), modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Label("清空", 10f, V2Colors.ink(.40f))
+                }
             }
         }
         if (visible.isEmpty()) {
@@ -619,31 +678,56 @@ fun LogsSheet(
             }
         }
     }
+    if (clearConfirmOpen) {
+        FluxConfirmDialog(
+            title = "清空日志？",
+            message = "本机缓存的日志会被全部删除，排障信息无法恢复。",
+            confirmLabel = "清空",
+            dismissLabel = "取消",
+            onConfirm = {
+                Log.i(FLUX_UX_LOG_TAG, "log clear confirmed by user count=${logs.size}")
+                clearConfirmOpen = false
+                onClear()
+            },
+            onDismiss = {
+                Log.i(FLUX_UX_LOG_TAG, "log clear cancelled; keep logs")
+                clearConfirmOpen = false
+            },
+        )
+    }
 }
 
 @Composable
 private fun FilterPill(label: String, count: Int, selected: Boolean, onClick: () -> Unit) {
-    Row(
+    // 视觉胶囊保持原尺寸，点击区域扩到 48dp。
+    Box(
         Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
-            .border(
-                1.dp,
-                if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
-                RoundedCornerShape(999.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .defaultMinSize(48.dp, 48.dp)
+            .testTag(V2UxTags.LOG_FILTER_PREFIX + label)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Label(label, 11f, if (selected) V2Colors.ink(.95f) else V2Colors.ink(.40f))
-        Spacer(Modifier.width(5.dp))
-        Label(
-            count.toString(),
-            10f,
-            if (selected) V2Colors.cyan700 else V2Colors.ink(.28f),
-            mono = true,
-        )
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
+                .border(
+                    1.dp,
+                    if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
+                    RoundedCornerShape(999.dp),
+                )
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Label(label, 11f, if (selected) V2Colors.ink(.95f) else V2Colors.ink(.40f))
+            Spacer(Modifier.width(5.dp))
+            Label(
+                count.toString(),
+                10f,
+                if (selected) V2Colors.cyan700 else V2Colors.ink(.28f),
+                mono = true,
+            )
+        }
     }
 }
 

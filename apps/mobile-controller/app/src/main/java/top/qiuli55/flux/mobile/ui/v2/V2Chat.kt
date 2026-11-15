@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -91,6 +94,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -266,7 +270,8 @@ fun V2ChatScreen(
     }
     val currentModelLabel = currentModelOption?.label ?: chat.model.ifBlank { "默认模型" }
     val listState = rememberLazyListState()
-    var input by remember(chat.conversationId) { mutableStateOf("") }
+    // 草稿跨配置变更/低内存重建保留：用户打了一半的字不能因为返回或旋转就消失。
+    var input by rememberSaveable(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
     var headerMenuOpen by remember { mutableStateOf(false) }
@@ -292,6 +297,68 @@ fun V2ChatScreen(
     val inputFocus = remember { FocusRequester() }
     var inputFocused by remember { mutableStateOf(false) }
     var bubbleMenu by remember { mutableStateOf<BubbleMenuTarget?>(null) }
+    // 返回时草稿未发送 / 运行中点停止：都先确认，避免一次误触丢掉内容或中断长任务。
+    var discardConfirmOpen by rememberSaveable { mutableStateOf(false) }
+    var stopConfirmOpen by rememberSaveable { mutableStateOf(false) }
+    // 所有发送入口共用：连点两次只认第一次（建议 chip、气泡「重发」也走这里）。
+    val sendGuard = remember { StopTapGuard(windowMs = 800L) }
+    val hasDraft = input.isNotBlank() || attachments.isNotEmpty()
+    val requestSend: (String) -> Unit = { text ->
+        val accepted = inputEnabled && sendGuard.tryAccept(SystemClock.elapsedRealtime())
+        if (accepted) {
+            Log.i(
+                FLUX_UX_LOG_TAG,
+                "send accepted len=${text.length} attachments=${attachments.size} " +
+                    "conversationId=${chat.conversationId}",
+            )
+            onSend(text)
+        } else {
+            Log.i(
+                FLUX_UX_LOG_TAG,
+                "send tap ignored enabled=$inputEnabled (debounce or busy)",
+            )
+        }
+    }
+    val requestBack: () -> Unit = {
+        if (hasDraft) {
+            Log.i(
+                FLUX_UX_LOG_TAG,
+                "back with draft: ask before discarding len=${input.length} " +
+                    "attachments=${attachments.size}",
+            )
+            discardConfirmOpen = true
+        } else {
+            onBack()
+        }
+    }
+    // 本地 Sheet / 菜单打开时，返回先交给它们；只有“裸”对话页才弹丢弃确认。
+    val localOverlayOpen = modeSheetOpen || designSheetOpen || bubbleMenu != null ||
+        headerMenuOpen || agentMenuOpen || modelMenuOpen
+    // 预览/测试环境可能没有 Activity 的 dispatcher：有才注册，避免组合期崩溃。
+    if (LocalOnBackPressedDispatcherOwner.current != null) {
+        BackHandler(enabled = hasDraft && !localOverlayOpen) {
+            Log.i(FLUX_UX_LOG_TAG, "system back with draft: confirm discard")
+            discardConfirmOpen = true
+        }
+    }
+    // 发送完成才知道成功与否：失败时保留输入（用户可直接重试），成功才清空。
+    var wasSending by remember { mutableStateOf(sending) }
+    LaunchedEffect(sending) {
+        if (wasSending && !sending) {
+            if (notice.isNullOrBlank()) {
+                if (input.isNotEmpty()) {
+                    Log.i(FLUX_UX_LOG_TAG, "draft cleared after successful send len=${input.length}")
+                    input = ""
+                }
+            } else {
+                Log.i(
+                    FLUX_UX_LOG_TAG,
+                    "send failed: draft kept len=${input.length} notice=${notice?.take(80)}",
+                )
+            }
+        }
+        wasSending = sending
+    }
 
     val composerBorder by animateColorAsState(
         targetValue = if (inputFocused) V2Colors.accent.copy(alpha = .45f) else V2Colors.line,
@@ -401,7 +468,7 @@ fun V2ChatScreen(
             if (showBack) {
                 RoundIconButton(
                     if (isNewChat) Icons.Outlined.Close else Icons.Outlined.ArrowBack,
-                    onBack,
+                    requestBack,
                     size = 34.dp,
                     iconSize = 18.dp,
                     contentDescription = if (isNewChat) "关闭" else "返回",
@@ -507,14 +574,20 @@ fun V2ChatScreen(
             ) {
                 Label(notice, 10f, V2Colors.amber700, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                Icon(
-                    Icons.Outlined.Close,
-                    contentDescription = "关闭提示",
-                    tint = V2Colors.amber700.copy(alpha = .7f),
-                    modifier = Modifier
-                        .size(14.dp)
+                // 14dp 图标单独点很难命中：外层补到 48dp 触摸目标。
+                Box(
+                    Modifier
+                        .size(48.dp)
                         .clickable(onClick = onDismissNotice),
-                )
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "关闭提示",
+                        tint = V2Colors.amber700.copy(alpha = .7f),
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
         }
 
@@ -648,15 +721,24 @@ fun V2ChatScreen(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 suggestions.forEach { suggestion ->
+                    // 外层 48dp 负责触摸目标，内层保持原来的胶囊视觉尺寸。
                     Box(
                         Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(V2Colors.surface(.45f))
-                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(999.dp))
-                            .v2Pressable(pressScale = .96f, enabled = inputEnabled) { onSend(suggestion) }
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                            .v2Pressable(pressScale = .96f, enabled = inputEnabled) {
+                                requestSend(suggestion)
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Label(suggestion, 11.5f, V2Colors.ink(.46f))
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(V2Colors.surface(.45f))
+                                .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(999.dp))
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                        ) {
+                            Label(suggestion, 11.5f, V2Colors.ink(.46f))
+                        }
                     }
                 }
             }
@@ -961,11 +1043,16 @@ fun V2ChatScreen(
                     sendEnabled = enabled,
                     stopping = stopping,
                     onSend = {
-                        val text = input.trim()
-                        input = ""
-                        onSend(text)
+                        // 不在点按瞬间清空：失败时文字要留在输入框里等用户重试。
+                        requestSend(input.trim())
                     },
-                    onStop = onStopTask,
+                    onStop = {
+                        Log.i(
+                            FLUX_UX_LOG_TAG,
+                            "stop tapped: ask for confirmation before cancelling run",
+                        )
+                        stopConfirmOpen = true
+                    },
                 )
             }
         }
@@ -1026,7 +1113,7 @@ fun V2ChatScreen(
                     onResend = {
                         bubbleMenu = null
                         if (inputEnabled) {
-                            onSend(menu.text)
+                            requestSend(menu.text)
                         } else {
                             Toast.makeText(context, "Agent 正在回复，稍后再重发", Toast.LENGTH_SHORT).show()
                         }
@@ -1034,6 +1121,40 @@ fun V2ChatScreen(
                 )
             }
         }
+    }
+    if (discardConfirmOpen) {
+        FluxConfirmDialog(
+            title = "丢弃草稿？",
+            message = "输入的内容还没有发送，返回后会丢失。",
+            confirmLabel = "丢弃",
+            dismissLabel = "继续编辑",
+            onConfirm = {
+                Log.i(FLUX_UX_LOG_TAG, "draft discarded by user len=${input.length}")
+                discardConfirmOpen = false
+                onBack()
+            },
+            onDismiss = {
+                Log.i(FLUX_UX_LOG_TAG, "draft discard cancelled; keep editing")
+                discardConfirmOpen = false
+            },
+        )
+    }
+    if (stopConfirmOpen) {
+        FluxConfirmDialog(
+            title = "停止本次运行？",
+            message = "Agent 正在执行。停止后本轮已生成的内容会保留，但不能继续。",
+            confirmLabel = "停止运行",
+            dismissLabel = "继续等待",
+            onConfirm = {
+                Log.i(FLUX_UX_LOG_TAG, "stop run confirmed by user")
+                stopConfirmOpen = false
+                onStopTask()
+            },
+            onDismiss = {
+                Log.i(FLUX_UX_LOG_TAG, "stop run cancelled; keep waiting")
+                stopConfirmOpen = false
+            },
+        )
     }
     }
 }
@@ -1251,24 +1372,31 @@ internal fun ChatSendButton(
 
 @Composable
 private fun DecisionModeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    // 实测原胶囊只有 40.5dp 高；外层补到 48dp，视觉不变，误触率下降。
     Box(
         Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) V2Colors.cyan500.copy(alpha = .14f) else V2Colors.surface(.45f))
-            .border(
-                1.dp,
-                if (selected) V2Colors.accent.copy(alpha = .35f) else V2Colors.ink(.07f),
-                RoundedCornerShape(999.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Label(
-            text,
-            9.5f,
-            if (selected) V2Colors.cyan800 else V2Colors.ink(.42f),
-            if (selected) FontWeight.Medium else FontWeight.Normal,
-        )
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(if (selected) V2Colors.cyan500.copy(alpha = .14f) else V2Colors.surface(.45f))
+                .border(
+                    1.dp,
+                    if (selected) V2Colors.accent.copy(alpha = .35f) else V2Colors.ink(.07f),
+                    RoundedCornerShape(999.dp),
+                )
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        ) {
+            Label(
+                text,
+                9.5f,
+                if (selected) V2Colors.cyan800 else V2Colors.ink(.42f),
+                if (selected) FontWeight.Medium else FontWeight.Normal,
+            )
+        }
     }
 }
 

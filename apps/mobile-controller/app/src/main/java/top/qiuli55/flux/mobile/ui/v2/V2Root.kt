@@ -320,6 +320,16 @@ fun FluxV2Root() {
             Log.i(FLUX_UX_LOG_TAG, "send ignored: empty input and no attachments")
             return
         }
+        // 同一帧内的第二次点击（建议 chip / 连点）不能落成两个任务：
+        // busyAction 由 ViewModel 在协程里置位，这里先用当前快照挡一次。
+        if (app.busyAction != null) {
+            Log.i(FLUX_UX_LOG_TAG, "send ignored: another action in flight busy=${app.busyAction}")
+            return
+        }
+        Log.i(
+            FLUX_UX_LOG_TAG,
+            "sendDraftMessage accepted textLen=${text.length} attachments=${attachmentIds.size}",
+        )
         if (attachmentIds.isEmpty()) {
             chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
         } else {
@@ -345,6 +355,16 @@ fun FluxV2Root() {
             summaryFrom = current.summaryFrom,
             attachmentIds = attachmentIds,
             origin = if (current.isAssistant) "assistant" else "chat",
+            onFailed = { message ->
+                // 建任务失败：把乐观气泡回滚掉，避免用户重试后出现两条一样的消息。
+                // 输入框里的文字由 V2ChatScreen 在失败时保留，用户可以直接再点发送。
+                val last = chatMessages.lastOrNull()
+                if (last != null && last.role == V2MessageRole.USER && last.text == text) {
+                    chatMessages.remove(last)
+                    Log.i(FLUX_UX_LOG_TAG, "optimistic message rolled back after createTask failure")
+                }
+                Log.w(FLUX_UX_LOG_TAG, "draft send failed, draft kept: ${message.take(160)}")
+            },
         ) { taskId ->
             // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
             draftAttachments.clear()

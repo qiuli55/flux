@@ -49,8 +49,10 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -83,6 +85,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -1119,4 +1122,44 @@ fun V2Fab(
     ) {
         Icon(icon, contentDescription, tint = V2Colors.actionInk, modifier = Modifier.size(24.dp))
     }
+}
+
+/**
+ * 统一的可撤销操作确认弹窗。
+ *
+ * 用于误触代价高的动作（退出登录、清空日志、丢弃草稿、停止运行）。视觉沿用
+ * Material3 AlertDialog，不做自定义样式；[onDismiss] 与 [onConfirm] 都由
+ * 调用方负责回收自己的弹窗状态，避免这里持有外部状态。
+ */
+/** 确认弹窗的稳定测试锚点：多个页面复用同一套按钮语义。 */
+internal object FluxConfirmTags {
+    const val CONFIRM = "flux_confirm_confirm"
+    const val DISMISS = "flux_confirm_dismiss"
+}
+
+@Composable
+fun FluxConfirmDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    dismissLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    destructive: Boolean = true,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Label(title, 16f, V2Colors.ink(.92f), FontWeight.SemiBold) },
+        text = { Label(message, 12.5f, V2Colors.ink(.55f)) },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag(FluxConfirmTags.CONFIRM)) {
+                Label(confirmLabel, 13f, if (destructive) V2Colors.rose else V2Colors.ink(.9f))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag(FluxConfirmTags.DISMISS)) {
+                Label(dismissLabel, 13f, V2Colors.ink(.62f))
+            }
+        },
+    )
 }

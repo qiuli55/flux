@@ -2,6 +2,7 @@ package top.qiuli55.flux.mobile.ui.v2
 
 import android.content.ContentResolver
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -430,14 +431,20 @@ class V2AppViewModel : FluxViewModel() {
         summaryFrom: String? = null,
         attachmentIds: List<String> = emptyList(),
         origin: String = "chat",
+        /** 建任务失败：调用方用它在本地回滚乐观气泡，并保留草稿让用户直接重试。 */
+        onFailed: (String) -> Unit = {},
         onCreated: (String) -> Unit,
     ) {
         val text = description.trim()
         if (text.isEmpty()) {
+            Log.i(FLUX_UX_LOG_TAG, "createTask ignored: blank description")
             _state.value = _state.value.copy(error = "任务描述不能为空")
             return
         }
-        if (_state.value.busyAction != null) return
+        if (_state.value.busyAction != null) {
+            Log.i(FLUX_UX_LOG_TAG, "createTask ignored: busy=${_state.value.busyAction}")
+            return
+        }
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "create", error = null, notice = null)
             try {
@@ -457,7 +464,14 @@ class V2AppViewModel : FluxViewModel() {
                 refresh(quiet = true)
                 onCreated(task.id)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(busyAction = null, error = readable(e))
+                val message = readable(e)
+                Log.w(
+                    FLUX_UX_LOG_TAG,
+                    "createTask failed origin=$origin textLen=${text.length} " +
+                        "attachments=${attachmentIds.size} error=${message.take(160)}",
+                )
+                _state.value = _state.value.copy(busyAction = null, error = message)
+                onFailed(message)
             }
         }
     }
