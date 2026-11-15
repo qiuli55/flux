@@ -32,9 +32,10 @@ class AgentCreateRequest(BaseModel):
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     permissions: list[Capability] = Field(default_factory=list)
-    #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI（codex / opencode）。
+    #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI
+    #: （codex / opencode / claude-code）。
     #: 取值在边界即校验（非法 → 422），并由 AgentManager 再校验一次（内部调用方同样受约束）。
-    runtime: Literal["dsh", "codex", "opencode"] = "dsh"
+    runtime: Literal["dsh", "codex", "opencode", "claude-code"] = "dsh"
     #: 接入方式：local 由 Flux 执行并展示；external 只经 MCP 接入，不被 Flux 调用、不展示。
     kind: Literal["local", "external"] = "local"
 
@@ -513,7 +514,7 @@ class CapabilityImportRequest(BaseModel):
 class InstallationConnectRequest(BaseModel):
     """接入一个本机 CLI Agent（或全部已安装的）。
 
-    - `agent`：adapter 名（codex / opencode），必须是服务端内置 adapter 之一；
+    - `agent`：adapter 名（codex / opencode / claude-code），必须是服务端内置 adapter 之一；
     - `all=true`：接入全部**已安装**的 Agent（未安装的跳过，不导致整体失败）；
     - 两者要么给一个，要么给 all，都不给按 422 拒绝（避免"接入什么"含糊不清）。
     """

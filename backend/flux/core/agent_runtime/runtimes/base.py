@@ -1,8 +1,8 @@
 """Agent Runtime 统一契约（P2-1，设计 §6）。
 
-`Task → AgentRuntime → {DSH, Codex, OpenCode}`：平台只认这一份契约，启动、身份注入、
-MCP 接入、事件流、取消各运行时各管各的实现细节，编排层（`TaskRunService`）不出现
-任何 runtime 专属分支。
+`Task → AgentRuntime → {DSH, Codex, OpenCode, Claude Code}`：平台只认这一份契约，启动、
+身份注入、MCP 接入、事件流、取消各运行时各管各的实现细节，编排层（`TaskRunService`）
+不出现任何 runtime 专属分支。
 
 统一事件词表与 DSH 侧对齐（`dsh_events.py`）：`status / message / tool_call /
 tool_result / final / error`。终态由既有 `RunSupervisor` 裁决（CLI 退出码 0 → completed、
@@ -20,14 +20,21 @@ from typing import Any, Protocol, runtime_checkable
 RUNTIME_DSH = "dsh"
 RUNTIME_CODEX = "codex"
 RUNTIME_OPENCODE = "opencode"
+RUNTIME_CLAUDE_CODE = "claude-code"
 DEFAULT_RUNTIME = RUNTIME_DSH
-KNOWN_RUNTIMES: tuple[str, ...] = (RUNTIME_DSH, RUNTIME_CODEX, RUNTIME_OPENCODE)
+KNOWN_RUNTIMES: tuple[str, ...] = (
+    RUNTIME_DSH,
+    RUNTIME_CODEX,
+    RUNTIME_OPENCODE,
+    RUNTIME_CLAUDE_CODE,
+)
 #: 需要 Flux 主动拉起本机 CLI 的 runtime（安装状态必须是 READY）
-CLI_RUNTIMES: tuple[str, ...] = (RUNTIME_CODEX, RUNTIME_OPENCODE)
+CLI_RUNTIMES: tuple[str, ...] = (RUNTIME_CODEX, RUNTIME_OPENCODE, RUNTIME_CLAUDE_CODE)
 
 #: 每个 runtime 是否原生逐 token 流式。
 #: True = 增量由 runtime 自己产出（DSH 走 LLM SSE 旁路 / codex 走 app-server delta /
-#: opencode 走 serve 的 message.part.delta），平台不做「整段生成再切块回放」。
+#: opencode 走 serve 的 message.part.delta / claude-code 走 stream-json 的
+#: content_block_delta），平台不做「整段生成再切块回放」。
 #: False = 该 runtime 只能整段返回：Agent 仍可正常创建与执行，档案带
 #: `native_streaming=False` 供客户端标注，正文由平台按分段回放兜底。
 #: 新增 runtime 必须在上面显式登记取值，契约测试会拦住漏登记的 runtime。
@@ -35,6 +42,7 @@ RUNTIME_NATIVE_STREAMING: dict[str, bool] = {
     RUNTIME_DSH: True,
     RUNTIME_CODEX: True,
     RUNTIME_OPENCODE: True,
+    RUNTIME_CLAUDE_CODE: True,
 }
 
 
@@ -79,6 +87,9 @@ RUNTIME_LIMITS: dict[str, RuntimeLimits] = {
         async_turn=True,
         reusable_process=True,
     ),
+    # Claude Code 一轮一个进程（`-p` 非交互 + stream-json 双向）：会话靠 --resume 续，
+    # 不复用进程，也不走异步回合。
+    RUNTIME_CLAUDE_CODE: RuntimeLimits(submit_timeout_seconds=60.0),
 }
 
 
@@ -222,6 +233,7 @@ __all__ = [
     "EVENT_TOOL_RESULT",
     "KNOWN_RUNTIMES",
     "ModelChannel",
+    "RUNTIME_CLAUDE_CODE",
     "RUNTIME_CODEX",
     "RUNTIME_DSH",
     "RUNTIME_EVENT_TYPES",

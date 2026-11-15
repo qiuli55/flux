@@ -4,7 +4,7 @@
 
 Flux **本身不做 agent**——没有 loop、不组装 prompt、不替 agent 调模型、不存 agent 对话。它内置一个以 **DeepSeek 为基底**的 agent（DSH + Cordis），与 Codex / Claude Code / OpenCode 等外部 agent 经**同一个 agent 面（MCP 优先 + CLI 兜底）**对等消费能力。核心差异化是 **Virtual Workspace**——AI 的每一次改动都以「提案 → 虚拟 diff → 人工审查 → 应用」的流程落地，**永不直接覆盖你的文件**。
 
-代码中的一等运行时是 `dsh` / `codex` / `opencode`（见 `backend/flux/core/agent_runtime/runtimes/`）；Claude Code 按外部 MCP 对等端 / 令牌身份接入，不走独立运行时适配目录。
+代码中的一等运行时是 `dsh` / `codex` / `opencode` / `claude-code`（见 `backend/flux/core/agent_runtime/runtimes/`）。Claude Code 经 `claude -p` 的 stream-json 双向流接入：正文增量来自 `content_block_delta`，原生工具授权经 `--permission-prompt-tool stdio` 回到 Flux 裁决，Flux 能力仍走同一个 MCP 面与一次性令牌，不为它开专用通道。
 
 架构方向以 [FLUX_TARGET_ARCHITECTURE.md](docs/FLUX_TARGET_ARCHITECTURE.md) 为最高优先级；规格的唯一权威来源是 [Flux_Master_Spec_v0.1.md](docs/Flux_Master_Spec_v0.1.md)。代码与规格不一致时以规格为准，实施期发现的新问题回写到规格附录 A。
 

@@ -189,6 +189,9 @@ class Settings(BaseSettings):
     # opencode 的模型清单来自它自己的全局配置（provider.<id>.models，含 Zen 免费模型）。
     # Flux 只读模型 id，不复制清单；文件不存在 = 不提供切换，沿用 opencode 自带默认。
     opencode_config_file: str = "~/.config/opencode/opencode.json"
+    # Claude Code 的默认模型；空 = 用 Claude Code 自己的默认（~/.claude/settings.json 的
+    # model / env.ANTHROPIC_MODEL）。非空时以 `--model` 传给 CLI（任务级覆盖优先）。
+    claude_code_model: str = ""
 
     # --- GitHub 账号（OAuth App 设备码授权 + 仓库读写）---
     # client_id 是公开值，可安全入库；设备码流程不消费 client_secret。

@@ -412,7 +412,8 @@ class Container:
         ):
             self.bus.subscribe(_terminal_event, self._on_run_terminal)
         # P2-1 §6.2：任务「开始执行」的编排收口——按 agent.config["runtime"] 分发
-        # dsh / codex / opencode。CLI runtime 复用同一个 RunSupervisor 与令牌服务，不新建生命周期。
+        # dsh / codex / opencode / claude-code。CLI runtime 复用同一个 RunSupervisor 与令牌服务，
+        # 不新建生命周期。
         # ChatGPT 账号登录态由它提供：codex Run 会把 auth.json 注入隔离 CODEX_HOME。
         self.codex_account = CodexAccountService(self.settings)
         # 计费账本与额度闸门：CLI runtime 的每一步用量都落到这里；先于 TaskRunService
