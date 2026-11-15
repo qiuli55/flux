@@ -3,6 +3,7 @@ package top.qiuli55.flux.mobile.ui.tasks
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
@@ -32,9 +33,13 @@ import top.qiuli55.flux.mobile.data.TaskRunSummary
 import top.qiuli55.flux.mobile.data.TaskStreamEvent
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.FluxViewModel
-import top.qiuli55.flux.mobile.ui.v2.V2RunItem
+import top.qiuli55.flux.mobile.ui.v2.FLUX_STREAM_LOG_TAG
+import top.qiuli55.flux.mobile.ui.v2.StreamApply
+import top.qiuli55.flux.mobile.ui.v2.StreamUiSnapshot
+import top.qiuli55.flux.mobile.ui.v2.TaskStreamReducer
 import top.qiuli55.flux.mobile.ui.v2.isFinished
 import top.qiuli55.flux.mobile.ui.v2.readable
+import top.qiuli55.flux.mobile.ui.v2.reconnectDelayMs
 
 // ---------------------------------------------------------------- 任务列表
 
@@ -126,12 +131,9 @@ data class TaskDetailUiState(
     val sending: Boolean = false,
     val busyAction: String? = null,
     val draft: String = "",
-    //: 流式回复：已收到的增量正文；liveLabel 用于还没有正文时的状态提示
-    val liveText: String = "",
-    val liveLabel: String? = null,
-    val liveActive: Boolean = false,
-    //: 执行轨迹（思考 / 命令）：本轮 Run 的实时事件，按到达顺序累积
-    val runItems: List<V2RunItem> = emptyList(),
+    //: 流式回复 + 执行过程 + 连接状态：由 TaskStreamReducer 归约后的不可变快照。
+    //: UI 只消费快照；增量在 ViewModel 里按帧合并，不再每条事件都整页重组。
+    val stream: StreamUiSnapshot = StreamUiSnapshot(),
     //: 每一轮 Run 的摘要（耗时 / 改动 / 命令 / 读取）：对话里的「任务耗时」入口靠它
     val runs: List<TaskRunSummary> = emptyList(),
     //: 正在查看的 Run 轨迹：非空时详情弹层打开
@@ -225,7 +227,7 @@ internal fun dropStaleStreamEvents(events: List<TaskStreamEvent>): List<TaskStre
  * 两条判据都会单独出现：
  *  - 任务已经到终态，但终态事件丢了/晚到 → 运行条会一直亮着；
  *  - 这条正文已经被落库成正式消息 → 流式气泡与历史气泡同时在场，同一段话显示两遍。
- * 两种情况都必须把 [TaskDetailUiState.liveText] 清掉，历史消息才是唯一事实来源。
+ * 两种情况都必须把 [TaskDetailUiState.stream] 里的实时正文清掉，历史消息才是唯一事实来源。
  */
 internal fun shouldSettleLiveBubble(
     finished: Boolean,
@@ -253,6 +255,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private var streamRetryJob: Job? = null
     private var streamPollJob: Job? = null
     private var streamEnabled = false
+    /** 上次建立流时是否走云中转：重试要沿用同一传输方式，不能把轮询切成 SSE。 */
+    private var streamRelay = false
     private var streamGeneration = 0
     private var lastStreamSeq = 0
     private val _state = MutableStateFlow(TaskDetailUiState())
@@ -265,12 +269,39 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
      */
     private val streamEvents = Channel<TaskStreamEvent>(Channel.UNLIMITED)
 
+    /** 纯归约器：增量攒批、seq 去重、思考/工具状态、连接状态都在这里。 */
+    private val streamReducer = TaskStreamReducer()
+    private var streamDirty = false
+    private var cancelledByUser = false
+
     init {
         refresh()
         startPolling()
         viewModelScope.launch {
             for (event in streamEvents) applyStreamEvent(event)
         }
+        // 约 30fps 把缓冲的增量合并进 UI：token 再快也不会一条一次重组 / 滚动。
+        viewModelScope.launch {
+            while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+                delay(STREAM_BATCH_MS)
+                if (streamDirty) {
+                    streamDirty = false
+                    val snapshot = streamReducer.flush()
+                    applyStreamSnapshot(snapshot)
+                    Log.d(
+                        FLUX_STREAM_LOG_TAG,
+                        "flush liveChars=${snapshot.liveText.length} " +
+                            "reasoningChars=${snapshot.reasoning?.text?.length ?: 0} " +
+                            "revision=${snapshot.revision}",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 把归约快照写进 UI 状态；只有这里会触发对话页重组。 */
+    private fun applyStreamSnapshot(snapshot: StreamUiSnapshot) {
+        _state.value = _state.value.copy(stream = snapshot)
     }
 
     fun startPolling() {
@@ -440,7 +471,14 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 val messages = messagesDeferred.await()
                 // 终态事件可能丢失或晚于这次刷新：只按事件收尾会留下常亮的运行条，
                 // 以及「流式气泡 + 落库消息」两份同样的回复。这里以接口状态为准收尾。
-                val settleLive = shouldSettleLiveBubble(finished, messages, _state.value.liveText)
+                val snapshot = _state.value.stream
+                val settleLive = shouldSettleLiveBubble(finished, messages, snapshot.liveText)
+                val stream = if (settleLive && snapshot.liveActive) {
+                    Log.i(FLUX_STREAM_LOG_TAG, "refresh settles live bubble finished=$finished")
+                    streamReducer.settleFinished()
+                } else {
+                    snapshot
+                }
                 _state.value = _state.value.copy(
                     loading = false,
                     error = null,
@@ -450,12 +488,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     contextUsage = contextDeferred.await() ?: _state.value.contextUsage,
                     run = runDeferred.await(),
                     runs = runsDeferred.await(),
-                    // 一轮结束后实时轨迹收进「任务耗时 → 详情」里，聊天只留结论气泡，
-                    // 避免执行步骤和详情弹层重复铺满屏幕
-                    runItems = if (finished) emptyList() else _state.value.runItems,
-                    liveActive = if (settleLive) false else _state.value.liveActive,
-                    liveText = if (settleLive) "" else _state.value.liveText,
-                    liveLabel = if (settleLive) null else _state.value.liveLabel,
+                    // 思考 / 工具过程保留在活动卡里（结束时默认收起），最终答复仍以落库消息为准
+                    stream = stream,
                 )
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(loading = false, error = e.message)
@@ -508,6 +542,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             // 中转模式（Terminal 页同理）改为轮询增量事件，直连才走长连接。
             val relay = runCatching { config().isRelay }.getOrDefault(false)
             if (!streamEnabled) return@launch
+            streamRelay = relay
+            Log.i(FLUX_STREAM_LOG_TAG, "start stream relay=$relay afterSeq=$lastStreamSeq")
+            applyStreamSnapshot(streamReducer.onConnecting())
             if (relay) startStreamPolling() else connectStream()
         }
     }
@@ -522,9 +559,11 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             // 复用同一个 FluxApi：它自带连接池，250ms 快轮询不能每轮都新建客户端
             var client = runCatching { api() }.getOrNull()
             var firstPoll = true
+            var failures = 0
+            var announcedLive = false
             while (streamEnabled && isActive) {
                 if (client == null) {
-                    delay(STREAM_RETRY_MS)
+                    delay(reconnectDelayMs(failures))
                     client = runCatching { api() }.getOrNull()
                     continue
                 }
@@ -535,8 +574,21 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 } catch (e: Exception) {
                     // 账号令牌可能刚过期：下一轮重新取配置（顺带续期）再试
                     client = null
-                    delay(STREAM_RETRY_MS)
+                    failures++
+                    announcedLive = false
+                    val snapshot = streamReducer.onDisconnected()
+                    applyStreamSnapshot(snapshot)
+                    Log.w(
+                        FLUX_STREAM_LOG_TAG,
+                        "relay poll failed attempt=${snapshot.reconnectAttempt}: ${e.message}",
+                    )
+                    delay(reconnectDelayMs(failures))
                     continue
+                }
+                failures = 0
+                if (!announcedLive) {
+                    announcedLive = true
+                    applyStreamSnapshot(streamReducer.onOpen())
                 }
                 // 缓冲区可能保留着上一轮已结束的事件：先把 seq 推进到队尾，再过滤掉旧内容
                 fetched.lastOrNull()?.let { lastStreamSeq = maxOf(lastStreamSeq, it.seq) }
@@ -557,7 +609,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             streamSource?.cancel()
             val api = runCatching { api() }.getOrNull()
             if (api == null) {
-                scheduleStreamReconnect()
+                handleStreamDrop(generation, "无法获取 API 配置")
                 return@launch
             }
             // api() 是挂起调用：期间页面可能已经离开，这里再确认一次，避免留下孤儿连接
@@ -566,29 +618,55 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 api.openTaskStream(
                     taskId = taskId,
                     afterSeq = lastStreamSeq,
+                    onOpen = {
+                        viewModelScope.launch {
+                            if (generation != streamGeneration) return@launch
+                            applyStreamSnapshot(streamReducer.onOpen())
+                            Log.i(FLUX_STREAM_LOG_TAG, "stream connected afterSeq=$lastStreamSeq")
+                        }
+                    },
                     onEvent = { event -> streamEvents.trySend(event) },
-                    onFailure = {
+                    onFailure = { reason ->
                         viewModelScope.launch {
                             if (generation != streamGeneration) return@launch
                             streamSource = null
-                            _state.value = _state.value.copy(
-                                liveActive = false,
-                                liveText = "",
-                                liveLabel = null,
-                            )
-                            scheduleStreamReconnect()
+                            handleStreamDrop(generation, reason)
                         }
                     },
                     onClosed = {
                         viewModelScope.launch {
                             if (generation != streamGeneration) return@launch
                             streamSource = null
-                            scheduleStreamReconnect()
+                            handleStreamDrop(generation, "连接已关闭")
                         }
                     },
                 )
-            }.onFailure { scheduleStreamReconnect() }.getOrNull()
+            }.onFailure { handleStreamDrop(generation, it.message ?: "连接失败") }.getOrNull()
         }
+    }
+
+    /**
+     * 断线处理：保留已渲染的部分正文，按指数退避重连；
+     * 连续失败超过上限才转成终态错误（UI 给「重试」），避免无限静默重试。
+     */
+    private fun handleStreamDrop(generation: Int, reason: String) {
+        if (!streamEnabled || generation != streamGeneration) return
+        if (streamRetryJob?.isActive == true) return
+        val snapshot = streamReducer.onDisconnected()
+        applyStreamSnapshot(snapshot)
+        Log.w(
+            FLUX_STREAM_LOG_TAG,
+            "stream dropped attempt=${snapshot.reconnectAttempt} reason=$reason " +
+                "partialChars=${snapshot.liveText.length}",
+        )
+        if (snapshot.reconnectAttempt > MAX_STREAM_ATTEMPTS) {
+            Log.e(FLUX_STREAM_LOG_TAG, "stream gave up after ${snapshot.reconnectAttempt} attempts")
+            // 标记为未启用：用户点「重试」或发下一条消息时还能重新建流，不会被 startStream 的幂等直接挡掉
+            streamEnabled = false
+            applyStreamSnapshot(streamReducer.onTerminal("实时连接失败，请重试"))
+            return
+        }
+        scheduleStreamReconnect(snapshot.reconnectAttempt)
     }
 
     /** 离开对话页时断开实时流，避免常驻连接占着心跳；再次进入从上次 seq 续传。 */
@@ -602,74 +680,88 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         streamPollJob = null
         streamSource?.cancel()
         streamSource = null
-        _state.value = _state.value.copy(
-            liveActive = false,
-            liveText = "",
-            liveLabel = null,
-            runItems = _state.value.runItems.map { it.copy(live = false) },
-        )
+        applyStreamSnapshot(streamReducer.stopStream())
+        Log.i(FLUX_STREAM_LOG_TAG, "stream stopped lastSeq=$lastStreamSeq")
     }
 
-    private fun scheduleStreamReconnect() {
+    private fun scheduleStreamReconnect(attempt: Int) {
         if (!streamEnabled || streamRetryJob?.isActive == true) return
+        val delayMs = reconnectDelayMs(attempt)
+        Log.i(FLUX_STREAM_LOG_TAG, "reconnect in ${delayMs}ms attempt=$attempt")
         streamRetryJob = viewModelScope.launch {
-            delay(STREAM_RETRY_MS)
+            delay(delayMs)
             connectStream()
         }
     }
 
+    /**
+     * 手动重试：清掉错误、重置退避，立刻重连并重新拉一次消息。
+     * 用于连接失败 / assistant_error 后的「重试」按钮。
+     */
+    fun retryStream() {
+        Log.i(FLUX_STREAM_LOG_TAG, "manual stream retry enabled=$streamEnabled")
+        streamRetryJob?.cancel()
+        streamRetryJob = null
+        streamGeneration++
+        streamSource?.cancel()
+        streamSource = null
+        streamPollJob?.cancel()
+        streamPollJob = null
+        applyStreamSnapshot(streamReducer.retry())
+        if (!streamEnabled) {
+            streamEnabled = true
+            viewModelScope.launch {
+                val relay = runCatching { config().isRelay }.getOrDefault(false)
+                streamRelay = relay
+                if (relay) startStreamPolling() else connectStream()
+            }
+        } else if (streamRelay) {
+            startStreamPolling()
+        } else {
+            connectStream()
+        }
+        refresh(quiet = true)
+    }
+
+    /**
+     * 单条事件入口：增量交给归约器缓冲，结构事件立刻出快照并处理副作用。
+     * 归约器按 seq 去重，重连时不会把已经渲染过的正文再追加一遍。
+     */
     private fun applyStreamEvent(event: TaskStreamEvent) {
         if (event.seq > lastStreamSeq) lastStreamSeq = event.seq
+        when (val outcome = streamReducer.apply(event)) {
+            StreamApply.BUFFERED -> {
+                streamDirty = true
+            }
+
+            StreamApply.DUPLICATE -> {
+                Log.w(
+                    FLUX_STREAM_LOG_TAG,
+                    "duplicate stream event seq=${event.seq} type=${event.type} ignored",
+                )
+            }
+
+            StreamApply.IGNORED -> Unit
+
+            StreamApply.COMMITTED -> {
+                streamDirty = false
+                applyStreamSnapshot(streamReducer.snapshot())
+                handleStreamSideEffect(event)
+            }
+        }
+    }
+
+    /** 与渲染无关的副作用：刷新历史、跨端 Agent 切换提示。 */
+    private fun handleStreamSideEffect(event: TaskStreamEvent) {
         val current = _state.value
         when (event.type) {
-            "assistant_start" -> _state.value = current.copy(
-                liveActive = true,
-                liveText = "",
-                liveLabel = "正在生成回复…",
-            )
-
-            "assistant_delta" -> {
-                val text = streamText(event)
-                _state.value = current.copy(
-                    liveActive = true,
-                    liveText = (current.liveText + text).takeLast(LIVE_TEXT_LIMIT),
-                    liveLabel = if (text.isEmpty()) current.liveLabel else null,
+            "assistant_message", "run_started", "run_status", "run_finished" -> refresh(quiet = true)
+            "assistant_error" -> {
+                val reason = streamString(event, "error").ifBlank { "回复中断" }
+                Log.w(
+                    FLUX_STREAM_LOG_TAG,
+                    "assistant error keptChars=${current.stream.liveText.length} reason=$reason",
                 )
-            }
-
-            "assistant_error" -> _state.value = current.copy(
-                liveActive = false,
-                liveText = "",
-                liveLabel = null,
-            )
-
-            "assistant_message" -> {
-                _state.value = current.copy(liveActive = false, liveText = "", liveLabel = null)
-                refresh(quiet = true)
-            }
-
-            "run_started" -> {
-                // 新一轮 Run：清空上一轮轨迹，聊天里不再落「已开始执行」气泡
-                _state.value = current.copy(
-                    liveActive = true,
-                    liveText = "",
-                    liveLabel = "正在思考…",
-                    runItems = emptyList(),
-                )
-                refresh(quiet = true)
-            }
-
-            "run_event" -> _state.value = applyRunEvent(current, event)
-
-            "run_status", "run_finished" -> {
-                _state.value = current.copy(
-                    liveActive = false,
-                    liveText = "",
-                    liveLabel = null,
-                    // 轨迹保留在聊天里：Run 结束后还能回看刚才执行了什么
-                    runItems = current.runItems.map { it.copy(live = false) },
-                )
-                refresh(quiet = true)
             }
 
             // 多端同步：别的设备发起的 Agent 切换，在本端也要看到排队/生效/失败
@@ -708,131 +800,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         }
     }
 
-    /** 运行事件 → 执行轨迹：思考刻度、命令卡、错误行；正文增量仍进答复气泡。 */
-    private fun applyRunEvent(current: TaskDetailUiState, event: TaskStreamEvent): TaskDetailUiState {
-        val kind = streamString(event, "kind")
-        val text = streamText(event)
-        when (kind) {
-            "thinking" -> {
-                val items = current.runItems.toMutableList()
-                if (items.isNotEmpty()) items[items.lastIndex] = items.last().copy(live = false)
-                if (text.isBlank()) {
-                    val phase = streamString(event, "phase").ifBlank { "step_start" }
-                    val last = items.lastOrNull()
-                    if (last != null && last.kind == "thinking" && last.text.isBlank()) {
-                        items[items.lastIndex] = last.copy(phase = phase, live = true)
-                    } else {
-                        items += V2RunItem(
-                            id = "think-${event.seq}",
-                            kind = "thinking",
-                            phase = phase,
-                            live = true,
-                        )
-                    }
-                } else {
-                    // server 模式按增量推思考：同一段推理要接着上一张思考卡长，
-                    // 不能每个片段另起一行（否则时间线会被几百条碎思考刷屏）
-                    val last = items.lastOrNull()
-                    if (last != null && last.kind == "thinking" && last.phase == "reasoning") {
-                        items[items.lastIndex] = last.copy(text = last.text + text, live = true)
-                    } else if (last != null && last.kind == "thinking" && last.text.isBlank()) {
-                        items[items.lastIndex] = last.copy(text = text, phase = "reasoning", live = true)
-                    } else {
-                        items += V2RunItem(
-                            id = "think-${event.seq}",
-                            kind = "thinking",
-                            text = text,
-                            phase = "reasoning",
-                            live = true,
-                        )
-                    }
-                }
-                return current.copy(
-                    runItems = items,
-                    liveActive = true,
-                    liveLabel = if (current.liveText.isEmpty()) "正在思考…" else null,
-                )
-            }
-
-            "tool" -> {
-                val items = current.runItems.toMutableList()
-                if (items.isNotEmpty()) items[items.lastIndex] = items.last().copy(live = false)
-                val callId = streamString(event, "call_id")
-                val item = V2RunItem(
-                    id = callId.ifBlank { "tool-${event.seq}" },
-                    kind = "tool",
-                    name = streamString(event, "name").ifBlank { "tool" },
-                    detail = streamString(event, "detail"),
-                    output = streamString(event, "output"),
-                    status = streamString(event, "status"),
-                    category = streamString(event, "category"),
-                    paths = streamStrings(event, "paths"),
-                    live = true,
-                )
-                // codex 的同一 item 会先 started 再 completed：按调用 id 合并成一张卡；
-                // 收尾事件可能只带输出与状态（DSH），不能整条覆盖掉已有的命令与分类
-                val index = items.indexOfFirst { it.kind == "tool" && it.id == item.id }
-                if (index >= 0) {
-                    val previous = items[index]
-                    items[index] = previous.copy(
-                        name = item.name.takeIf { it.isNotBlank() && it != "tool" } ?: previous.name,
-                        detail = item.detail.ifBlank { previous.detail },
-                        output = item.output.ifBlank { previous.output },
-                        status = item.status.ifBlank { previous.status },
-                        category = item.category.ifBlank { previous.category },
-                        paths = if (item.paths.isNotEmpty()) item.paths else previous.paths,
-                        live = true,
-                    )
-                } else {
-                    items += item
-                }
-                return current.copy(
-                    runItems = items,
-                    liveActive = true,
-                    liveLabel = if (current.liveText.isEmpty()) "正在执行命令…" else null,
-                )
-            }
-
-            "error" -> {
-                val items = current.runItems.map { it.copy(live = false) } +
-                    V2RunItem(
-                        id = "error-${event.seq}",
-                        kind = "error",
-                        text = text.ifBlank { "执行出错" },
-                        live = true,
-                    )
-                return current.copy(
-                    runItems = items,
-                    liveActive = true,
-                    liveLabel = "执行出错",
-                )
-            }
-
-            "text" -> {
-                if (text.isEmpty()) return current.copy(liveActive = true)
-                return current.copy(
-                    liveActive = true,
-                    liveText = (current.liveText + text).takeLast(LIVE_TEXT_LIMIT),
-                    liveLabel = null,
-                )
-            }
-        }
-        return current
-    }
-
-    private fun streamText(event: TaskStreamEvent): String = streamString(event, "text")
-
     private fun streamString(event: TaskStreamEvent, key: String): String =
         runCatching { event.data[key]?.jsonPrimitive?.contentOrNull.orEmpty() }
             .getOrDefault("")
-
-    /** 取字符串数组（工具事件的 paths）：解析失败按空数组处理。 */
-    private fun streamStrings(event: TaskStreamEvent, key: String): List<String> =
-        runCatching {
-            (event.data[key] as? kotlinx.serialization.json.JsonArray)
-                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                .orEmpty()
-        }.getOrDefault(emptyList())
 
     fun send() {
         val current = _state.value
@@ -841,12 +811,13 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         if (current.sending || current.busyAction != null || current.uploading) return
         if (content.isEmpty() && attachmentIds.isEmpty()) return
         viewModelScope.launch {
+            // 新的一轮：上一轮的思考/命令过程清掉（连接与 seq 水位保留）。
+            cancelledByUser = false
+            applyStreamSnapshot(streamReducer.resetActivity())
             _state.value = _state.value.copy(
                 sending = true,
                 error = null,
                 draft = "",
-                // 新的一轮：上一轮的执行轨迹不再堆在输入框上方
-                runItems = emptyList(),
             )
             try {
                 val api = api()
@@ -866,6 +837,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 )
                 // 拉一次全量历史：既补齐上下文，也避免终态/续跑后的状态漂移。
                 refresh()
+                // 上次连接重试耗尽后流是停的：新一轮消息发出时顺手把实时流重新建起来
+                if (!streamEnabled) startStream()
             } catch (e: FluxApiException) {
                 _state.value = _state.value.copy(sending = false, draft = content, error = e.message)
             } catch (e: Exception) {
@@ -876,20 +849,47 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
 
     fun start() = runAction("start") { api ->
         val outcome = api.startTask(taskId)
+        cancelledByUser = false
+        applyStreamSnapshot(streamReducer.startRun())
         _state.value = _state.value.copy(
             task = outcome.task,
-            runItems = emptyList(),
-            liveActive = true,
-            liveText = "",
-            liveLabel = "正在思考…",
             // 不再弹「已开始执行」提示：过程看执行轨迹，结果看下面的答复与变更列表
             notice = null,
         )
+        // 上一轮把重连次数用尽后流是停的：手动开始时一并恢复实时流
+        if (!streamEnabled) startStream()
     }
 
-    fun cancel() = runAction("cancel") { api ->
-        val task = api.cancelTask(taskId)
-        _state.value = _state.value.copy(task = task, notice = "任务已取消")
+    /**
+     * 停止本轮：按钮与 UI 都做了防抖，这里再用同步状态抢占一次，
+     * 保证连点两下只会发出一个取消请求。已生成的部分正文保留。
+     */
+    fun cancel() {
+        if (cancelledByUser || _state.value.busyAction == "cancel") {
+            Log.i(FLUX_STREAM_LOG_TAG, "cancel ignored: already in flight")
+            return
+        }
+        cancelledByUser = true
+        // 先同步占位再起协程：两次点击落在同一帧时第二次也进不来
+        _state.value = _state.value.copy(busyAction = "cancel", error = null, notice = null)
+        viewModelScope.launch {
+            applyStreamSnapshot(streamReducer.markCancelled())
+            Log.i(
+                FLUX_STREAM_LOG_TAG,
+                "cancel requested keptChars=${_state.value.stream.liveText.length}",
+            )
+            try {
+                val task = api().cancelTask(taskId)
+                _state.value = _state.value.copy(task = task, notice = "任务已取消")
+                refresh(quiet = true)
+            } catch (e: FluxApiException) {
+                _state.value = _state.value.copy(error = e.message)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message ?: "取消失败")
+            } finally {
+                _state.value = _state.value.copy(busyAction = null)
+            }
+        }
     }
 
     fun interruptRun() = runAction("interrupt") { api ->
@@ -1068,11 +1068,12 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
 
     companion object {
         private const val POLL_INTERVAL_MS = 3000L
-        private const val STREAM_RETRY_MS = 3000L
+        /** 增量合并窗口：约 30fps，token 再快也只重组一次/帧。 */
+        private const val STREAM_BATCH_MS = 33L
+        /** 连续重连失败上限：超过后转终态错误，由用户点「重试」。 */
+        private const val MAX_STREAM_ATTEMPTS = 6
         /** 中转模式轮询间隔：有增量时快回合保证逐字效果，空闲时降频省请求。 */
         private const val STREAM_POLL_FAST_MS = 250L
         private const val STREAM_POLL_IDLE_MS = 1500L
-        /** 流式气泡只保留最近一段：长任务的事件正文不无限堆积。 */
-        private const val LIVE_TEXT_LIMIT = 3000
     }
 }

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,6 +22,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -88,7 +90,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,6 +125,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.TaskContextUsage
@@ -150,6 +155,11 @@ data class V2ChatState(
     val isAssistant: Boolean = false,
 )
 
+/** 对话页的测试 tag：自动跟随 / 回到最新 的交互回归测试靠它定位列表。 */
+internal object V2ChatTags {
+    const val MESSAGE_LIST = "v2_chat_message_list"
+}
+
 @Composable
 fun V2ChatScreen(
     chat: V2ChatState,
@@ -175,12 +185,10 @@ fun V2ChatScreen(
     onPickDesign: (DesignSummary) -> Unit = {},
     /** 首条消息发出后等待 Agent 回复。 */
     sending: Boolean = false,
-    /** 流式回复：已经收到的增量正文与状态提示。 */
-    liveText: String = "",
-    liveLabel: String? = null,
-    liveActive: Boolean = false,
-    /** 本轮 Run 的执行轨迹：思考刻度与命令卡（Run 结束后保留可回看）。 */
-    runItems: List<V2RunItem> = emptyList(),
+    /** 本轮实时流：正文、思考、工具步骤、连接状态（纯快照，最多 ~30fps 更新一次）。 */
+    stream: StreamUiSnapshot = StreamUiSnapshot(),
+    /** 终态错误后的「重试」：重连实时流，不清掉已经生成的正文。 */
+    onRetryStream: () -> Unit = {},
     /** run_id → 该轮的耗时与概览：历史答案气泡上方的「任务耗时」入口用。 */
     runSummaries: Map<String, TaskRunSummary> = emptyMap(),
     /** 打开某一轮的执行详情（概览 / 思考过程 / 命令输出）。 */
@@ -264,8 +272,11 @@ fun V2ChatScreen(
     var headerMenuOpen by remember { mutableStateOf(false) }
     var modeSheetOpen by remember { mutableStateOf(false) }
     var designSheetOpen by remember { mutableStateOf(false) }
-    // 执行轨迹的展开状态按对话记忆：用户收起后，流式新增的思考/命令不再把它顶开
-    var timelineExpanded by remember(chat.conversationId) { mutableStateOf(true) }
+    // 流式跟随：默认贴底；用户一旦拖动消息列表就暂停，直到自己回到底部或点「回到最新」。
+    var followingStream by remember(chat.conversationId) { mutableStateOf(true) }
+    var unseenWhileAway by remember(chat.conversationId) { mutableStateOf(false) }
+    var lastSeenRevision by remember(chat.conversationId) { mutableStateOf(stream.revision) }
+    val scope = rememberCoroutineScope()
     // 待审批卡固定在输入框上方：AI 输出再长也不用往回滚
     val pendingApproval = messages.lastOrNull {
         it.kind == "decision" && it.approvalCard?.status == "pending" && it.approvalCard.expired != true
@@ -288,20 +299,80 @@ fun V2ChatScreen(
         label = "chat-composer-border",
     )
 
+    val showLiveBubble = stream.liveActive || stream.liveText.isNotBlank()
+    val showStreamStatus = stream.terminalError != null ||
+        stream.cancelled ||
+        stream.connection == StreamConnection.RECONNECTING ||
+        stream.connection == StreamConnection.FAILED
     // 微信式：消息直接出现，不做错峰入场；进入对话与新增消息都瞬时贴底，不慢慢滚到底。
-    // 目标索引按当前内容自己算（摘要卡 / 消息 / 执行轨迹 / 流式气泡 / 等待行），
+    // 目标索引按当前内容自己算（摘要卡 / 消息 / 执行过程 / 流式气泡 / 等待行 / 状态行），
     // 不能依赖 layoutInfo（首帧还没量出来，会得到 0 并停在最早的消息）。
-    val bottomIndex = messages.size +
-        (if (!chat.pendingSummary.isNullOrBlank()) 1 else 0) +
+    val bottomIndex = (if (!chat.pendingSummary.isNullOrBlank()) 1 else 0) +
+        (if (chat.pendingSummary.isNullOrBlank() && messages.isEmpty() && chat.conversationId == null) 1 else 0) +
         (if (!messages.firstOrNull()?.time.isNullOrBlank()) 1 else 0) +
-        (if (runItems.isNotEmpty()) 1 else 0) +
-        (if (liveActive && (runItems.isEmpty() || liveText.isNotBlank())) 1 else 0) +
-        (if (!liveActive && sending) 1 else 0) - 1
-    LaunchedEffect(messages.size, liveActive, liveText.length, runItems.size, sending, chat.conversationId) {
+        messages.size +
+        (if (pendingChangeCount > 0 && onOpenChanges != null) 1 else 0) +
+        (if (stream.hasActivity) 1 else 0) +
+        (if (showLiveBubble) 1 else if (sending) 1 else 0) +
+        (if (showStreamStatus) 1 else 0) - 1
+
+    // 手指拖动 = 用户想自己看：立即停止跟随。程序化 scrollToItem 不会产生 DragInteraction，
+    // 所以贴底滚动本身不会把跟随关掉。
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start && followingStream) {
+                followingStream = false
+                Log.i(FLUX_UX_LOG_TAG, "stream follow paused by user drag")
+            }
+        }
+    }
+    // 用户自己滑回底部（或内容本来就没超出屏幕）：恢复跟随。
+    LaunchedEffect(listState) {
+        snapshotFlow { !listState.canScrollForward && !listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { atBottom ->
+                if (atBottom && !followingStream) {
+                    followingStream = true
+                    unseenWhileAway = false
+                    Log.i(FLUX_UX_LOG_TAG, "stream follow resumed at bottom")
+                }
+            }
+    }
+    // 跟随模式：内容一变化就贴底；非跟随模式只记「有新内容」，绝不再把用户拽下去。
+    LaunchedEffect(
+        messages.size,
+        stream.revision,
+        showLiveBubble,
+        sending,
+        bottomIndex,
+        followingStream,
+        chat.conversationId,
+    ) {
         if (bottomIndex < 0) return@LaunchedEffect
+        if (!followingStream) {
+            if (stream.revision != lastSeenRevision) {
+                unseenWhileAway = true
+                lastSeenRevision = stream.revision
+            }
+            return@LaunchedEffect
+        }
+        unseenWhileAway = false
+        lastSeenRevision = stream.revision
         // 等首帧布局完成再定位：还没量出高度时滚动会被夹到顶部
         withFrameNanos { }
         listState.scrollToItem(bottomIndex)
+    }
+    val jumpToBottom: () -> Unit = {
+        followingStream = true
+        unseenWhileAway = false
+        lastSeenRevision = stream.revision
+        Log.i(
+            FLUX_UX_LOG_TAG,
+            "jump to bottom tapped messages=${messages.size} revision=${stream.revision}",
+        )
+        scope.launch {
+            if (bottomIndex >= 0) listState.animateScrollToItem(bottomIndex)
+        }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
@@ -451,6 +522,7 @@ fun V2ChatScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
+                    .testTag(V2ChatTags.MESSAGE_LIST)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -476,7 +548,11 @@ fun V2ChatScreen(
                     // 日期分隔：与设计稿一致，只在首条消息上方标一次时间
                     item(key = "date-separator") { ChatDateSeparator(firstTime) }
                 }
-                itemsIndexed(messages) { index, message ->
+                itemsIndexed(
+                    messages,
+                    // 稳定 key：流式增量刷新时历史气泡不会被当成新 item 重建（滚动位置也不跳）
+                    key = { index, message -> message.id.ifBlank { "chat-message-$index" } },
+                ) { index, message ->
                     // 不做入场动画：像微信一样，消息直接出现。
                     // 待审批卡已固定在输入框上方，列表里不再重复渲染（避免两处按钮）。
                     val pinned = message.kind == "decision" &&
@@ -506,27 +582,36 @@ fun V2ChatScreen(
                         )
                     }
                 }
-                if (runItems.isNotEmpty()) {
-                    // codex 式的执行轨迹：思考与命令单独成卡，最终答复仍是下面的助手消息。
-                    // 固定 key：上方新增消息时卡片不会被当成新 item 重建（否则展开状态被重置）。
-                    item(key = "run-timeline") {
-                        RunTimelineCard(
-                            items = runItems,
-                            active = liveActive,
-                            expanded = timelineExpanded,
-                            onToggle = { timelineExpanded = !timelineExpanded },
-                        )
+                if (stream.hasActivity) {
+                    // 执行过程：思考可折叠（结束后默认收起），工具步骤带运行/完成/失败状态。
+                    // 固定 key：正文增量刷新时卡片不会被重建，展开状态也不会被重置。
+                    item(key = "stream-activity") {
+                        StreamActivityCard(stream)
                     }
                 }
-                if (liveActive && (runItems.isEmpty() || liveText.isNotBlank())) {
+                if (showLiveBubble) {
+                    // 正文气泡固定 key：每个增量只重绘这一条，不重建整个列表。
+                    // 终态错误 / 手动停止时 liveActive=false，但保留已生成的部分输出。
                     item(key = "live-streaming") {
-                        StreamingRow(liveText, liveLabel, onOpenUrl, onSend)
+                        StreamingRow(
+                            text = stream.liveText,
+                            label = stream.liveLabel,
+                            streaming = stream.liveActive,
+                            onOpenUrl = onOpenUrl,
+                            onSend = onSend,
+                        )
                     }
                 } else if (sending) {
                     item(key = "waiting-agent") {
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                             Label("Agent 正在处理…", 11f, V2Colors.ink(.30f), mono = true)
                         }
+                    }
+                }
+                if (showStreamStatus) {
+                    // 行内状态：重连中 / 终态错误 + 重试 / 已停止。不遮挡内容、不弹窗。
+                    item(key = "stream-status") {
+                        StreamStatusRow(stream = stream, onRetry = onRetryStream)
                     }
                 }
             }
@@ -540,6 +625,16 @@ fun V2ChatScreen(
                 ) { messageList() }
             } else {
                 messageList()
+            }
+            // 离开底部后浮出「回到最新」；有新内容时换文案，点一下恢复跟随。
+            if (!followingStream && (messages.isNotEmpty() || showLiveBubble || stream.hasActivity)) {
+                JumpToBottomButton(
+                    hasNewContent = unseenWhileAway,
+                    onClick = jumpToBottom,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 10.dp),
+                )
             }
         }
 
@@ -1085,14 +1180,16 @@ private fun PendingChangesCard(
 
 /** 输入卡上的圆形发送钮：执行中就地变成停止。 */
 @Composable
-private fun ChatSendButton(
+internal fun ChatSendButton(
     running: Boolean,
     sendEnabled: Boolean,
     stopping: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val enabled = running || sendEnabled
+    // 停止请求已发出后按钮保持原位置、原尺寸，只是不再响应重复点击。
+    val enabled = (running && !stopping) || sendEnabled
+    val stopGuard = remember { StopTapGuard() }
     val background = when {
         running -> V2Colors.rose
         sendEnabled -> V2Colors.accent
@@ -1109,7 +1206,16 @@ private fun ChatSendButton(
                     FLUX_UX_LOG_TAG,
                     "composer action tapped running=$running sendEnabled=$sendEnabled stopping=$stopping",
                 )
-                if (running) onStop() else onSend()
+                if (running) {
+                    // 双击保护：700ms 内只认第一次，避免发出两个取消请求。
+                    if (stopGuard.tryAccept(SystemClock.elapsedRealtime())) {
+                        onStop()
+                    } else {
+                        Log.i(FLUX_UX_LOG_TAG, "stop tap ignored by debounce")
+                    }
+                } else {
+                    onSend()
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -1425,6 +1531,7 @@ private fun SummaryCard(text: String, time: String, note: String = "来自上一
 private fun StreamingRow(
     text: String,
     label: String?,
+    streaming: Boolean = true,
     onOpenUrl: (String) -> Unit = {},
     onSend: (String) -> Unit = {},
 ) {
@@ -1443,8 +1550,9 @@ private fun StreamingRow(
             if (text.isBlank()) {
                 Label((label ?: "正在处理…") + "▍", 15f, V2Colors.ink(.42f))
             } else {
-                // 流式正文与最终答复共用同一套卡片渲染：代码/表格在生成过程中就能成卡
-                RichMessageBody(text, streaming = true, onOpenUrl = onOpenUrl, onAction = onSend)
+                // 流式正文与最终答复共用同一套卡片渲染：代码/表格在生成过程中就能成卡。
+                // 连接中断/停止后仍保留这段部分输出，只是不再显示光标。
+                RichMessageBody(text, streaming = streaming, onOpenUrl = onOpenUrl, onAction = onSend)
             }
         }
     }

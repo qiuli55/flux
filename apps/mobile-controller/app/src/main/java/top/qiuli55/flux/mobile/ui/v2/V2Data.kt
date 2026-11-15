@@ -112,6 +112,8 @@ data class V2Message(
     val role: V2MessageRole,
     val text: String,
     val time: String,
+    /** 服务端消息 id：LazyColumn 的稳定 key，流式刷新时不重建整列。空串时 UI 用下标兜底。 */
+    val id: String = "",
     /** text = 普通消息；summary = 前情摘要；attachments = 附件消息；design_card = 设计稿卡片；
      *  plan_card = 实施计划；decision = 待审批；decision_result = 审批结果；
      *  secure_input = 安全输入卡片；secure_input_result = 密钥已保存回执。 */

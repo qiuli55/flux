@@ -326,6 +326,16 @@ internal fun RichMessageBody(
                 is RichBlock.Generative -> GenerativeCard(block.card, onAction)
             }
         }
+        // 光标只在最后一段正文里；如果尾巴是代码/表格/卡片，单独补一行，
+        // 流式时始终能看到「还在写」，又不会把 ▍ 塞进代码内容里。
+        if (streaming && blocks.isNotEmpty() && blocks.last() !is RichBlock.Paragraph) {
+            Text(
+                text = "▍",
+                color = V2Colors.ink(.50f),
+                fontSize = 15.sp,
+                lineHeight = 25.sp,
+            )
+        }
     }
 }
 

@@ -598,7 +598,10 @@ fun V2TaskChatScreen(
             val id = record.id ?: return@forEach
             decisionStates[id] = (record.status ?: "pending") to record.chosen
         }
-        val mapped = state.messages.mapNotNull { it.toV2Message() }.map { message ->
+        val mapped = state.messages.mapNotNull { message ->
+            // 带上服务端 id：列表 key 稳定，流式增量刷新时不会把历史气泡当成新 item 重建
+            message.toV2Message()?.copy(id = message.id)
+        }.map { message ->
             val card = message.approvalCard
             if (message.kind == "decision" && card != null && decisionStates.containsKey(card.id)) {
                 val (status, chosen) = decisionStates.getValue(card.id)
@@ -693,10 +696,8 @@ fun V2TaskChatScreen(
             onRequestDesigns = onRequestDesigns,
             onPickDesign = { design -> vm.attachDesign(design.id, design.name) },
             sending = state.sending,
-            liveText = state.liveText,
-            liveLabel = state.liveLabel,
-            liveActive = state.liveActive,
-            runItems = state.runItems,
+            stream = state.stream,
+            onRetryStream = { vm.retryStream() },
             runSummaries = runSummaries,
             onOpenRunTrace = { vm.openRunTrace(it) },
             locked = locked,
@@ -729,7 +730,7 @@ fun V2TaskChatScreen(
             onAllowApproval = { decisionId -> vm.chooseDecision(decisionId, "允许", reject = false) },
             onDenyApproval = { decisionId -> vm.chooseDecision(decisionId, null, reject = true) },
             // 执行中常驻运行状态条；停止动作已并入输入区主按钮
-            taskRunning = task?.status?.toV2TaskStatus() == V2TaskStatus.RUNNING || state.liveActive,
+            taskRunning = task?.status?.toV2TaskStatus() == V2TaskStatus.RUNNING || state.stream.liveActive,
             runningTaskTitle = task?.firstLine()?.takeIf { it.isNotBlank() },
             stopping = state.busyAction == "cancel",
             onStopTask = { vm.cancel() },

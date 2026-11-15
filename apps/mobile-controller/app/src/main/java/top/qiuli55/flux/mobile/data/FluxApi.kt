@@ -652,6 +652,8 @@ class FluxApi(
     fun openTaskStream(
         taskId: String,
         afterSeq: Int = 0,
+        /** 连接建立（HTTP 200 + SSE 握手完成）：UI 据此结束「正在重连」状态。 */
+        onOpen: () -> Unit = {},
         onEvent: (TaskStreamEvent) -> Unit,
         onFailure: (String) -> Unit,
         onClosed: () -> Unit,
@@ -665,6 +667,10 @@ class FluxApi(
             .build()
 
         return sseFactory.newEventSource(request, object : EventSourceListener() {
+            override fun onOpen(eventSource: EventSource, response: okhttp3.Response) {
+                onOpen()
+            }
+
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 runCatching { json.decodeFromString(TaskStreamEvent.serializer(), data) }
                     .onSuccess(onEvent)
