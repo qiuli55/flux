@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.setup
 
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +13,7 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.HealthData
 import top.qiuli55.flux.mobile.ui.FluxViewModel
+import top.qiuli55.flux.mobile.ui.v2.FLUX_UX_LOG_TAG
 
 /** 连接设置页的界面状态。 */
 data class SetupUiState(
@@ -27,6 +29,12 @@ data class SetupUiState(
 ) {
     val isComplete: Boolean get() = baseUrl.isNotBlank() && token.isNotBlank()
 }
+
+/**
+ * 测试/保存的同步入口互斥：连点第二下时 Compose 还没重组出禁用态，
+ * 必须在进入协程前用当前状态拦住，否则会并发发出两次请求。
+ */
+internal fun setupActionInFlight(testing: Boolean, saving: Boolean): Boolean = testing || saving
 
 /**
  * 连接设置：保存服务器地址与令牌，并用一次真实请求验证配置是否可用。
@@ -76,14 +84,21 @@ class SetupViewModel : FluxViewModel() {
 
     fun test() {
         val current = _state.value
+        // 同步置位前先做一次入口判断：连点两下时第二次还没看到 testing=true。
+        if (setupActionInFlight(current.testing, current.saving)) {
+            Log.i(FLUX_UX_LOG_TAG, "test ignored: testing=${current.testing} saving=${current.saving}")
+            return
+        }
         if (!current.isComplete) {
+            Log.i(FLUX_UX_LOG_TAG, "test ignored: incomplete baseUrl/token")
             _state.value = current.copy(error = "服务器地址与访问令牌都要填")
             return
         }
+        _state.value = current.copy(testing = true, error = null, health = null, dsh = null, agentCount = null)
         viewModelScope.launch {
-            _state.value = _state.value.copy(testing = true, error = null, health = null, dsh = null, agentCount = null)
             try {
                 val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
+                Log.i(FLUX_UX_LOG_TAG, "test started host=$normalized")
                 val currentConfig = ConnectionConfig(normalized, current.token.trim())
                 val api = FluxEnv.api(currentConfig)
                 val health = api.health()
@@ -109,14 +124,21 @@ class SetupViewModel : FluxViewModel() {
 
     fun save(onSaved: () -> Unit) {
         val current = _state.value
+        // 同 test()：入口同步判重，避免双击触发两次保存/两次跳转。
+        if (setupActionInFlight(current.testing, current.saving)) {
+            Log.i(FLUX_UX_LOG_TAG, "save ignored: testing=${current.testing} saving=${current.saving}")
+            return
+        }
         if (!current.isComplete) {
+            Log.i(FLUX_UX_LOG_TAG, "save ignored: incomplete baseUrl/token")
             _state.value = current.copy(error = "服务器地址与访问令牌都要填")
             return
         }
+        _state.value = current.copy(saving = true, error = null, savedHint = null)
         viewModelScope.launch {
-            _state.value = _state.value.copy(saving = true, error = null, savedHint = null)
             try {
                 val normalized = FluxApi.normalizeBaseUrl(current.baseUrl)
+                Log.i(FLUX_UX_LOG_TAG, "save started host=$normalized")
                 val normalizedToken = current.token.trim()
                 require(normalizedToken.isNotEmpty()) { "访问令牌不能为空" }
                 FluxEnv.settings.save(normalized, normalizedToken)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -434,7 +435,8 @@ fun ManualConnectSheet(
             }
             Spacer(Modifier.height(18.dp))
         }
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+        // 键盘弹出时把按钮顶到键盘上方，避免遮挡后只能盲点。
+        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
             GhostButton(
                 text = if (state.testing) "测试中…" else "测试连接",
                 onClick = { vm.test() },
