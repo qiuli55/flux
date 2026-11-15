@@ -17,6 +17,7 @@ from flux.core.agent_runtime.manager import AgentManager, AgentSpec
 from flux.core.agent_runtime.runtimes.base import (
     DEFAULT_RUNTIME_LIMITS,
     KNOWN_RUNTIMES,
+    RUNTIME_CLAUDE_CODE,
     RUNTIME_CODEX,
     RUNTIME_DSH,
     RUNTIME_NATIVE_STREAMING,
@@ -31,7 +32,9 @@ def test_every_known_runtime_declares_streaming_explicitly() -> None:
     assert set(RUNTIME_NATIVE_STREAMING) == set(KNOWN_RUNTIMES)
 
 
-@pytest.mark.parametrize("runtime", [RUNTIME_DSH, RUNTIME_CODEX, RUNTIME_OPENCODE])
+@pytest.mark.parametrize(
+    "runtime", [RUNTIME_DSH, RUNTIME_CODEX, RUNTIME_OPENCODE, RUNTIME_CLAUDE_CODE]
+)
 def test_current_runtimes_are_native_streaming(runtime: str) -> None:
     assert RUNTIME_NATIVE_STREAMING[runtime] is True
 
