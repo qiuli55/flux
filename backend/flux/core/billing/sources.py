@@ -176,6 +176,12 @@ def resolve_default_model(settings: Settings, runtime_id: str) -> str:
         return opencode_default_model(settings)
     if runtime_id == "codex":
         return (settings.codex_model or "").strip()
+    if runtime_id == "claude-code":
+        # 复用模型目录的唯一口径（FLUX_CLAUDE_CODE_MODEL → ~/.claude/settings.json）。
+        # 局部导入：billing 被 runtimes/cli 引用，避免模块级循环。
+        from flux.core.agent_runtime.model_catalog import default_model_for_runtime
+
+        return default_model_for_runtime(settings, runtime_id)
     return (settings.dsh_model or "").strip()
 
 

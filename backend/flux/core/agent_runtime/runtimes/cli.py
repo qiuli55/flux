@@ -9,6 +9,12 @@
 配置（0600），注入 Flux MCP 端点与一枚一次性 Bearer 令牌（scopes 仅 file.read / file.write /
 terminal.execute——没有 apply / git / secret）。
 令牌明文只出现在该配置文件里，不进日志、不进任何文档/证据；Run 结束立即撤销。
+
+三种运行时共用同一套生命周期：
+- Codex：`codex app-server`（JSON-RPC over stdio，真增量，进程可跨轮复用）；
+- OpenCode：`opencode serve`（HTTP + SSE，真增量，进程可跨轮复用）；
+- Claude Code：`claude -p` + stream-json 双向流（真增量，每轮一个进程，用 `--resume`
+  续聊），原生工具经 `--permission-prompt-tool stdio` 回到 Flux 审批。
 """
 
 from __future__ import annotations
@@ -51,12 +57,20 @@ from flux.core.agent_runtime.runtimes.base import (
     EVENT_THINKING,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
+    RUNTIME_CLAUDE_CODE,
     RUNTIME_CODEX,
     RUNTIME_NATIVE_STREAMING,
     RUNTIME_OPENCODE,
     RuntimeEvent,
     RuntimeLaunch,
     RuntimeProcess,
+)
+from flux.core.agent_runtime.runtimes.claude_code import (
+    CLAUDE_EXIT_GRACE_SECONDS,
+    ClaudeCodeSession,
+    claude_argv,
+    claude_mcp_config,
+    claude_session_file,
 )
 from flux.core.agent_runtime.runtimes.codex_server import (
     CodexAppServerSession,
@@ -288,8 +302,8 @@ class _CliSpec:
     extra_args: tuple[str, ...]
 
 
-#: 两个外部 CLI 的启动差异（argv 按本机实测版本校准：codex-cli 0.157.1 / opencode 1.18.29
-#: [2026-10-05 快照]）
+#: 外部 CLI 的启动差异（argv 按本机实测版本校准：codex-cli 0.157.1 / opencode 1.18.29 /
+#: Claude Code 2.1.323 [2026-11-16 快照]）
 _SPECS: dict[str, _CliSpec] = {
     RUNTIME_CODEX: _CliSpec(
         runtime_id=RUNTIME_CODEX,
@@ -306,6 +320,14 @@ _SPECS: dict[str, _CliSpec] = {
         # `--print-logs --log-level ERROR` 把内部错误日志放到 stderr：上游额度/鉴权错误
         # 只写在 opencode 自己的日志里（实测 1.18.29），不读 stderr 就只能干等超时。
         extra_args=("--format", "json", "--print-logs", "--log-level", "ERROR"),
+    ),
+    # Claude Code 的 argv 由 `claude_argv()` 完整拼装（stream-json 双向 + 权限模式），
+    # 不用通用的 `extra_args` 追加。
+    RUNTIME_CLAUDE_CODE: _CliSpec(
+        runtime_id=RUNTIME_CLAUDE_CODE,
+        adapter_name="claude-code",
+        binary_env="FLUX_CLAUDE_CODE_CLI_BINARY",
+        extra_args=(),
     ),
 }
 
@@ -513,7 +535,7 @@ async def shutdown_cli_process_pool() -> None:
 
 
 class CliRuntime:
-    """外部 CLI Agent 的运行时（Codex / OpenCode 共用同一实现）。"""
+    """外部 CLI Agent 的运行时（Codex / OpenCode / Claude Code 共用同一实现）。"""
 
     def __init__(
         self,
@@ -688,6 +710,10 @@ class CliRuntime:
             )
         )
         env.update(runtime_env)
+        if self.runtime_id == RUNTIME_CLAUDE_CODE and channel is not None:
+            # 密钥库通道要压过用户环境里的订阅令牌：ANTHROPIC_API_KEY 与 AUTH_TOKEN 同时
+            # 存在时 Claude Code 的行为由 CLI 决定，这里直接移除，避免"用了 key 却还没生效"。
+            env.pop("ANTHROPIC_AUTH_TOKEN", None)
         # 子进程 cwd 变了但 PWD 仍是 Flux 服务进程的旧值；OpenCode 用它判定项目目录
         # （会话会落到错误 workspace，原生文件工具也会看错仓库），必须同步覆盖。
         env["PWD"] = str(workspace)
@@ -720,6 +746,28 @@ class CliRuntime:
                     "config_dir": config_dir,
                     "token_id": token_id,
                 }
+        elif self.runtime_id == RUNTIME_CLAUDE_CODE:
+            # stream-json 双向：每轮一个进程；会话靠 --resume 续聊。
+            # 模型留空 = 用 Claude Code 自己的默认（~/.claude/settings.json / ANTHROPIC_MODEL）。
+            claude_model = model_override or (self._settings.claude_code_model or "").strip()
+            previous = await self._stored_session(task_key, agent_id)
+            # 会话文件不存在时带 --resume 会让 CLI 直接失败（No conversation found），
+            # 所以先确认 jsonl 真在盘上，否则当新会话处理。
+            resume = previous if previous and claude_session_file(previous) else ""
+            if previous and not resume:
+                logger.info(
+                    "claude 会话文件不存在，改为新建 task=%s session=%s",
+                    task_key or "未关联",
+                    previous,
+                )
+            argv = claude_argv(
+                self._binary_path(),
+                mode=mode,
+                model=claude_model,
+                resume=resume,
+                mcp_config=str(run_dir / "claude-mcp.json"),
+                uploads_dir=str(self._settings.uploads_dir),
+            )
         else:
             argv = self._build_argv(instruction, mode)
         if pooled is not None:
@@ -782,8 +830,12 @@ class CliRuntime:
                     env=launch.env,
                     cwd=launch.cwd,
                     stderr=stderr_target,
-                    # codex app-server 要一条 stdin 管道收发 JSON-RPC
-                    stdin=subprocess.PIPE if self.runtime_id == RUNTIME_CODEX else None,
+                    # codex app-server 与 claude stream-json 都要 stdin 管道收发 JSON
+                    stdin=(
+                        subprocess.PIPE
+                        if self.runtime_id in (RUNTIME_CODEX, RUNTIME_CLAUDE_CODE)
+                        else None
+                    ),
                 )
         except Exception:
             if pooled is not None:
@@ -947,11 +999,13 @@ class CliRuntime:
     def _supervisor_for(
         self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
     ) -> Any:
-        """按 runtime 选执行方式：两种 server 模式各自有原生增量通道。"""
+        """按 runtime 选执行方式：三种外部 CLI 各自有原生增量通道。"""
         if self.runtime_id == RUNTIME_OPENCODE:
             return self._supervise_server(process, launch, queue)
         if self.runtime_id == RUNTIME_CODEX:
             return self._supervise_codex_server(process, launch, queue)
+        if self.runtime_id == RUNTIME_CLAUDE_CODE:
+            return self._supervise_claude_code(process, launch, queue)
         return self._supervise(process, launch, queue)
 
     async def events(self, proc: RuntimeProcess) -> AsyncIterator[RuntimeEvent]:
@@ -1034,6 +1088,40 @@ class CliRuntime:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
             raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
+        if self.runtime_id == RUNTIME_CLAUDE_CODE:
+            # 只有 MCP 配置落盘（0600）；模型通道的密钥只进子进程环境，绝不写文件。
+            # 先校验通道再写文件：校验失败时不在 run 目录留下含令牌的半成品。
+            env: dict[str, str] = {}
+            if channel is not None:
+                provider = str(getattr(channel, "provider", "") or "").strip().lower()
+                if provider != "anthropic":
+                    # Claude Code 走 Anthropic 协议；把它接 OpenAI 兼容端点只会得到
+                    # 一个难懂的 404/401，不如在建 Run 前直接说清楚。
+                    raise ConfigurationError(
+                        "Claude Code 只支持 Anthropic 协议的密钥通道",
+                        details={
+                            "provider": provider,
+                            "key_id": getattr(channel, "key_id", ""),
+                        },
+                    )
+                if not (model or "").strip():
+                    raise ConfigurationError(
+                        "使用密钥库模型时必须在任务上指定模型 id",
+                        details={"key_id": getattr(channel, "key_id", "")},
+                    )
+                env["ANTHROPIC_API_KEY"] = str(getattr(channel, "api_key", "") or "")
+                base_url = str(getattr(channel, "base_url", "") or "").strip()
+                if base_url:
+                    env["ANTHROPIC_BASE_URL"] = base_url
+                # 置空后由 prepare 移除：订阅令牌不能盖过本次 Run 的密钥库通道
+                env["ANTHROPIC_AUTH_TOKEN"] = ""
+            config = run_dir / "claude-mcp.json"
+            config.write_text(
+                claude_mcp_config(url, token_raw, run_id),
+                encoding="utf-8",
+            )
+            self._secure(config)
+            return env
         if self.runtime_id == RUNTIME_CODEX:
             home = run_dir / "codex-home"
             home.mkdir(parents=True, exist_ok=True)
@@ -1407,6 +1495,150 @@ class CliRuntime:
         await self._finalize(
             launch, DshRunStatus.COMPLETED, 0, result.text or "".join(texts), queue
         )
+
+    async def _supervise_claude_code(
+        self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
+    ) -> None:
+        """Claude Code stream-json 模式的失败收口：异常不冒泡，统一按失败落终态。"""
+        try:
+            await self._run_claude_code(process, launch, queue)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 握手失败/进程退出都按失败收尾
+            logger.exception("claude stream run 失败 run=%s", launch.run_id)
+            message = str(exc).strip() or "claude 执行失败"
+            self._fail_reasons.setdefault(launch.run_id, message)
+            await self._stop_process(process)
+            await self._finalize(launch, DshRunStatus.FAILED, None, "", queue)
+
+    async def _run_claude_code(
+        self, process: Any, launch: RuntimeLaunch, queue: asyncio.Queue[Any]
+    ) -> None:
+        """Claude Code 一轮：stdin 发 initialize + user，stdout 收增量与工具事件。"""
+        run_id = launch.run_id
+        usage = self._usage.setdefault(run_id, _RunUsage())
+        texts: list[str] = []
+
+        async def emit(event: RuntimeEvent, parsed: dict[str, Any]) -> None:
+            record = {
+                **event.data,
+                "run_id": run_id,
+                "runtime_id": self.runtime_id,
+                "event_type": event.type,
+            }
+            delta = _accumulate_usage(usage, event, parsed)
+            queue.put_nowait(event)
+            await self._on_event(event, record)
+            if delta is not None:
+                await self._record_usage(launch, delta)
+
+        async def on_text(text: str) -> None:
+            texts.append(text)
+            await emit(RuntimeEvent(EVENT_MESSAGE, run_id, {"text": text}), {"type": "text"})
+
+        async def on_thinking(text: str, phase: str = "") -> None:
+            data: dict[str, Any] = {"text": text}
+            if phase:
+                data["phase"] = phase
+            await emit(RuntimeEvent(EVENT_THINKING, run_id, data), {"type": "reasoning"})
+
+        async def on_tool(fields: dict[str, Any], state: str) -> None:
+            parsed = {"type": "tool_use", "part": fields}
+            event = RuntimeEvent(EVENT_TOOL_CALL, run_id, dict(fields))
+            if state in ("completed", "error"):
+                event = RuntimeEvent(EVENT_TOOL_RESULT, run_id, dict(fields))
+            await emit(event, parsed)
+
+        async def on_step(step: dict[str, Any]) -> None:
+            # step_finished 由 _accumulate_usage 记账；parsed 用 step_finish，
+            # 避免再命中 turn.completed 之类的二次计数分支。
+            await emit(
+                RuntimeEvent(
+                    EVENT_STATUS,
+                    run_id,
+                    {
+                        "step_finished": True,
+                        "usage": step,
+                        "cost": 0.0,
+                        "runtime_id": self.runtime_id,
+                    },
+                ),
+                {"type": "step_finish"},
+            )
+
+        async def on_status(fields: dict[str, Any]) -> None:
+            data: dict[str, Any] = {"phase": str(fields.get("phase") or "status")}
+            await emit(RuntimeEvent(EVENT_STATUS, run_id, data), {"type": "status"})
+
+        async def on_native_approval(command: str) -> bool:
+            return await self._approve_native_command(
+                run_id=run_id, command=command, mode=launch.permission_mode
+            )
+
+        session = ClaudeCodeSession(process)
+        session.bind(
+            on_text=on_text,
+            on_thinking=on_thinking,
+            on_tool=on_tool,
+            on_step=on_step,
+            on_status=on_status,
+            approval_handler=on_native_approval,
+        )
+        # 已生成正文的读取器：看护器超时/取消时据此保留产出，而不是整轮作废
+        self._supervisor.register_partial_output(run_id, lambda: "".join(texts))
+        result = await session.run(
+            compose_instruction(launch.instruction, launch.permission_mode),
+            permission_mode=launch.permission_mode,
+            workspace=launch.cwd,
+            uploads_dir=str(self._settings.uploads_dir),
+        )
+        if result.session_id:
+            await self._remember_session(launch.task_id, result.session_id, launch.agent_id)
+            logger.info(
+                "claude 会话绑定 run=%s task=%s session=%s",
+                run_id,
+                launch.task_id or "未关联",
+                result.session_id,
+            )
+        # 收到 result 不等于进程已经落盘：先等它自然退出，超时才强制停止。
+        await self._wait_claude_exit(process, run_id)
+        await self._stop_process(process)
+        reason = result.error or self._fail_reasons.get(run_id, "")
+        if reason:
+            logger.warning("claude stream 本轮异常 run=%s %s", run_id, reason)
+            self._fail_reasons.setdefault(run_id, reason)
+            await self._finalize(launch, DshRunStatus.FAILED, None, result.text, queue)
+            return
+        # 与 codex 对齐：在总线上留一条 final。parsed 用 result，_accumulate_usage
+        # 不会重复记账（每步用量已在 message_delta 时记过）。
+        await emit(
+            RuntimeEvent(
+                EVENT_FINAL,
+                run_id,
+                {"status": "completed", "runtime_id": self.runtime_id, "usage": result.usage},
+            ),
+            {"type": "result", "usage": result.usage},
+        )
+        await self._finalize(
+            launch, DshRunStatus.COMPLETED, 0, result.text or "".join(texts), queue
+        )
+
+    async def _wait_claude_exit(self, process: Any, run_id: str) -> None:
+        """等 Claude Code 在 stdin EOF 后自然退出；超时才交给 `_stop_process` 强停。
+
+        CLI 收到 EOF 后还要把会话 jsonl 落盘；立刻 SIGTERM 可能让下一轮 `--resume`
+        找不到会话文件（表现为每轮都新开会话）。
+        """
+        try:
+            await asyncio.to_thread(process.popen.wait, CLAUDE_EXIT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "claude 进程未在 %.0f 秒内自然退出，改为停止 run=%s",
+                CLAUDE_EXIT_GRACE_SECONDS,
+                run_id,
+            )
+        except Exception:  # noqa: BLE001 - 句柄异常不应阻断后续强停
+            logger.debug("等待 claude 进程退出失败 run=%s", run_id, exc_info=True)
 
     async def _stored_session(self, task_id: str | None, agent_id: str | None) -> str:
         """取该任务在当前 Agent + runtime 上记住的外部会话 id；没有/读失败时返回空串。"""

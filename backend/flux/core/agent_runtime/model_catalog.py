@@ -8,6 +8,8 @@
      从该文件读 `models[].slug`；否则退回 `FLUX_CODEX_MODEL`；
    - `opencode`：读它自己的全局配置 `provider.<id>.models`，拼成 `<provider>/<model>`
      （用户配置的 Zen 免费模型因此能在手机/桌面端直接选）；
+   - `claude-code`：优先 `FLUX_CLAUDE_CODE_MODEL`；否则读 Claude Code 自己的
+     `~/.claude/settings.json` 顶层 `model` / `env.ANTHROPIC_MODEL`（只读模型 id，不读密钥）；
    - 其它 runtime：空列表（前端只显示当前模型，不提供切换）。
 2. 密钥库（`api_keys`）里登记的 key + 模型；按 runtime 的协议兼容性过滤。
 
@@ -18,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +29,7 @@ from typing import Any
 from flux.config import Settings
 from flux.core.agent_runtime.runtimes.base import (
     DEFAULT_RUNTIME,
+    RUNTIME_CLAUDE_CODE,
     RUNTIME_CODEX,
     RUNTIME_DSH,
     RUNTIME_OPENCODE,
@@ -58,6 +62,8 @@ _RUNTIME_PROVIDERS: dict[str, frozenset[str]] = {
     RUNTIME_CODEX: frozenset({PROVIDER_DEEPSEEK, PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE}),
     # opencode 原生支持多家供应商
     RUNTIME_OPENCODE: frozenset(KEY_PROVIDERS),
+    # claude-code 只讲 Anthropic 协议（ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL）
+    RUNTIME_CLAUDE_CODE: frozenset({PROVIDER_ANTHROPIC}),
 }
 
 #: dsh 内部 provider 标识：只有 DeepSeek 官方协议走这个入口
@@ -164,6 +170,27 @@ def _opencode_model_ids(raw_path: str) -> list[str]:
     return ids
 
 
+def _claude_settings_model() -> str:
+    """读 Claude Code 自己配置的默认模型（只读模型 id，绝不读 env 里的密钥）。"""
+    override = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = Path(override).expanduser() if override else Path.home() / ".claude"
+    try:
+        data = json.loads((root / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    model = data.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    env = data.get("env")
+    if isinstance(env, dict):
+        value = env.get("ANTHROPIC_MODEL")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
     """该 runtime 支持的原生模型 id 列表（顺序即展示顺序，第一项是默认值）。"""
     name = (runtime or DEFAULT_RUNTIME).strip().lower()
@@ -179,6 +206,12 @@ def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
     if name == RUNTIME_OPENCODE:
         # 模型清单由 opencode 全局配置持有；列表首项 = 它的默认模型。
         return _opencode_model_ids(settings.opencode_config_file)
+    if name == RUNTIME_CLAUDE_CODE:
+        configured = (settings.claude_code_model or "").strip()
+        if configured:
+            return [configured]
+        model = _claude_settings_model()
+        return [model] if model else []
     return []
 
 
@@ -196,6 +229,8 @@ def default_model_for_runtime(settings: Settings, runtime: str | None) -> str:
     if name == RUNTIME_OPENCODE:
         models = _opencode_model_ids(settings.opencode_config_file)
         return models[0] if models else ""
+    if name == RUNTIME_CLAUDE_CODE:
+        return (settings.claude_code_model or "").strip() or _claude_settings_model()
     return ""
 
 
