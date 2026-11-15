@@ -75,6 +75,13 @@ android {
             "/META-INF/versions/9/previous-compilation-data.bin",
         )
     }
+
+    // Compose UI 测试跑在 JVM（Robolectric）上，需要真实的 Android 资源与 manifest。
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -101,4 +108,14 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     testImplementation("junit:junit:4.13.2")
+
+    // Compose UI 测试（JVM / Robolectric）：本机没有可用模拟器，且基线工程没有任何
+    // androidTest 基础设施，因此把布局断言放在 :app:testDebugUnitTest 里跑。
+    // 均为测试期依赖，不进 APK；compose 版本仍由上面的 BOM 统一约束。
+    testImplementation(platform("androidx.compose:compose-bom:2024.02.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test.ext:junit:1.1.5")
+    testImplementation("org.robolectric:robolectric:4.11.1")
+    // createComposeRule 需要一个可装载的 ComponentActivity（仅 debug 变体测试用）。
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

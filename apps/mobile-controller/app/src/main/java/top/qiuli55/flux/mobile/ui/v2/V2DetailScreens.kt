@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -669,6 +670,7 @@ fun V2TaskChatScreen(
             onDelete = onRequestDelete,
             onOpenAgentPicker = {},
             onSend = { text ->
+                Log.i(FLUX_UX_LOG_TAG, "detail chat send invoked textLen=${text.length}")
                 vm.onDraftChange(text)
                 vm.send()
             },

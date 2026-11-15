@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -105,6 +106,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -648,6 +650,7 @@ fun V2ChatScreen(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
+                .testTag(V2ComposerTags.ROOT)
                 .clip(composerShape)
                 .background(V2Colors.surface)
                 .border(1.dp, composerBorder, composerShape)
@@ -672,6 +675,7 @@ fun V2ChatScreen(
                     onValueChange = { input = it },
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag(V2ComposerTags.INPUT)
                         .focusRequester(inputFocus)
                         .onFocusChanged { inputFocused = it.isFocused },
                     enabled = inputEnabled,
@@ -681,7 +685,14 @@ fun V2ChatScreen(
                 )
             }
             Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // 工具条：+ / 模型 chip / 盾牌 / 发送。
+            // 模型 chip 用 weight(1f, fill = false) 吃掉剩余宽度（超长模型名由 Label 内部
+            // maxLines = 1 + Ellipsis 截断），保证右侧盾牌与发送钮始终按固定尺寸量出来，
+            // 不会被长文案挤出屏幕（窄屏 + 大字号下曾复现发送钮消失）。
+            Row(
+                Modifier.fillMaxWidth().testTag(V2ComposerTags.TOOLBAR),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 AttachmentPickerButton(
                     enabled = canPickFiles,
                     onPicked = onAddAttachments,
@@ -694,9 +705,12 @@ fun V2ChatScreen(
                         null
                     },
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
                 // Agent · 模型：任务对话就地展开，新对话打开完整选择面板
-                Box {
+                // fill = false：chip 本身保持内容宽度（有上限），不强制撑满剩余空间。
+                // 零高度占位撑满 weight 分配到的槽位，短模型名时右侧按钮仍贴边。
+                Box(Modifier.weight(1f, fill = false).testTag(V2ComposerTags.MODEL_CHIP)) {
+                    Spacer(Modifier.fillMaxWidth())
                     Row(
                         Modifier
                             .clip(RoundedCornerShape(999.dp))
@@ -717,6 +731,7 @@ fun V2ChatScreen(
                             },
                             11f,
                             V2Colors.ink(.62f),
+                            modifier = Modifier.testTag(V2ComposerTags.MODEL_LABEL),
                             maxLines = 1,
                         )
                         Icon(
@@ -814,24 +829,36 @@ fun V2ChatScreen(
                         }
                     }
                 }
-                Spacer(Modifier.weight(1f))
-                // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息
+                Spacer(Modifier.width(4.dp))
+                // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息。
+                // 外层 48dp 只负责触摸目标，内层 32dp 保持原有视觉尺寸。
                 Box(
                     Modifier
-                        .size(32.dp)
+                        .size(48.dp)
+                        .testTag(V2ComposerTags.PERMISSION)
                         .clip(CircleShape)
-                        .border(1.dp, V2Colors.ink(.14f), CircleShape)
-                        .clickable(enabled = !locked) { modeSheetOpen = true },
+                        .clickable(enabled = !locked) {
+                            Log.i(FLUX_UX_LOG_TAG, "permission sheet opened locked=$locked")
+                            modeSheetOpen = true
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        Icons.Outlined.Security,
-                        contentDescription = "对话权限模式",
-                        tint = if (locked) V2Colors.ink(.22f) else V2Colors.ink(.55f),
-                        modifier = Modifier.size(16.dp),
-                    )
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .border(1.dp, V2Colors.ink(.14f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Security,
+                            contentDescription = "对话权限模式",
+                            tint = if (locked) V2Colors.ink(.22f) else V2Colors.ink(.55f),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(4.dp))
                 val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
                 // 发送 / 停止共用同一个圆钮：执行中就地变成停止
                 ChatSendButton(
@@ -1071,32 +1098,47 @@ private fun ChatSendButton(
         sendEnabled -> V2Colors.accent
         else -> V2Colors.ink(.12f)
     }
+    // 外层 48dp 保证最小触摸目标，内层 38dp 保持原有视觉尺寸。
     Box(
         Modifier
-            .size(38.dp)
+            .size(48.dp)
+            .testTag(V2ComposerTags.SEND)
             .clip(CircleShape)
-            .background(background)
-            .clickable(enabled = enabled) { if (running) onStop() else onSend() },
+            .clickable(enabled = enabled) {
+                Log.i(
+                    FLUX_UX_LOG_TAG,
+                    "composer action tapped running=$running sendEnabled=$sendEnabled stopping=$stopping",
+                )
+                if (running) onStop() else onSend()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        when {
-            running && stopping -> CircularProgressIndicator(
-                color = V2Colors.actionInk,
-                strokeWidth = 1.6.dp,
-                modifier = Modifier.size(14.dp),
-            )
-            running -> Box(
-                Modifier
-                    .size(11.dp)
-                    .clip(RoundedCornerShape(2.5.dp))
-                    .background(V2Colors.actionInk),
-            )
-            else -> Icon(
-                Icons.Outlined.ArrowUpward,
-                contentDescription = "发送",
-                tint = if (sendEnabled) V2Colors.actionInk else V2Colors.ink(.32f),
-                modifier = Modifier.size(19.dp),
-            )
+        Box(
+            Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(background),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                running && stopping -> CircularProgressIndicator(
+                    color = V2Colors.actionInk,
+                    strokeWidth = 1.6.dp,
+                    modifier = Modifier.size(14.dp),
+                )
+                running -> Box(
+                    Modifier
+                        .size(11.dp)
+                        .clip(RoundedCornerShape(2.5.dp))
+                        .background(V2Colors.actionInk),
+                )
+                else -> Icon(
+                    Icons.Outlined.ArrowUpward,
+                    contentDescription = "发送",
+                    tint = if (sendEnabled) V2Colors.actionInk else V2Colors.ink(.32f),
+                    modifier = Modifier.size(19.dp),
+                )
+            }
         }
     }
 }
@@ -1926,21 +1968,33 @@ internal fun AttachmentPickerButton(
     }
 
     Box {
+        // 外层 48dp 保证最小触摸目标，内层 32dp 保持原有视觉尺寸。
         Box(
             Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(V2Colors.surface(.55f))
-                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp))
-                .clickable(enabled = enabled) { menuOpen = true },
+                .size(48.dp)
+                .testTag(V2ComposerTags.ATTACH)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(enabled = enabled) {
+                    Log.i(FLUX_UX_LOG_TAG, "attachment menu opened enabled=$enabled")
+                    menuOpen = true
+                },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Outlined.Add,
-                contentDescription = "添加附件",
-                tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
-                modifier = Modifier.size(17.dp),
-            )
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(V2Colors.surface(.55f))
+                    .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "添加附件",
+                    tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
+                    modifier = Modifier.size(17.dp),
+                )
+            }
         }
         DropdownMenu(
             expanded = menuOpen,

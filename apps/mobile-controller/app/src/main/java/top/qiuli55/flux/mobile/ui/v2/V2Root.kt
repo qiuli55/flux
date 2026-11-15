@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -299,12 +300,26 @@ fun FluxV2Root() {
     }
 
     fun sendDraftMessage(text: String) {
-        val current = chat ?: return
-        if (draftUploading) return
+        Log.i(
+            FLUX_UX_LOG_TAG,
+            "sendDraftMessage invoked textLen=${text.length} attachments=${draftAttachments.size} " +
+                "uploading=$draftUploading",
+        )
+        val current = chat ?: run {
+            Log.w(FLUX_UX_LOG_TAG, "send ignored: no active chat")
+            return
+        }
+        if (draftUploading) {
+            Log.i(FLUX_UX_LOG_TAG, "send ignored: attachment upload in progress")
+            return
+        }
         val attachmentIds = draftAttachments.map { it.id }
         // 只有附件没有文字也能发；后端任务描述必填，这里给 Agent 一句最小上下文
         val description = text.ifBlank { "请查看我附上的文件" }
-        if (text.isBlank() && attachmentIds.isEmpty()) return
+        if (text.isBlank() && attachmentIds.isEmpty()) {
+            Log.i(FLUX_UX_LOG_TAG, "send ignored: empty input and no attachments")
+            return
+        }
         if (attachmentIds.isEmpty()) {
             chatMessages.add(V2Message(V2MessageRole.USER, text, nowMinute()))
         } else {
