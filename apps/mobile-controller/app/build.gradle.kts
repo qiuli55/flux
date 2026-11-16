@@ -20,8 +20,8 @@ android {
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装。
         // 已发布过 0.9.12（vc69），本次提升到 vc70，保证同签名直接覆盖升级。
-        versionCode = 70
-        versionName = "0.9.13"
+        versionCode = 71
+        versionName = "0.9.14"
     }
 
     buildFeatures {
