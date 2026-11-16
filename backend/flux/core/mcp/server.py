@@ -23,14 +23,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from flux.api.deps import get_container
 from flux.api.response import fail
 from flux.container import Container
-from flux.core.agent_runtime.model_catalog import (
-    default_model_for_runtime,
-    models_for_runtime,
-)
 from flux.core.context.redact import redact
 from flux.core.event.bus import Events
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools import ALL_TOOLS, TOOLS, ToolContext, ToolSpec
+from flux.core.mcp.tools.runtime_tools import agent_model_view, load_task_key
 from flux.core.permissions.modes import (
     allowed_tools,
     denied_message,
@@ -40,6 +37,7 @@ from flux.core.permissions.modes import (
 from flux.enums import StepKind, StepStatus
 from flux.errors import AIOSError, AuthenticationError, NotFoundError
 from flux.logging import get_logger
+from flux.models.task import Task
 from flux.version import VERSION
 
 logger = get_logger(__name__)
@@ -119,7 +117,7 @@ class McpServer:
             logger.debug("MCP 通知 method=%s agent=%s", method, identity.agent_id)
             return None
         if method == "initialize":
-            return _result(request_id, self._initialize(params, identity))
+            return _result(request_id, await self._initialize(params, identity))
         if method == "ping":
             return _result(request_id, {})
         if method == "tools/list":
@@ -134,24 +132,45 @@ class McpServer:
 
     # --- 内部 ---
 
-    def _initialize(self, params: Any, identity: AgentIdentity) -> dict[str, Any]:
+    async def _initialize(self, params: Any, identity: AgentIdentity) -> dict[str, Any]:
         requested = params.get("protocolVersion") if isinstance(params, dict) else None
         version = (
             requested
             if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS
             else DEFAULT_PROTOCOL_VERSION
         )
+        # 本次连接已绑定 Run 时能看到当前任务：模型口径与 flux_context 保持一致
+        task = await self._current_task(identity)
+        key = await load_task_key(self._container, task)
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": VERSION},
             "instructions": SERVER_INSTRUCTIONS + AGENT_IDENTITY_INSTRUCTIONS,
             # Flux 扩展：客户端一连上就知道自己是谁、能选哪些模型
-            "agent": self._agent_view(identity),
+            "agent": self._agent_view(identity, task, key),
         }
 
-    def _agent_view(self, identity: AgentIdentity) -> dict[str, Any]:
-        """接入身份视图：注册名 + 本次连接自报名 + 当前 runtime 支持的模型。"""
+    async def _current_task(self, identity: AgentIdentity) -> Task | None:
+        """本次连接绑定的 Run 所执行的任务；没有 Run / 没有任务时返回 None。
+
+        run_id 由 `_attach_run_id` 校验归属后附加（这里不再重复鉴权）；查不到就退回
+        runtime 默认模型——身份视图读取失败不能影响 initialize 本身。
+        """
+        if not identity.run_id:
+            return None
+        try:
+            run = await self._container.run_repo.get(identity.run_id)
+            if run is None or run.task_id is None:
+                return None
+            return await self._container.task_repo.get(run.task_id)
+        except AIOSError:
+            return None
+
+    def _agent_view(
+        self, identity: AgentIdentity, task: Task | None = None, key: Any | None = None
+    ) -> dict[str, Any]:
+        """接入身份视图：注册名 + 本次连接自报名 + 当前实际使用的模型。"""
         runtime = ""
         agents = getattr(self._container, "agents", None)
         if agents is not None:
@@ -159,7 +178,7 @@ class McpServer:
                 runtime = agents.get(identity.agent_id).spec.runtime
             except (KeyError, NotFoundError):
                 runtime = ""
-        settings = self._container.settings
+        model, runtime_models = agent_model_view(self._container, runtime, task, key)
         return {
             "id": identity.agent_id,
             "name": identity.name,
@@ -169,9 +188,10 @@ class McpServer:
             # 连接方上报的自己支持的模型；首次接入为空
             "models": list(identity.reported_models),
             "models_reported": bool(identity.reported_models),
-            # Flux 当前 runtime 能执行的模型
-            "runtime_models": models_for_runtime(settings, runtime) if runtime else [],
-            "model": default_model_for_runtime(settings, runtime) if runtime else "",
+            # Flux 当前能执行的模型（任务级 key 库条目优先）
+            "runtime_models": runtime_models,
+            # 当前实际使用的模型：任务级选择优先，否则 runtime 默认
+            "model": model,
         }
 
     async def _call_tool(

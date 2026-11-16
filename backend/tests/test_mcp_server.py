@@ -17,16 +17,21 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from flux.core.agent_runtime.manager import AgentSpec
 from flux.core.agent_runtime.protocol import MODE_RULES, RUNTIME_ENTRY
+from flux.core.agent_runtime.runtimes.base import RUNTIME_CODEX
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.server import DEFAULT_PROTOCOL_VERSION, McpServer, _attach_run_id
 from flux.core.mcp.tools import ALL_TOOLS, CORE_TOOL_NAMES, FORBIDDEN_TOOL_NAMES
 from flux.core.mcp.tools.base import ToolContext
 from flux.core.mcp.tools.write_tools import proposal_create
-from flux.enums import Capability, DshRunStatus, StepStatus
+from flux.enums import AgentRole, Capability, DshRunStatus, StepStatus
 from flux.errors import AuthenticationError
 
-from .conftest import create_agent, issue_token
+from .conftest import ALL_TEST_CAPABILITIES, create_agent, issue_token
+
+#: 任务级选中的 key 库模型（与 runtime 默认模型区分开，用于身份视图断言）
+TASK_MODEL = "proxy-deepseek-v4.1-flash"
 
 PROPOSAL = {
     "summary": "修复待办服务的两处缺陷",
@@ -863,13 +868,14 @@ def _task_header_request(task_id: str | None) -> SimpleNamespace:
     return SimpleNamespace(headers=headers)
 
 
-async def _seed_run(container, *, run_id: str, agent_id: str) -> None:
+async def _seed_run(container, *, run_id: str, agent_id: str, task_id=None) -> None:
     await container.run_repo.create(
         run_id=run_id,
         session_id="sess",
         instruction="do it",
         status=DshRunStatus.PENDING,
         agent_id=agent_id,
+        task_id=task_id,
     )
 
 
@@ -1089,3 +1095,156 @@ async def test_context_steps_lists_the_current_run_and_refuses_foreign_runs(
     )
     assert denied["result"]["isError"] is True
     assert "本 Agent" in denied["result"]["content"][0]["text"]
+
+
+# --- 7. 身份视图的模型口径：任务级选择优先，runtime 默认只做兜底 ---
+
+
+def _create_codex_agent(client: TestClient, *, name: str) -> str:
+    """登记一个 runtime=codex 的档案（conftest 的 create_agent 不带 runtime）。"""
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "name": name,
+            "role": "developer",
+            "runtime": "codex",
+            "permissions": [str(capability) for capability in ALL_TEST_CAPABILITIES],
+        },
+    )
+    assert response.status_code == 200, response.text
+    return str(response.json()["data"]["id"])
+
+
+def _create_vault_key(client: TestClient, *, models: list[str]) -> dict:
+    """经 REST 登记一条测试密钥（假 key，不碰真实凭据）。"""
+    response = client.post(
+        "/api/v1/keys",
+        json={
+            "name": "DeepSeek 测试",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "sk-test-12345678",
+            "models": models,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def _create_vault_task(client: TestClient, key: dict, *, model: str) -> dict:
+    response = client.post(
+        "/api/v1/tasks",
+        json={"description": "用 key 库模型跑一次", "model": model, "key_id": key["id"]},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def test_identity_reports_the_task_selected_vault_model(mcp_client: TestClient) -> None:
+    """任务选了 key 库模型时，agent.model 必须是它，而不是 runtime 默认模型。"""
+    _create_codex_agent(mcp_client, name="codex-vault")
+    token = issue_token(mcp_client, agent_id="codex-vault", scopes=[Capability.FILE_READ])
+    key = _create_vault_key(mcp_client, models=["deepseek-v4-pro", TASK_MODEL])
+    task = _create_vault_task(mcp_client, key, model=TASK_MODEL)
+
+    data = payload(call(mcp_client, token, "context.boot", {"task_id": task["id"]}))
+    runtime = data["runtime"]
+    # 当前模型取任务级选择；key 库清单里当前模型置顶
+    assert runtime["agent"]["model"] == TASK_MODEL
+    assert runtime["agent"]["runtime_models"] == [TASK_MODEL, "deepseek-v4-pro"]
+    # 任务视图带出模型与 key 的展示名，但不含任何密钥字段
+    assert runtime["task"]["model"] == TASK_MODEL
+    assert runtime["task"]["api_key_id"] == key["id"]
+    assert runtime["task"]["api_key_name"] == key["name"]
+    dumped = json.dumps(data, ensure_ascii=False)
+    assert "key_ciphertext" not in dumped
+    assert "sk-test-12345678" not in dumped
+
+    # 单项工具口径一致（context.boot 只是聚合）
+    single = payload(call(mcp_client, token, "flux_context", {"task_id": task["id"]}))
+    assert single["agent"]["model"] == TASK_MODEL
+    assert single["agent"]["runtime_models"] == [TASK_MODEL, "deepseek-v4-pro"]
+    assert single["task"]["api_key_name"] == key["name"]
+
+
+def test_identity_falls_back_to_runtime_default_without_a_task_model(
+    mcp_client: TestClient,
+) -> None:
+    """没有任务级模型时退回 runtime 默认；有 key 库模型的任务不被默认值盖掉。"""
+    live_settings = mcp_client.app.state.container.settings
+    original = live_settings.codex_model
+    live_settings.codex_model = "gpt-5.6-luna"
+    try:
+        _create_codex_agent(mcp_client, name="codex-default")
+        token = issue_token(mcp_client, agent_id="codex-default", scopes=[Capability.FILE_READ])
+
+        # 没有任务：runtime 默认模型
+        bare = payload(call(mcp_client, token, "context.boot", {}))
+        assert bare["runtime"]["task"] is None
+        assert bare["runtime"]["agent"]["model"] == "gpt-5.6-luna"
+        assert bare["runtime"]["agent"]["runtime_models"] == ["gpt-5.6-luna"]
+
+        # 有任务但没有模型/密钥：仍是 runtime 默认模型
+        plain = mcp_client.post(
+            "/api/v1/tasks", json={"description": "普通任务"}
+        ).json()["data"]
+        plain_data = payload(call(mcp_client, token, "flux_context", {"task_id": plain["id"]}))
+        assert plain_data["agent"]["model"] == "gpt-5.6-luna"
+        assert plain_data["task"]["model"] is None
+
+        # key 库模型的任务：仍然报任务模型，不被 runtime 默认值盖掉
+        key = _create_vault_key(mcp_client, models=["deepseek-v4-pro", TASK_MODEL])
+        task = _create_vault_task(mcp_client, key, model=TASK_MODEL)
+        vault = payload(call(mcp_client, token, "flux_context", {"task_id": task["id"]}))
+        assert vault["agent"]["model"] == TASK_MODEL
+        assert vault["agent"]["runtime_models"] == [TASK_MODEL, "deepseek-v4-pro"]
+    finally:
+        live_settings.codex_model = original
+
+
+async def test_initialize_reports_the_task_model_when_a_run_is_bound(apply_container) -> None:
+    """initialize 能看到绑定的 Run/任务时，模型口径与 flux_context 一致。"""
+    original = apply_container.settings.codex_model
+    apply_container.settings.codex_model = "gpt-5.6-luna"
+    try:
+        handle = await apply_container.agents.create(
+            AgentSpec(name="codex-init", role=AgentRole.DEVELOPER, runtime=RUNTIME_CODEX)
+        )
+        agent_id = str(handle.id)
+        identity = AgentIdentity(agent_id=agent_id, token_id="t", scopes=frozenset())
+        server = McpServer(apply_container)
+
+        # 没有 Run：沿用 runtime 默认模型（既有 initialize 行为不变）
+        unbound = await server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, identity
+        )
+        assert unbound["result"]["agent"]["model"] == "gpt-5.6-luna"
+        assert unbound["result"]["agent"]["runtime_models"] == ["gpt-5.6-luna"]
+
+        key = await apply_container.key_vault.create(
+            name="DeepSeek 测试",
+            provider="deepseek",
+            api_key="sk-test-12345678",
+            models=["deepseek-v4-pro", TASK_MODEL],
+        )
+        task = await apply_container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="initialize 也要报任务模型",
+            priority=1,
+            project_id=None,
+            agent_id=None,
+            model=TASK_MODEL,
+            api_key_id=key.id,
+        )
+        run_id = uuid.uuid4().hex
+        await _seed_run(apply_container, run_id=run_id, agent_id=agent_id, task_id=task.id)
+        bound = await _attach_run_id(_header_request(run_id), apply_container, identity)
+
+        result = await server.handle(
+            {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}}, bound
+        )
+        agent = result["result"]["agent"]
+        assert agent["model"] == TASK_MODEL
+        assert agent["runtime_models"] == [TASK_MODEL, "deepseek-v4-pro"]
+    finally:
+        apply_container.settings.codex_model = original

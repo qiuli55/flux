@@ -47,12 +47,18 @@ from flux.core.permissions.modes import boundary_for, normalize_mode
 from flux.core.task_engine.repository import TaskRepository
 from flux.enums import Capability, FluxCapability
 from flux.errors import AIOSError, NotFoundError, ValidationError
+from flux.logging import get_logger
 from flux.models.agent_run import AgentRun
 from flux.models.task import Task
 from flux.version import VERSION
 
+logger = get_logger(__name__)
+
 #: Personal MVP 的平台模式
 PLATFORM_MODE = "personal"
+
+#: `_agent_view` 的 key 缺省值：区分「调用方已加载（失败为 None）」与「还没加载」
+_KEY_UNLOADED: Any = object()
 
 FLUX_CONTEXT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -74,8 +80,55 @@ FLUX_CONTEXT_SCHEMA: dict[str, Any] = {
 }
 
 
-def _agent_view(ctx: ToolContext) -> dict[str, Any]:
-    """Agent 身份视图：注册名、本次连接自报名、运行时与当前支持的模型。"""
+async def load_task_key(container: Any, task: Task | None) -> Any | None:
+    """任务级模型引用的密钥库条目；未引用或读取失败时返回 None。
+
+    身份视图是只读旁路：密钥被删/库读不出来只降级为「按 runtime 默认模型展示」，
+    不能让 context.boot / initialize 整体失败。返回的条目只用于取 name / models，
+    密文与明文一律不外泄。
+    """
+    if task is None or task.api_key_id is None:
+        return None
+    key_vault = getattr(container, "key_vault", None)
+    if key_vault is None:
+        return None
+    try:
+        return await key_vault.get(task.api_key_id)
+    except AIOSError as exc:
+        logger.warning("任务引用的密钥不可读 task=%s error=%s", task.id, exc.code)
+        return None
+
+
+def agent_model_view(
+    container: Any, runtime: str, task: Task | None, key: Any | None
+) -> tuple[str, list[str]]:
+    """当前身份该报给 Agent 的 (model, runtime_models)。
+
+    任务级选择优先（与启动 Run 时的模型通道同一口径）：
+    - model：任务选了就用任务的，否则用该 runtime 的默认模型；
+    - runtime_models：任务引用的 key 库条目登记的模型清单，当前模型置顶
+      （不在清单里也补在首位）；没有 key 时退回 runtime 原生模型目录。
+    """
+    settings = container.settings
+    fallback = default_model_for_runtime(settings, runtime) if runtime else ""
+    model = (task.model or "").strip() if task is not None else ""
+    model = model or fallback
+    key_models = [
+        str(item).strip() for item in (getattr(key, "models", None) or []) if str(item).strip()
+    ]
+    if key_models:
+        models = [item for item in key_models if item != model]
+        if model:
+            models.insert(0, model)
+    else:
+        models = models_for_runtime(settings, runtime) if runtime else []
+    return model, models
+
+
+async def _agent_view(
+    ctx: ToolContext, task: Task | None = None, key: Any = _KEY_UNLOADED
+) -> dict[str, Any]:
+    """Agent 身份视图：注册名、本次连接自报名、运行时与当前模型（任务级选择优先）。"""
     container = ctx.container
     runtime = ""
     agents = getattr(container, "agents", None)
@@ -84,6 +137,9 @@ def _agent_view(ctx: ToolContext) -> dict[str, Any]:
             runtime = agents.get(ctx.identity.agent_id).spec.runtime
         except (KeyError, NotFoundError):
             runtime = ""
+    if key is _KEY_UNLOADED:
+        key = await load_task_key(container, task)
+    model, runtime_models = agent_model_view(container, runtime, task, key)
     return {
         "id": ctx.identity.agent_id,
         # 注册表里的档案名（如 flux-builtin），不随连接自报名变化
@@ -96,9 +152,10 @@ def _agent_view(ctx: ToolContext) -> dict[str, Any]:
         # 连接方上报的自己支持的模型（agent.report_models 写入）
         "models": list(ctx.identity.reported_models),
         "models_reported": bool(ctx.identity.reported_models),
-        # Flux 当前 runtime 能执行的模型（与连接方的模型清单分开）
-        "runtime_models": models_for_runtime(container.settings, runtime) if runtime else [],
-        "model": default_model_for_runtime(container.settings, runtime) if runtime else "",
+        # Flux 当前能执行的模型（任务级 key 库条目优先，与连接方的模型清单分开）
+        "runtime_models": runtime_models,
+        # 当前实际使用的模型：任务级选择优先，否则 runtime 默认
+        "model": model,
     }
 
 
@@ -113,6 +170,8 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
         container, agent_id=ctx.identity.agent_id, run_id=optional_str(params, "run_id")
     )
     task = await _resolve_task(container.task_repo, optional_str(params, "task_id"), run)
+    # 任务引用的 key 只查一次，agent / task 两份视图共用（避免重复读库）
+    task_key = await load_task_key(container, task)
     mode = normalize_mode(ctx.identity.permission_mode)
     boundary = boundary_for(mode)
 
@@ -124,9 +183,9 @@ async def flux_context(ctx: ToolContext, params: dict[str, Any]) -> dict[str, An
             "mode": PLATFORM_MODE,
         },
         "run": _run_view(run),
-        "task": _task_view(task),
+        "task": _task_view(task, task_key),
         "workspace": _workspace_view(container, settings),
-        "agent": _agent_view(ctx),
+        "agent": await _agent_view(ctx, task, task_key),
         "policy": {
             # Full / 免审核模式允许直写工作区，提案不再是唯一完成路径
             "proposal_required": bool(settings.proposal_required)
@@ -283,11 +342,19 @@ def _run_view(run: AgentRun | None) -> dict[str, Any] | None:
     }
 
 
-def _task_view(task: Task | None) -> dict[str, Any] | None:
+def _task_view(task: Task | None, key: Any | None = None) -> dict[str, Any] | None:
     if task is None:
         return None
     # Task 模型没有 title 列，任务描述即其"标题"（§7 的 task.title 语义）
-    return {"id": str(task.id), "title": task.description, "status": task.status}
+    return {
+        "id": str(task.id),
+        "title": task.description,
+        "status": task.status,
+        # 任务级模型选择：Agent 据此知道自己这一轮实际用的是哪个模型/哪条 key（不含密钥）
+        "model": (task.model or "").strip() or None,
+        "api_key_id": str(task.api_key_id) if task.api_key_id is not None else None,
+        "api_key_name": getattr(key, "name", None) if task.api_key_id is not None else None,
+    }
 
 
 def _workspace_view(container: Any, settings: Settings) -> dict[str, Any]:
