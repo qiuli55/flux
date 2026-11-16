@@ -139,6 +139,33 @@ data class V2AppState(
     val finishedCount: Int get() = chatTasks.count { it.isFinished }
 }
 
+/**
+ * 刷新 Flux 数据的准入判断：只有已选好设备的 READY 状态才允许请求 /mobile。
+ *
+ * 账号刚登录、还没选设备时 boot 仍是 DEVICES，settings.config 还留着上一次手动连接的
+ * 地址与令牌；此时请求 /mobile 只会 401（后端「缺少或无效的访问令牌」），并把这个
+ * 错误显示到设备选择页上。LOGIN / LOADING 同理，都不该有后台刷新。
+ */
+internal data class FluxRefreshGuard(
+    val allowed: Boolean,
+    val reason: String = "",
+)
+
+internal fun fluxRefreshGuard(boot: V2Boot, account: AccountSession?): FluxRefreshGuard = when {
+    account != null && account.isSignedIn && !account.hasDevice ->
+        FluxRefreshGuard(false, "account has no selected device")
+    boot != V2Boot.READY -> FluxRefreshGuard(false, "boot=$boot")
+    else -> FluxRefreshGuard(true)
+}
+
+/** 静默刷新失败只记日志：后台请求的错误不能覆盖设备选择页 / 登录页。 */
+internal fun V2AppState.afterRefreshFailure(quiet: Boolean, message: String): V2AppState =
+    if (quiet) {
+        copy(refreshing = false)
+    } else {
+        copy(refreshing = false, error = message)
+    }
+
 class V2AppViewModel : FluxViewModel() {
 
     private var bootJob: Job? = null
@@ -315,6 +342,12 @@ class V2AppViewModel : FluxViewModel() {
     // ------------------------------------------------------------ 数据
 
     fun refresh(quiet: Boolean = false) {
+        val current = _state.value
+        val gate = fluxRefreshGuard(current.boot, current.account)
+        if (!gate.allowed) {
+            Log.d(FLUX_UX_LOG_TAG, "refresh skipped quiet=$quiet reason=${gate.reason}")
+            return
+        }
         if (quiet && refreshJob?.isActive == true) return
         if (!quiet) refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -366,9 +399,23 @@ class V2AppViewModel : FluxViewModel() {
                 // 额度只在显式刷新（进首页 / 切设备 / 下拉刷新）时读，静默轮询不额外打这个接口。
                 if (!quiet) loadBilling()
             } catch (e: FluxApiException) {
-                _state.value = _state.value.copy(refreshing = false, error = e.message)
+                val message = e.message
+                if (quiet) {
+                    Log.w(
+                        FLUX_UX_LOG_TAG,
+                        "quiet refresh failed, error suppressed: ${message.take(160)}",
+                    )
+                }
+                _state.value = _state.value.afterRefreshFailure(quiet, message)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(refreshing = false, error = readable(e))
+                val message = readable(e)
+                if (quiet) {
+                    Log.w(
+                        FLUX_UX_LOG_TAG,
+                        "quiet refresh failed, error suppressed: ${message.take(160)}",
+                    )
+                }
+                _state.value = _state.value.afterRefreshFailure(quiet, message)
             }
         }
     }
@@ -384,7 +431,7 @@ class V2AppViewModel : FluxViewModel() {
                 delay(POLL_INTERVAL_MS)
                 if (!foreground) continue
                 val current = _state.value
-                if (current.boot != V2Boot.READY) continue
+                if (!fluxRefreshGuard(current.boot, current.account).allowed) continue
                 val live = current.tasks.any { it.status.toV2TaskStatus().isActive }
                 if (live) refresh(quiet = true)
             }
@@ -1024,6 +1071,12 @@ class V2AppViewModel : FluxViewModel() {
 
     /** 群列表：进首页时与对话一起刷新；失败保留上一份。 */
     fun loadGroups(quiet: Boolean = true) {
+        val current = _state.value
+        val gate = fluxRefreshGuard(current.boot, current.account)
+        if (!gate.allowed) {
+            Log.d(FLUX_UX_LOG_TAG, "loadGroups skipped quiet=$quiet reason=${gate.reason}")
+            return
+        }
         if (groupListJob?.isActive == true) return
         groupListJob = viewModelScope.launch {
             if (!quiet) {

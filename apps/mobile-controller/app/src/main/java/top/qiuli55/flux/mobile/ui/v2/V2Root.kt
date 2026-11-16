@@ -219,7 +219,14 @@ fun FluxV2Root() {
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     vm.setForeground(true)
-                    vm.refresh(quiet = true)
+                    // 登录页 / 设备选择页没有可用的设备令牌：这里不打 Flux /mobile，
+                    // 否则会拿上一次手动连接的旧配置请求 tasks 并 401。
+                    val boot = vm.state.value.boot
+                    if (boot == V2Boot.READY) {
+                        vm.refresh(quiet = true)
+                    } else {
+                        Log.d(FLUX_UX_LOG_TAG, "ON_RESUME refresh skipped: boot=$boot")
+                    }
                     UpdateCenter.onForeground()
                 }
                 Lifecycle.Event.ON_PAUSE -> {
