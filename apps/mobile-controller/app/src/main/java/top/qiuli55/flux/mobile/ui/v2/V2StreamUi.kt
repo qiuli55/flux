@@ -94,14 +94,25 @@ internal fun StreamActivityCard(
     val commands = if (categorized > 0) tools.count { it.category == "command" } else tools.size
     val filesChanged = tools.filter { it.category == "write" }.flatMap { it.paths }.toSet().size
     val filesRead = tools.filter { it.category == "read" }.flatMap { it.paths }.toSet().size
-    val summary = if (tools.isEmpty()) {
-        if (stream.reasoning?.active == true) "思考中" else "思考过程"
-    } else {
-        buildString {
+    val summary = buildString {
+        val reasoning = stream.reasoning
+        if (reasoning != null) {
+            // 与 Claude 一致：思考中只报状态，结束后固化成「思考了 N 秒」。
+            append(
+                if (reasoning.active) {
+                    "思考中"
+                } else {
+                    "思考了 ${formatStreamElapsed(reasoning.elapsedMs(System.currentTimeMillis()))}"
+                },
+            )
+        }
+        if (tools.isNotEmpty()) {
+            if (isNotEmpty()) append(" · ")
             append(if (commands > 0) "$commands 条命令" else "${tools.size} 步")
             if (filesChanged > 0) append(" · 改动 $filesChanged 文件")
             if (filesRead > 0) append(" · 读取 $filesRead 文件")
         }
+        if (isEmpty()) append("执行过程")
     }
     Column(
         modifier
@@ -159,7 +170,8 @@ private fun ReasoningSection(reasoning: StreamReasoning) {
     }
     val expanded = manual ?: reasoning.active
     val elapsed = formatStreamElapsed(reasoning.elapsedMs(System.currentTimeMillis()))
-    val title = if (reasoning.active) "思考中… $elapsed" else "思考 $elapsed"
+    // Claude 的写法：进行中是「思考中…」，结束后固化成「思考了 N 秒」。
+    val title = if (reasoning.active) "思考中… $elapsed" else "思考了 $elapsed"
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -234,11 +246,26 @@ private fun StreamToolStepRow(step: StreamToolStep) {
                 weight = FontWeight.Medium,
                 mono = true,
                 maxLines = 1,
-                modifier = Modifier.weight(1f, fill = false),
             )
             Spacer(Modifier.width(6.dp))
+            // Claude 的工具行直接带目标（Read xxx / Bash 命令），
+            // 不用点开就能知道这一步在做什么。
+            val summary = compactToolDetail(step.detail)
+            if (summary.isNotEmpty()) {
+                Label(
+                    summary,
+                    9f,
+                    V2Colors.ink(.38f),
+                    mono = true,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            Spacer(Modifier.width(6.dp))
             Label(label, 8f, tint, mono = true)
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(6.dp))
             Label(if (open) "收起" else "展开", 8f, V2Colors.cyan700)
         }
         if (open) {
@@ -391,8 +418,24 @@ internal fun JumpToBottomButton(
     }
 }
 
-/** 思考耗时：不足 1 秒显示 0 秒，避免流式头几帧出现奇怪的小数。 */
+/** 工具行的一行摘要：取第一段非空内容，过长时截断，避免撑破单行。 */
+internal fun compactToolDetail(detail: String, limit: Int = 80): String {
+    val line = detail.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    if (line.isEmpty()) return ""
+    return if (line.length <= limit) line else line.take(limit - 1).trimEnd() + "…"
+}
+
+/** 运行状态条上的当前动作：与 Claude 的「Using Read…」同一层信息。 */
+internal fun runningToolPhase(step: StreamToolStep): String = when (step.category) {
+    "command" -> "正在执行命令"
+    "read" -> "正在读取文件"
+    "write" -> "正在修改文件"
+    else -> "正在使用 ${step.name.ifBlank { "工具" }}"
+}
+
+/** 思考/执行耗时：不足 1 分钟只报秒，超过后与 Claude 一样用「分 + 秒」。 */
 internal fun formatStreamElapsed(elapsedMs: Long): String {
     val seconds = (elapsedMs.coerceAtLeast(0L) / 1000L).coerceAtMost(99_999L)
-    return "${seconds}秒"
+    if (seconds < 60L) return "${seconds} 秒"
+    return "${seconds / 60L} 分 ${seconds % 60L} 秒"
 }

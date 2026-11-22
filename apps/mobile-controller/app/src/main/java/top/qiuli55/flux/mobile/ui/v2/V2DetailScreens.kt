@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.time.OffsetDateTime
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.serialization.json.Json
@@ -658,6 +659,14 @@ fun V2TaskChatScreen(
     }
     // run_id → 该轮的耗时与概览：答案气泡上方的「任务耗时」入口按它渲染
     val runSummaries = remember(state.runs) { state.runs.associateBy { it.runId } }
+    // 当前这一轮的开始时间：运行状态条的耗时以它为准，别从进入页面时重新算
+    val runningStartedAtMs = remember(task?.runId, state.runs) {
+        val currentRun = state.runs.firstOrNull { it.runId == task?.runId }
+            ?: state.runs.lastOrNull { it.status == "running" }
+        currentRun?.startedAt?.let { iso ->
+            runCatching { OffsetDateTime.parse(iso).toInstant().toEpochMilli() }.getOrNull()
+        }
+    }
     // 上下文占用：同一等级点过「继续聊」就不再打扰，涨到 full 会再提醒一次。
     val usage = state.contextUsage
     val contextPromptVisible = shouldPromptContext(usage, state.contextDismissedLevel)
@@ -732,6 +741,8 @@ fun V2TaskChatScreen(
             // 执行中常驻运行状态条；停止动作已并入输入区主按钮
             taskRunning = task?.status?.toV2TaskStatus() == V2TaskStatus.RUNNING || state.stream.liveActive,
             runningTaskTitle = task?.firstLine()?.takeIf { it.isNotBlank() },
+            // 状态条耗时以服务端 started_at 为准；解析失败时回退为进入页面起算
+            runningStartedAtMs = runningStartedAtMs,
             stopping = state.busyAction == "cancel",
             onStopTask = { vm.cancel() },
             // 审批卡固定在输入框上方，提交期间禁用按钮

@@ -25,11 +25,15 @@ enum class StreamToolStatus { RUNNING, DONE, FAILED }
 /** 一次 Run 的推理内容：同一轮的多段 thinking 合并成一段，收起后只占一行。 */
 data class StreamReasoning(
     val text: String = "",
+    /** 当前这段思考的开始时间；多段思考合并时由 [accumulatedMs] 保留之前的耗时。 */
     val startedAtMs: Long = 0L,
     val endedAtMs: Long? = null,
     val active: Boolean = false,
+    /** 已经结束的思考段累计耗时；正文/工具执行的时间不算进去。 */
+    val accumulatedMs: Long = 0L,
 ) {
-    fun elapsedMs(nowMs: Long): Long = ((endedAtMs ?: nowMs) - startedAtMs).coerceAtLeast(0L)
+    fun elapsedMs(nowMs: Long): Long =
+        (accumulatedMs + ((endedAtMs ?: nowMs) - startedAtMs)).coerceAtLeast(0L)
 }
 
 /** 一次工具调用；同名 `call_id` 的 started / completed 事件合并到同一步。 */
@@ -152,7 +156,13 @@ internal class TaskStreamReducer(
                 } else {
                     pendingText.append(text)
                     // 正文一到就不再显示「正在生成」占位；真正重组等 flush。
-                    state = state.copy(liveActive = true, liveLabel = null)
+                    // 同时结束思考计时：Claude 的 thinking 块在正文开始时就停表，
+                    // 不能一边输出答案、一边显示「思考中…」继续涨秒数。
+                    state = state.copy(
+                        liveActive = true,
+                        liveLabel = null,
+                        reasoning = endReasoning(state.reasoning),
+                    )
                     StreamApply.BUFFERED
                 }
             }
@@ -420,10 +430,9 @@ internal class TaskStreamReducer(
             "thinking" -> {
                 if (text.isBlank()) {
                     flushInternal()
-                    val reasoning = state.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
                     state = touch(
                         state.copy(
-                            reasoning = reasoning.copy(active = true),
+                            reasoning = beginReasoning(state.reasoning),
                             liveActive = true,
                             liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
                         ),
@@ -431,9 +440,9 @@ internal class TaskStreamReducer(
                     return StreamApply.COMMITTED
                 }
                 // 推理也是逐段到达，和正文一样先进缓冲，避免一条一条重组。
-                val reasoning = state.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
+                // 工具执行后再次思考 = 新的一段：计时重新开始，之前那段保留累计值。
                 state = state.copy(
-                    reasoning = reasoning.copy(active = true),
+                    reasoning = beginReasoning(state.reasoning),
                     liveActive = true,
                     liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
                 )
@@ -443,6 +452,8 @@ internal class TaskStreamReducer(
 
             "tool" -> {
                 flushInternal()
+                // 开始调工具就停掉思考计时：Claude 的 thinking 块在下一个块开始时收尾。
+                state = state.copy(reasoning = endReasoning(state.reasoning))
                 state = touch(applyToolEvent(event))
                 return StreamApply.COMMITTED
             }
@@ -468,7 +479,12 @@ internal class TaskStreamReducer(
                     return StreamApply.BUFFERED
                 }
                 pendingText.append(text)
-                state = state.copy(liveActive = true, liveLabel = null)
+                // 正文开始 = 思考结束；与 assistant_delta 保持同一套停表规则。
+                state = state.copy(
+                    liveActive = true,
+                    liveLabel = null,
+                    reasoning = endReasoning(state.reasoning),
+                )
                 return StreamApply.BUFFERED
             }
         }
@@ -554,6 +570,23 @@ internal class TaskStreamReducer(
 
     private fun endReasoning(reasoning: StreamReasoning?): StreamReasoning? =
         reasoning?.copy(active = false, endedAtMs = reasoning.endedAtMs ?: now())
+
+    /**
+     * 开始（或继续）一段思考。
+     *
+     * 工具执行完再思考时，思考块本身继续合并正文，但计时只算「真正在思考」的时间：
+     * 上一段耗时进 accumulatedMs，新一段从 now 重新起表。
+     */
+    private fun beginReasoning(reasoning: StreamReasoning?): StreamReasoning {
+        if (reasoning == null) return StreamReasoning(startedAtMs = now(), active = true)
+        if (reasoning.active) return reasoning
+        return reasoning.copy(
+            startedAtMs = now(),
+            endedAtMs = null,
+            active = true,
+            accumulatedMs = reasoning.elapsedMs(now()),
+        )
+    }
 
     private fun finishRunning(
         tools: List<StreamToolStep>,

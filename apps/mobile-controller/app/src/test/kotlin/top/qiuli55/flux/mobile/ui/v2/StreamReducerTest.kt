@@ -105,6 +105,53 @@ class StreamReducerTest {
     }
 
     @Test
+    fun `thinking timer stops while tools run and resumes on the next thinking segment`() {
+        now = 1_000L
+        reducer.apply(thinking(1, "第一段"))
+        reducer.flush()
+
+        now = 4_000L
+        reducer.apply(tool(2, "call-1", "running"))
+        var reasoning = reducer.snapshot().reasoning
+        assertNotNull(reasoning)
+        assertFalse(reasoning!!.active)
+        // 工具执行的 16 秒不算进思考耗时（Claude 的 thinking 块在下一个块开始时停表）
+        assertEquals(3_000L, reasoning.elapsedMs(20_000L))
+
+        now = 20_000L
+        reducer.apply(tool(3, "call-1", "completed"))
+        reducer.apply(thinking(4, "第二段"))
+        reducer.flush()
+        now = 23_000L
+        reasoning = reducer.snapshot().reasoning
+        assertTrue(reasoning!!.active)
+        assertEquals(6_000L, reasoning.elapsedMs(now))
+        assertEquals("第一段第二段", reasoning.text)
+
+        // 正文一开始，思考停表：之后不管过多久都不再涨
+        now = 24_000L
+        reducer.apply(delta(5, "最终回答"))
+        reasoning = reducer.snapshot().reasoning
+        assertFalse(reasoning!!.active)
+        assertEquals(7_000L, reasoning.elapsedMs(99_000L))
+    }
+
+    @Test
+    fun `stream elapsed switches to minutes after sixty seconds`() {
+        assertEquals("0 秒", formatStreamElapsed(999L))
+        assertEquals("59 秒", formatStreamElapsed(59_999L))
+        assertEquals("1 分 0 秒", formatStreamElapsed(60_000L))
+        assertEquals("2 分 3 秒", formatStreamElapsed(123_000L))
+    }
+
+    @Test
+    fun `tool detail summary keeps one line and truncates long targets`() {
+        assertEquals("pytest -q", compactToolDetail("pytest -q\n42 passed"))
+        assertEquals("", compactToolDetail("  \n  "))
+        assertEquals("aaaa…", compactToolDetail("a".repeat(80), limit = 5))
+    }
+
+    @Test
     fun `tool started and completed merge into one step`() {
         reducer.apply(tool(1, "call-9", "running", detail = "pytest -q"))
         reducer.apply(tool(2, "call-9", "completed", output = "42 passed"))

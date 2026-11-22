@@ -72,7 +72,7 @@ class V2StreamUiTest {
         }
 
         rule.onNodeWithTag(V2StreamTags.REASONING).assertIsDisplayed()
-        rule.onNodeWithText("思考 3秒").assertIsDisplayed()
+        rule.onNodeWithText("思考了 3 秒").assertIsDisplayed()
         // 结束后默认收起：正文不占空间，也不会在下一轮重新冒出来
         rule.onNodeWithTag(V2StreamTags.REASONING_BODY).assertDoesNotExist()
 
@@ -120,6 +120,8 @@ class V2StreamUiTest {
 
         rule.onNodeWithTag(V2StreamTags.tool("call-1")).assertIsDisplayed()
         rule.onNodeWithText("完成").assertIsDisplayed()
+        // 与 Claude 一致：一行摘要直接带命令目标，不展开也能看出这一步在做什么
+        rule.onNodeWithText("pytest -q").assertIsDisplayed()
         rule.onNodeWithTag(V2StreamTags.toolBody("call-1")).assertDoesNotExist()
 
         rule.onNodeWithTag(V2StreamTags.tool("call-1")).performClick()

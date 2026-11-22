@@ -129,6 +129,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import top.qiuli55.flux.mobile.data.DesignSummary
@@ -244,6 +245,8 @@ fun V2ChatScreen(
     taskRunning: Boolean = false,
     /** 正在执行的任务标题：运行状态条上显示，便于确认停的是哪个任务。 */
     runningTaskTitle: String? = null,
+    /** 本轮 Run 的服务端开始时间（epoch ms）：状态条耗时以它为准；为空时从进入页面起算。 */
+    runningStartedAtMs: Long? = null,
     /** 停止请求已发出、等服务端确认。 */
     stopping: Boolean = false,
     onStopTask: () -> Unit = {},
@@ -758,7 +761,12 @@ fun V2ChatScreen(
 
         // 执行中：运行状态条固定在输入区上方；停止动作只保留在输入区主按钮上
         if (taskRunning) {
-            RunningStatusBar(title = runningTaskTitle, stopping = stopping)
+            RunningStatusBar(
+                title = runningTaskTitle,
+                stopping = stopping,
+                stream = stream,
+                startedAtMs = runningStartedAtMs,
+            )
             Spacer(Modifier.height(2.dp))
         }
 
@@ -1546,9 +1554,34 @@ private fun PromptAction(
     }
 }
 
-/** 执行中的运行状态条：只报状态，停止统一由输入区主按钮承担。 */
+/** 执行中的运行状态条：报当前动作与耗时，停止统一由输入区主按钮承担。 */
 @Composable
-private fun RunningStatusBar(title: String?, stopping: Boolean) {
+private fun RunningStatusBar(
+    title: String?,
+    stopping: Boolean,
+    stream: StreamUiSnapshot,
+    startedAtMs: Long?,
+) {
+    // 没有服务端开始时间（例如刚发消息）就从进入状态条时起算；
+    // remember 不随秒表 tick 重建，避免耗时每秒归零。
+    val fallbackStart = remember { System.currentTimeMillis() }
+    val start = startedAtMs ?: fallbackStart
+    var nowMs by remember(start) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(start) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+    // 与 Claude 的状态行一致：先说是「在思考」还是「在用某个工具」，再报总耗时。
+    val runningTool = stream.tools.lastOrNull { it.status == StreamToolStatus.RUNNING }
+    val phase = when {
+        stopping -> "正在停止"
+        stream.reasoning?.active == true -> "思考中"
+        runningTool != null -> runningToolPhase(runningTool)
+        stream.liveActive && stream.liveText.isNotBlank() -> "正在回复"
+        else -> "Agent 正在执行"
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -1561,17 +1594,28 @@ private fun RunningStatusBar(title: String?, stopping: Boolean) {
     ) {
         LiveDot(V2Colors.emerald)
         Spacer(Modifier.width(6.dp))
-        Label("Agent 正在执行", 9.5f, V2Colors.emerald700, weight = FontWeight.Medium)
+        Label(phase, 9.5f, V2Colors.emerald700, weight = FontWeight.Medium, maxLines = 1)
         if (!title.isNullOrBlank()) {
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             Label("·", 9.5f, V2Colors.emerald700.copy(alpha = .5f))
-            Spacer(Modifier.width(6.dp))
-            Label(title, 9.5f, V2Colors.emerald700.copy(alpha = .8f), maxLines = 1)
+            Spacer(Modifier.width(5.dp))
+            Label(
+                title,
+                9.5f,
+                V2Colors.emerald700.copy(alpha = .8f),
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
         }
-        Spacer(Modifier.weight(1f))
-        if (stopping) {
-            Label("停止中…", 9f, V2Colors.rose, weight = FontWeight.Medium)
-        }
+        Spacer(Modifier.width(8.dp))
+        Label(
+            if (stopping) "停止中…" else formatStreamElapsed(nowMs - start),
+            9f,
+            if (stopping) V2Colors.rose else V2Colors.emerald700.copy(alpha = .7f),
+            mono = true,
+        )
     }
 }
 
