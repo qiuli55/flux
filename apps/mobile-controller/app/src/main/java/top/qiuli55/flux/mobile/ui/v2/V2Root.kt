@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddComment
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Publish
@@ -72,6 +73,9 @@ private sealed interface V2Route {
     data object Home : V2Route
     data object Assistant : V2Route
     data object Designs : V2Route
+    /** 一级页面：对话产出的成品（设计稿 / 页面 / 文档）。 */
+    data object Artifacts : V2Route
+    data class ArtifactDetail(val artifactId: String) : V2Route
     /** 「我的」：账号与全部管理入口（设备、终端、密钥、额度、记忆、偏好）。 */
     data object Profile : V2Route
     data object DesignCanvas : V2Route
@@ -106,7 +110,7 @@ private sealed interface V2Route {
 }
 
 /** 平板左侧主导航的入口（与手机底部三个 Tab 一致）。 */
-private enum class V2RailItem { CHATS, DESIGNS, PROFILE }
+private enum class V2RailItem { CHATS, ARTIFACTS, PROFILE }
 
 private val clockFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
@@ -126,6 +130,8 @@ fun FluxV2Root() {
     val app by vm.state.collectAsState()
     val designVm: DesignStudioViewModel = viewModel()
     val designState by designVm.state.collectAsState()
+    val artifactsVm: ArtifactsViewModel = viewModel()
+    val artifactsState by artifactsVm.state.collectAsState()
     val assistantVm: V2AssistantViewModel = viewModel()
     val assistantState by assistantVm.state.collectAsState()
     val update by UpdateCenter.state.collectAsState()
@@ -205,6 +211,7 @@ fun FluxV2Root() {
                     vm.loadGroups(quiet = true)
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
+                V2Route.Artifacts -> artifactsVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 V2Route.Profile -> vm.loadMemories()
                 else -> Unit
@@ -468,6 +475,11 @@ fun FluxV2Root() {
                       V2Route.Home
                   }
                   is V2Route.Browser -> current.origin
+                  is V2Route.ArtifactDetail -> {
+                      artifactsVm.closeDetail()
+                      V2Route.Artifacts
+                  }
+                  V2Route.Designs -> V2Route.Artifacts
                   V2Route.DesignCanvas -> {
                       if (designState.dirty) {
                           designExitOpen = true
@@ -537,7 +549,7 @@ fun FluxV2Root() {
                             groups = app.groupChat.groups,
                             groupsLoading = app.groupChat.loadingGroups,
                             extraTop = extraTop,
-                            onOpenDesigns = { route = V2Route.Designs },
+                            onOpenArtifacts = { route = V2Route.Artifacts },
                             onOpenAssistant = { openAssistant() },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
                             onDeleteConversation = {
@@ -627,11 +639,53 @@ fun FluxV2Root() {
                             onDismissMessages = { assistantVm.clearMessages() },
                         )
 
+                        V2Route.Artifacts -> ArtifactsScreen(
+                            state = artifactsState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Home },
+                            onReload = { artifactsVm.load() },
+                            onFilter = { artifactsVm.setFilter(it) },
+                            onOpenArtifact = { artifactId ->
+                                artifactsVm.open(artifactId)
+                                route = V2Route.ArtifactDetail(artifactId)
+                            },
+                            onOpenDesign = { designId ->
+                                designOrigin = V2Route.Artifacts
+                                designVm.openDesign(designId)
+                                route = V2Route.DesignCanvas
+                            },
+                            onCreate = { type, title ->
+                                artifactsVm.create(type, title) { artifactId ->
+                                    artifactsVm.open(artifactId)
+                                    route = V2Route.ArtifactDetail(artifactId)
+                                }
+                            },
+                            onOpenDesignStudio = { route = V2Route.Designs },
+                            onDismissMessages = { artifactsVm.clearMessages() },
+                        )
+
+                        is V2Route.ArtifactDetail -> ArtifactDetailScreen(
+                            artifactId = current.artifactId,
+                            state = artifactsState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = {
+                                artifactsVm.closeDetail()
+                                route = V2Route.Artifacts
+                            },
+                            onSave = { title, content -> artifactsVm.save(title, content) },
+                            onDelete = { artifactId ->
+                                artifactsVm.delete(artifactId) { route = V2Route.Artifacts }
+                            },
+                            onDismissMessages = { artifactsVm.clearMessages() },
+                        )
+
                         V2Route.Designs -> DesignStudioListScreen(
                             state = designState,
                             extraTop = extraTop,
                             showBack = showBack,
-                            onBack = { route = V2Route.Home },
+                            onBack = { route = V2Route.Artifacts },
                             onReload = { designVm.loadDesigns() },
                             onOpen = { designId ->
                                 designOrigin = V2Route.Designs
@@ -941,14 +995,17 @@ fun FluxV2Root() {
                         Row(Modifier.fillMaxSize().then(insets)) {
                             V2NavRail(
                                 selected = when (route) {
-                                    V2Route.Designs, V2Route.DesignCanvas -> V2RailItem.DESIGNS
+                                    V2Route.Artifacts,
+                                    V2Route.Designs,
+                                    V2Route.DesignCanvas,
+                                    is V2Route.ArtifactDetail -> V2RailItem.ARTIFACTS
                                     V2Route.Profile -> V2RailItem.PROFILE
                                     else -> V2RailItem.CHATS
                                 },
                                 onSelect = { item ->
                                     when (item) {
                                         V2RailItem.CHATS -> route = V2Route.Home
-                                        V2RailItem.DESIGNS -> route = V2Route.Designs
+                                        V2RailItem.ARTIFACTS -> route = V2Route.Artifacts
                                         V2RailItem.PROFILE -> route = V2Route.Profile
                                     }
                                 },
@@ -970,10 +1027,10 @@ fun FluxV2Root() {
                             }
                         }
                     } else {
-                        // 手机：三个一级页面（对话 / 设计 / 我的）带底部 Tab，二三级页面全屏
+                        // 手机：三个一级页面（对话 / Artifacts / 我的）带底部 Tab，二三级页面全屏
                         val topTab = when (route) {
                             V2Route.Home -> V2TopTab.CHATS
-                            V2Route.Designs -> V2TopTab.DESIGNS
+                            V2Route.Artifacts -> V2TopTab.ARTIFACTS
                             V2Route.Profile -> V2TopTab.PROFILE
                             else -> null
                         }
@@ -988,7 +1045,7 @@ fun FluxV2Root() {
                                         current,
                                         0.dp,
                                         current != V2Route.Home &&
-                                            current != V2Route.Designs &&
+                                            current != V2Route.Artifacts &&
                                             current != V2Route.Profile,
                                     )
                                 }
@@ -1003,8 +1060,8 @@ fun FluxV2Root() {
                                                 chatMessages.clear()
                                                 route = V2Route.Home
                                             }
-                                            V2TopTab.DESIGNS -> if (route != V2Route.Designs) {
-                                                route = V2Route.Designs
+                                            V2TopTab.ARTIFACTS -> if (route != V2Route.Artifacts) {
+                                                route = V2Route.Artifacts
                                             }
                                             V2TopTab.PROFILE -> if (route != V2Route.Profile) {
                                                 route = V2Route.Profile
@@ -1374,10 +1431,10 @@ private fun V2NavRail(
         }
         Spacer(Modifier.height(4.dp))
         RailButton(
-            icon = Icons.Outlined.Edit,
-            label = "设计",
-            selected = selected == V2RailItem.DESIGNS,
-        ) { onSelect(V2RailItem.DESIGNS) }
+            icon = Icons.Outlined.Dashboard,
+            label = "Artifacts",
+            selected = selected == V2RailItem.ARTIFACTS,
+        ) { onSelect(V2RailItem.ARTIFACTS) }
         Spacer(Modifier.height(4.dp))
         RailButton(
             icon = Icons.Outlined.Person,
@@ -1479,8 +1536,9 @@ private fun RailButton(
 
 /** 页面层级：用于判断转场方向（前进 / 返回）。 */
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
-    V2Route.Home, V2Route.Designs, V2Route.Profile -> 0
+    V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
+    V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2
     V2Route.DesignCanvas -> 2
