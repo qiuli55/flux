@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent 多阶段流式输出 · SSE 演示</title>
+<style>
+:root{--bg:#fafafa;--surface:#fff;--fg:#0a0a0b;--mute:rgba(10,10,11,.5);--line:rgba(10,10,11,.1);--soft:rgba(10,10,11,.06);--blue:#3b82f6;--ok:#10b981;--code:#0a0a0b;--codefg:#f4f4f5;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e0e0f;--surface:#1a1a1b;--fg:#f4f4f5;--mute:rgba(244,244,245,.5);--line:rgba(244,244,245,.12);--soft:rgba(244,244,245,.08);--code:#000;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0e0e0f;--surface:#1a1a1b;--fg:#f4f4f5;--mute:rgba(244,244,245,.5);--line:rgba(244,244,245,.12);--soft:rgba(244,244,245,.08);--code:#000;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+#app{height:100%;display:flex;flex-direction:column;max-width:760px;margin:0 auto}
+header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+#ring{width:18px;height:18px;border-radius:50%;border:2px solid var(--line);flex:none}
+#ring.run{border-top-color:var(--blue);animation:r .8s linear infinite}
+#ring.fin{border-color:var(--ok)}
+#ttl{flex:1;min-width:0;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ttl span{color:var(--mute);font-weight:400}
+.hb{border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:10px;height:36px;padding:0 12px;font:inherit;font-size:12px;cursor:pointer}
+.hb.on{background:var(--fg);color:var(--bg)}
+#chat{flex:1;overflow-y:auto;padding:16px}
+.msg{margin:0 0 26px;display:flex;flex-direction:column}
+.user{align-items:flex-end}
+.bub{background:var(--soft);padding:10px 14px;border-radius:18px 18px 4px 18px;max-width:85%;white-space:pre-wrap;word-break:break-word}
+.parts>*{margin-bottom:6px}
+details>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;min-height:44px;color:var(--mute);font-size:15px;-webkit-tap-highlight-color:transparent}
+details>summary::-webkit-details-marker{display:none}
+summary svg{flex:none}
+.chev{margin-left:2px;transition:transform .15s}
+details[open]>summary .chev{transform:rotate(90deg)}
+.lbl,.gl,.ct{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ct{flex:1;min-width:0}
+.ct code,.ans code.ic{font:.86em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 6px;border-radius:6px;color:var(--fg)}
+.shim{background:linear-gradient(90deg,var(--mute) 30%,var(--fg) 50%,var(--mute) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:s 1.6s linear infinite}
+@keyframes s{to{background-position:-200% 0}}
+.tx{padding:0 0 8px 28px;color:var(--mute);font-size:14px;line-height:1.7;white-space:pre-wrap}
+.rows{padding-left:12px;border-left:1px solid var(--line);margin:0 0 6px 8px}
+.rows summary{min-height:40px;font-size:14px}
+.st{display:flex;align-items:center;width:14px;justify-content:center;flex:none}
+.dotb{width:9px;height:9px;border-radius:50%;background:var(--blue);animation:p 1s ease-in-out infinite}
+@keyframes p{50%{opacity:.25}}
+.ok{color:var(--ok);font-size:13px}
+.out{margin:0 0 8px 28px;background:var(--code);color:var(--codefg);border-radius:10px;padding:10px 12px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto}
+@keyframes r{to{transform:rotate(360deg)}}
+.ans p,.ans ul,.ans ol,.ans h4{margin:0 0 10px}
+.ans h4{font-size:17px;margin-top:6px}
+.ans ul,.ans ol{padding-left:22px}
+.ans pre{position:relative;background:var(--code);color:var(--codefg);border-radius:12px;padding:30px 14px 12px;overflow-x:auto;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0 0 12px}
+.ans pre .lang{position:absolute;top:8px;left:14px;font-size:11px;opacity:.5}
+.cur{display:inline-block;width:7px;height:1.05em;background:var(--fg);vertical-align:-3px;margin-left:2px;animation:b 1s steps(2) infinite}
+.ans pre .cur{background:var(--codefg)}
+@keyframes b{50%{opacity:0}}
+.work{display:flex;align-items:center;gap:12px;color:var(--mute);margin-top:14px}
+.mas{width:30px;height:22px;background:var(--fg);border-radius:6px;display:inline-flex;gap:6px;align-items:center;justify-content:center}
+.mas i{width:4px;height:7px;background:var(--bg);border-radius:1px;animation:k 3s infinite}
+@keyframes k{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+.meta{display:flex;gap:6px;align-items:center;color:var(--mute);font-size:12px;flex-wrap:wrap}
+.meta button{border:0;background:var(--soft);color:var(--fg);border-radius:8px;height:32px;padding:0 12px;font:inherit;font-size:12px;cursor:pointer}
+#empty{text-align:center;padding:14vh 8px 0}
+#empty .mas{width:48px;height:36px;border-radius:10px;gap:9px;margin-bottom:14px}
+#empty .mas i{width:6px;height:11px}
+#empty p{color:var(--mute);margin:6px 0 20px;font-size:13px}
+.chip{border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:14px;padding:12px 16px;font:inherit;font-size:14px;cursor:pointer}
+#rawp{display:none;margin:0;border-top:1px solid var(--line);background:var(--surface);max-height:28vh;overflow:auto;padding:8px 14px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--mute);white-space:pre-wrap;word-break:break-all}
+#rawp.on{display:block}
+#dock{position:relative;padding:6px 14px 12px}
+#jump{display:none;position:absolute;top:-44px;left:50%;transform:translateX(-50%);border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:20px;height:38px;padding:0 16px;font:inherit;font-size:14px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+#jump.on{display:block}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:12px 12px 10px 16px}
+#q{display:none;font-size:12px;color:var(--mute);margin-bottom:4px}
+textarea{width:100%;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;font-size:16px;resize:none;line-height:1.5;display:block}
+.bar{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+.bar button{width:42px;height:42px;border-radius:50%;border:0;cursor:pointer;display:grid;place-items:center}
+#send{background:var(--fg);color:var(--bg)}
+#stop{display:none;background:rgba(239,68,68,.18);color:#ef4444}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div id="ring"></div>
+    <div id="ttl"><span>flux / </span><b id="tt">新任务</b></div>
+    <button class="hb" id="rawBtn" type="button">原始流</button>
+    <button class="hb" id="clr" type="button">清空</button>
+  </header>
+  <main id="chat">
+    <div id="empty">
+      <div class="mas"><i></i><i></i></div>
+      <h3 style="margin:0">交给我一个任务</h3>
+      <p>演示多阶段流式输出：思考、命令、工具调用，中间穿插小结</p>
+      <button class="chip" type="button">启动项目的前端，并验证能访问</button>
+    </div>
+  </main>
+  <pre id="rawp"></pre>
+  <div id="dock">
+    <button id="jump" type="button">↓ 最新消息</button>
+    <form id="f"><div class="box">
+      <div id="q"></div>
+      <textarea id="in" rows="2" placeholder="发消息…"></textarea>
+      <div class="bar">
+        <button id="stop" type="button" aria-label="停止"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></button>
+        <button id="send" type="submit" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+      </div>
+    </div></form>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const chat = $('#chat'), inp = $('#in'), rawp = $('#rawp'), jump = $('#jump');
+const F = '```';
+const SV = (d, extra) => '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' + (extra || '') + '>' + d + '</svg>';
+const IC = {
+  cmd: SV('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10l3 2-3 2M12 15h4"/>'),
+  tool: SV('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.8 3.8z"/>'),
+  bulb: SV('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>'),
+  chev: SV('<path d="M9 6l6 6-6 6"/>', ' width="16" height="16" class="chev"')
+};
+let ctrl = null, stick = true, lastPrompt = '', queue = [];
+const sleep = (ms, sig) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms);
+  sig.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')); }, { once: true });
+});
+const el = (cls, html) => { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; };
+const fmt = ms => { const s = Math.floor(ms / 1000), m = Math.floor(s / 60); return m ? m + 'm' + (s % 60) + 's' : s + 's'; };
+const toBottom = () => { if (stick) chat.scrollTop = chat.scrollHeight; };
+const syncJump = () => jump.classList.toggle('on', !!ctrl && !stick);
+chat.addEventListener('scroll', () => { stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60; syncJump(); });
+jump.addEventListener('click', () => { stick = true; chat.scrollTop = chat.scrollHeight; syncJump(); });
+
+/* ---------- 演示脚本：思考 / 文本 / 命令组 / 工具组 交替出现 ---------- */
+const SCRIPT = [
+  { k: 'think', s: '用户要启动前端并确认能访问。先弄清楚前端在哪个目录、用什么命令启动，再决定怎么验证，不能只看进程是否起来。' },
+  { k: 'text', s: '先看一下项目结构和前端的启动方式。' },
+  { k: 'group', kind: 'cmd', items: [
+    { title: 'ls apps/', out: 'mobile-controller\nshowcase-web\nweb-dashboard', ms: 900 },
+    { title: 'cat apps/web-dashboard/package.json', out: '"dev": "vite --host"\n"build": "tsc && vite build"', ms: 1200 },
+    { title: 'git status -s', out: '(工作区干净)', ms: 800 }] },
+  { k: 'text', s: '前端在 `apps/web-dashboard`，用 **Vite**，启动脚本是 `npm run dev`。先装依赖，再启动开发服务器。' },
+  { k: 'group', kind: 'cmd', items: [
+    { title: 'npm install', out: 'added 312 packages in 14s', ms: 2400 },
+    { title: 'npm run dev -- --port 5173', out: 'VITE ready in 420 ms\n  Local: http://localhost:5173/', ms: 2000 }] },
+  { k: 'think', s: '服务起来了，但“能启动”不等于“能访问”。要用请求验证状态码和页面内容，再看有没有运行时的报错。' },
+  { k: 'text', s: '服务已经在 5173 端口跑起来了。**进程在跑不等于能访问**，我再用请求验证一遍。' },
+  { k: 'group', kind: 'cmd', items: [
+    { title: 'curl -sI http://localhost:5173', out: 'HTTP/1.1 200 OK\nContent-Type: text/html', ms: 1100 },
+    { title: 'curl -s http://localhost:5173 | head -5', out: '<!doctype html>\n<html lang="zh-CN">\n<title>Flux</title>', ms: 1100 }] },
+  { k: 'text', s: '首页返回 **200**，HTML 内容也对。不过启动日志里有一条环境变量警告，顺手查一下来源。' },
+  { k: 'group', kind: 'tool', items: [
+    { title: 'grep "VITE_API" src/', out: 'src/api/client.ts:3', ms: 1200 },
+    { title: 'read_file src/api/client.ts', out: '已读取 42 行', ms: 1000 }] },
+  { k: 'text', s: '## 结果\n\n- 前端已启动：`http://localhost:5173`，状态码 **200**\n- 警告来源：`VITE_API_URL` 没有配置，现在回退到默认的本地地址\n- 不影响页面访问，但接后端之前需要补上\n\n需要手动再启动时：\n\n' + F + 'bash\ncd apps/web-dashboard\nnpm run dev -- --port 5173\n' + F + '\n\n要不要我把 `VITE_API_URL` 补进 `.env.example`？' }
+];
+
+/* ---------- 模拟服务端：按 SSE 文本格式逐帧输出 ---------- */
+const fr = (ev, d) => 'event: ' + ev + '\ndata: ' + JSON.stringify(d) + '\n\n';
+const chunks = (s, n) => { const a = []; for (let i = 0; i < s.length; i += n) a.push(s.slice(i, i + n)); return a; };
+async function* server(sig) {
+  let id = 0;
+  for (const st of SCRIPT) {
+    if (st.k === 'think') {
+      yield fr('state', { label: '思考中' });
+      for (const c of chunks(st.s, 3)) { yield fr('thinking', { text: c }); await sleep(26, sig); }
+      yield fr('think_end', {}); await sleep(200, sig);
+    } else if (st.k === 'text') {
+      yield fr('state', { label: '工作中' });
+      for (const c of chunks(st.s, 2)) { yield fr('token', { text: c }); await sleep(14 + Math.random() * 22, sig); }
+      await sleep(250, sig);
+    } else {
+      yield fr('state', { label: st.kind === 'cmd' ? '正在运行命令' : '正在调用工具' });
+      yield fr('group_start', { kind: st.kind });
+      for (const it of st.items) {
+        const cid = 'c' + (id++);
+        yield fr('cmd', { id: cid, kind: st.kind, title: it.title });
+        await sleep(it.ms, sig);
+        yield fr('cmd_end', { id: cid, out: it.out });
+      }
+      yield fr('group_end', {}); await sleep(200, sig);
+    }
+  }
+  yield fr('done', {});
+}
+/* 模拟网络：每一帧随机拆成两段，检验解析器能否处理半帧。接真实后端时换成 fetch 的 ReadableStream 即可 */
+async function* transport(sig) {
+  for await (const f of server(sig)) {
+    const k = 1 + Math.floor(Math.random() * (f.length - 1));
+    yield f.slice(0, k); yield f.slice(k);
+  }
+}
+async function* sse(stream) {
+  let buf = '';
+  for await (const c of stream) {
+    buf += c;
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const blk = buf.slice(0, i); buf = buf.slice(i + 2);
+      rawp.textContent += blk + '\n\n'; rawp.scrollTop = rawp.scrollHeight;
+      let ev = 'message', data = '';
+      for (const l of blk.split('\n')) {
+        if (l.startsWith('event:')) ev = l.slice(6).trim();
+        else if (l.startsWith('data:')) data += l.slice(5).trim();
+      }
+      if (data) yield { ev, data: JSON.parse(data) };
+    }
+  }
+}
+
+/* ---------- 轻量 Markdown（支持流式中途未闭合的代码块） ---------- */
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function inline(p) {
+  const fmtI = t => t.replace(/`([^`]+)`/g, '<code class="ic">$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  let out = '', list = null;
+  const close = () => { if (list) { out += '</' + list + '>'; list = null; } };
+  for (const l of esc(p).split('\n')) {
+    let m;
+    if ((m = l.match(/^#{1,3}\s+(.*)/))) { close(); out += '<h4>' + fmtI(m[1]) + '</h4>'; }
+    else if ((m = l.match(/^[-*]\s+(.*)/))) { if (list !== 'ul') { close(); out += '<ul>'; list = 'ul'; } out += '<li>' + fmtI(m[1]) + '</li>'; }
+    else if (l.trim() === '') close();
+    else { close(); out += '<p>' + fmtI(l) + '</p>'; }
+  }
+  close(); return out;
+}
+const md = s => s.split(F).map((p, i) => {
+  if (i % 2) {
+    const nl = p.indexOf('\n');
+    return '<pre><span class="lang">' + esc((nl < 0 ? p : p.slice(0, nl)).trim()) + '</span><code>' + esc(nl < 0 ? '' : p.slice(nl + 1)) + '</code></pre>';
+  }
+  return inline(p);
+}).join('');
+
+/* ---------- 界面 ---------- */
+function setBusy(b) {
+  $('#stop').style.display = b ? 'grid' : 'none';
+  $('#ring').className = b ? 'run' : '';
+  inp.placeholder = b ? '输入会加入队列' : '发消息…';
+  syncJump();
+}
+const showQ = () => { const q = $('#q'); q.style.display = queue.length ? 'block' : 'none'; q.textContent = '排队中 · ' + queue.length + ' 条'; };
+const mkDetails = (cls, summary, body) => { const d = document.createElement('details'); d.className = cls; d.innerHTML = '<summary>' + summary + '</summary>' + body; return d; };
+
+async function run(p) {
+  lastPrompt = p; stick = true;
+  const empty = $('#empty');
+  if (empty) { empty.remove(); $('#tt').textContent = p; }
+  const u = el('msg user'); u.appendChild(el('bub')).textContent = p; chat.appendChild(u);
+  const msg = el('msg agent'), parts = el('parts');
+  const work = el('work', '<span class="mas"><i></i><i></i></span><span class="wl">工作中…</span>');
+  parts.appendChild(work); msg.appendChild(parts); chat.appendChild(msg);
+  rawp.textContent = '';
+  ctrl = new AbortController(); setBusy(true); toBottom();
+  const curEl = document.createElement('span'); curEl.className = 'cur';
+  const t0 = performance.now();
+  const add = n => { curEl.remove(); parts.insertBefore(n, work); };
+  let txt = null, txtS = '', th = null, thS = '', grp = null, gk = 'cmd', gT = 0, tick = null, n = 0;
+  const rows = {};
+  const stopTick = () => { clearInterval(tick); tick = null; };
+  try {
+    for await (const { ev, data } of sse(transport(ctrl.signal))) {
+      if (ev === 'state') work.querySelector('.wl').textContent = data.label + '…';
+      else if (ev === 'thinking') {
+        if (!th) { txt = null; th = mkDetails('think', IC.bulb + '<span class="lbl shim">思考中…</span>' + IC.chev, '<div class="tx"></div>'); th.open = true; add(th); }
+        thS += data.text; th.querySelector('.tx').textContent = thS;
+      } else if (ev === 'think_end') {
+        const l = th.querySelector('.lbl'); l.textContent = '思考过程'; l.classList.remove('shim'); th.open = false; th = null; thS = '';
+      } else if (ev === 'group_start') {
+        txt = null; gk = data.kind; n = 0; gT = performance.now();
+        grp = mkDetails('grp', '<span class="gl"></span>' + IC.chev, '<div class="rows"></div>'); grp.open = true; add(grp);
+        const gl = grp.querySelector('.gl'), run1 = gk === 'cmd' ? '正在运行命令' : '正在调用工具';
+        gl.textContent = run1 + ' · 0s';
+        tick = setInterval(() => { gl.textContent = run1 + ' · ' + fmt(performance.now() - gT); }, 1000);
+      } else if (ev === 'cmd') {
+        const r = mkDetails('row', IC[data.kind] + '<span class="ct">' + (data.kind === 'cmd' ? '运行 ' : '调用 ') + '<code>' + esc(data.title) + '</code></span><span class="st"><span class="dotb"></span></span>' + IC.chev, '<pre class="out"></pre>');
+        rows[data.id] = r; grp.querySelector('.rows').appendChild(r); n++;
+      } else if (ev === 'cmd_end') {
+        const r = rows[data.id]; r.querySelector('.st').innerHTML = '<span class="ok">✓</span>'; r.querySelector('.out').textContent = data.out;
+      } else if (ev === 'group_end') {
+        stopTick(); grp.querySelector('.gl').textContent = gk === 'cmd' ? '运行了 ' + n + ' 条命令' : '调用了 ' + n + ' 个工具'; grp.open = false; grp = null;
+      } else if (ev === 'token') {
+        if (!txt) { txt = el('ans'); txtS = ''; add(txt); }
+        txtS += data.text; txt.innerHTML = md(txtS);
+        let t = txt; while (t.lastElementChild) t = t.lastElementChild; t.appendChild(curEl);
+      }
+      toBottom();
+    }
+    curEl.remove(); work.remove(); $('#ring').className = 'fin';
+    const m = el('meta', '<span>共用时 ' + fmt(performance.now() - t0) + '</span>');
+    const cp = document.createElement('button'); cp.type = 'button'; cp.textContent = '复制';
+    cp.onclick = async () => { try { await navigator.clipboard.writeText(parts.innerText); cp.textContent = '已复制'; } catch (e) { cp.textContent = '复制失败'; } };
+    const rg = document.createElement('button'); rg.type = 'button'; rg.textContent = '重新生成';
+    rg.onclick = () => { if (!ctrl) { u.remove(); msg.remove(); run(lastPrompt); } };
+    m.append(cp, rg); parts.appendChild(m);
+  } catch (e) {
+    stopTick(); curEl.remove(); work.remove();
+    msg.querySelectorAll('.dotb').forEach(d => d.replaceWith('·'));
+    msg.querySelectorAll('.shim').forEach(s => { s.classList.remove('shim'); s.textContent = '思考过程'; });
+    parts.appendChild(el('meta', e.name === 'AbortError' ? '已停止' : '出错了：' + esc(String(e.message))));
+  } finally {
+    ctrl = null; setBusy(false); toBottom();
+    if (queue.length) { const nx = queue.shift(); showQ(); run(nx); }
+  }
+}
+function submit() {
+  const v = inp.value.trim(); if (!v) return;
+  inp.value = '';
+  if (ctrl) { queue.push(v); showQ(); } else run(v);
+}
+$('#f').addEventListener('submit', e => { e.preventDefault(); submit(); });
+$('#stop').addEventListener('click', () => { if (ctrl) ctrl.abort(); });
+inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } });
+$('.chip').addEventListener('click', e => run(e.currentTarget.textContent));
+$('#rawBtn').addEventListener('click', e => { rawp.classList.toggle('on'); e.currentTarget.classList.toggle('on'); });
+$('#clr').addEventListener('click', () => location.reload());
+setBusy(false);
+</script>
+</body>
+</html>

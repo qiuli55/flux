@@ -246,6 +246,45 @@ class StreamReducerTest {
     }
 
     @Test
+    fun `parts keep arrival order across thinking text and tool groups`() {
+        now = 1_000L
+        reducer.apply(thinking(1, "先看日志"))
+        reducer.flush()
+        reducer.apply(delta(2, "第一段"))
+        reducer.flush()
+        reducer.apply(tool(3, "call-1", "running", detail = "pytest -q"))
+        reducer.apply(tool(4, "call-1", "completed", detail = "pytest -q", output = "42 passed"))
+        reducer.apply(delta(5, "第二段"))
+        reducer.flush()
+
+        val parts = reducer.snapshot().parts
+        assertEquals(4, parts.size)
+        assertTrue(parts[0] is StreamPart.Thinking)
+        assertEquals("第一段", (parts[1] as StreamPart.Text).text)
+        val group = parts[2] as StreamPart.ToolGroup
+        assertEquals(1, group.steps.size)
+        assertEquals(StreamToolStatus.DONE, group.steps[0].status)
+        assertEquals("第二段", (parts[3] as StreamPart.Text).text)
+    }
+
+    @Test
+    fun `late tool completion updates its original group instead of appending`() {
+        reducer.apply(thinking(1, "先跑测试"))
+        reducer.flush()
+        reducer.apply(tool(2, "call-9", "running", detail = "pytest -q"))
+        reducer.apply(delta(3, "测试结果如下"))
+        reducer.flush()
+
+        reducer.apply(tool(4, "call-9", "completed", detail = "pytest -q", output = "42 passed"))
+
+        val parts = reducer.snapshot().parts
+        assertEquals(3, parts.size)
+        val group = parts[1] as StreamPart.ToolGroup
+        assertEquals(StreamToolStatus.DONE, group.steps[0].status)
+        assertEquals("测试结果如下", (parts[2] as StreamPart.Text).text)
+    }
+
+    @Test
     fun `terminal connection failure keeps partial text and offers retry state`() {
         reducer.apply(delta(1, "部分内容"))
         reducer.flush()

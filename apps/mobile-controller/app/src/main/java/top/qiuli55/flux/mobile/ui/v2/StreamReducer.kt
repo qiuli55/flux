@@ -49,6 +49,30 @@ data class StreamToolStep(
 
 data class StreamErrorLine(val id: Int, val text: String)
 
+/**
+ * 实时流按到达顺序切成的段落。
+ *
+ * 一次 Run 里「思考 → 命令 → 正文 → 再思考」会反复交替；分开存段落后，
+ * UI 才能像 Kimi / Claude 一样把命令折叠行插在对应正文之间，而不是全部堆在顶部。
+ */
+sealed interface StreamPart {
+    val id: Int
+
+    data class Text(override val id: Int, val text: String) : StreamPart
+
+    data class Thinking(
+        override val id: Int,
+        val text: String,
+        val startedAtMs: Long,
+        val endedAtMs: Long? = null,
+        val active: Boolean = true,
+    ) : StreamPart {
+        fun elapsedMs(nowMs: Long): Long = ((endedAtMs ?: nowMs) - startedAtMs).coerceAtLeast(0L)
+    }
+
+    data class ToolGroup(override val id: Int, val steps: List<StreamToolStep>) : StreamPart
+}
+
 /** UI 消费的不可变快照；[revision] 只在真正需要重绘时变化（flush / 结构事件）。 */
 data class StreamUiSnapshot(
     val liveText: String = "",
@@ -56,6 +80,8 @@ data class StreamUiSnapshot(
     val liveActive: Boolean = false,
     val reasoning: StreamReasoning? = null,
     val tools: List<StreamToolStep> = emptyList(),
+    /** 按到达顺序排列的实时段落；run_finished 后清空，交给落库消息。 */
+    val parts: List<StreamPart> = emptyList(),
     val errorLines: List<StreamErrorLine> = emptyList(),
     val connection: StreamConnection = StreamConnection.IDLE,
     val terminalError: String? = null,
@@ -112,6 +138,7 @@ internal class TaskStreamReducer(
     private var state = StreamUiSnapshot()
     private val pendingText = StringBuilder()
     private val pendingReasoning = StringBuilder()
+    private var partSeq = 0
 
     fun snapshot(): StreamUiSnapshot = state
 
@@ -140,6 +167,7 @@ internal class TaskStreamReducer(
                     // 普通回话也可能接在上一轮工具之后：不继承上一轮的过程。
                     reasoning = null,
                     tools = emptyList(),
+                    parts = emptyList(),
                     errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
@@ -162,6 +190,7 @@ internal class TaskStreamReducer(
                         liveActive = true,
                         liveLabel = null,
                         reasoning = endReasoning(state.reasoning),
+                        parts = endThinkingParts(state.parts),
                     )
                     StreamApply.BUFFERED
                 }
@@ -174,6 +203,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = endReasoning(it.reasoning),
                     tools = finishRunning(it.tools),
+                    parts = emptyList(),
                     terminalError = null,
                 )
             }
@@ -196,6 +226,7 @@ internal class TaskStreamReducer(
                                 step
                             }
                         },
+                        parts = finishToolParts(endThinkingParts(it.parts), failed = true),
                     )
                 }
             }
@@ -207,6 +238,7 @@ internal class TaskStreamReducer(
                     liveLabel = "正在思考…",
                     reasoning = null,
                     tools = emptyList(),
+                    parts = emptyList(),
                     errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
@@ -226,6 +258,7 @@ internal class TaskStreamReducer(
                         // 避免执行结束瞬间正文先消失、落库消息随后才到造成的闪烁。
                         reasoning = endReasoning(it.reasoning),
                         tools = finishRunning(it.tools, failed),
+                        parts = finishToolParts(endThinkingParts(it.parts), failed),
                         terminalError = if (failed) {
                             it.terminalError ?: string(event, "error").ifBlank { "执行失败" }
                         } else {
@@ -244,6 +277,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = null,
                     tools = emptyList(),
+                    parts = emptyList(),
                     errorLines = emptyList(),
                     terminalError = null,
                 )
@@ -256,6 +290,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = null,
                     tools = emptyList(),
+                    parts = emptyList(),
                     errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
@@ -284,6 +319,7 @@ internal class TaskStreamReducer(
                 terminalError = null,
                 reasoning = endReasoning(state.reasoning),
                 tools = finishRunning(state.tools),
+                parts = finishToolParts(endThinkingParts(state.parts)),
             ),
         )
         return state
@@ -299,6 +335,7 @@ internal class TaskStreamReducer(
                 liveLabel = null,
                 reasoning = null,
                 tools = emptyList(),
+                parts = emptyList(),
                 errorLines = emptyList(),
                 terminalError = null,
             ),
@@ -316,6 +353,7 @@ internal class TaskStreamReducer(
                 liveLabel = label,
                 reasoning = null,
                 tools = emptyList(),
+                parts = emptyList(),
                 errorLines = emptyList(),
                 terminalError = null,
                 cancelled = false,
@@ -334,6 +372,7 @@ internal class TaskStreamReducer(
                 liveLabel = null,
                 reasoning = null,
                 tools = emptyList(),
+                parts = emptyList(),
                 errorLines = emptyList(),
                 terminalError = null,
                 cancelled = false,
@@ -404,6 +443,7 @@ internal class TaskStreamReducer(
                         step
                     }
                 },
+                parts = finishToolParts(endThinkingParts(state.parts), failed = true),
             ),
         )
         return state
@@ -453,7 +493,10 @@ internal class TaskStreamReducer(
             "tool" -> {
                 flushInternal()
                 // 开始调工具就停掉思考计时：Claude 的 thinking 块在下一个块开始时收尾。
-                state = state.copy(reasoning = endReasoning(state.reasoning))
+                state = state.copy(
+                    reasoning = endReasoning(state.reasoning),
+                    parts = endThinkingParts(state.parts),
+                )
                 state = touch(applyToolEvent(event))
                 return StreamApply.COMMITTED
             }
@@ -484,6 +527,7 @@ internal class TaskStreamReducer(
                     liveActive = true,
                     liveLabel = null,
                     reasoning = endReasoning(state.reasoning),
+                    parts = endThinkingParts(state.parts),
                 )
                 return StreamApply.BUFFERED
             }
@@ -524,8 +568,10 @@ internal class TaskStreamReducer(
                 paths = paths,
             )
         }
+        val changed = if (index >= 0) steps[index] else steps.last()
         return state.copy(
             tools = steps,
+            parts = appendToolPart(state.parts, changed),
             liveActive = true,
             liveLabel = if (state.liveText.isEmpty()) "正在执行命令…" else state.liveLabel,
         )
@@ -544,13 +590,6 @@ internal class TaskStreamReducer(
         pendingText.setLength(0)
         pendingReasoning.setLength(0)
         var next = state
-        if (text.isNotEmpty()) {
-            next = next.copy(
-                liveText = (next.liveText + text).takeLast(STREAM_TEXT_LIMIT),
-                liveLabel = null,
-                liveActive = true,
-            )
-        }
         if (reasoningText.isNotEmpty()) {
             val reasoning = next.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
             next = next.copy(
@@ -558,9 +597,87 @@ internal class TaskStreamReducer(
                     text = (reasoning.text + reasoningText).takeLast(STREAM_REASONING_LIMIT),
                     active = true,
                 ),
+                parts = appendThinkingPart(next.parts, reasoningText, reasoning.startedAtMs),
+            )
+        }
+        if (text.isNotEmpty()) {
+            next = next.copy(
+                liveText = (next.liveText + text).takeLast(STREAM_TEXT_LIMIT),
+                liveLabel = null,
+                liveActive = true,
+                parts = appendTextPart(next.parts, text),
             )
         }
         state = touch(next)
+    }
+
+    private fun appendTextPart(parts: List<StreamPart>, text: String): List<StreamPart> {
+        if (text.isEmpty()) return parts
+        val last = parts.lastOrNull()
+        return if (last is StreamPart.Text) {
+            parts.dropLast(1) + last.copy(text = (last.text + text).takeLast(STREAM_TEXT_LIMIT))
+        } else {
+            parts + StreamPart.Text(++partSeq, text.takeLast(STREAM_TEXT_LIMIT))
+        }
+    }
+
+    private fun appendThinkingPart(
+        parts: List<StreamPart>,
+        text: String,
+        startedAtMs: Long,
+    ): List<StreamPart> {
+        if (text.isEmpty()) return parts
+        val last = parts.lastOrNull()
+        return if (last is StreamPart.Thinking && last.active) {
+            parts.dropLast(1) + last.copy(
+                text = (last.text + text).takeLast(STREAM_REASONING_LIMIT),
+            )
+        } else {
+            parts + StreamPart.Thinking(
+                id = ++partSeq,
+                text = text.takeLast(STREAM_REASONING_LIMIT),
+                startedAtMs = startedAtMs,
+            )
+        }
+    }
+
+    private fun endThinkingParts(parts: List<StreamPart>): List<StreamPart> {
+        if (parts.none { it is StreamPart.Thinking && it.active }) return parts
+        return parts.map { part ->
+            if (part is StreamPart.Thinking && part.active) {
+                part.copy(active = false, endedAtMs = part.endedAtMs ?: now())
+            } else {
+                part
+            }
+        }
+    }
+
+    private fun appendToolPart(parts: List<StreamPart>, step: StreamToolStep): List<StreamPart> {
+        // 同一个 call_id 的 completed 可能晚于正文到达：先找回它原来所在的分组原位更新。
+        val owner = parts.indexOfLast {
+            it is StreamPart.ToolGroup && it.steps.any { s -> s.id == step.id }
+        }
+        if (owner >= 0) {
+            val group = parts[owner] as StreamPart.ToolGroup
+            val steps = group.steps.map { if (it.id == step.id) step else it }
+            return parts.toMutableList().also { it[owner] = group.copy(steps = steps) }
+        }
+        val last = parts.lastOrNull()
+        if (last is StreamPart.ToolGroup) {
+            return parts.dropLast(1) + last.copy(steps = last.steps + step)
+        }
+        return parts + StreamPart.ToolGroup(++partSeq, listOf(step))
+    }
+
+    private fun finishToolParts(
+        parts: List<StreamPart>,
+        failed: Boolean = false,
+    ): List<StreamPart> = parts.map { part ->
+        if (part is StreamPart.ToolGroup) {
+            part.copy(steps = finishRunning(part.steps, failed))
+        } else {
+            part
+        }
     }
 
     private fun dropPending() {
