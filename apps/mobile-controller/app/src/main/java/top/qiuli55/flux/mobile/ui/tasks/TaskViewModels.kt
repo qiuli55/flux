@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.sse.EventSource
@@ -259,6 +260,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private var streamRelay = false
     private var streamGeneration = 0
     private var lastStreamSeq = 0
+    private val streamJson = Json { ignoreUnknownKeys = true }
     private val _state = MutableStateFlow(TaskDetailUiState())
     val state = _state.asStateFlow()
 
@@ -755,7 +757,14 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private fun handleStreamSideEffect(event: TaskStreamEvent) {
         val current = _state.value
         when (event.type) {
-            "assistant_message", "run_started", "run_status", "run_finished" -> refresh(quiet = true)
+            // 终态事件自带落库消息：先乐观插入，再拉全量。
+            // 否则实时正文刚被清空、全量刷新还没回来，正文会空白闪一下。
+            "assistant_message", "run_finished" -> {
+                adoptStreamMessage(event)
+                refresh(quiet = true)
+            }
+
+            "run_started", "run_status" -> refresh(quiet = true)
             "assistant_error" -> {
                 val reason = streamString(event, "error").ifBlank { "回复中断" }
                 Log.w(
@@ -803,6 +812,21 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private fun streamString(event: TaskStreamEvent, key: String): String =
         runCatching { event.data[key]?.jsonPrimitive?.contentOrNull.orEmpty() }
             .getOrDefault("")
+
+    /**
+     * 终态/落库事件自带的 assistant 消息先插入本地列表，
+     * 与实时正文的清空落在同一批状态更新里；随后的全量刷新再以服务端列表为准。
+     */
+    private fun adoptStreamMessage(event: TaskStreamEvent) {
+        val element = event.data["message"] ?: return
+        val message = runCatching {
+            streamJson.decodeFromJsonElement(TaskMessage.serializer(), element)
+        }.getOrNull() ?: return
+        if (message.id.isBlank()) return
+        val current = _state.value
+        if (current.messages.any { it.id == message.id }) return
+        _state.value = current.copy(messages = current.messages + message)
+    }
 
     fun send() {
         val current = _state.value
