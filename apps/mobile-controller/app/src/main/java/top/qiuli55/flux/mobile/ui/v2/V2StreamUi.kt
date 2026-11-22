@@ -102,22 +102,22 @@ internal fun StreamActivityCard(
     val filesChanged = tools.filter { it.category == "write" }.flatMap { it.paths }.toSet().size
     val filesRead = tools.filter { it.category == "read" }.flatMap { it.paths }.toSet().size
     val settledSummary = buildString {
-        val reasoning = stream.reasoning
-        if (reasoning != null) {
-            // 与 Claude 一致：思考中只报状态，结束后固化成「思考了 N 秒」。
-            append(
-                if (reasoning.active) {
-                    "思考中"
-                } else {
-                    "思考了 ${formatStreamElapsed(reasoning.elapsedMs(System.currentTimeMillis()))}"
-                },
-            )
-        }
+        // Kimi 式折叠行：正文上方只留「运行了 N 条命令」；没有工具时才报思考耗时。
         if (tools.isNotEmpty()) {
-            if (isNotEmpty()) append(" · ")
-            append(if (commands > 0) "$commands 条命令" else "${tools.size} 步")
+            append(if (commands > 0) "运行了 $commands 条命令" else "执行了 ${tools.size} 步")
             if (filesChanged > 0) append(" · 改动 $filesChanged 文件")
             if (filesRead > 0) append(" · 读取 $filesRead 文件")
+        } else {
+            val reasoning = stream.reasoning
+            if (reasoning != null) {
+                append(
+                    if (reasoning.active) {
+                        "思考中"
+                    } else {
+                        "思考了 ${formatStreamElapsed(reasoning.elapsedMs(System.currentTimeMillis()))}"
+                    },
+                )
+            }
         }
         if (isEmpty()) append("执行过程")
     }
@@ -127,7 +127,6 @@ internal fun StreamActivityCard(
     val liveAction = when {
         runningTool != null -> runningToolActivity(runningTool)
         stream.reasoning?.active == true -> reasoningHint(stream.reasoning)
-        stream.liveActive && stream.liveText.isNotBlank() -> "正在回复…"
         else -> null
     }
     val running = liveAction != null

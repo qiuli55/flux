@@ -58,6 +58,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -369,9 +370,11 @@ fun V2ChatScreen(
         label = "chat-composer-border",
     )
 
-    // 有执行过程时只显示那一行状态，不再额外冒一个空正文气泡（Claude 同款）。
-    val showLiveBubble = stream.liveText.isNotBlank() ||
-        (stream.liveActive && !stream.hasActivity)
+    // 运行中固定在正文流底部显示「••• 工作中…」；正文一到就切成正文气泡。
+    val showLiveBubble = stream.liveText.isNotBlank() || stream.liveActive
+    // Kimi 式分层：思考/工具过程放进输入区上方的运行状态条，正文里只在
+    // 已经开始输出后留一行折叠摘要（「运行了 N 条命令」），避免过程比答案还重。
+    val showInlineTrace = stream.hasActivity && (!stream.liveActive || stream.liveText.isNotBlank())
     val showStreamStatus = stream.terminalError != null ||
         stream.cancelled ||
         stream.connection == StreamConnection.RECONNECTING ||
@@ -384,7 +387,7 @@ fun V2ChatScreen(
         (if (!messages.firstOrNull()?.time.isNullOrBlank()) 1 else 0) +
         messages.size +
         (if (pendingChangeCount > 0 && onOpenChanges != null) 1 else 0) +
-        (if (stream.hasActivity) 1 else 0) +
+        (if (showInlineTrace) 1 else 0) +
         (if (showLiveBubble) 1 else if (sending) 1 else 0) +
         (if (showStreamStatus) 1 else 0) - 1
 
@@ -660,7 +663,7 @@ fun V2ChatScreen(
                         )
                     }
                 }
-                if (stream.hasActivity) {
+                if (showInlineTrace) {
                     // 执行过程：思考可折叠（结束后默认收起），工具步骤带运行/完成/失败状态。
                     // 固定 key：正文增量刷新时卡片不会被重建，展开状态也不会被重置。
                     item(key = "stream-activity") {
@@ -673,7 +676,6 @@ fun V2ChatScreen(
                     item(key = "live-streaming") {
                         StreamingRow(
                             text = stream.liveText,
-                            label = stream.liveLabel,
                             streaming = stream.liveActive,
                             onOpenUrl = onOpenUrl,
                             onSend = onSend,
@@ -710,7 +712,7 @@ fun V2ChatScreen(
                 messageList()
             }
             // 离开底部后浮出「回到最新」；有新内容时换文案，点一下恢复跟随。
-            if (!followingStream && (messages.isNotEmpty() || showLiveBubble || stream.hasActivity)) {
+            if (!followingStream && (messages.isNotEmpty() || showLiveBubble || showInlineTrace || taskRunning)) {
                 JumpToBottomButton(
                     hasNewContent = unseenWhileAway,
                     onClick = jumpToBottom,
@@ -1561,7 +1563,7 @@ private fun PromptAction(
     }
 }
 
-/** 执行中的运行状态条：报当前动作与耗时，停止统一由输入区主按钮承担。 */
+/** 执行中的运行状态条：Kimi 式悬浮在输入框上方，点开才看思考与工具明细。 */
 @Composable
 private fun RunningStatusBar(
     title: String?,
@@ -1580,49 +1582,136 @@ private fun RunningStatusBar(
             delay(1_000L)
         }
     }
-    // 与 Claude 的状态行一致：先说是「在思考」还是「在用某个工具」，再报总耗时。
+    var expanded by remember(start) { mutableStateOf(false) }
+    var reasoningOpen by remember(start) { mutableStateOf(false) }
     val runningTool = stream.tools.lastOrNull { it.status == StreamToolStatus.RUNNING }
     val phase = when {
         stopping -> "正在停止"
-        stream.reasoning?.active == true -> "思考中"
         runningTool != null -> runningToolPhase(runningTool)
+        stream.reasoning?.active == true -> "思考中"
         stream.liveActive && stream.liveText.isNotBlank() -> "正在回复"
         else -> "Agent 正在执行"
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(V2Colors.surface(.92f))
+            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(14.dp))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 11.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (stopping) {
+                LiveDot(V2Colors.rose)
+            } else {
+                TypingDots()
+            }
+            Spacer(Modifier.width(7.dp))
+            Label(
+                phase,
+                10.5f,
+                if (stopping) V2Colors.rose else V2Colors.ink(.68f),
+                weight = FontWeight.Medium,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(6.dp))
+            Label(
+                if (stopping) "停止中…" else formatStreamElapsed(nowMs - start),
+                9.5f,
+                V2Colors.ink(.38f),
+                mono = true,
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowRight,
+                contentDescription = if (expanded) "收起运行详情" else "展开运行详情",
+                tint = V2Colors.ink(.30f),
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 7.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (!title.isNullOrBlank()) {
+                    Label(title, 9f, V2Colors.ink(.32f), maxLines = 1)
+                }
+                stream.reasoning?.let { reasoning ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { reasoningOpen = !reasoningOpen }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.AutoAwesome,
+                            contentDescription = null,
+                            tint = V2Colors.ink(.34f),
+                            modifier = Modifier.size(11.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Label("思考过程", 9.5f, V2Colors.ink(.52f))
+                        Spacer(Modifier.width(5.dp))
+                        Label(
+                            formatStreamElapsed(reasoning.elapsedMs(nowMs)),
+                            8.5f,
+                            V2Colors.ink(.34f),
+                            mono = true,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Label(if (reasoningOpen) "收起" else "展开", 8.5f, V2Colors.cyan700)
+                    }
+                    if (reasoningOpen && reasoning.text.isNotBlank()) {
+                        Label(
+                            reasoning.text,
+                            9.5f,
+                            V2Colors.ink(.48f),
+                            maxLines = 8,
+                            modifier = Modifier.padding(start = 17.dp),
+                        )
+                    }
+                }
+                stream.tools.takeLast(4).forEach { step -> RunningToolLine(step) }
+            }
+        }
+    }
+}
+
+/** 运行状态条展开后的一行工具：状态图标 + 名称/目标 + 状态。 */
+@Composable
+private fun RunningToolLine(step: StreamToolStep) {
+    val (icon, tint, statusLabel) = when (step.status) {
+        StreamToolStatus.RUNNING -> Triple(Icons.Outlined.Autorenew, V2Colors.cyan700, "运行中")
+        StreamToolStatus.DONE -> Triple(Icons.Outlined.Check, V2Colors.emerald, "完成")
+        StreamToolStatus.FAILED -> Triple(Icons.Outlined.Close, V2Colors.rose, "失败")
     }
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(V2Colors.emerald.copy(alpha = .06f))
-            .border(1.dp, V2Colors.emerald.copy(alpha = .20f), RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .padding(vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LiveDot(V2Colors.emerald)
+        Icon(icon, contentDescription = statusLabel, tint = tint, modifier = Modifier.size(11.dp))
         Spacer(Modifier.width(6.dp))
-        Label(phase, 9.5f, V2Colors.emerald700, weight = FontWeight.Medium, maxLines = 1)
-        if (!title.isNullOrBlank()) {
-            Spacer(Modifier.width(5.dp))
-            Label("·", 9.5f, V2Colors.emerald700.copy(alpha = .5f))
-            Spacer(Modifier.width(5.dp))
-            Label(
-                title,
-                9.5f,
-                V2Colors.emerald700.copy(alpha = .8f),
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            Spacer(Modifier.weight(1f))
-        }
-        Spacer(Modifier.width(8.dp))
+        Label(step.name.ifBlank { "tool" }, 9f, V2Colors.ink(.62f), mono = true, maxLines = 1)
+        Spacer(Modifier.width(6.dp))
         Label(
-            if (stopping) "停止中…" else formatStreamElapsed(nowMs - start),
-            9f,
-            if (stopping) V2Colors.rose else V2Colors.emerald700.copy(alpha = .7f),
+            compactToolDetail(step.detail),
+            8.5f,
+            V2Colors.ink(.36f),
             mono = true,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
         )
+        Spacer(Modifier.width(6.dp))
+        Label(statusLabel, 8f, tint, mono = true)
     }
 }
 
@@ -1709,7 +1798,6 @@ private fun SummaryCard(text: String, time: String, note: String = "来自上一
 @Composable
 private fun StreamingRow(
     text: String,
-    label: String?,
     streaming: Boolean = true,
     onOpenUrl: (String) -> Unit = {},
     onSend: (String) -> Unit = {},
@@ -1735,11 +1823,11 @@ private fun StreamingRow(
             },
         ) {
             if (blank) {
-                // 还没出正文：只给三点动画与一句轻提示。
+                // 还没出正文：Kimi 式「••• 工作中…」，具体在做什么交给输入框上方的状态条。
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TypingDots()
                     Spacer(Modifier.width(7.dp))
-                    Label(label ?: "正在处理…", 10.5f, V2Colors.ink(.42f))
+                    Label("工作中…", 10.5f, V2Colors.ink(.42f))
                 }
             } else {
                 // 流式正文与最终答复共用同一套卡片渲染：代码/表格在生成过程中就能成卡。
@@ -2175,41 +2263,40 @@ private fun RunDurationRow(run: TaskRunSummary, onClick: () -> Unit) {
         else -> ""
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        // Kimi 式：正文里就是一行很轻的折叠入口，不加边框和底色。
         Row(
             Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(V2Colors.surface)
-                .border(1.dp, V2Colors.line, RoundedCornerShape(999.dp))
+                .clip(RoundedCornerShape(8.dp))
                 .clickable(onClick = onClick)
-                .padding(start = 12.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+                .padding(horizontal = 4.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Outlined.Timer,
-                contentDescription = null,
-                tint = tone.copy(alpha = .8f),
-                modifier = Modifier.size(13.dp),
-            )
-            Spacer(Modifier.width(6.dp))
             Label(
-                if (steps > 0) {
-                    "已执行 $steps 步 · 用时 ${formatRunDuration(run.durationMs)}$suffix"
-                } else {
-                    "用时 ${formatRunDuration(run.durationMs)}$suffix"
+                when {
+                    run.commands > 0 -> "运行了 ${run.commands} 条命令"
+                    steps > 0 -> "运行了 $steps 步"
+                    else -> "查看执行过程"
                 },
-                12f,
+                11.5f,
                 tone,
             )
-            Spacer(Modifier.width(4.dp))
+            val duration = formatRunDuration(run.durationMs)
+            if (duration != "—") {
+                Spacer(Modifier.width(6.dp))
+                Label("· $duration$suffix", 10f, tone.copy(alpha = .62f), mono = true)
+            } else if (suffix.isNotEmpty()) {
+                Label(suffix, 10f, tone, mono = true)
+            }
+            Spacer(Modifier.width(3.dp))
             Icon(
                 Icons.Outlined.KeyboardArrowRight,
                 contentDescription = "执行详情",
-                tint = tone.copy(alpha = .6f),
-                modifier = Modifier.size(15.dp),
+                tint = tone.copy(alpha = .5f),
+                modifier = Modifier.size(14.dp),
             )
         }
     }
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(6.dp))
 }
 
 /** 耗时展示：1 分 10 秒 → 「1分10秒」；不足 1 秒单独说明，避免显示成 0 秒。 */
