@@ -25,11 +25,34 @@ import type {
   SupervisorOverview, SupervisorPlanResult, SupervisorProcessResult, SupervisorProjectOverview,
   SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
   SupervisorTicket, SupervisorTimelineItem, SupervisorTrigger, SupervisorWatchdogResult, Task,
-  TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
+  TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskRunSummary,
+  TaskStartOutcome, RunTrace,
   TerminalEvent, TerminalSession,
 } from "./types";
 
 export { API_BASE } from "./base";
+
+export function taskStreamUrl(taskId: string, afterSeq = 0): string {
+  const suffix = afterSeq > 0 ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
+  return `${API_BASE}/tasks/${encodeURIComponent(taskId)}/stream${suffix}`;
+}
+
+/**
+ * 供 SSE 等需要自建 fetch 的场景复用鉴权头。
+ * 浏览器 EventSource 不能带 Authorization，所以任务流走 fetch + ReadableStream。
+ */
+export function authHeaders(base?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(base ?? {}) };
+  if (
+    typeof window !== "undefined" &&
+    (window as Window & { fluxDesktop?: { isDesktop?: boolean } }).fluxDesktop?.isDesktop
+  ) {
+    headers["X-Flux-Desktop"] = "1";
+  }
+  const token = getAccessToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
 
 export function terminalStreamUrl(sessionId: string, afterSeq = 0): string {
   const suffix = afterSeq > 0 ? `?after_seq=${encodeURIComponent(afterSeq)}` : "";
@@ -73,16 +96,7 @@ function formatValidationDetails(details: unknown): string | null {
 }
 
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (
-    typeof window !== "undefined" &&
-    (window as Window & { fluxDesktop?: { isDesktop?: boolean } }).fluxDesktop?.isDesktop
-  ) {
-    headers["X-Flux-Desktop"] = "1";
-  }
-  const token = getAccessToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const headers = authHeaders(body !== undefined ? { "Content-Type": "application/json" } : undefined);
   try {
     return await fetch(`${API_BASE}${path}`, {
       method,
@@ -231,6 +245,10 @@ export const api = {
   },
   sendTaskMessage: (taskId: string, content: string) =>
     getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  listTaskRuns: (taskId: string, limit = 50) =>
+    getData<TaskRunSummary[]>("GET", `/tasks/${taskId}/runs?limit=${encodeURIComponent(limit)}`),
+  getRunTrace: (taskId: string, runId: string) =>
+    getData<RunTrace>("GET", `/tasks/${taskId}/runs/${encodeURIComponent(runId)}/trace`),
   startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
     getData<TaskStartOutcome>(
       "POST",

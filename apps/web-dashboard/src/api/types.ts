@@ -443,6 +443,13 @@ export interface TaskMessagePayload {
   /** 历史数据里的旧字段，保留兼容渲染 */
   clarify?: { label: string; value: string }[];
   steps?: string[];
+  /** agent run 落库消息（run_finished / run_retry）的关联信息 */
+  run_id?: string;
+  run_status?: string;
+  status?: string;
+  finish_reason?: string;
+  error?: string;
+  reason?: string;
 }
 
 /** 任务对话消息（GET /api/v1/tasks/{id}/messages） */
@@ -487,6 +494,79 @@ export interface DecisionOutcome {
   task: Task;
   decision: DecisionRecord;
   message: TaskMessage;
+}
+
+/** 一轮 agent 执行的概览（GET /api/v1/tasks/{id}/runs） */
+export interface TaskRunSummary {
+  run_id: string;
+  task_id?: string;
+  agent_id?: string;
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  /** 运行过的命令条数（bash/shell/exec 类工具调用） */
+  commands?: number;
+  /** 读取过的文件数（按路径去重） */
+  files_read?: number;
+  /** 改动过的文件数（按路径去重） */
+  files_changed?: number;
+}
+
+/** 执行轨迹项：思考段 / 工具卡 / 错误行 */
+export interface RunTraceItem {
+  seq?: number;
+  kind: string;
+  /** command / read / write / other；思考与错误行为空 */
+  category?: string;
+  text?: string;
+  name?: string;
+  detail?: string;
+  output?: string;
+  status?: string;
+  call_id?: string;
+  paths?: string[];
+}
+
+/** 一轮 Run 的完整轨迹（GET /api/v1/tasks/{id}/runs/{run_id}/trace） */
+export interface RunTrace {
+  run_id: string;
+  status: string;
+  duration_ms?: number | null;
+  commands?: number;
+  files_read?: number;
+  files_changed?: number;
+  items: RunTraceItem[];
+}
+
+/** SSE task.event 帧里的 data 载荷（按需取字段，未知字段保留） */
+export interface TaskStreamEventData {
+  [key: string]: unknown;
+  text?: string;
+  kind?: "thinking" | "tool" | "text" | "error" | "status" | string;
+  phase?: string;
+  name?: string;
+  detail?: string;
+  status?: string;
+  output?: string;
+  category?: string;
+  paths?: string[];
+  call_id?: string;
+  title?: string;
+  run_id?: string;
+  runtime?: string;
+  event_type?: string;
+  message?: TaskMessage;
+  error?: string;
+  finish_reason?: string;
+  reason?: string;
+}
+
+/** SSE 每一帧的内容（data: {seq, type, data}） */
+export interface TaskStreamEvent {
+  seq: number;
+  type: string;
+  data: TaskStreamEventData;
 }
 
 /* ---------- Agent Terminal Console（doc/AGENT_TERMINAL_CONSOLE.md） ---------- */

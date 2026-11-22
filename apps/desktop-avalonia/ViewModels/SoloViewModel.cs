@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using Avalonia.Media;
@@ -37,6 +39,97 @@ public partial class SoloViewModel : ViewModelBase
     private string? _lastStatus;
     private string? _contextDismissedLevel;
     private string? _pendingSummaryFrom;
+
+    // ===== 任务 SSE 实时流 =====
+    private readonly DispatcherTimer _streamTimer;
+    private readonly DispatcherTimer _settleTimer;
+    private readonly Dictionary<string, StreamToolRow> _streamToolRows = new();
+    private readonly Dictionary<string, RunTraceCardModel> _runTraces = new();
+    private TaskStreamClient? _streamClient;
+    private CancellationTokenSource? _streamCts;
+    private TaskStreamReducer _stream = new();
+    private TaskRunSummary[] _runSummaries = [];
+    private string? _streamTaskId;
+    private string? _messagesTaskId;
+    private bool _streamDirty;
+    private bool _wasStreamActive;
+    private bool _streamAutoCollapsed;
+
+    [ObservableProperty]
+    private bool _streamVisible;
+
+    [ObservableProperty]
+    private bool _streamActivityVisible;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StreamActivityCaret))]
+    private bool _streamActivityOpen = true;
+
+    [ObservableProperty]
+    private string _streamActivityMeta = "";
+
+    public string StreamActivityCaret => StreamActivityOpen ? "▾" : "▸";
+
+    [ObservableProperty]
+    private bool _streamHasText;
+
+    [ObservableProperty]
+    private string _streamLiveText = "";
+
+    [ObservableProperty]
+    private string _streamLabel = "";
+
+    [ObservableProperty]
+    private string _streamMeta = "";
+
+    [ObservableProperty]
+    private string _streamElapsed = "";
+
+    [ObservableProperty]
+    private bool _streamCanStop;
+
+    [ObservableProperty]
+    private bool _streamTypingVisible;
+
+    [ObservableProperty]
+    private bool _streamHasReasoning;
+
+    [ObservableProperty]
+    private bool _streamReasoningActive;
+
+    [ObservableProperty]
+    private string _streamReasoningText = "";
+
+    [ObservableProperty]
+    private string _streamReasoningTitle = "思考";
+
+    [ObservableProperty]
+    private bool _streamActivityHasContent;
+
+    [ObservableProperty]
+    private bool _hasStreamTools;
+
+    [ObservableProperty]
+    private string _streamConnectionText = "";
+
+    [ObservableProperty]
+    private IBrush _streamConnectionBrush = Muted;
+
+    [ObservableProperty]
+    private bool _streamConnectionVisible;
+
+    [ObservableProperty]
+    private bool _streamFailed;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStreamTerminalError))]
+    private string _streamTerminalError = "";
+
+    public bool HasStreamTerminalError => StreamTerminalError.Length > 0;
+
+    public ObservableCollection<StreamToolRow> StreamTools { get; } = new();
+
+    public ObservableCollection<string> StreamErrors { get; } = new();
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsPipeline))]
@@ -198,6 +291,30 @@ public partial class SoloViewModel : ViewModelBase
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _timer.Tick += async (_, _) => await PollSelectedAsync();
         _timer.Start();
+
+        // 流式正文按 50ms 合帧刷新，避免每个 delta 都触发一次布局。
+        _streamTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        _streamTimer.Tick += (_, _) =>
+        {
+            if (_streamDirty)
+            {
+                _streamDirty = false;
+                SyncStream();
+            }
+            else if (_stream.LiveActive)
+            {
+                // 只更新耗时，保持每秒走字。
+                UpdateStreamTiming();
+            }
+        };
+        _streamTimer.Start();
+
+        _settleTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _settleTimer.Tick += async (_, _) =>
+        {
+            _settleTimer.Stop();
+            await RefreshAfterRunAsync();
+        };
     }
 
     public bool IsPipeline => !IsSoloAgent;
@@ -276,6 +393,10 @@ public partial class SoloViewModel : ViewModelBase
         HasConfirmation = false;
         ConfirmationItems.Clear();
         Messages.Clear();
+        _messagesTaskId = null;
+        _runTraces.Clear();
+        _runSummaries = [];
+        ResetStream();
         DecisionOptions.Clear();
         HasPendingDecision = false;
         DecisionNote = "";
@@ -334,6 +455,7 @@ public partial class SoloViewModel : ViewModelBase
         }
 
         IsSending = true;
+        SyncStream();
         Draft = "";
         try
         {
@@ -356,6 +478,7 @@ public partial class SoloViewModel : ViewModelBase
                 ApplyTask(created);
                 IsNewTask = false;
                 taskId = created.Id;
+                StartStream(taskId);
                 PendingSummary = null;
                 _pendingSummaryFrom = null;
                 await RefreshTaskListAsync(api);
@@ -373,9 +496,11 @@ public partial class SoloViewModel : ViewModelBase
 
             ApplyTask(result.Task);
             AppendMessages(result.Messages);
+            StartStream(taskId);
             ConfirmationHint = $"已落库 · {result.Messages.Length} 条消息";
             await RefreshTaskListAsync(api);
             await RefreshContextUsageAsync(api, taskId);
+            SyncStream();
             AppLog.Info($"Solo 发送消息 · task={taskId} · {result.Messages.Length} 条");
         }
         catch (Exception ex)
@@ -387,6 +512,7 @@ public partial class SoloViewModel : ViewModelBase
         finally
         {
             IsSending = false;
+            SyncStream();
         }
     }
 
@@ -463,6 +589,7 @@ public partial class SoloViewModel : ViewModelBase
 
             ApplyTask(result.Task);
             await ReloadMessagesAsync(taskId);
+            StartStream(taskId);
             await RefreshChangesAsync(taskId);
             await MaybeAutoApplyPipelineAsync(api);
             ConfirmationHint = "已开始执行，Flux 会在需要你决策时停下。";
@@ -502,6 +629,431 @@ public partial class SoloViewModel : ViewModelBase
             ConfirmationHint = $"取消失败：{ex.Message}";
             AppLog.Error($"Solo 取消执行失败 · task={taskId}", ex);
         }
+    }
+
+    // ===== 任务事件流（SSE）：实时正文 + 执行过程 + 断线重连 =====
+
+    /// <summary>为当前任务建立事件流；同一任务重复调用是幂等的。</summary>
+    private void StartStream(string? taskId)
+    {
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            ResetStream();
+            return;
+        }
+
+        if (_streamTaskId == taskId && _streamCts is { IsCancellationRequested: false })
+        {
+            return;
+        }
+
+        StopStream();
+        _streamTaskId = taskId;
+        _stream = new TaskStreamReducer();
+        _stream.OnConnecting();
+        _streamToolRows.Clear();
+        StreamTools.Clear();
+        StreamErrors.Clear();
+        _wasStreamActive = false;
+        _streamAutoCollapsed = false;
+        ConnectStream(taskId, 0);
+    }
+
+    private void ConnectStream(string taskId, long afterSeq)
+    {
+        var api = Api();
+        if (api is null)
+        {
+            return;
+        }
+
+        _streamCts?.Cancel();
+        _streamCts?.Dispose();
+        _streamClient?.Dispose();
+
+        _streamCts = new CancellationTokenSource();
+        _streamClient = new TaskStreamClient(api.BaseUrl);
+        var client = _streamClient;
+        var token = _streamCts.Token;
+
+        var callbacks = new TaskStreamCallbacks(
+            Opened: () => Dispatcher.UIThread.Post(() =>
+            {
+                if (_streamTaskId != taskId)
+                {
+                    return;
+                }
+                _stream.OnOpen();
+                _streamDirty = true;
+            }),
+            Received: evt => Dispatcher.UIThread.Post(() =>
+            {
+                if (_streamTaskId != taskId)
+                {
+                    return;
+                }
+                var result = _stream.Apply(evt);
+                if (result.Kind == StreamApplyKind.Ignored)
+                {
+                    return;
+                }
+                if (result.Message is not null)
+                {
+                    MergeMessage(result.Message, taskId);
+                }
+                if (result.Settled)
+                {
+                    _settleTimer.Stop();
+                    _settleTimer.Start();
+                }
+                _streamDirty = true;
+            }),
+            Reconnecting: attempt => Dispatcher.UIThread.Post(() =>
+            {
+                if (_streamTaskId != taskId)
+                {
+                    return;
+                }
+                _stream.OnDisconnected(attempt);
+                _streamDirty = true;
+            }),
+            Failed: message => Dispatcher.UIThread.Post(() =>
+            {
+                if (_streamTaskId != taskId)
+                {
+                    return;
+                }
+                _stream.OnTerminal(message);
+                SyncStream();
+            }));
+
+        _streamDirty = true;
+        _ = Task.Run(() => client.RunAsync(taskId, afterSeq, callbacks, token));
+        AppLog.Info($"Solo SSE 连接 · task={taskId} · after_seq={afterSeq}");
+    }
+
+    private void StopStream()
+    {
+        if (_streamCts is not null)
+        {
+            _streamCts.Cancel();
+            _streamCts.Dispose();
+            _streamCts = null;
+        }
+        _streamClient?.Dispose();
+        _streamClient = null;
+    }
+
+    private void ResetStream()
+    {
+        StopStream();
+        _streamTaskId = null;
+        _stream = new TaskStreamReducer();
+        _streamToolRows.Clear();
+        StreamTools.Clear();
+        StreamErrors.Clear();
+        _wasStreamActive = false;
+        _streamAutoCollapsed = false;
+        _streamDirty = false;
+        SyncStream();
+    }
+
+    /// <summary>把归约器状态投影到可绑定属性（50ms 合帧调用）。</summary>
+    private void SyncStream()
+    {
+        var active = _stream.LiveActive;
+        var reconnecting = _stream.Connection is StreamConnectionState.Reconnecting or StreamConnectionState.Failed;
+        StreamVisible = active || _stream.HasActivity || reconnecting;
+
+        StreamHasText = _stream.LiveText.Length > 0;
+        StreamLiveText = _stream.LiveText;
+        StreamLabel = _stream.LiveLabel.Length > 0 ? _stream.LiveLabel : "正在输出…";
+        StreamMeta = $"Flux · {StreamLabel}";
+        StreamCanStop = active && SelectedTask?.Id is not null;
+
+        var reasoning = _stream.Reasoning;
+        StreamHasReasoning = reasoning is { Text.Length: > 0 };
+        StreamReasoningText = reasoning?.Text ?? "";
+        StreamReasoningActive = reasoning?.Active ?? false;
+        StreamReasoningTitle = reasoning is null
+            ? "思考"
+            : reasoning.Active
+                ? "正在思考…"
+                : $"思考 · {FormatStreamElapsed(reasoning.StartedAt, reasoning.EndedAt)}";
+
+        SyncToolRows(_stream.Tools);
+        SyncStreamErrors();
+
+        HasStreamTools = StreamTools.Count > 0;
+        StreamActivityHasContent = StreamHasReasoning || HasStreamTools || StreamErrors.Count > 0;
+        StreamActivityVisible = StreamActivityHasContent;
+        var activityParts = new List<string>();
+        if (StreamHasReasoning)
+        {
+            activityParts.Add(StreamReasoningActive ? "思考中" : "思考");
+        }
+        if (HasStreamTools)
+        {
+            activityParts.Add($"{StreamTools.Count} 个步骤");
+        }
+        if (StreamErrors.Count > 0)
+        {
+            activityParts.Add($"{StreamErrors.Count} 个错误");
+        }
+        StreamActivityMeta = string.Join(" · ", activityParts);
+
+        if (active && !_wasStreamActive)
+        {
+            StreamActivityOpen = true;
+            _streamAutoCollapsed = false;
+        }
+        else if (!active && _wasStreamActive && !_streamAutoCollapsed)
+        {
+            StreamActivityOpen = false;
+            _streamAutoCollapsed = true;
+        }
+        _wasStreamActive = active;
+
+        var awaiting =
+            IsSending
+            || (!IsNewTask && SoloRules.IsActiveStatus(SelectedTask?.Status));
+        StreamTypingVisible =
+            awaiting
+            && !StreamVisible
+            && _stream.StartedAt is null
+            && _stream.EndedAt is null;
+
+        UpdateStreamTiming();
+
+        var (text, brush, visible) = _stream.Connection switch
+        {
+            StreamConnectionState.Connecting => ("连接中…", Muted, StreamVisible || IsSending),
+            StreamConnectionState.Live => ("实时同步中", Muted, active),
+            StreamConnectionState.Reconnecting =>
+                ($"重连中…（第 {_stream.RetryAttempt} 次）", Orange, true),
+            StreamConnectionState.Failed => ("连接中断", Danger, true),
+            _ => ("", Muted, false),
+        };
+        StreamConnectionText = text;
+        StreamConnectionBrush = brush;
+        StreamConnectionVisible = visible;
+        StreamFailed = _stream.Connection == StreamConnectionState.Failed;
+        StreamTerminalError = _stream.TerminalError;
+    }
+
+    private void UpdateStreamTiming()
+    {
+        StreamElapsed = _stream.StartedAt is { } started
+            ? FormatStreamElapsed(started, _stream.EndedAt)
+            : "";
+        if (_stream.Reasoning is { Active: false } reasoning)
+        {
+            StreamReasoningTitle = $"思考 · {FormatStreamElapsed(reasoning.StartedAt, reasoning.EndedAt)}";
+        }
+    }
+
+    private void SyncToolRows(IReadOnlyList<StreamToolStep> steps)
+    {
+        var seen = new HashSet<string>();
+        foreach (var step in steps)
+        {
+            seen.Add(step.CallId);
+            if (!_streamToolRows.TryGetValue(step.CallId, out var row))
+            {
+                row = new StreamToolRow(step.CallId);
+                _streamToolRows[step.CallId] = row;
+                StreamTools.Add(row);
+            }
+            row.Apply(step);
+        }
+
+        for (var i = StreamTools.Count - 1; i >= 0; i--)
+        {
+            var row = StreamTools[i];
+            if (seen.Contains(row.CallId))
+            {
+                continue;
+            }
+            _streamToolRows.Remove(row.CallId);
+            StreamTools.RemoveAt(i);
+        }
+    }
+
+    private void SyncStreamErrors()
+    {
+        var desired = _stream.Errors.Select(error => error.Text).ToArray();
+        if (StreamErrors.SequenceEqual(desired))
+        {
+            return;
+        }
+        StreamErrors.Clear();
+        foreach (var text in desired)
+        {
+            StreamErrors.Add(text);
+        }
+    }
+
+    private static string FormatStreamElapsed(DateTimeOffset? start, DateTimeOffset? end)
+    {
+        if (start is null)
+        {
+            return "";
+        }
+        var span = (end ?? DateTimeOffset.UtcNow) - start.Value;
+        if (span < TimeSpan.Zero)
+        {
+            span = TimeSpan.Zero;
+        }
+        if (span.TotalMinutes >= 1)
+        {
+            return $"{(int)span.TotalMinutes}m {span.Seconds:00}s";
+        }
+        return $"{Math.Max(1, (int)Math.Round(span.TotalSeconds))}s";
+    }
+
+    /// <summary>把 SSE 推来的已落库消息按 seq 插入（同 id 去重）。</summary>
+    private void MergeMessage(TaskMessage message, string? expectedTaskId = null)
+    {
+        if (!string.IsNullOrEmpty(expectedTaskId) && message.TaskId != expectedTaskId)
+        {
+            return;
+        }
+        if (Messages.Any(row => row.Id == message.Id))
+        {
+            return;
+        }
+
+        var row = new MessageRow(message, CreateRunTrace(message));
+        InsertMessageRow(row);
+    }
+
+    private void InsertMessageRow(MessageRow row)
+    {
+        var index = Messages.Count;
+        while (index > 0 && Messages[index - 1].Seq > row.Seq)
+        {
+            index -= 1;
+        }
+        Messages.Insert(index, row);
+    }
+
+    private RunTraceCardModel? CreateRunTrace(TaskMessage message)
+    {
+        if (message.Payload is not { } payload || payload.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return null;
+        }
+        if (!payload.TryGetProperty("run_id", out var runIdElement)
+            || runIdElement.ValueKind != System.Text.Json.JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var runId = runIdElement.GetString();
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            return null;
+        }
+        if (_runTraces.TryGetValue(runId, out var existing))
+        {
+            return existing;
+        }
+
+        var taskId = message.TaskId;
+        var summary = _runSummaries.FirstOrDefault(item => item.RunId == runId);
+        var model = new RunTraceCardModel(runId, summary, async () =>
+        {
+            var api = Api();
+            if (api is null)
+            {
+                return null;
+            }
+            return (await api.GetRunTraceAsync(taskId, runId))?.Data;
+        });
+        _runTraces[runId] = model;
+        return model;
+    }
+
+    private async Task LoadRunSummariesAsync(FluxApiClient api, string taskId)
+    {
+        try
+        {
+            var runs = (await api.ListTaskRunsAsync(taskId))?.Data ?? [];
+            if (SelectedTask?.Id != taskId)
+            {
+                return;
+            }
+            _runSummaries = runs.ToArray();
+            foreach (var row in Messages)
+            {
+                if (string.IsNullOrEmpty(row.RunId))
+                {
+                    continue;
+                }
+                row.RunTrace?.ApplySummary(runs.FirstOrDefault(run => run.RunId == row.RunId));
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"Solo Run 概览获取失败 · task={taskId} · {ex.Message}");
+        }
+    }
+
+    /// <summary>终态后兜底刷新任务 / 消息 / 改动 / Run 概览（避免和 3s 轮询重复）。</summary>
+    private async Task RefreshAfterRunAsync()
+    {
+        var api = Api();
+        var taskId = SelectedTask?.Id;
+        if (api is null || taskId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var task = (await api.GetTaskAsync(taskId))?.Data;
+            if (task is not null)
+            {
+                ApplyTask(task);
+            }
+            await ReloadMessagesAsync(taskId);
+            await RefreshTaskListAsync(api);
+            await RefreshChangesAsync(taskId);
+            await LoadRunSummariesAsync(api, taskId);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"Solo 终态刷新失败 · task={taskId} · {ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private void ToggleStreamActivity()
+    {
+        StreamActivityOpen = !StreamActivityOpen;
+        _streamAutoCollapsed = true;
+    }
+
+    [RelayCommand]
+    private void RetryStream()
+    {
+        var taskId = _streamTaskId ?? SelectedTask?.Id;
+        if (string.IsNullOrEmpty(taskId))
+        {
+            return;
+        }
+        StopStream();
+        _streamTaskId = taskId;
+        _stream.OnConnecting();
+        ConnectStream(taskId, _stream.LastSeq);
+    }
+
+    [RelayCommand]
+    private async Task StopStreamRunAsync()
+    {
+        await CancelTaskAsync();
+        _stream.MarkCancelled();
+        SyncStream();
     }
 
     [RelayCommand]
@@ -795,6 +1347,7 @@ public partial class SoloViewModel : ViewModelBase
             }
 
             ApplyTask(task);
+            StartStream(taskId);
             await ReloadMessagesAsync(taskId);
             await RefreshChangesAsync(taskId);
             await RefreshContextUsageAsync(api, taskId);
@@ -831,6 +1384,7 @@ public partial class SoloViewModel : ViewModelBase
         ApplyConfirmation(task.Confirmation, task.Status);
         ApplyDecision(task.PendingDecision);
         SwitchChat(task.Id);
+        SyncStream();
     }
 
     private void ApplyConfirmation(TaskConfirmation? confirmation, string status)
@@ -899,21 +1453,60 @@ public partial class SoloViewModel : ViewModelBase
             return;
         }
 
+        // 先拿 Run 概览，轨迹卡创建时就能显示耗时/计数，展开时再懒加载明细。
+        await LoadRunSummariesAsync(api, taskId);
+
         var messages = (await api.ListTaskMessagesAsync(taskId))?.Data ?? [];
-        Messages.Clear();
-        foreach (var message in messages)
+        if (SelectedTask?.Id != taskId)
         {
-            Messages.Add(new MessageRow(message));
+            return;
         }
 
-        AppLog.Info($"Solo 消息 · task={taskId} · {messages.Count} 条");
+        if (_messagesTaskId != taskId)
+        {
+            _messagesTaskId = taskId;
+            Messages.Clear();
+            _runTraces.Clear();
+        }
+
+        // 按 id 合并而不是整体重建：SSE 刚推来的消息不会被一次兜底刷新抹掉。
+        var incoming = messages.Select(message => message.Id).ToHashSet();
+        for (var i = Messages.Count - 1; i >= 0; i--)
+        {
+            if (!incoming.Contains(Messages[i].Id))
+            {
+                Messages.RemoveAt(i);
+            }
+        }
+
+        foreach (var message in messages)
+        {
+            if (Messages.Any(row => row.Id == message.Id))
+            {
+                continue;
+            }
+            InsertMessageRow(new MessageRow(message, CreateRunTrace(message)));
+        }
+
+        // SSE 与 REST 都可能先到，这里按 seq 统一纠正一次顺序。
+        var ordered = Messages.OrderBy(row => row.Seq).ToList();
+        if (!Messages.SequenceEqual(ordered))
+        {
+            Messages.Clear();
+            foreach (var row in ordered)
+            {
+                Messages.Add(row);
+            }
+        }
+
+        AppLog.Info($"Solo 消息 · task={taskId} · {Messages.Count} 条");
     }
 
     private void AppendMessages(IEnumerable<TaskMessage> messages)
     {
         foreach (var message in messages)
         {
-            Messages.Add(new MessageRow(message));
+            MergeMessage(message);
         }
     }
 
@@ -1048,6 +1641,7 @@ public partial class SoloViewModel : ViewModelBase
             }
 
             ApplyTask(task);
+            StartStream(taskId);
             if (wasActive && !SoloRules.IsActiveStatus(task.Status))
             {
                 await ReloadMessagesAsync(taskId);
@@ -1497,8 +2091,12 @@ public partial class ConfirmationEdit : ObservableObject
 /// <summary>对话消息行。</summary>
 public sealed class MessageRow
 {
-    public MessageRow(TaskMessage message)
+    public MessageRow(TaskMessage message, RunTraceCardModel? runTrace = null)
     {
+        Id = message.Id;
+        Seq = message.Seq;
+        RunId = ReadRunId(message.Payload);
+        RunTrace = runTrace;
         IsUser = message.Role == "user";
         Author = message.Role switch
         {
@@ -1514,7 +2112,19 @@ public sealed class MessageRow
             : $"{Author} · {ClockText(message.CreatedAt)}";
     }
 
+    public string Id { get; }
+
+    public long Seq { get; }
+
+    public string RunId { get; }
+
+    public RunTraceCardModel? RunTrace { get; }
+
+    public bool HasRunTrace => RunTrace is not null;
+
     public bool IsUser { get; }
+
+    public bool IsAssistant => !IsUser;
 
     public string Author { get; }
 
@@ -1523,6 +2133,17 @@ public sealed class MessageRow
     public bool IsSummary { get; }
 
     public string Meta { get; }
+
+    private static string ReadRunId(JsonElement? payload)
+    {
+        if (payload is not { ValueKind: JsonValueKind.Object } value
+            || !value.TryGetProperty("run_id", out var runId)
+            || runId.ValueKind != JsonValueKind.String)
+        {
+            return "";
+        }
+        return runId.GetString() ?? "";
+    }
 
     private static string ClockText(string? value)
         => DateTime.TryParse(value, out var time) ? time.ToLocalTime().ToString("HH:mm") : "";

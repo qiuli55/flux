@@ -20,7 +20,9 @@ import type {
   Project,
   Task,
   TaskMessage,
+  TaskRunSummary,
   TaskStatus,
+  TaskStreamEvent,
 } from "../api/types";
 import { openCommandPalette } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
@@ -32,6 +34,7 @@ import { BotAvatar } from "../components/group/BotAvatar";
 import { CreateBotDialog } from "../components/group/CreateBotDialog";
 import { SoloSidePanel } from "../components/side/SoloSidePanel";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
+import { mergeMessages } from "../components/solo/taskStream";
 import { BUILTIN_ROLES, ROLE_LABELS, STATE_LABELS, toCreateRequest } from "../data/team";
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
@@ -461,6 +464,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [msgLoading, setMsgLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
+  /** 当前任务的 Run 概览：历史执行轨迹卡的折叠头数据（run_id → summary） */
+  const [runs, setRuns] = useState<TaskRunSummary[]>([]);
+  const taskIdRef = useRef<string | null>(null);
+  taskIdRef.current = taskId;
 
   const [agents, setAgents] = useState<AgentHandle[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
@@ -545,6 +552,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const enginePopRef = useRef<HTMLDivElement>(null);
 
   const task = useMemo(() => tasks.find((item) => item.id === taskId) ?? null, [tasks, taskId]);
+  const runSummaries = useMemo(
+    () => new Map(runs.map((run) => [run.run_id, run])),
+    [runs],
+  );
   const pendingChanges = useMemo(() => changes.filter((c) => c.status === "pending"), [changes]);
   const appliedChanges = useMemo(() => changes.filter((c) => c.status === "applied"), [changes]);
   const reviewChange = useMemo(
@@ -692,13 +703,29 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     };
   }, [taskId]);
 
+  // 切换任务：并行拉取这一任务的 Run 概览（历史执行轨迹卡的折叠头数据）
+  useEffect(() => {
+    setRuns([]);
+    if (!taskId) return;
+    let alive = true;
+    api
+      .listTaskRuns(taskId, 50)
+      .then((rows) => {
+        if (alive) setRuns(rows);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [taskId]);
+
   const loadOlder = useCallback(async () => {
     const first = messages[0];
     if (!taskId || loadingOlder || !hasMore || !first) return;
     setLoadingOlder(true);
     try {
       const page = await api.listTaskMessages(taskId, { limit: 30, before: first.seq });
-      setMessages((prev) => [...page.items, ...prev]);
+      setMessages((prev) => mergeMessages(prev, page.items));
       setHasMore(page.hasMore);
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -727,17 +754,60 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     return () => document.removeEventListener("mousedown", onDown);
   }, [stratOpen, engineOpen]);
 
-  // 重新拉取当前任务的消息（执行开始/阶段变化后把新消息显示出来）
+  // 重新拉取当前任务的消息（执行开始/阶段变化后把新消息显示出来）。
+  // 用合并而不是覆盖：用户向上翻出的更早消息不能因为一次兜底刷新就丢掉。
   const reloadMessages = useCallback(async () => {
-    if (!taskId) return;
+    const id = taskIdRef.current;
+    if (!id) return;
     try {
-      const page = await api.listTaskMessages(taskId, { limit: 30 });
-      setMessages(page.items);
-      setHasMore(page.hasMore);
+      const page = await api.listTaskMessages(id, { limit: 30 });
+      if (taskIdRef.current !== id) return;
+      setMessages((prev) => mergeMessages(prev, page.items));
+      setHasMore((prev) => prev && page.hasMore);
     } catch {
       // 静默：消息刷新失败不该打断用户正在做的操作
     }
-  }, [taskId]);
+  }, []);
+
+  const refreshRuns = useCallback(async () => {
+    const id = taskIdRef.current;
+    if (!id) return;
+    try {
+      const rows = await api.listTaskRuns(id, 50);
+      if (taskIdRef.current === id) setRuns(rows);
+    } catch {
+      // 轨迹摘要只是增强信息，失败不影响聊天
+    }
+  }, []);
+
+  /** SSE 推来的已落库消息：按 id/seq 合并，避免与 REST 刷新重复 */
+  const handlePersistedMessage = useCallback((message: TaskMessage) => {
+    if (message.task_id !== taskIdRef.current) return;
+    setMessages((prev) => mergeMessages(prev, [message]));
+  }, []);
+
+  /** run_status / run_finished：短暂防抖后刷新任务、改动、消息与 Run 概览 */
+  const settledTimerRef = useRef<number | null>(null);
+  const handleRunSettled = useCallback(
+    (_event: TaskStreamEvent) => {
+      if (settledTimerRef.current !== null) window.clearTimeout(settledTimerRef.current);
+      settledTimerRef.current = window.setTimeout(() => {
+        settledTimerRef.current = null;
+        void loadTasks();
+        void loadChanges();
+        void reloadMessages();
+        void refreshRuns();
+      }, 400);
+    },
+    [loadTasks, loadChanges, reloadMessages, refreshRuns],
+  );
+
+  useEffect(
+    () => () => {
+      if (settledTimerRef.current !== null) window.clearTimeout(settledTimerRef.current);
+    },
+    [],
+  );
 
   // 任务级决策策略是权威：切换任务时以任务上的 decision_mode 为准（本机偏好只服务新建任务）
   useEffect(() => {
@@ -808,10 +878,9 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     setDraft("");
     try {
       const outcome = await api.sendTaskMessage(target, payload);
-      setMessages((prev) => [...prev, ...outcome.messages]);
+      setMessages((prev) => mergeMessages(prev, outcome.messages));
       setTasks((prev) => prev.map((item) => (item.id === target ? outcome.task : item)));
       setQuote(null);
-      toast(`已发送 · ${outcome.messages.length} 条消息已落库`);
     } catch (error) {
       toast(errorMessage(error), "error");
       setDraft(content);
@@ -1121,7 +1190,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     try {
       const outcome = await api.updateTaskConfirmation(task.id, confirmDraft);
       setTasks((prev) => prev.map((item) => (item.id === outcome.task.id ? outcome.task : item)));
-      setMessages((prev) => [...prev, outcome.message]);
+      setMessages((prev) => mergeMessages(prev, [outcome.message]));
       toast("需求确认已保存：之后开始执行将以这一版为准");
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -1144,9 +1213,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     try {
       const outcome = await api.startTask(task.id, confirmDraft ?? undefined);
       setTasks((prev) => prev.map((item) => (item.id === outcome.task.id ? outcome.task : item)));
-      setMessages((prev) => [...prev, outcome.message]);
+      setMessages((prev) => mergeMessages(prev, [outcome.message]));
       toast(`已开始执行（Run ${outcome.run.run_id.slice(0, 8)}）`);
       await reloadMessages();
+      void refreshRuns();
     } catch (error) {
       toast(errorMessage(error), "error");
     } finally {
@@ -1183,7 +1253,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
         note: decisionNote.trim() || undefined,
       });
       setTasks((prev) => prev.map((item) => (item.id === outcome.task.id ? outcome.task : item)));
-      setMessages((prev) => [...prev, outcome.message]);
+      setMessages((prev) => mergeMessages(prev, [outcome.message]));
       setDecisionNote("");
       toast(
         action === "choose"
@@ -1197,20 +1267,20 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     }
   };
 
-  const quoteMessage = (text: string) => {
+  const quoteMessage = useCallback((text: string) => {
     setQuote(text);
     inputRef.current?.focus();
     toast("已引用该条消息，发送后会带上引用内容");
-  };
+  }, []);
 
-  const copyMessage = async (text: string) => {
+  const copyMessage = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       toast("已复制该条消息");
     } catch {
       toast("复制失败，请手动选择文本", "error");
     }
-  };
+  }, []);
 
   // --- 流程与进度（全部由真实数据推导） ---
 
@@ -1354,7 +1424,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       const outcome = await api.sendTaskMessage(created.id, pending.payload);
       setTasks((prev) => prev.map((item) => (item.id === created.id ? outcome.task : item)));
       const page = await api.listTaskMessages(created.id, { limit: 30 });
-      setMessages(page.items);
+      setMessages((prev) => mergeMessages(prev, page.items));
       setHasMore(page.hasMore);
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -2161,6 +2231,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               <SoloChat
                 taskId={taskId}
                 messages={messages}
+                runSummaries={runSummaries}
                 hasMore={hasMore}
                 loading={msgLoading}
                 loadingOlder={loadingOlder}
@@ -2171,9 +2242,13 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                     ? `模型 ${lastModel.provider} · ${lastModel.model} 正在处理`
                     : "正在调用平台助手"
                 }
+                cancelling={cancelBusy}
                 onLoadOlder={() => void loadOlder()}
-                onCopy={(text) => void copyMessage(text)}
+                onCopy={copyMessage}
                 onQuote={quoteMessage}
+                onCancel={() => void cancelExecution()}
+                onPersistedMessage={handlePersistedMessage}
+                onRunSettled={handleRunSettled}
               />
             </section>
           </div>

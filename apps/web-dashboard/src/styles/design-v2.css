@@ -1077,3 +1077,197 @@ body.bottom-closed .ide-bottom { display: none; }
 .st-lsp.is-error, .st-lsp.is-closed { color: #ff9b9b; }
 .st-lsp.is-idle { color: var(--text-3); }
 
+/* ===== 流式对话（Claude Code 风格）：实时气泡 / 执行过程 / 执行轨迹 / Markdown ===== */
+.stream-meta { display: flex; align-items: center; gap: 8px; }
+.stream-phase { color: var(--text-3); }
+.stream-phase::before { content: "· "; }
+.stream-elapsed { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.stream-elapsed::before { content: "· "; }
+.stream-stop {
+  margin-left: auto; height: 20px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text-3);
+  font-size: 11px; white-space: nowrap;
+}
+.stream-stop:hover:not(:disabled) { color: var(--red); border-color: rgba(241,106,106,.45); }
+.stream-stop:disabled { opacity: .55; cursor: default; }
+
+/* 执行过程卡 */
+.stream-activity {
+  margin: 6px 0 8px; border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(255,255,255,.015); overflow: hidden;
+}
+.stream-activity.is-embedded { margin: 0; border: 0; border-radius: 0; background: none; }
+.stream-activity-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.stream-activity-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 11.5px; }
+.stream-activity-caret { width: 10px; color: var(--text-3); font-size: 10px; }
+.stream-activity-title { font-weight: 600; }
+.stream-activity-summary {
+  min-width: 0; color: var(--text-3); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stream-activity-live {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--tn-accent); font-size: 11px; white-space: nowrap;
+}
+.stream-activity-meta { margin-left: auto; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.stream-activity-trace { margin-left: auto; color: var(--text-3); font-size: 11px; }
+.stream-activity-trace:hover { color: var(--text); }
+.stream-activity-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; }
+.stream-activity.is-embedded .stream-activity-body { padding: 8px 0 0; }
+
+.stream-spin {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid var(--tn-accent-line); border-top-color: var(--tn-accent);
+  animation: streamSpin .8s linear infinite;
+}
+@keyframes streamSpin { to { transform: rotate(360deg); } }
+.stream-status-done { color: var(--green); font-size: 11px; }
+.stream-status-fail { color: var(--red); font-size: 11px; }
+
+/* 思考块 */
+.stream-think { border: 1px solid var(--line-soft); border-radius: 8px; background: rgba(255,255,255,.02); }
+.stream-think.is-active { border-color: var(--tn-accent-line); }
+.stream-think-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 9px; font-size: 11.5px; color: var(--text-3);
+}
+.stream-think-label { flex: 1; min-width: 0; text-align: left; }
+.stream-think.is-active .stream-think-label { color: var(--tn-accent); }
+.stream-think-caret { font-size: 10px; }
+.stream-think-body {
+  max-height: 220px; overflow: auto; padding: 0 10px 8px;
+  color: var(--text-3); font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* 工具调用行 */
+.stream-tools { display: flex; flex-direction: column; gap: 3px; }
+.stream-tool { border-radius: 8px; border: 1px solid transparent; }
+.stream-tool.is-open { border-color: var(--line-soft); background: rgba(255,255,255,.02); }
+.stream-tool-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 4px 6px; border-radius: 8px; text-align: left;
+}
+.stream-tool-head:hover { background: var(--panel-3); }
+.stream-tool-icon {
+  flex: 0 0 auto; display: inline-grid; place-content: center; width: 16px; height: 16px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--panel-3);
+  color: var(--text-3); font-size: 9px;
+}
+.stream-tool-name { flex: 0 0 auto; color: var(--text-2); font: 11.5px var(--mono); }
+.stream-tool-detail {
+  flex: 1 1 auto; min-width: 0; color: var(--text-3); font: 11px var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stream-tool-state { flex: 0 0 auto; display: inline-flex; justify-content: center; width: 14px; }
+.stream-tool-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 8px 8px 30px; }
+.stream-tool-paths { display: flex; flex-wrap: wrap; gap: 4px; }
+.stream-tool-paths code {
+  padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--panel-3); color: var(--text-3); font: 10.5px var(--mono);
+}
+.stream-tool-output {
+  max-height: 220px; margin: 0; overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--line-soft); border-radius: 6px; background: #0a0c14;
+  color: var(--text-2); font: 11px/1.55 var(--mono); white-space: pre;
+}
+
+/* 错误行 */
+.stream-errors { display: flex; flex-direction: column; gap: 4px; }
+.stream-error {
+  display: flex; gap: 6px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid rgba(241,106,106,.22); background: rgba(241,106,106,.08);
+  color: var(--red); font-size: 11.5px; word-break: break-word;
+}
+
+/* 连接状态 */
+.stream-conn { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--text-3); }
+.stream-conn.is-warn { color: var(--orange); }
+.stream-conn.is-error { color: var(--red); }
+.stream-retry {
+  margin-left: auto; height: 22px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text-2); font-size: 11px;
+}
+.stream-retry:hover { border-color: var(--red); color: var(--red); }
+
+/* 助手正文 Markdown */
+.md-body {
+  color: var(--text-2); font-size: 12.5px; line-height: 1.65;
+  word-break: break-word; overflow-wrap: anywhere;
+}
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0 0 8px; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  margin: 14px 0 6px; color: var(--text); font-weight: 600; line-height: 1.35;
+}
+.md-body h1 { font-size: 16px; }
+.md-body h2 { font-size: 14.5px; }
+.md-body h3 { font-size: 13.5px; }
+.md-body h4 { font-size: 12.5px; }
+.md-body ul, .md-body ol { margin: 0 0 8px; padding-left: 20px; }
+.md-body li { margin: 2px 0; }
+.md-body li > p { margin: 0; }
+.md-body a { color: var(--tn-accent); text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body strong { color: var(--text); font-weight: 600; }
+.md-body blockquote {
+  margin: 8px 0; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--line); color: var(--text-3);
+}
+.md-body code {
+  padding: 0 4px; border: 1px solid var(--line-soft); border-radius: 4px;
+  background: var(--panel-3); color: var(--text); font: 11.5px var(--mono);
+}
+.md-body table { width: 100%; margin: 8px 0; border-collapse: collapse; font-size: 11.5px; }
+.md-body th, .md-body td { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
+.md-body th { background: var(--panel-2); color: var(--text-2); font-weight: 600; }
+.md-body hr { margin: 12px 0; border: 0; border-top: 1px solid var(--line); }
+.md-code { margin: 8px 0; border: 1px solid var(--line); border-radius: 8px; background: #0a0c14; overflow: hidden; }
+.md-code-head {
+  display: flex; align-items: center; justify-content: space-between; padding: 4px 10px;
+  border-bottom: 1px solid var(--line-soft); background: var(--panel-2);
+}
+.md-code-lang { color: var(--text-3); font: 10.5px var(--mono); }
+.md-code-copy { color: var(--text-3); font-size: 10.5px; }
+.md-code-copy:hover { color: var(--text); }
+.md-code pre { margin: 0; padding: 10px 12px; overflow-x: auto; }
+.md-code pre code {
+  padding: 0; border: 0; background: none; color: #c8d0e4;
+  font: 11.5px/1.6 var(--mono); white-space: pre;
+}
+.md-body.is-streaming > :last-child::after {
+  content: "▍"; margin-left: 2px; color: var(--tn-accent);
+  animation: mdCaret 1s steps(2, start) infinite;
+}
+@keyframes mdCaret { 50% { opacity: 0; } }
+
+/* 历史执行轨迹卡 */
+.run-trace {
+  margin-top: 8px; border: 1px solid var(--line); border-radius: 9px;
+  background: rgba(255,255,255,.015); overflow: hidden;
+}
+.run-trace-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; text-align: left; }
+.run-trace-head:hover { background: var(--panel-2); }
+.run-trace-caret { width: 10px; color: var(--text-3); font-size: 10px; }
+.run-trace-title { color: var(--text-2); font-size: 11.5px; font-weight: 600; }
+.run-trace-counts {
+  min-width: 0; color: var(--text-3); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.run-trace-duration { margin-left: auto; color: var(--text-3); font: 10.5px var(--mono); }
+.run-trace-body { padding: 0 10px 10px; border-top: 1px solid var(--line-soft); }
+.run-trace-hint { display: flex; align-items: center; gap: 8px; padding-top: 8px; color: var(--text-3); font-size: 11.5px; }
+.run-trace-hint.is-error { color: var(--red); }
+.run-trace-hint .btn { margin-left: auto; }
+
+@media (max-width: 860px) {
+  .stream-activity-summary { display: none; }
+  .md-body { font-size: 13px; }
+  .stream-think-body { max-height: 160px; }
+  .stream-tool-output { max-height: 160px; }
+}
+

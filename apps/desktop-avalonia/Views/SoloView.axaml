@@ -1,6 +1,8 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:views="using:Flux.Desktop.Views"
+             xmlns:sys="using:System"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="900"
@@ -50,6 +52,88 @@
             </Border>
         </DataTemplate>
 
+        <!-- 工具调用行：实时执行过程与历史轨迹共用 -->
+        <DataTemplate x:Key="ToolStepCard" DataType="vm:StreamToolRow">
+            <Border Background="{DynamicResource TnBg2}" BorderBrush="{DynamicResource TnLine}"
+                    BorderThickness="1" CornerRadius="6" Padding="8,6" Margin="0,0,0,4">
+                <StackPanel Spacing="4">
+                    <Button Classes="btn quiet" Padding="0" HorizontalContentAlignment="Stretch"
+                            Command="{Binding ToggleCommand}">
+                        <Grid ColumnDefinitions="Auto,Auto,*,Auto">
+                            <TextBlock Text="{Binding Icon}" FontSize="11"
+                                       Foreground="{DynamicResource TnText3}" Margin="0,0,6,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="11"
+                                       FontFamily="{DynamicResource TnMonoFont}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Text="{Binding Detail}" FontSize="10"
+                                       Foreground="{DynamicResource TnText4}"
+                                       TextTrimming="CharacterEllipsis" Margin="8,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="3" Text="{Binding StatusGlyph}" FontSize="10"
+                                       Foreground="{Binding StatusBrush}"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                    </Button>
+                    <TextBlock Text="{Binding PathsText}" FontSize="9" IsVisible="{Binding HasPaths}"
+                               FontFamily="{DynamicResource TnMonoFont}" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TnText4}" />
+                    <Border IsVisible="{Binding ShowOutput}" Background="#05070A" CornerRadius="5"
+                            Padding="6" MaxHeight="180">
+                        <ScrollViewer>
+                            <TextBlock Text="{Binding Output}" FontSize="10"
+                                       FontFamily="{DynamicResource TnMonoFont}" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText2}" />
+                        </ScrollViewer>
+                    </Border>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="ErrorLine" DataType="sys:String">
+            <TextBlock Text="{Binding}" FontSize="10" TextWrapping="Wrap"
+                       Foreground="{DynamicResource TnDanger}" />
+        </DataTemplate>
+
+        <!-- 落库消息下方的历史执行轨迹卡 -->
+        <DataTemplate x:Key="RunTraceCard" DataType="vm:RunTraceCardModel">
+            <Border Background="#0C111B" BorderBrush="{DynamicResource TnLine}"
+                    BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,4,0,0">
+                <StackPanel Spacing="6">
+                    <Button Classes="btn quiet" Padding="0" HorizontalContentAlignment="Stretch"
+                            Command="{Binding ToggleAsyncCommand}">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <TextBlock Text="{Binding Caret}" FontSize="10"
+                                       Foreground="{DynamicResource TnText4}" Margin="0,0,6,0" />
+                            <TextBlock Grid.Column="1" Text="{Binding Title}" FontSize="10"
+                                       Foreground="{DynamicResource TnText3}" />
+                            <TextBlock Grid.Column="2" Text="{Binding MetaText}" FontSize="10"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </Grid>
+                    </Button>
+                    <StackPanel Spacing="6" IsVisible="{Binding IsExpanded}">
+                        <TextBlock Text="加载执行轨迹…" FontSize="10"
+                                   Foreground="{DynamicResource TnText4}"
+                                   IsVisible="{Binding IsLoading}" />
+                        <TextBlock Text="{Binding ErrorText}" FontSize="10" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TnDanger}"
+                                   IsVisible="{Binding HasError}" />
+                        <TextBlock Text="这次执行没有留下步骤记录。" FontSize="10" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TnText4}"
+                                   IsVisible="{Binding IsEmpty}" />
+                        <TextBlock Text="{Binding ReasoningText}" FontSize="11" LineHeight="18"
+                                   TextWrapping="Wrap" MaxLines="12"
+                                   Foreground="{DynamicResource TnText2}"
+                                   IsVisible="{Binding HasReasoning}" />
+                        <ItemsControl ItemsSource="{Binding Tools}"
+                                      ItemTemplate="{StaticResource ToolStepCard}" />
+                        <ItemsControl ItemsSource="{Binding Errors}"
+                                      ItemTemplate="{StaticResource ErrorLine}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
         <!-- 流水线对话气泡 -->
         <DataTemplate x:Key="MessageCard" DataType="vm:MessageRow">
             <Border Classes="bubble" Classes.user="{Binding IsUser}" Margin="0,0,0,8">
@@ -60,7 +144,12 @@
                     <TextBlock Text="{Binding Meta}" FontSize="10"
                                Foreground="{DynamicResource TnText4}" />
                     <TextBlock Text="{Binding Content}" FontSize="12" LineHeight="19"
-                               TextWrapping="Wrap" />
+                               TextWrapping="Wrap" IsVisible="{Binding IsUser}" />
+                    <views:MarkdownView Markdown="{Binding Content}"
+                                        IsVisible="{Binding IsAssistant}" />
+                    <ContentControl Content="{Binding RunTrace}"
+                                    ContentTemplate="{StaticResource RunTraceCard}"
+                                    IsVisible="{Binding HasRunTrace}" />
                 </StackPanel>
             </Border>
         </DataTemplate>
@@ -350,10 +439,107 @@
                                         </ScrollViewer>
                                     </StackPanel>
                                 </Border>
-                                <ScrollViewer Name="ChatScroll" MaxHeight="420">
-                                    <ItemsControl ItemsSource="{Binding Messages}"
-                                                  ItemTemplate="{StaticResource MessageCard}" />
-                                </ScrollViewer>
+                                <Grid>
+                                    <ScrollViewer Name="ChatScroll" MaxHeight="420">
+                                        <StackPanel>
+                                            <ItemsControl ItemsSource="{Binding Messages}"
+                                                          ItemTemplate="{StaticResource MessageCard}" />
+
+                                            <!-- 已发送、还没收到第一段输出 -->
+                                            <Border Classes="bubble" IsVisible="{Binding StreamTypingVisible}"
+                                                    Margin="0,0,0,8">
+                                                <TextBlock Text="Flux 正在思考…" FontSize="11"
+                                                           Foreground="{DynamicResource TnText4}" />
+                                            </Border>
+
+                                            <!-- 实时输出：执行过程 + 正文 -->
+                                            <Border Classes="bubble" IsVisible="{Binding StreamVisible}"
+                                                    Margin="0,0,0,8">
+                                                <StackPanel Spacing="8">
+                                                    <Grid ColumnDefinitions="*,Auto">
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <TextBlock Text="Flux" FontSize="10"
+                                                                       Foreground="{DynamicResource TnText4}" />
+                                                            <TextBlock Text="{Binding StreamLabel}" FontSize="10"
+                                                                       Foreground="{DynamicResource TnInfo}" />
+                                                            <TextBlock Text="{Binding StreamElapsed}" FontSize="10"
+                                                                       FontFamily="{DynamicResource TnMonoFont}"
+                                                                       Foreground="{DynamicResource TnText4}" />
+                                                        </StackPanel>
+                                                        <Button Grid.Column="1" Classes="mini" Content="停止"
+                                                                IsVisible="{Binding StreamCanStop}"
+                                                                Command="{Binding StopStreamRunCommand}" />
+                                                    </Grid>
+
+                                                    <StackPanel Orientation="Horizontal" Spacing="8"
+                                                                IsVisible="{Binding StreamConnectionVisible}">
+                                                        <TextBlock Text="{Binding StreamConnectionText}" FontSize="10"
+                                                                   Foreground="{Binding StreamConnectionBrush}" />
+                                                        <Button Classes="mini" Content="重连"
+                                                                IsVisible="{Binding StreamFailed}"
+                                                                Command="{Binding RetryStreamCommand}" />
+                                                    </StackPanel>
+
+                                                    <!-- 执行过程：思考 / 工具 / 错误 -->
+                                                    <Border Background="#0C111B" BorderBrush="{DynamicResource TnLine}"
+                                                            BorderThickness="1" CornerRadius="6" Padding="8"
+                                                            IsVisible="{Binding StreamActivityVisible}">
+                                                        <StackPanel Spacing="6">
+                                                            <Button Classes="btn quiet" Padding="0"
+                                                                    HorizontalContentAlignment="Stretch"
+                                                                    Command="{Binding ToggleStreamActivityCommand}">
+                                                                <Grid ColumnDefinitions="Auto,*,Auto">
+                                                                    <TextBlock Text="{Binding StreamActivityCaret}"
+                                                                               FontSize="10"
+                                                                               Foreground="{DynamicResource TnText4}"
+                                                                               Margin="0,0,6,0" />
+                                                                    <TextBlock Grid.Column="1" Text="执行过程"
+                                                                               FontSize="10"
+                                                                               Foreground="{DynamicResource TnText3}" />
+                                                                    <TextBlock Grid.Column="2"
+                                                                               Text="{Binding StreamActivityMeta}"
+                                                                               FontSize="10"
+                                                                               Foreground="{DynamicResource TnText4}" />
+                                                                </Grid>
+                                                            </Button>
+                                                            <StackPanel Spacing="6"
+                                                                        IsVisible="{Binding StreamActivityOpen}">
+                                                                <Border IsVisible="{Binding StreamHasReasoning}"
+                                                                        Background="#0A1420" CornerRadius="5"
+                                                                        Padding="8">
+                                                                    <StackPanel Spacing="3">
+                                                                        <TextBlock Text="{Binding StreamReasoningTitle}"
+                                                                                   FontSize="9"
+                                                                                   Foreground="{DynamicResource TnInfo}" />
+                                                                        <TextBlock Text="{Binding StreamReasoningText}"
+                                                                                   FontSize="11" LineHeight="18"
+                                                                                   TextWrapping="Wrap" MaxLines="10"
+                                                                                   Foreground="{DynamicResource TnText2}" />
+                                                                    </StackPanel>
+                                                                </Border>
+                                                                <ItemsControl ItemsSource="{Binding StreamTools}"
+                                                                              ItemTemplate="{StaticResource ToolStepCard}" />
+                                                                <ItemsControl ItemsSource="{Binding StreamErrors}"
+                                                                              ItemTemplate="{StaticResource ErrorLine}" />
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <views:MarkdownView Markdown="{Binding StreamLiveText}"
+                                                                        IsVisible="{Binding StreamHasText}" />
+                                                    <TextBlock Text="{Binding StreamTerminalError}" FontSize="11"
+                                                               TextWrapping="Wrap"
+                                                               Foreground="{DynamicResource TnDanger}"
+                                                               IsVisible="{Binding HasStreamTerminalError}" />
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Button Name="JumpLatest" Classes="mini" Content="回到最新"
+                                            HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                            Margin="0,0,12,10" IsVisible="False"
+                                            Click="OnJumpLatest" />
+                                </Grid>
                             </StackPanel>
                         </Border>
                     </StackPanel>

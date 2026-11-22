@@ -328,6 +328,34 @@ public sealed class FluxApiClient : IDisposable
             $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages?limit={limit}",
             ct);
 
+    /// <summary>向上翻更早的消息；has_more 在信封 metadata 里。</summary>
+    public Task<ApiEnvelope<List<TaskMessage>>?> ListTaskMessagesBeforeAsync(
+        string taskId,
+        long before,
+        int limit = 30,
+        CancellationToken ct = default)
+        => GetAsync<List<TaskMessage>>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages?limit={limit}&before={before}",
+            ct);
+
+    /// <summary>任务的 Run 概览（执行轨迹卡的计数与耗时）。</summary>
+    public Task<ApiEnvelope<List<TaskRunSummary>>?> ListTaskRunsAsync(
+        string taskId,
+        int limit = 50,
+        CancellationToken ct = default)
+        => GetAsync<List<TaskRunSummary>>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/runs?limit={limit}",
+            ct);
+
+    /// <summary>单轮 Run 的执行轨迹（懒加载）。</summary>
+    public Task<ApiEnvelope<RunTrace>?> GetRunTraceAsync(
+        string taskId,
+        string runId,
+        CancellationToken ct = default)
+        => GetAsync<RunTrace>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/runs/{Uri.EscapeDataString(runId)}/trace",
+            ct);
+
     public Task<ApiEnvelope<TaskMessageResult>?> CreateTaskMessageAsync(
         string taskId,
         string content,
