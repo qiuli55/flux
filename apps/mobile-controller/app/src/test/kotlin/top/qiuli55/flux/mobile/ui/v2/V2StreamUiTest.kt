@@ -71,9 +71,12 @@ class V2StreamUiTest {
             )
         }
 
-        rule.onNodeWithTag(V2StreamTags.REASONING).assertIsDisplayed()
+        // 折叠时只留一行摘要，与 Claude 的「Thought for Ns」同层
         rule.onNodeWithText("思考了 3 秒").assertIsDisplayed()
-        // 结束后默认收起：正文不占空间，也不会在下一轮重新冒出来
+        rule.onNodeWithTag(V2StreamTags.REASONING).assertDoesNotExist()
+        // 展开执行过程后，思考正文仍默认收起
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
+        rule.onNodeWithTag(V2StreamTags.REASONING).assertIsDisplayed()
         rule.onNodeWithTag(V2StreamTags.REASONING_BODY).assertDoesNotExist()
 
         rule.onNodeWithTag(V2StreamTags.REASONING).performClick()
@@ -95,7 +98,10 @@ class V2StreamUiTest {
             )
         }
 
-        rule.onNodeWithText("思考中…", substring = true).assertIsDisplayed()
+        // 思考中只报最后一句进度，完整思考正文点开执行过程才看
+        rule.onNodeWithText("正在分析依赖树…").assertIsDisplayed()
+        rule.onNodeWithTag(V2StreamTags.REASONING_BODY).assertDoesNotExist()
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
         rule.onNodeWithTag(V2StreamTags.REASONING_BODY).assertIsDisplayed()
     }
 
@@ -118,6 +124,9 @@ class V2StreamUiTest {
             )
         }
 
+        // 默认折叠成一行动作，不展开时看不到工具明细
+        rule.onNodeWithTag(V2StreamTags.tool("call-1")).assertDoesNotExist()
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
         rule.onNodeWithTag(V2StreamTags.tool("call-1")).assertIsDisplayed()
         rule.onNodeWithText("完成").assertIsDisplayed()
         // 与 Claude 一致：一行摘要直接带命令目标，不展开也能看出这一步在做什么
@@ -144,6 +153,9 @@ class V2StreamUiTest {
             )
         }
 
+        // 运行中：单行状态直接带工具名
+        rule.onNodeWithText("正在使用 shell").assertIsDisplayed()
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
         rule.onNodeWithText("运行中").assertIsDisplayed()
         rule.onNodeWithText("失败").assertIsDisplayed()
     }

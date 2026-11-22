@@ -369,7 +369,9 @@ fun V2ChatScreen(
         label = "chat-composer-border",
     )
 
-    val showLiveBubble = stream.liveActive || stream.liveText.isNotBlank()
+    // 有执行过程时只显示那一行状态，不再额外冒一个空正文气泡（Claude 同款）。
+    val showLiveBubble = stream.liveText.isNotBlank() ||
+        (stream.liveActive && !stream.hasActivity)
     val showStreamStatus = stream.terminalError != null ||
         stream.cancelled ||
         stream.connection == StreamConnection.RECONNECTING ||
@@ -677,10 +679,15 @@ fun V2ChatScreen(
                             onSend = onSend,
                         )
                     }
-                } else if (sending) {
+                } else if (sending && !stream.hasActivity) {
                     item(key = "waiting-agent") {
-                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Label("Agent 正在处理…", 11f, V2Colors.ink(.30f), mono = true)
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TypingDots()
+                            Spacer(Modifier.width(6.dp))
+                            Label("${agent.name} 正在处理…", 10.5f, V2Colors.ink(.42f))
                         }
                     }
                 }
@@ -1720,7 +1727,12 @@ private fun StreamingRow(
                 .padding(horizontal = 14.dp, vertical = 11.dp),
         ) {
             if (text.isBlank()) {
-                Label((label ?: "正在处理…") + "▍", 15f, V2Colors.ink(.42f))
+                // 还没出正文：只给三点动画与一句轻提示，不塞一个空的大气泡。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TypingDots()
+                    Spacer(Modifier.width(7.dp))
+                    Label(label ?: "正在处理…", 13f, V2Colors.ink(.42f))
+                }
             } else {
                 // 流式正文与最终答复共用同一套卡片渲染：代码/表格在生成过程中就能成卡。
                 // 连接中断/停止后仍保留这段部分输出，只是不再显示光标。

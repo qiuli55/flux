@@ -1,5 +1,10 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +28,8 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,9 +41,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -76,11 +85,8 @@ internal class StopTapGuard(private val windowMs: Long = 700L) {
 }
 
 /**
- * 本轮执行过程：思考（可折叠，结束后默认收起）+ 工具步骤（逐步可折叠）。
- *
- * 沿用 RunTimelineCard 的卡片样式，只把「思考」和「工具」拆成独立可折叠项：
- *  - 思考中显示耗时，结束时自动收起，正文点开才看；
- *  - 工具默认只占一行，状态用 spinner / check / error 图标，参数与结果点开才看。
+ * 本轮执行过程：与 Claude 一样默认只占一行——
+ * 运行动画点 + 当前动作（正在修改 xxx / 思考内容最后一句），点开才看思考正文与工具参数。
  */
 @Composable
 internal fun StreamActivityCard(
@@ -88,13 +94,14 @@ internal fun StreamActivityCard(
     modifier: Modifier = Modifier,
 ) {
     if (!stream.hasActivity) return
-    var expanded by remember { mutableStateOf(true) }
+    // Claude 的执行过程默认折叠；结束后也保持折叠，只留一行摘要。
+    var expanded by remember { mutableStateOf(false) }
     val tools = stream.tools
     val categorized = tools.count { it.category.isNotBlank() }
     val commands = if (categorized > 0) tools.count { it.category == "command" } else tools.size
     val filesChanged = tools.filter { it.category == "write" }.flatMap { it.paths }.toSet().size
     val filesRead = tools.filter { it.category == "read" }.flatMap { it.paths }.toSet().size
-    val summary = buildString {
+    val settledSummary = buildString {
         val reasoning = stream.reasoning
         if (reasoning != null) {
             // 与 Claude 一致：思考中只报状态，结束后固化成「思考了 N 秒」。
@@ -114,40 +121,67 @@ internal fun StreamActivityCard(
         }
         if (isEmpty()) append("执行过程")
     }
+    val runningTool = tools.lastOrNull { it.status == StreamToolStatus.RUNNING }
+    // 运行中只报当前动作：优先工具（带目标），其次思考内容的最后一句，
+    // 都没有时说明在写正文。结束后换回一行摘要。
+    val liveAction = when {
+        runningTool != null -> runningToolActivity(runningTool)
+        stream.reasoning?.active == true -> reasoningHint(stream.reasoning)
+        stream.liveActive && stream.liveText.isNotBlank() -> "正在回复…"
+        else -> null
+    }
+    val running = liveAction != null
+    val headline = liveAction ?: settledSummary
+    // 折叠时就是正文里的一行，不再套一层卡片，避免流式过程比答案还重。
+    val container = if (expanded) {
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(V2Colors.surface(.58f))
+            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    } else {
+        Modifier.padding(horizontal = 4.dp, vertical = 3.dp)
+    }
     Column(
         modifier
             .fillMaxWidth()
             .testTag(V2StreamTags.ACTIVITY)
-            .clip(RoundedCornerShape(14.dp))
-            .background(V2Colors.surface(.58f))
-            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .then(container),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .testTag(V2StreamTags.ACTIVITY_TOGGLE)
-                .clickable { expanded = !expanded },
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 1.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Outlined.AutoAwesome,
-                contentDescription = null,
-                tint = V2Colors.cyan700,
-                modifier = Modifier.size(13.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Label("执行过程", 10f, V2Colors.ink(.64f), weight = FontWeight.Medium)
-            Spacer(Modifier.width(6.dp))
-            Label(summary, 8.5f, V2Colors.ink(.32f), mono = true)
-            Spacer(Modifier.weight(1f))
-            if (stream.liveActive && stream.runningTools > 0) {
-                Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
-                Spacer(Modifier.width(4.dp))
-                Label("进行中", 8f, V2Colors.emerald, mono = true)
-                Spacer(Modifier.width(6.dp))
+            if (running) {
+                TypingDots()
+            } else {
+                Icon(
+                    Icons.Outlined.Check,
+                    contentDescription = null,
+                    tint = V2Colors.emerald,
+                    modifier = Modifier.size(12.dp),
+                )
             }
-            Label(if (expanded) "收起" else "展开", 8.5f, V2Colors.cyan700)
+            Spacer(Modifier.width(6.dp))
+            Label(
+                text = headline,
+                10f,
+                V2Colors.ink(if (running) .58f else .38f),
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowRight,
+                contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
+                tint = V2Colors.ink(.30f),
+                modifier = Modifier.size(14.dp),
+            )
         }
         if (expanded) {
             Spacer(Modifier.height(8.dp))
@@ -158,6 +192,50 @@ internal fun StreamActivityCard(
             }
         }
     }
+}
+
+/** Claude 式三点等待动画：三点错峰呼吸，替代「正在思考…▍」这种空文本气泡。 */
+@Composable
+internal fun TypingDots(
+    color: Color = V2Colors.ink(.46f),
+    modifier: Modifier = Modifier,
+    dotSize: Dp = 3.dp,
+) {
+    val transition = rememberInfiniteTransition(label = "typing")
+    Row(
+        modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        repeat(3) { index ->
+            val alpha by transition.animateFloat(
+                initialValue = .25f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 420, delayMillis = index * 140),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "typing-dot-$index",
+            )
+            Box(
+                Modifier
+                    .size(dotSize)
+                    .clip(CircleShape)
+                    .background(color.copy(alpha = alpha)),
+            )
+        }
+    }
+}
+
+/** 思考中给一行实时提示：取思考正文最后一个非空行，与 Claude 的「正在规划…」同层。 */
+internal fun reasoningHint(reasoning: StreamReasoning?): String {
+    val line = reasoning?.text
+        ?.lineSequence()
+        ?.map { it.trim() }
+        ?.lastOrNull { it.isNotEmpty() }
+        .orEmpty()
+    if (line.isEmpty()) return "正在思考…"
+    return if (line.length <= 60) line else line.take(59).trimEnd() + "…"
 }
 
 /** 思考块：流式中展开并显示「思考中… N 秒」，结束后自动收起成一行。 */
@@ -431,6 +509,12 @@ internal fun runningToolPhase(step: StreamToolStep): String = when (step.categor
     "read" -> "正在读取文件"
     "write" -> "正在修改文件"
     else -> "正在使用 ${step.name.ifBlank { "工具" }}"
+}
+
+/** 单行执行状态：动作 + 目标，例如「正在读取文件 README.md」。 */
+internal fun runningToolActivity(step: StreamToolStep): String {
+    val target = compactToolDetail(step.detail, limit = 48)
+    return if (target.isEmpty()) runningToolPhase(step) else "${runningToolPhase(step)} $target"
 }
 
 /** 思考/执行耗时：不足 1 分钟只报秒，超过后与 Claude 一样用「分 + 秒」。 */
