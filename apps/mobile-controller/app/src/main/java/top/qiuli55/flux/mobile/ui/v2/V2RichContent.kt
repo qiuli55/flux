@@ -101,15 +101,56 @@ internal data class RichCard(
 )
 
 /**
- * Markdown 块解析器（纯函数，可单测）。
- *
- * 支持：标题、有序/无序列表、代码围栏、管道表格、整行网址，以及 ```ui 生成式卡片。
- * 表格/列表之外的行内语法仍按普通段落处理；未闭合的代码围栏按「正在生成的代码」处理。
+ * 整行网址才升级成链接卡。去掉包裹符号和句末标点，
+ * 避免 `https://x.com/a。` 或 `（https://x.com/a）` 把标点带进链接。
  */
+internal fun normalizeBareUrl(text: String): String? {
+    var candidate = text.trim()
+    candidate = candidate.removeSurrounding("<", ">").trim()
+    candidate = candidate.removeSurrounding("(", ")").trim()
+    candidate = candidate.removeSurrounding("（", "）").trim()
+    if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) {
+        return null
+    }
+    candidate = trimUrlTail(candidate)
+    if (candidate.any { it.isWhitespace() }) {
+        return null
+    }
+    return candidate.takeIf { it.substringAfter("://", "").isNotBlank() }
+}
+
+/** 链接卡第二行：优先展示路径 + 查询；根路径返回空，只保留域名一行。 */
+internal fun linkDetail(url: String): String {
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return ""
+    val rawPath = uri.rawPath.orEmpty()
+    val path = runCatching { java.net.URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+    val query = uri.rawQuery?.takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
+    val readable = path.takeIf { it.isNotBlank() && it != "/" }?.plus(query)
+    return readable ?: query
+}
+
+private fun trimUrlTail(raw: String): String {
+    var url = raw
+    while (url.isNotEmpty()) {
+        val last = url.last()
+        val strip = when (last) {
+            in ".,;:!?'\"，。；：！？、" -> true
+            ')' -> url.count { it == ')' } > url.count { it == '(' }
+            ']' -> url.count { it == ']' } > url.count { it == '[' }
+            '}' -> url.count { it == '}' } > url.count { it == '{' }
+            '>', '》', '」', '』', '】' -> true
+            else -> false
+        }
+        if (!strip) break
+        url = url.dropLast(1)
+    }
+    return url
+}
+
+/** 把 Markdown-lite 正文解析成可渲染的块；流式时容忍未闭合的代码围栏。 */
 internal object RichContentParser {
 
     private val separatorCell = Regex("^:?-{2,}:?$")
-    private val bareUrl = Regex("^<?(https?://[^\\s<>]+)>?$")
     private val heading = Regex("^(#{1,6})\\s+(.+)$")
     private val unorderedBullet = Regex("^[-*•]\\s+(.+)$")
     private val orderedBullet = Regex("^(\\d{1,3})[.)]\\s+(.+)$")
@@ -187,7 +228,7 @@ internal object RichContentParser {
                 continue
             }
 
-            val url = bareUrl.matchEntire(line.trim())?.groupValues?.get(1)
+            val url = normalizeBareUrl(line)
             if (url != null) {
                 flushParagraph()
                 blocks += RichBlock.Link(url)
@@ -700,6 +741,7 @@ private fun LinkCard(url: String, onOpenUrl: (String) -> Unit) {
     val host = remember(url) {
         runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
     }
+    val detail = remember(url) { linkDetail(url) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -726,8 +768,10 @@ private fun LinkCard(url: String, onOpenUrl: (String) -> Unit) {
                 mono = true,
                 maxLines = 1,
             )
-            Spacer(Modifier.height(2.dp))
-            Label(url, 10f, V2Colors.ink(.34f), mono = true, maxLines = 1)
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Label(detail, 9.5f, V2Colors.ink(.34f), mono = true, maxLines = 1)
+            }
         }
         Icon(
             Icons.Outlined.OpenInNew,

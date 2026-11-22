@@ -473,7 +473,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 // 以及「流式气泡 + 落库消息」两份同样的回复。这里以接口状态为准收尾。
                 val snapshot = _state.value.stream
                 val settleLive = shouldSettleLiveBubble(finished, messages, snapshot.liveText)
-                val stream = if (settleLive && snapshot.liveActive) {
+                val stream = if (settleLive && (snapshot.liveActive || snapshot.liveText.isNotBlank())) {
                     Log.i(FLUX_STREAM_LOG_TAG, "refresh settles live bubble finished=$finished")
                     streamReducer.settleFinished()
                 } else {
@@ -488,7 +488,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     contextUsage = contextDeferred.await() ?: _state.value.contextUsage,
                     run = runDeferred.await(),
                     runs = runsDeferred.await(),
-                    // 思考 / 工具过程保留在活动卡里（结束时默认收起），最终答复仍以落库消息为准
+                    // 思考 / 工具过程交给消息下方的执行轨迹卡回看，最终答复以落库消息为准
                     stream = stream,
                 )
             } catch (e: FluxApiException) {

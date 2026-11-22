@@ -133,6 +133,10 @@ internal class TaskStreamReducer(
                     liveActive = true,
                     liveText = "",
                     liveLabel = "正在生成回复…",
+                    // 普通回话也可能接在上一轮工具之后：不继承上一轮的过程。
+                    reasoning = null,
+                    tools = emptyList(),
+                    errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
                 )
@@ -160,6 +164,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = endReasoning(it.reasoning),
                     tools = finishRunning(it.tools),
+                    terminalError = null,
                 )
             }
 
@@ -200,13 +205,37 @@ internal class TaskStreamReducer(
 
             "run_event" -> applyRunEvent(event)
 
-            "run_status", "run_finished" -> structural {
+            "run_status" -> {
+                val status = string(event, "status").lowercase()
+                val failed = status == "failed" || status == "error"
+                structural {
+                    it.copy(
+                        liveActive = false,
+                        liveLabel = null,
+                        // 先到正文、后到终态：这里只收尾，不清正文；由 run_finished 统一交棒，
+                        // 避免执行结束瞬间正文先消失、落库消息随后才到造成的闪烁。
+                        reasoning = endReasoning(it.reasoning),
+                        tools = finishRunning(it.tools, failed),
+                        terminalError = if (failed) {
+                            it.terminalError ?: string(event, "error").ifBlank { "执行失败" }
+                        } else {
+                            it.terminalError
+                        },
+                    )
+                }
+            }
+
+            "run_finished" -> structural {
+                // 终态由落库的 run_finished 消息接管：清空实时内容，
+                // 思考/工具改从消息下方的执行轨迹卡回看，避免与持久化消息重复。
                 it.copy(
                     liveActive = false,
                     liveText = "",
                     liveLabel = null,
-                    reasoning = endReasoning(it.reasoning),
-                    tools = finishRunning(it.tools),
+                    reasoning = null,
+                    tools = emptyList(),
+                    errorLines = emptyList(),
+                    terminalError = null,
                 )
             }
 
@@ -250,7 +279,7 @@ internal class TaskStreamReducer(
         return state
     }
 
-    /** 任务已到终态（refresh 兜底）：收尾流式气泡，但保留思考/工具供回看。 */
+    /** 任务已到终态（refresh 兜底）：与 run_finished 一致，交给落库消息与轨迹卡。 */
     fun settleFinished(): StreamUiSnapshot {
         flushInternal()
         state = touch(
@@ -258,8 +287,10 @@ internal class TaskStreamReducer(
                 liveActive = false,
                 liveText = "",
                 liveLabel = null,
-                reasoning = endReasoning(state.reasoning),
-                tools = finishRunning(state.tools),
+                reasoning = null,
+                tools = emptyList(),
+                errorLines = emptyList(),
+                terminalError = null,
             ),
         )
         return state
@@ -524,9 +555,16 @@ internal class TaskStreamReducer(
     private fun endReasoning(reasoning: StreamReasoning?): StreamReasoning? =
         reasoning?.copy(active = false, endedAtMs = reasoning.endedAtMs ?: now())
 
-    private fun finishRunning(tools: List<StreamToolStep>): List<StreamToolStep> =
+    private fun finishRunning(
+        tools: List<StreamToolStep>,
+        failed: Boolean = false,
+    ): List<StreamToolStep> =
         tools.map { step ->
-            if (step.status == StreamToolStatus.RUNNING) step.copy(status = StreamToolStatus.DONE) else step
+            if (step.status != StreamToolStatus.RUNNING) {
+                step
+            } else {
+                step.copy(status = if (failed) StreamToolStatus.FAILED else StreamToolStatus.DONE)
+            }
         }
 
     private fun touch(next: StreamUiSnapshot): StreamUiSnapshot =

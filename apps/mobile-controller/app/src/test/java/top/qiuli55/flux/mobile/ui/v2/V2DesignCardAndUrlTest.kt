@@ -70,4 +70,39 @@ class V2DesignCardAndUrlTest {
     fun `blank address falls back to about blank`() {
         assertEquals("about:blank", normalizeUrl("   "))
     }
+
+    @Test
+    fun `bare url line drops trailing punctuation before becoming a card`() {
+        val blocks = RichContentParser.parse("https://flux.app.qiuli55.top/report。")
+
+        assertEquals(1, blocks.size)
+        assertEquals("https://flux.app.qiuli55.top/report", (blocks[0] as RichBlock.Link).url)
+    }
+
+    @Test
+    fun `url wrapped in common brackets is unwrapped`() {
+        assertEquals(
+            "https://flux.app.qiuli55.top/a",
+            normalizeBareUrl("（https://flux.app.qiuli55.top/a）"),
+        )
+        assertEquals(
+            "https://flux.app.qiuli55.top/a",
+            normalizeBareUrl("<https://flux.app.qiuli55.top/a>"),
+        )
+    }
+
+    @Test
+    fun `balanced parentheses inside url are preserved`() {
+        assertEquals(
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            normalizeBareUrl("https://en.wikipedia.org/wiki/Foo_(bar)"),
+        )
+    }
+
+    @Test
+    fun `link detail shows path but hides duplicated root url`() {
+        assertEquals("/docs/start?from=chat", linkDetail("https://flux.app.qiuli55.top/docs/start?from=chat"))
+        assertEquals("", linkDetail("https://flux.app.qiuli55.top/"))
+        assertEquals("", linkDetail("https://flux.app.qiuli55.top"))
+    }
 }

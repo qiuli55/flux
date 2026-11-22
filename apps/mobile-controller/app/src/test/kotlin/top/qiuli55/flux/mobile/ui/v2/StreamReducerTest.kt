@@ -126,11 +126,46 @@ class StreamReducerTest {
     }
 
     @Test
-    fun `run finished completes running tools`() {
-        reducer.apply(tool(1, "call-3", "running"))
+    fun `run status keeps partial body until run finished hands off`() {
+        reducer.apply(delta(1, "先到的正文"))
+        reducer.flush()
+        reducer.apply(tool(2, "call-3", "running"))
+        reducer.apply(event(3, "run_status", "status" to "completed"))
+
+        val settled = reducer.snapshot()
+        // 终态先到、落库消息后到：正文不能在这中间消失。
+        assertEquals("先到的正文", settled.liveText)
+        assertFalse(settled.liveActive)
+        assertEquals(StreamToolStatus.DONE, settled.tools[0].status)
+
+        reducer.apply(event(4, "run_finished"))
+        val finished = reducer.snapshot()
+        assertEquals("", finished.liveText)
+        assertTrue(finished.tools.isEmpty())
+        assertNull(finished.reasoning)
+    }
+
+    @Test
+    fun `run finished clears live activity for trace handoff`() {
+        reducer.apply(tool(1, "call-4", "running"))
         reducer.apply(event(2, "run_finished"))
-        assertEquals(StreamToolStatus.DONE, reducer.snapshot().tools[0].status)
-        assertFalse(reducer.snapshot().liveActive)
+
+        val snapshot = reducer.snapshot()
+        assertTrue(snapshot.tools.isEmpty())
+        assertFalse(snapshot.liveActive)
+        assertEquals("", snapshot.liveText)
+    }
+
+    @Test
+    fun `assistant start does not inherit previous run activity`() {
+        reducer.apply(tool(1, "call-5", "completed"))
+        reducer.apply(thinking(2, "上一轮的思考"))
+        reducer.apply(event(3, "assistant_start"))
+
+        val snapshot = reducer.snapshot()
+        assertTrue(snapshot.tools.isEmpty())
+        assertNull(snapshot.reasoning)
+        assertTrue(snapshot.liveActive)
     }
 
     @Test
