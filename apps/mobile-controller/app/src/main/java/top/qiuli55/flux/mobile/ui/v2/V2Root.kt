@@ -170,6 +170,8 @@ fun FluxV2Root() {
     var designExitOpen by remember { mutableStateOf(false) }
     // 画布来源：从设计列表进默认回列表；从对话卡片进则回原对话
     var designOrigin by remember { mutableStateOf<V2Route>(V2Route.Designs) }
+    // 产物详情来源：从 Artifacts 列表进默认回列表；从对话卡片进则回原对话
+    var artifactOrigin by remember { mutableStateOf<V2Route>(V2Route.Artifacts) }
 
     // 长按对话 / 对话页垃圾桶 → 删除面板；面板按 id 实时读任务状态（运行中要先停止）。
     var deleteConversationId by remember { mutableStateOf<String?>(null) }
@@ -250,6 +252,13 @@ fun FluxV2Root() {
         designOrigin = route
         designVm.openDesign(designId)
         route = V2Route.DesignCanvas
+    }
+
+    // 从对话里的产物卡片进详情：记住当前对话路由，返回时回到这段对话
+    fun openArtifactFromChat(artifactId: String) {
+        artifactOrigin = route
+        artifactsVm.open(artifactId)
+        route = V2Route.ArtifactDetail(artifactId)
     }
 
     // 对话里的链接一律交给 App 内的浏览器，不跳系统浏览器
@@ -477,7 +486,7 @@ fun FluxV2Root() {
                   is V2Route.Browser -> current.origin
                   is V2Route.ArtifactDetail -> {
                       artifactsVm.closeDetail()
-                      V2Route.Artifacts
+                      artifactOrigin
                   }
                   V2Route.Designs -> V2Route.Artifacts
                   V2Route.DesignCanvas -> {
@@ -647,6 +656,7 @@ fun FluxV2Root() {
                             onReload = { artifactsVm.load() },
                             onFilter = { artifactsVm.setFilter(it) },
                             onOpenArtifact = { artifactId ->
+                                artifactOrigin = V2Route.Artifacts
                                 artifactsVm.open(artifactId)
                                 route = V2Route.ArtifactDetail(artifactId)
                             },
@@ -672,7 +682,7 @@ fun FluxV2Root() {
                             showBack = showBack,
                             onBack = {
                                 artifactsVm.closeDetail()
-                                route = V2Route.Artifacts
+                                route = artifactOrigin
                             },
                             onSave = { title, content -> artifactsVm.save(title, content) },
                             onDelete = { artifactId ->
@@ -930,6 +940,7 @@ fun FluxV2Root() {
                                 startHandoffChat(current.taskId, summary)
                             },
                             onOpenDesign = { openDesignFromChat(it) },
+                            onOpenArtifact = { openArtifactFromChat(it) },
                             onOpenUrl = { openInternalBrowser(it) },
                             designOptions = designState.designs,
                             designsLoading = designState.loading,

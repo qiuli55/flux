@@ -235,6 +235,8 @@ fun V2ChatScreen(
     onOpenUrl: (String) -> Unit = {},
     /** 设计稿卡片：点开进入原生画布预览。 */
     onOpenDesign: (String) -> Unit = {},
+    /** 已发布的页面 / 文档卡片：点开进入产物详情。 */
+    onOpenArtifact: (String) -> Unit = {},
     /** 切换对话权限模式（plan / normal / full）；只影响后续消息。 */
     onPermissionModeChange: (String) -> Unit = {},
     /** 审批卡：允许本次执行 / 拒绝本次执行。 */
@@ -655,6 +657,7 @@ fun V2ChatScreen(
                         onOpenRunTrace = onOpenRunTrace,
                         onOpenUrl = onOpenUrl,
                         onOpenDesign = onOpenDesign,
+                        onOpenArtifact = onOpenArtifact,
                         onSend = onSend,
                         onLongPress = openBubbleMenu,
                         onSubmitSecureInput = onSubmitSecureInput,
@@ -1985,6 +1988,8 @@ private fun MessageRow(
     onOpenRunTrace: (String) -> Unit = {},
     onOpenUrl: (String) -> Unit = {},
     onOpenDesign: (String) -> Unit = {},
+    /** 产物卡片：页面 / 文档点开进入 ArtifactDetail。 */
+    onOpenArtifact: (String) -> Unit = {},
     /** 生成式卡片里的动作胶囊：点一下就把按钮的 prompt 发出去。 */
     onSend: (String) -> Unit = {},
     /** 长按气泡：回传消息与气泡在根容器中的位置，用于浮出复制/引用/重发菜单。 */
@@ -2009,6 +2014,13 @@ private fun MessageRow(
     if (message.kind == "design_card" && message.designCard != null) {
         // Agent 通过 design.share 写入的设计稿卡片：点开进原生画布，不套普通文字气泡
         DesignCardMessage(message.designCard, message.time) { onOpenDesign(message.designCard.id) }
+        return
+    }
+    if (message.kind == "artifact_card" && message.artifactCard != null) {
+        // Agent 通过 artifact.publish 发布的页面 / 文档：点开进产物详情
+        ArtifactCardMessage(message.artifactCard, message.time) {
+            onOpenArtifact(message.artifactCard.id)
+        }
         return
     }
     if (message.kind == "plan_card" && message.planCard != null) {
@@ -2377,6 +2389,71 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
             )
             Spacer(Modifier.weight(1f))
             Label("v${card.version} · $time", 8.5f, V2Colors.ink(.26f), mono = true)
+        }
+    }
+}
+
+/**
+ * Artifact 卡片：Agent 通过 artifact.publish 把页面 / 文档发布进对话。
+ *
+ * 正文内容留在产物详情里，卡片只展示类型、标题、摘要与「已发布」状态；
+ * 点开进入 ArtifactDetail。产物默认私有，所以这里也不出现任何分享链接。
+ */
+@Composable
+private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () -> Unit) {
+    val doc = card.type == "doc"
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(V2Colors.surface(.80f))
+            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(V2Colors.accent.copy(alpha = .12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (doc) Icons.Outlined.Description else Icons.Outlined.Language,
+                    contentDescription = null,
+                    tint = V2Colors.accent,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Label(card.title, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 1)
+                Spacer(Modifier.height(2.dp))
+                val kind = if (doc) "文档" else "页面"
+                val version = if (card.version > 0) " · v${card.version}" else ""
+                Label("$kind$version", 9f, V2Colors.ink(.42f), maxLines = 1)
+            }
+            Spacer(Modifier.width(8.dp))
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(V2Colors.accent.copy(alpha = .14f))
+                    .padding(horizontal = 9.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Label("已发布", 9f, V2Colors.accent, FontWeight.SemiBold)
+            }
+        }
+        if (card.summary.isNotBlank()) {
+            Spacer(Modifier.height(9.dp))
+            Label(card.summary, 10f, V2Colors.ink(.56f), maxLines = 3)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("产物默认私有，仅你可见", 8.5f, V2Colors.ink(.30f), mono = true)
+            Spacer(Modifier.weight(1f))
+            Label("点开查看 · $time", 8.5f, V2Colors.ink(.26f), mono = true)
         }
     }
 }
