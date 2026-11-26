@@ -85,9 +85,7 @@ async def complete_oauth_browser(
         return _oauth_html("授权失败", exc.message, ok=False)
     login = str(status.get("login") or "").strip()
     detail = (
-        f"已连接 @{login}，可以回到 Flux 继续。"
-        if login
-        else "已连接 GitHub，可以回到 Flux 继续。"
+        f"已连接 @{login}，可以回到 Flux 继续。" if login else "已连接 GitHub，可以回到 Flux 继续。"
     )
     return _oauth_html("授权成功", detail, ok=True)
 
@@ -95,16 +93,16 @@ async def complete_oauth_browser(
 def _oauth_html(title: str, message: str, *, ok: bool) -> HTMLResponse:
     color = "#059669" if ok else "#e11d48"
     body = (
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\" />"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" />'
+        '<meta name="viewport" content="width=device-width, initial-scale=1" />'
         f"<title>{html.escape(title)}</title></head>"
-        "<body style=\"margin:0;min-height:100vh;display:flex;align-items:center;"
+        '<body style="margin:0;min-height:100vh;display:flex;align-items:center;'
         "justify-content:center;background:#f6f7f9;color:#1d1f23;"
-        "font-family:system-ui,-apple-system,sans-serif;\">"
-        "<main style=\"max-width:420px;padding:32px 24px;text-align:center;\">"
-        f"<h1 style=\"font-size:20px;margin:0 0 10px;color:{color};\">"
+        'font-family:system-ui,-apple-system,sans-serif;">'
+        '<main style="max-width:420px;padding:32px 24px;text-align:center;">'
+        f'<h1 style="font-size:20px;margin:0 0 10px;color:{color};">'
         f"{html.escape(title)}</h1>"
-        "<p style=\"font-size:14px;line-height:1.7;color:#52565e;margin:0;\">"
+        '<p style="font-size:14px;line-height:1.7;color:#52565e;margin:0;">'
         f"{html.escape(message)}</p>"
         "</main></body></html>"
     )
