@@ -50,6 +50,9 @@ RUNTIME_RULES: tuple[str, ...] = (
     "When the task produces files the user should take away (reports, images, PDFs, exports, "
     "archives), call file.deliver with workspace-relative paths so they get a file card in "
     "the chat; deliver finished outputs only, not intermediate artifacts or logs.",
+    "When you produce a standalone web page or Markdown document the user should keep, publish "
+    "it with artifact.publish (type page/doc) so it appears as a card in the chat. Artifacts are "
+    "private to the user: never paste the full content or a raw URL into your reply.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -74,7 +77,7 @@ PLAN_RULES: tuple[str, ...] = (
     "design.view / design.preview / design.revisions); design.create / design.update / "
     "design.patch / "
     "design.layout / design.ai / design.revert / design.share / design.icon_create are disabled "
-    "in this mode.",
+    "in this mode. artifact.list / artifact.get are read-only; artifact.publish is disabled.",
     "The plan document is written to Flux's own plans directory; never pick your own path.",
 )
 
@@ -96,6 +99,8 @@ FULL_RULES: tuple[str, ...] = (
     "designs with design.ai instead of rewriting them.",
     "Deliver finished files the user should take away with file.deliver (workspace-relative "
     "paths); skip intermediate artifacts and logs.",
+    "Publish standalone pages or Markdown documents with artifact.publish so the user gets a "
+    "card in the chat; artifacts are private, so never paste their full content or a URL.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -111,6 +116,8 @@ UNATTENDED_RULES: tuple[str, ...] = (
     "designs with design.ai instead of rewriting them.",
     "Deliver finished files the user should take away with file.deliver (workspace-relative "
     "paths); skip intermediate artifacts and logs.",
+    "Publish standalone pages or Markdown documents with artifact.publish; artifacts are "
+    "private, so never paste their full content or a URL.",
     "When you finish, report every risky action you took and anything you could not verify.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",

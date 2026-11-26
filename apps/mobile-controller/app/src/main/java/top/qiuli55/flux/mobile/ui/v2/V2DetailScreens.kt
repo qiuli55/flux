@@ -541,6 +541,8 @@ fun V2TaskChatScreen(
     onHandoffReady: (HandoffSummary) -> Unit = {},
     /** 设计稿卡片点开：外层切到原生画布。 */
     onOpenDesign: (String) -> Unit = {},
+    /** 已发布的页面 / 文档卡片点开：外层切到产物详情。 */
+    onOpenArtifact: (String) -> Unit = {},
     /** 对话里的链接：外层切到内嵌浏览器。 */
     onOpenUrl: (String) -> Unit = {},
     /** 「+」菜单里的设计稿来源：null 表示不提供该入口。 */
@@ -725,6 +727,7 @@ fun V2TaskChatScreen(
             handoffBusy = state.handoffBusy,
             onOpenUrl = onOpenUrl,
             onOpenDesign = onOpenDesign,
+            onOpenArtifact = onOpenArtifact,
             // 权限模式只影响后续消息；审批走既有决策点接口（允许 / 拒绝）
             onPermissionModeChange = { vm.setPermissionMode(it) },
             onAllowApproval = { decisionId -> vm.chooseDecision(decisionId, "允许", reject = false) },
@@ -781,6 +784,12 @@ private fun TaskMessage.toV2Message(): V2Message? {
     if (kind == "design_card") {
         parseDesignCard(payload)?.let { card ->
             return V2Message(mapped, text, clockLabel(createdAt), kind = kind, designCard = card)
+        }
+    }
+    // 已发布的页面 / 文档：payload 只带类型、标题与摘要，正文留在产物详情里
+    if (kind == "artifact_card") {
+        parseArtifactCard(payload)?.let { card ->
+            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, artifactCard = card)
         }
     }
     // Plan 模式产出的计划卡：标题 + 步骤 + 涉及文件 + 计划文档路径
@@ -867,6 +876,20 @@ internal fun parseDesignCard(payload: JsonElement?): V2DesignCard? {
         updatedAt = root.stringField("updated_at").orEmpty(),
         bg = root.stringField("bg") ?: "#F4F6F9",
         preview = preview,
+    )
+}
+
+/** 解析 artifact_card 消息 payload（artifact.publish 产出）→ 对话里的产物卡片。 */
+internal fun parseArtifactCard(payload: JsonElement?): V2ArtifactCard? {
+    val root = payload as? JsonObject ?: return null
+    val id = root.stringField("artifact_id") ?: return null
+    val title = root.stringField("title") ?: return null
+    return V2ArtifactCard(
+        id = id,
+        type = root.stringField("type") ?: "page",
+        title = title,
+        summary = root.stringField("summary").orEmpty(),
+        version = root.intField("version"),
     )
 }
 

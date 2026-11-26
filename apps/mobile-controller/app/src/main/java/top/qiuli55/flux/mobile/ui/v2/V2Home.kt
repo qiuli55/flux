@@ -40,7 +40,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DesignServices
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Laptop
@@ -88,7 +88,7 @@ fun V2HomeScreen(
     groups: List<ChatGroup>,
     groupsLoading: Boolean = false,
     extraTop: androidx.compose.ui.unit.Dp,
-    onOpenDesigns: () -> Unit,
+    onOpenArtifacts: () -> Unit,
     onOpenAssistant: () -> Unit,
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
@@ -294,7 +294,7 @@ fun V2HomeScreen(
                             haptics?.play(V2HapticLevel.SUCCESS)
                             when (chosen) {
                                 0 -> onNewChat()
-                                1 -> onOpenDesigns()
+                                1 -> onOpenArtifacts()
                             }
                         }
                     }
@@ -685,7 +685,7 @@ private fun SwipeDeleteAction(onClick: () -> Unit) {
 private fun QuickActionStack(visible: Boolean, hover: Int, modifier: Modifier = Modifier) {
     val actions = listOf(
         Triple(Icons.Outlined.AddComment, "新建对话", "直接开一段新对话"),
-        Triple(Icons.Outlined.DesignServices, "设计工作室", "画布与 AI 改稿"),
+        Triple(Icons.Outlined.Dashboard, "Artifacts", "设计、页面与文档"),
     )
     Column(
         modifier,
