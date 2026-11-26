@@ -532,6 +532,31 @@ data class TaskStreamEvent(
     val data: JsonObject = JsonObject(emptyMap()),
 )
 
+// ------------------------------------------------------------------ Artifacts
+
+/**
+ * 会话产出的成品：page（单文件 HTML）/ doc（Markdown）/ design（设计稿投影）。
+ *
+ * design 的 [id] 形如 `design:<luma-id>`，由后端实时聚合 Luma Studio，不在 Flux 库留副本；
+ * 列表只带摘要，详情才带 [content]。
+ */
+@Serializable
+data class Artifact(
+    val id: String = "",
+    val type: String = "page",
+    val title: String = "",
+    val summary: String = "",
+    val version: Int = 0,
+    @SerialName("screen_count") val screenCount: Int = 0,
+    @SerialName("updated_at") val updatedAt: String = "",
+    val content: String? = null,
+    val preview: DesignPreview? = null,
+) {
+    /** design 类型对应的 Luma 设计稿 id；其它类型为 null。 */
+    val designId: String?
+        get() = if (type == "design") id.removePrefix("design:").takeIf { it.isNotBlank() } else null
+}
+
 // ------------------------------------------------------------------ 设计工作室
 
 /** 设计稿列表项（Luma Studio 的 summary，不含画板正文）。 */

@@ -474,6 +474,48 @@ class FluxApi(
     suspend fun rollbackChange(changeId: String): Change =
         post("api/v1/workspace/changes/$changeId/rollback", buildJsonObject {})
 
+    // ---------------------------------------------------------- Artifacts
+
+    /** 产物列表；type 为空返回全部（含实时聚合的设计稿）。 */
+    suspend fun listArtifacts(type: String? = null): List<Artifact> {
+        val query = type?.takeIf { it.isNotBlank() }?.let { "?type=$it" } ?: ""
+        return get("api/v1/artifacts$query")
+    }
+
+    /** 产物详情：页面 / 文档带正文；设计稿是 Luma 投影，只带摘要。 */
+    suspend fun getArtifact(artifactId: String): Artifact =
+        get("api/v1/artifacts/${Uri.encode(artifactId)}")
+
+    /** 新建页面 / 文档；设计稿仍走设计工作室（POST /designs）。 */
+    suspend fun createArtifact(type: String, title: String, content: String = ""): Artifact =
+        post(
+            "api/v1/artifacts",
+            buildJsonObject {
+                put("type", type)
+                put("title", title.trim())
+                put("content", content)
+            },
+        )
+
+    /** 保存标题 / 正文；带 baseVersion 做乐观锁，冲突抛 artifact_conflict。 */
+    suspend fun updateArtifact(
+        artifactId: String,
+        title: String? = null,
+        content: String? = null,
+        baseVersion: Int? = null,
+    ): Artifact =
+        putRequest(
+            "api/v1/artifacts/${Uri.encode(artifactId)}",
+            buildJsonObject {
+                if (title != null) put("title", title)
+                if (content != null) put("content", content)
+                if (baseVersion != null) put("base_version", baseVersion)
+            },
+        )
+
+    suspend fun deleteArtifact(artifactId: String): JsonElement =
+        delete("api/v1/artifacts/${Uri.encode(artifactId)}")
+
     // ---------------------------------------------------------- 设计工作室
 
     suspend fun listDesigns(projectId: String? = null): List<DesignSummary> {

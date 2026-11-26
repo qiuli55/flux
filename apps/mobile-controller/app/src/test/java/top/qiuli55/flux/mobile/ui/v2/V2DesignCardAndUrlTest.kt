@@ -57,6 +57,37 @@ class V2DesignCardAndUrlTest {
     }
 
     @Test
+    fun `artifact card keeps type title summary and version`() {
+        val payload = Json.parseToJsonElement(
+            """
+            {
+              "artifact_id": "8f1c2d3e-0000-4000-8000-000000000001",
+              "type": "doc",
+              "title": "发布说明",
+              "summary": "v2.0 更新内容",
+              "version": 2,
+              "metadata": {}
+            }
+            """.trimIndent(),
+        )
+
+        val card = parseArtifactCard(payload)
+
+        assertTrue(card != null)
+        assertEquals("8f1c2d3e-0000-4000-8000-000000000001", card!!.id)
+        assertEquals("doc", card.type)
+        assertEquals("发布说明", card.title)
+        assertEquals("v2.0 更新内容", card.summary)
+        assertEquals(2, card.version)
+    }
+
+    @Test
+    fun `artifact card without id is ignored instead of crashing`() {
+        val payload = Json.parseToJsonElement("""{"type":"page","title":"没有 id"}""")
+        assertNull(parseArtifactCard(payload))
+    }
+
+    @Test
     fun `browser url gets https when scheme is missing`() {
         assertEquals("https://flux.app.qiuli55.top/x", normalizeUrl("flux.app.qiuli55.top/x"))
     }

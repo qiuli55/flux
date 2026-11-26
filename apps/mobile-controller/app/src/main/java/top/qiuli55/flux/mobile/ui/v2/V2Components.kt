@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Laptop
 import androidx.compose.material.icons.outlined.Person
@@ -1058,10 +1059,10 @@ fun V2SectionLabel(text: String, modifier: Modifier = Modifier) {
 
 // ------------------------------------------------------------------ 底部 Tab
 
-/** 三个一级页面：对话 / 设计 / 我的。 */
+/** 三个一级页面：对话 / Artifacts / 我的。 */
 enum class V2TopTab(val label: String, val icon: ImageVector) {
     CHATS("对话", Icons.Outlined.ChatBubbleOutline),
-    DESIGNS("设计", Icons.Outlined.Edit),
+    ARTIFACTS("Artifacts", Icons.Outlined.Dashboard),
     PROFILE("我的", Icons.Outlined.Person),
 }
 
