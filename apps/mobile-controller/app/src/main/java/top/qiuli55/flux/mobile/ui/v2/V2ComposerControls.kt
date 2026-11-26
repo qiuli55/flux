@@ -149,7 +149,7 @@ internal fun ContextRingButton(
     Box(
         modifier
             .testTag(V2ComposerTags.CONTEXT_RING)
-            .size(40.dp)
+            .size(44.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick)
             .semantics { contentDescription = "上下文占用 $percent%" },
@@ -247,7 +247,7 @@ internal fun ModelCubeButton(
     Box(
         modifier
             .testTag(V2ComposerTags.MODEL_BUTTON)
-            .size(40.dp)
+            .size(44.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = "切换模型" },
