@@ -17,6 +17,8 @@ data class V2Agent(
     val tint: Color,
     /** 是否原生逐 token 流式；false 时界面标注「非逐字流式」。 */
     val nativeStreaming: Boolean = true,
+    /** 执行该 Agent 的 runtime（dsh / codex / opencode / claude-code），用于匹配官方图标。 */
+    val runtime: String = "",
 )
 
 /** 一个可选模型：keyId 非空表示来自密钥库。 */
@@ -315,6 +317,16 @@ fun agentsForDevice(deviceName: String): List<V2AgentOption> {
     }
     return options.ifEmpty { listOf(V2AgentOption(fallbackAgent, globalModelOptions())) }
 }
+
+/**
+ * 当前选中 Agent 的模型清单。
+ *
+ * Agent 与模型不是一个下拉里的两级菜单：切换 Agent 后，模型入口必须立刻只展示
+ * 新 Agent 实际支持的模型（后端 `spec.models` + 已启用 `spec.key_models`）。
+ * 找不到对应 Agent 时返回空列表，让 UI 明确禁用模型入口，而不是沿用上一个 Agent 的模型。
+ */
+fun modelsForAgent(options: List<V2AgentOption>, agentId: String?): List<V2ModelOption> =
+    options.firstOrNull { it.agent.id == agentId }?.models.orEmpty()
 
 fun deviceKind(name: String): V2DeviceKind =
     V2Registry.devices.firstOrNull { it.name == name }?.kind ?: V2DeviceKind.LAPTOP

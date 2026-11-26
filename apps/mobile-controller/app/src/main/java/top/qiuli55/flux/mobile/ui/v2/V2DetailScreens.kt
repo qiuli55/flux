@@ -573,8 +573,12 @@ fun V2TaskChatScreen(
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
     val agentId = task?.agentId.orEmpty()
-    val option = agentsForDevice(device).firstOrNull { it.agent.id == agentId }
+    val agentOptionsForChat = agentsForDevice(device)
+    val option = agentOptionsForChat.firstOrNull { it.agent.id == agentId }
     val models = option?.models ?: emptyList()
+    // 执行中切换 Agent 会排队：模型菜单按「本轮结束后生效的 Agent」取清单，
+    // 避免把旧 Agent 的模型带进新 Agent 的下拉（真正切换后后端会清掉模型覆盖）。
+    val effectiveAgentId = task?.pendingAgentId ?: agentId
     // 任务级模型覆盖优先（带 key 归属）；没有覆盖时用该 Agent 的第一个可用模型。
     val currentKeyId = task?.apiKeyId?.takeIf { it.isNotBlank() }
     val selectedModel = task?.model?.takeIf { it.isNotBlank() }?.let { modelId ->
@@ -717,10 +721,10 @@ fun V2TaskChatScreen(
             suggestions = emptyList(),
             showHandoff = false,
             // 当前设备上已配置的 Agent 就地下拉切换，历史消息保留。
-            agentOptions = if (canSwitchAgent) agentsForDevice(chat.device) else emptyList(),
+            agentOptions = if (canSwitchAgent) agentOptionsForChat else emptyList(),
             onSwitchAgent = { vm.switchAgent(it) },
-            // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型）。
-            modelOptions = if (canSwitchModel) models else emptyList(),
+            // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型），跟随待切换 Agent。
+            modelOptions = if (canSwitchModel) modelsForAgent(agentOptionsForChat, effectiveAgentId) else emptyList(),
             onSwitchModel = { vm.switchModel(it.model, it.keyId) },
             contextUsage = usage,
             contextPromptVisible = contextPromptVisible,

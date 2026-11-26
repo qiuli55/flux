@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#081C24</color>
+
+    <!-- Agent 官方图标的主题墨色：浅色近黑、深色近白，由 values-night 覆盖。 -->
+    <color name="agent_icon_ink">#0A0A0B</color>
+    <color name="agent_icon_ink_muted">#6B6B70</color>
 </resources>

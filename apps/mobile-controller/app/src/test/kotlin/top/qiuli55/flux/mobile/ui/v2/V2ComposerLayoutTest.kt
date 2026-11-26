@@ -22,6 +22,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import top.qiuli55.flux.mobile.data.TaskContextUsage
 
 /**
  * 输入区工具条的交互回归测试。
@@ -66,7 +67,7 @@ class V2ComposerLayoutTest {
                 Box(Modifier.width(widthDp.dp).testTag(TEST_ROOT)) {
                     V2ChatScreen(
                         chat = V2ChatState(
-                            conversationId = null,
+                            conversationId = "task-layout",
                             title = "新的对话",
                             device = "本机",
                             agentId = agentId,
@@ -80,9 +81,25 @@ class V2ComposerLayoutTest {
                         onSend = { sent += it },
                         agentOptions = listOf(
                             V2AgentOption(
-                                V2Agent(agentId, "codex-agent", "编码 Agent", 0, 0, V2Colors.accent),
+                                V2Agent(
+                                    agentId,
+                                    "codex-agent",
+                                    "编码 Agent",
+                                    0,
+                                    0,
+                                    V2Colors.accent,
+                                    runtime = "codex",
+                                ),
                                 listOf(V2ModelOption(modelLabel, modelLabel)),
                             ),
+                        ),
+                        modelOptions = listOf(V2ModelOption(modelLabel, modelLabel)),
+                        contextUsage = TaskContextUsage(
+                            limit = 20,
+                            usedMessages = 8,
+                            usedChars = 12_300,
+                            budgetChars = 30_000,
+                            percent = 42,
                         ),
                         suggestions = emptyList(),
                         showHandoff = false,
@@ -110,6 +127,18 @@ class V2ComposerLayoutTest {
         assertTrue("$tag bottom ${bounds.bottom} > root bottom ${root.bottom}", bounds.bottom <= root.bottom)
     }
 
+    /** 环形 / 立方体 / Agent 胶囊只需完整落在根容器内（触摸目标 44dp）。 */
+    private fun assertInsideRoot(tag: String) {
+        val root = rule.onNodeWithTag(TEST_ROOT).getUnclippedBoundsInRoot()
+        val node = rule.onNodeWithTag(tag)
+        node.assertIsDisplayed()
+        val bounds = node.getUnclippedBoundsInRoot()
+        assertTrue("$tag left ${bounds.left} < root left ${root.left}", bounds.left >= root.left)
+        assertTrue("$tag top ${bounds.top} < root top ${root.top}", bounds.top >= root.top)
+        assertTrue("$tag right ${bounds.right} > root right ${root.right}", bounds.right <= root.right)
+        assertTrue("$tag bottom ${bounds.bottom} > root bottom ${root.bottom}", bounds.bottom <= root.bottom)
+    }
+
     @Test
     fun `long model name keeps all composer actions visible at 320dp font scale 1`() {
         render(widthDp = 320, fontScale = 1f, modelLabel = longModel)
@@ -126,6 +155,9 @@ class V2ComposerLayoutTest {
         assertActionFits(V2ComposerTags.SEND)
         assertActionFits(V2ComposerTags.ATTACH)
         assertActionFits(V2ComposerTags.PERMISSION)
+        assertInsideRoot(V2ComposerTags.CONTEXT_RING)
+        assertInsideRoot(V2ComposerTags.MODEL_BUTTON)
+        assertInsideRoot(V2ComposerTags.AGENT_BUTTON)
         rule.onNodeWithTag(V2ComposerTags.SEND).assertHasClickAction()
     }
 

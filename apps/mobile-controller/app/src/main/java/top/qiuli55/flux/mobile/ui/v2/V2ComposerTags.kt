@@ -3,8 +3,9 @@ package top.qiuli55.flux.mobile.ui.v2
 /**
  * 输入区（composer）的测试标记与日志 tag。
  *
- * 加这些标记是为了让 Compose UI 测试能定位「+ / 模型 chip / 盾牌 / 发送」四个按钮，
- * 验证窄屏 + 大字号 + 超长模型名时发送按钮仍在根容器内、尺寸 >= 48dp 且可点击。
+ * 加这些标记是为了让 Compose UI 测试能定位「+ / Agent 胶囊 / 上下文环 /
+ * 模型立方体 / 盾牌 / 发送」这些入口，验证窄屏 + 大字号时发送按钮仍在根容器内、
+ * 尺寸 >= 48dp 且可点击，环形与立方体也完整可见。
  * 只加 testTag，不改变任何视觉或交互语义。
  */
 internal object V2ComposerTags {
@@ -12,8 +13,16 @@ internal object V2ComposerTags {
     const val INPUT = "v2_composer_input"
     const val TOOLBAR = "v2_composer_toolbar"
     const val ATTACH = "v2_composer_attach"
+    /** Agent 胶囊（官方运行时图标 + 名称 + 当前模型）。 */
+    const val AGENT_BUTTON = "v2_composer_agent"
+    /** 旧的 Agent·模型 chip 容器名保留，测试与日志仍可用。 */
     const val MODEL_CHIP = "v2_composer_model_chip"
     const val MODEL_LABEL = "v2_composer_model_label"
+    /** 输入栏旁的模型选择入口（线框立方体）。 */
+    const val MODEL_BUTTON = "v2_composer_model_button"
+    /** 输入栏旁的上下文占用环。 */
+    const val CONTEXT_RING = "v2_composer_context_ring"
+    const val CONTEXT_INFO = "v2_composer_context_info"
     const val PERMISSION = "v2_composer_permission"
     const val SEND = "v2_composer_send"
 }

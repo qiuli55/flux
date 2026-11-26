@@ -1068,6 +1068,7 @@ internal fun List<Agent>.toV2Agents(tasks: List<Task>): List<V2Agent> =
             running = running,
             tint = agentTints[index % agentTints.size],
             nativeStreaming = agent.spec?.nativeStreaming ?: true,
+            runtime = agent.spec?.runtime.orEmpty(),
         )
     }
 

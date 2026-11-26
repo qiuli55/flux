@@ -3,7 +3,6 @@ package top.qiuli55.flux.mobile.ui.v2
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,18 +10,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,6 +57,8 @@ internal object V2StreamTags {
     const val RETRY = "v2_stream_retry"
     const val ERROR = "v2_stream_error"
     const val JUMP_TO_BOTTOM = "v2_stream_jump_bottom"
+    /** 后台命令状态条（不混进正文正文气泡）。 */
+    const val BACKGROUND = "v2_stream_background"
 
     fun tool(id: String): String = "v2_stream_tool_$id"
     fun toolBody(id: String): String = "v2_stream_tool_body_$id"
@@ -76,11 +82,12 @@ internal class StopTapGuard(private val windowMs: Long = 700L) {
 }
 
 /**
- * 本轮执行过程：思考（可折叠，结束后默认收起）+ 工具步骤（逐步可折叠）。
+ * 本轮执行过程：摘要行（运行了几条命令 · 时长）+ 可折叠的命令行。
  *
- * 沿用 RunTimelineCard 的卡片样式，只把「思考」和「工具」拆成独立可折叠项：
- *  - 思考中显示耗时，结束时自动收起，正文点开才看；
- *  - 工具默认只占一行，状态用 spinner / check / error 图标，参数与结果点开才看。
+ * 目标是不再把工具/命令输出堆成一大墙字：
+ *  - 结束后默认收起，只剩一行摘要；流式中保持展开，方便看到正在跑什么；
+ *  - 每条命令只占一行，输出默认隐藏，点开单条命令才看，并在框内限高滚动；
+ *  - 流式正文继续生成、但命令仍在跑时，收进「后台 Bash」状态条，不混进正文。
  */
 @Composable
 internal fun StreamActivityCard(
@@ -88,21 +95,20 @@ internal fun StreamActivityCard(
     modifier: Modifier = Modifier,
 ) {
     if (!stream.hasActivity) return
-    var expanded by remember { mutableStateOf(true) }
-    val tools = stream.tools
-    val categorized = tools.count { it.category.isNotBlank() }
-    val commands = if (categorized > 0) tools.count { it.category == "command" } else tools.size
-    val filesChanged = tools.filter { it.category == "write" }.flatMap { it.paths }.toSet().size
-    val filesRead = tools.filter { it.category == "read" }.flatMap { it.paths }.toSet().size
-    val summary = if (tools.isEmpty()) {
-        if (stream.reasoning?.active == true) "思考中" else "思考过程"
-    } else {
-        buildString {
-            append(if (commands > 0) "$commands 条命令" else "${tools.size} 步")
-            if (filesChanged > 0) append(" · 改动 $filesChanged 文件")
-            if (filesRead > 0) append(" · 读取 $filesRead 文件")
-        }
+    // 只要还在思考 / 有命令在跑 / 正文还在流，本轮就视为进行中，默认展开；
+    // 结束后自动收起成一行摘要（用户手动展开后不再覆盖）。
+    val activityLive = stream.liveActive ||
+        stream.reasoning?.active == true ||
+        stream.runningTools > 0
+    var manual by remember(stream.runStartedAtMs) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(activityLive, stream.runStartedAtMs) {
+        if (!activityLive && manual == null) manual = false
     }
+    val expanded = manual ?: activityLive
+    val summary = streamActivitySummary(stream, System.currentTimeMillis())
+    val backgroundCommands = backgroundCommandSteps(stream)
+    val backgroundIds = backgroundCommands.map { it.id }.toSet()
+    val visibleTools = stream.tools.filterNot { it.id in backgroundIds }
     Column(
         modifier
             .fillMaxWidth()
@@ -116,36 +122,131 @@ internal fun StreamActivityCard(
             Modifier
                 .fillMaxWidth()
                 .testTag(V2StreamTags.ACTIVITY_TOGGLE)
-                .clickable { expanded = !expanded },
+                .clickable { manual = !expanded },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                Icons.Outlined.AutoAwesome,
+                Icons.Outlined.Terminal,
                 contentDescription = null,
-                tint = V2Colors.cyan700,
+                tint = V2Colors.ink(.46f),
                 modifier = Modifier.size(13.dp),
             )
             Spacer(Modifier.width(6.dp))
-            Label("执行过程", 10f, V2Colors.ink(.64f), weight = FontWeight.Medium)
-            Spacer(Modifier.width(6.dp))
-            Label(summary, 8.5f, V2Colors.ink(.32f), mono = true)
-            Spacer(Modifier.weight(1f))
+            Label(
+                summary,
+                10f,
+                V2Colors.ink(.60f),
+                weight = FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
             if (stream.liveActive && stream.runningTools > 0) {
                 Box(Modifier.size(6.dp).background(V2Colors.emerald, CircleShape))
                 Spacer(Modifier.width(4.dp))
                 Label("进行中", 8f, V2Colors.emerald, mono = true)
                 Spacer(Modifier.width(6.dp))
             }
-            Label(if (expanded) "收起" else "展开", 8.5f, V2Colors.cyan700)
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
+                tint = V2Colors.ink(.34f),
+                modifier = Modifier.size(15.dp),
+            )
         }
         if (expanded) {
             Spacer(Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 stream.reasoning?.let { ReasoningSection(it) }
-                tools.forEach { step -> StreamToolStepRow(step) }
+                if (backgroundCommands.isNotEmpty()) {
+                    BackgroundCommandChip(backgroundCommands.size)
+                }
+                visibleTools.forEach { step -> StreamToolStepRow(step) }
                 stream.errorLines.forEach { line -> StreamErrorRow(line) }
             }
         }
+    }
+}
+
+/**
+ * 摘要行文案：`运行了 N 条命令 · 时长`（外加读/写文件数）。
+ * 纯函数，方便 JVM 单测直接断言时长格式与文案。
+ */
+internal fun streamActivitySummary(stream: StreamUiSnapshot, nowMs: Long): String {
+    val tools = stream.tools
+    val categorized = tools.count { it.category.isNotBlank() }
+    val commands = if (categorized > 0) tools.count { it.category == "command" } else tools.size
+    val filesChanged = tools.filter { it.category == "write" }.flatMap { it.paths }.toSet().size
+    val filesRead = tools.filter { it.category == "read" }.flatMap { it.paths }.toSet().size
+    val base = when {
+        tools.isNotEmpty() && commands > 0 -> "运行了 $commands 条命令"
+        tools.isNotEmpty() -> "${tools.size} 步"
+        stream.reasoning?.active == true -> "思考中"
+        stream.reasoning != null -> "思考过程"
+        else -> "执行过程"
+    }
+    val extras = buildList {
+        if (filesChanged > 0) add("改动 $filesChanged 文件")
+        if (filesRead > 0) add("读取 $filesRead 文件")
+        if (stream.errorLines.isNotEmpty()) add("${stream.errorLines.size} 条错误")
+    }
+    val withExtras = if (extras.isEmpty()) base else "$base · ${extras.joinToString(" · ")}"
+    val elapsed = stream.elapsedMs(nowMs)
+    return if (elapsed >= 1_000L) "$withExtras · ${formatRunDuration(elapsed)}" else withExtras
+}
+
+/** 运行时长：21秒 / 1分32秒 / 1小时5分。 */
+internal fun formatRunDuration(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs.coerceAtLeast(0L) / 1_000L).coerceAtMost(99_999_999L)
+    if (totalSeconds < 60L) return "${totalSeconds}秒"
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    if (minutes < 60L) {
+        return if (seconds == 0L) "${minutes}分" else "${minutes}分${seconds}秒"
+    }
+    val hours = minutes / 60L
+    val restMinutes = minutes % 60L
+    return if (restMinutes == 0L) "${hours}小时" else "${hours}小时${restMinutes}分"
+}
+
+/**
+ * 仍在后台运行的命令：流式正文已经开始继续生成，说明 Agent 没在等这条命令。
+ * 这类步骤收进「后台 Bash」状态条，不再混进命令列表。
+ */
+internal fun backgroundCommandSteps(stream: StreamUiSnapshot): List<StreamToolStep> {
+    // 「本轮还在继续」：正文在流，或思考在流。只有这时才把运行中的命令收进后台条。
+    val turnContinues = stream.liveText.isNotBlank() || stream.reasoning?.active == true
+    if (!stream.liveActive || !turnContinues) return emptyList()
+    return stream.tools.filter {
+        it.category == "command" && it.status == StreamToolStatus.RUNNING
+    }
+}
+
+@Composable
+private fun BackgroundCommandChip(count: Int) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .testTag(V2StreamTags.BACKGROUND)
+            .clip(RoundedCornerShape(10.dp))
+            .background(V2Colors.blue.copy(alpha = .07f))
+            .border(1.dp, V2Colors.blue.copy(alpha = .20f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.Terminal,
+            contentDescription = null,
+            tint = V2Colors.blue,
+            modifier = Modifier.size(12.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Label("后台 Bash", 9.5f, V2Colors.ink(.72f), weight = FontWeight.Medium)
+        Spacer(Modifier.width(6.dp))
+        Box(Modifier.size(5.dp).background(V2Colors.blue, CircleShape))
+        Spacer(Modifier.width(4.dp))
+        Label("$count", 9f, V2Colors.blue, mono = true)
+        Spacer(Modifier.weight(1f))
+        Label("仍在运行", 8f, V2Colors.ink(.34f), mono = true)
     }
 }
 
@@ -196,7 +297,10 @@ private fun ReasoningSection(reasoning: StreamReasoning) {
     }
 }
 
-/** 单个工具步骤：默认一行（状态图标 + 名称 + 状态），参数/结果点开才展开。 */
+/**
+ * 单条命令/工具：默认一行（状态图标 + 命令首行 + 状态 + 展开箭头）。
+ * 点开才看完整命令与输出；输出框限高并可内部滚动，避免一屏被 stdout 铺满。
+ */
 @Composable
 private fun StreamToolStepRow(step: StreamToolStep) {
     var open by remember(step.id) { mutableStateOf(false) }
@@ -205,6 +309,12 @@ private fun StreamToolStepRow(step: StreamToolStep) {
         StreamToolStatus.DONE -> Triple(Icons.Outlined.Check, V2Colors.emerald, "完成")
         StreamToolStatus.FAILED -> Triple(Icons.Outlined.Close, V2Colors.rose, "失败")
     }
+    val command = step.detail.ifBlank { step.name }.ifBlank { "tool" }
+    val firstLine = when {
+        step.category == "command" -> command.lineSequence().firstOrNull()?.trim().orEmpty()
+        step.paths.isNotEmpty() -> "${step.name} · ${step.paths.first()}"
+        else -> step.name
+    }.ifBlank { command.lineSequence().firstOrNull()?.trim().orEmpty() }.ifBlank { "tool" }
     Column(
         Modifier
             .fillMaxWidth()
@@ -228,7 +338,7 @@ private fun StreamToolStepRow(step: StreamToolStep) {
             )
             Spacer(Modifier.width(6.dp))
             Label(
-                step.name.ifBlank { "tool" },
+                firstLine,
                 9.5f,
                 V2Colors.ink(.74f),
                 weight = FontWeight.Medium,
@@ -239,7 +349,12 @@ private fun StreamToolStepRow(step: StreamToolStep) {
             Spacer(Modifier.width(6.dp))
             Label(label, 8f, tint, mono = true)
             Spacer(Modifier.weight(1f))
-            Label(if (open) "收起" else "展开", 8f, V2Colors.cyan700)
+            Icon(
+                if (open) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (open) "收起命令输出" else "展开命令输出",
+                tint = V2Colors.ink(.34f),
+                modifier = Modifier.size(14.dp),
+            )
         }
         if (open) {
             Column(
@@ -249,8 +364,14 @@ private fun StreamToolStepRow(step: StreamToolStep) {
                     .padding(top = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (step.detail.isNotBlank()) {
-                    Label("参数", 8f, V2Colors.ink(.34f), mono = true)
+                // 首行已经展示了整条命令时不再重复；多行命令才补一份全文。
+                if (step.detail.isNotBlank() && step.detail.trim() != firstLine) {
+                    Label(
+                        if (step.category == "command") "命令" else "参数",
+                        8f,
+                        V2Colors.ink(.34f),
+                        mono = true,
+                    )
                     Text(
                         text = step.detail,
                         color = V2Colors.ink(.60f),
@@ -260,10 +381,11 @@ private fun StreamToolStepRow(step: StreamToolStep) {
                     )
                 }
                 if (step.output.isNotBlank()) {
-                    Label("结果", 8f, V2Colors.ink(.34f), mono = true)
+                    Label("输出", 8f, V2Colors.ink(.34f), mono = true)
                     Box(
                         Modifier
                             .fillMaxWidth()
+                            .heightIn(max = 168.dp)
                             .clip(RoundedCornerShape(7.dp))
                             .background(V2Colors.ink(.045f))
                             .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -272,12 +394,11 @@ private fun StreamToolStepRow(step: StreamToolStep) {
                             text = step.output,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
+                                .verticalScroll(rememberScrollState()),
                             color = V2Colors.ink(.52f),
                             fontSize = 9.5.sp,
                             lineHeight = 13.5.sp,
                             fontFamily = FontFamily.Monospace,
-                            softWrap = false,
                         )
                     }
                 }

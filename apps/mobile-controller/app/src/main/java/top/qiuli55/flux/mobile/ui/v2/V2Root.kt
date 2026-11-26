@@ -821,6 +821,28 @@ fun FluxV2Root() {
                                     },
                                     // 新建对话不是从设备接续的历史会话，不需要接续横幅。
                                     showHandoff = false,
+                                    // 新对话也在输入栏里就地切 Agent / 模型：
+                                    // 切 Agent 后模型清单立刻换成新 Agent 支持的模型（后端注入）。
+                                    agentOptions = agentsForDevice(active.device),
+                                    modelOptions = modelsForAgent(
+                                        agentsForDevice(active.device),
+                                        active.agentId,
+                                    ),
+                                    onSwitchAgent = { agentId ->
+                                        val nextOptions = agentsForDevice(active.device)
+                                        val firstModel = modelsForAgent(nextOptions, agentId).firstOrNull()
+                                        chat = chat?.copy(
+                                            agentId = agentId,
+                                            model = firstModel?.model.orEmpty(),
+                                            modelKeyId = firstModel?.keyId,
+                                        )
+                                    },
+                                    onSwitchModel = { option ->
+                                        chat = chat?.copy(
+                                            model = option.model,
+                                            modelKeyId = option.keyId,
+                                        )
+                                    },
                                     onDecisionModeChange = { mode -> chat = chat?.copy(decisionMode = mode) },
                                     // 新建对话还没有任务：模式只记在本地，发首条消息时随建任务请求带上
                                     onPermissionModeChange = { mode -> chat = chat?.copy(permissionMode = mode) },

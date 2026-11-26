@@ -71,9 +71,14 @@ class V2StreamUiTest {
             )
         }
 
+        // 本轮结束后执行过程整卡默认收起，只留一行摘要。
+        rule.onNodeWithText("思考过程").assertIsDisplayed()
+        rule.onNodeWithTag(V2StreamTags.REASONING).assertDoesNotExist()
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
+
         rule.onNodeWithTag(V2StreamTags.REASONING).assertIsDisplayed()
         rule.onNodeWithText("思考 3秒").assertIsDisplayed()
-        // 结束后默认收起：正文不占空间，也不会在下一轮重新冒出来
+        // 思考正文仍默认收起：正文不占空间，也不会在下一轮重新冒出来
         rule.onNodeWithTag(V2StreamTags.REASONING_BODY).assertDoesNotExist()
 
         rule.onNodeWithTag(V2StreamTags.REASONING).performClick()
@@ -118,6 +123,11 @@ class V2StreamUiTest {
             )
         }
 
+        // 结束后执行过程默认收起：先把摘要行展开，才看到一行行命令。
+        rule.onNodeWithText("运行了 1 条命令").assertIsDisplayed()
+        rule.onNodeWithTag(V2StreamTags.tool("call-1")).assertDoesNotExist()
+        rule.onNodeWithTag(V2StreamTags.ACTIVITY_TOGGLE).performClick()
+
         rule.onNodeWithTag(V2StreamTags.tool("call-1")).assertIsDisplayed()
         rule.onNodeWithText("完成").assertIsDisplayed()
         rule.onNodeWithTag(V2StreamTags.toolBody("call-1")).assertDoesNotExist()
@@ -144,6 +154,71 @@ class V2StreamUiTest {
 
         rule.onNodeWithText("运行中").assertIsDisplayed()
         rule.onNodeWithText("失败").assertIsDisplayed()
+    }
+
+    @Test
+    fun `finished run shows command count and duration in one summary line`() {
+        rule.setContent {
+            StreamActivityCard(
+                stream = StreamUiSnapshot(
+                    tools = listOf(
+                        StreamToolStep(id = "a", name = "shell", status = StreamToolStatus.DONE, category = "command"),
+                        StreamToolStep(id = "b", name = "shell", status = StreamToolStatus.DONE, category = "command"),
+                        StreamToolStep(id = "c", name = "shell", status = StreamToolStatus.DONE, category = "command"),
+                    ),
+                    runStartedAtMs = 10_000L,
+                    runEndedAtMs = 40_000L,
+                    liveActive = false,
+                ),
+            )
+        }
+
+        rule.onNodeWithText("运行了 3 条命令 · 30秒").assertIsDisplayed()
+        // 收起状态下不铺命令行
+        rule.onNodeWithTag(V2StreamTags.tool("a")).assertDoesNotExist()
+    }
+
+    @Test
+    fun `running command moves into background chip while assistant keeps writing`() {
+        rule.setContent {
+            StreamActivityCard(
+                stream = StreamUiSnapshot(
+                    liveActive = true,
+                    liveText = "先把结论写出来，后台命令还在跑。",
+                    tools = listOf(
+                        StreamToolStep(
+                            id = "bg",
+                            name = "shell",
+                            detail = "npm run dev",
+                            status = StreamToolStatus.RUNNING,
+                            category = "command",
+                        ),
+                        StreamToolStep(
+                            id = "done",
+                            name = "shell",
+                            detail = "pytest -q",
+                            status = StreamToolStatus.DONE,
+                            category = "command",
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        rule.onNodeWithTag(V2StreamTags.BACKGROUND).assertIsDisplayed()
+        rule.onNodeWithText("后台 Bash").assertIsDisplayed()
+        // 后台命令不再以普通行混在列表里；已完成的命令仍是一行。
+        rule.onNodeWithTag(V2StreamTags.tool("bg")).assertDoesNotExist()
+        rule.onNodeWithTag(V2StreamTags.tool("done")).assertIsDisplayed()
+    }
+
+    @Test
+    fun `run duration formatter handles seconds minutes and hours`() {
+        assertEquals("0秒", formatRunDuration(0))
+        assertEquals("21秒", formatRunDuration(21_900))
+        assertEquals("1分32秒", formatRunDuration(92_000))
+        assertEquals("30分2秒", formatRunDuration(1_802_000))
+        assertEquals("1小时5分", formatRunDuration(3_900_000))
     }
 
     // ------------------------------------------------------------ 连接状态

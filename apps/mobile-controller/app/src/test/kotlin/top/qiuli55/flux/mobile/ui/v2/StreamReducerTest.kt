@@ -237,6 +237,24 @@ class StreamReducerTest {
     }
 
     @Test
+    fun `run start and finish drive summary duration`() {
+        now = 10_000L
+        reducer.apply(event(1, "run_started"))
+        assertEquals(10_000L, reducer.snapshot().runStartedAtMs)
+        assertNull(reducer.snapshot().runEndedAtMs)
+
+        now = 31_000L
+        reducer.apply(tool(2, "call-8", "completed"))
+        reducer.apply(event(3, "run_finished"))
+        val snapshot = reducer.snapshot()
+        assertEquals(10_000L, snapshot.runStartedAtMs)
+        assertEquals(31_000L, snapshot.runEndedAtMs)
+        assertEquals(21_000L, snapshot.elapsedMs(now))
+        // 结束后时间冻结，不再跟着 now 增长
+        assertEquals(21_000L, snapshot.elapsedMs(99_000L))
+    }
+
+    @Test
     fun `start run clears previous activity but keeps seq watermark`() {
         reducer.apply(delta(7, "上一轮"))
         reducer.flush()

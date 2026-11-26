@@ -60,6 +60,10 @@ data class StreamUiSnapshot(
     val reconnectAttempt: Int = 0,
     /** 重连时被 seq 去重挡掉的事件数，便于日志与单测断言。 */
     val duplicateEvents: Int = 0,
+    /** 本轮开始时间：摘要行「运行了 N 条命令 · 时长」用。0 = 未记录（历史快照）。 */
+    val runStartedAtMs: Long = 0L,
+    /** 本轮结束时间；null 表示仍在进行。 */
+    val runEndedAtMs: Long? = null,
     val revision: Int = 0,
 ) {
     val hasActivity: Boolean
@@ -67,6 +71,11 @@ data class StreamUiSnapshot(
 
     val runningTools: Int
         get() = tools.count { it.status == StreamToolStatus.RUNNING }
+
+    /** 本轮已运行时长；没有开始时间时返回 0，UI 不显示时长。 */
+    fun elapsedMs(nowMs: Long): Long =
+        if (runStartedAtMs <= 0L) 0L
+        else ((runEndedAtMs ?: nowMs) - runStartedAtMs).coerceAtLeast(0L)
 }
 
 internal enum class StreamApply {
@@ -135,6 +144,8 @@ internal class TaskStreamReducer(
                     liveLabel = "正在生成回复…",
                     terminalError = null,
                     cancelled = false,
+                    runStartedAtMs = it.runStartedAtMs.takeIf { start -> start > 0 } ?: now(),
+                    runEndedAtMs = null,
                 )
             }
 
@@ -142,13 +153,20 @@ internal class TaskStreamReducer(
                 val text = string(event, "text")
                 if (text.isEmpty()) {
                     if (!state.liveActive || state.liveLabel == null) {
-                        state = state.copy(liveActive = true)
+                        state = state.copy(
+                            liveActive = true,
+                            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                        )
                     }
                     StreamApply.BUFFERED
                 } else {
                     pendingText.append(text)
                     // 正文一到就不再显示「正在生成」占位；真正重组等 flush。
-                    state = state.copy(liveActive = true, liveLabel = null)
+                    state = state.copy(
+                        liveActive = true,
+                        liveLabel = null,
+                        runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                    )
                     StreamApply.BUFFERED
                 }
             }
@@ -160,6 +178,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = endReasoning(it.reasoning),
                     tools = finishRunning(it.tools),
+                    runEndedAtMs = it.runEndedAtMs ?: now(),
                 )
             }
 
@@ -174,6 +193,7 @@ internal class TaskStreamReducer(
                         // 保留已经生成的正文：用户至少能看到停在哪
                         terminalError = message,
                         reasoning = endReasoning(it.reasoning),
+                        runEndedAtMs = it.runEndedAtMs ?: now(),
                         tools = it.tools.map { step ->
                             if (step.status == StreamToolStatus.RUNNING) {
                                 step.copy(status = StreamToolStatus.FAILED)
@@ -195,6 +215,8 @@ internal class TaskStreamReducer(
                     errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
+                    runStartedAtMs = now(),
+                    runEndedAtMs = null,
                 )
             }
 
@@ -207,6 +229,7 @@ internal class TaskStreamReducer(
                     liveLabel = null,
                     reasoning = endReasoning(it.reasoning),
                     tools = finishRunning(it.tools),
+                    runEndedAtMs = it.runEndedAtMs ?: now(),
                 )
             }
 
@@ -220,6 +243,8 @@ internal class TaskStreamReducer(
                     errorLines = emptyList(),
                     terminalError = null,
                     cancelled = false,
+                    runStartedAtMs = 0L,
+                    runEndedAtMs = null,
                 )
             }
 
@@ -245,6 +270,7 @@ internal class TaskStreamReducer(
                 terminalError = null,
                 reasoning = endReasoning(state.reasoning),
                 tools = finishRunning(state.tools),
+                runEndedAtMs = state.runEndedAtMs ?: now(),
             ),
         )
         return state
@@ -260,6 +286,7 @@ internal class TaskStreamReducer(
                 liveLabel = null,
                 reasoning = endReasoning(state.reasoning),
                 tools = finishRunning(state.tools),
+                runEndedAtMs = state.runEndedAtMs ?: now(),
             ),
         )
         return state
@@ -278,6 +305,8 @@ internal class TaskStreamReducer(
                 errorLines = emptyList(),
                 terminalError = null,
                 cancelled = false,
+                runStartedAtMs = now(),
+                runEndedAtMs = null,
             ),
         )
         return state
@@ -296,6 +325,8 @@ internal class TaskStreamReducer(
                 errorLines = emptyList(),
                 terminalError = null,
                 cancelled = false,
+                runStartedAtMs = 0L,
+                runEndedAtMs = null,
             ),
         )
         return state
@@ -312,6 +343,7 @@ internal class TaskStreamReducer(
                 reasoning = endReasoning(state.reasoning),
                 connection = StreamConnection.IDLE,
                 reconnectAttempt = 0,
+                runEndedAtMs = if (state.runStartedAtMs > 0) state.runEndedAtMs ?: now() else null,
             ),
         )
         return state
@@ -356,6 +388,7 @@ internal class TaskStreamReducer(
                 liveActive = false,
                 liveLabel = null,
                 reasoning = endReasoning(state.reasoning),
+                runEndedAtMs = state.runEndedAtMs ?: now(),
                 tools = state.tools.map { step ->
                     if (step.status == StreamToolStatus.RUNNING) {
                         step.copy(status = StreamToolStatus.FAILED)
@@ -395,6 +428,8 @@ internal class TaskStreamReducer(
                             reasoning = reasoning.copy(active = true),
                             liveActive = true,
                             liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
+                            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                            runEndedAtMs = null,
                         ),
                     )
                     return StreamApply.COMMITTED
@@ -405,6 +440,8 @@ internal class TaskStreamReducer(
                     reasoning = reasoning.copy(active = true),
                     liveActive = true,
                     liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
+                    runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                    runEndedAtMs = null,
                 )
                 pendingReasoning.append(text)
                 return StreamApply.BUFFERED
@@ -433,11 +470,18 @@ internal class TaskStreamReducer(
 
             "text" -> {
                 if (text.isEmpty()) {
-                    state = state.copy(liveActive = true)
+                    state = state.copy(
+                        liveActive = true,
+                        runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                    )
                     return StreamApply.BUFFERED
                 }
                 pendingText.append(text)
-                state = state.copy(liveActive = true, liveLabel = null)
+                state = state.copy(
+                    liveActive = true,
+                    liveLabel = null,
+                    runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                )
                 return StreamApply.BUFFERED
             }
         }
@@ -481,6 +525,8 @@ internal class TaskStreamReducer(
             tools = steps,
             liveActive = true,
             liveLabel = if (state.liveText.isEmpty()) "正在执行命令…" else state.liveLabel,
+            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+            runEndedAtMs = null,
         )
     }
 
@@ -502,6 +548,8 @@ internal class TaskStreamReducer(
                 liveText = (next.liveText + text).takeLast(STREAM_TEXT_LIMIT),
                 liveLabel = null,
                 liveActive = true,
+                runStartedAtMs = next.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                runEndedAtMs = null,
             )
         }
         if (reasoningText.isNotEmpty()) {

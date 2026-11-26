@@ -21,10 +21,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.GppBad
+import androidx.compose.material.icons.outlined.GppMaybe
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,12 +42,19 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-/** 权限模式的展示元数据：颜色与一句话说明。 */
+/**
+ * 权限模式的展示元数据：图标、颜色与一句话说明。
+ *
+ * 四个模式的语义与文案不变，只对齐参考图的视觉层次：
+ * Plan 中性（灰）/ 正常模式必要时询问（琥珀 + 问号盾）/ 完全访问明确放行（蓝 + 开锁）/
+ * 免审核警示红（红 + 感叹号盾）。完全访问不用红，避免和「免审核」两个高权限模式撞色。
+ */
 internal data class PermissionModeMeta(
     val mode: String,
     val name: String,
     val subtitle: String,
     val color: Color,
+    val icon: ImageVector,
 )
 
 internal fun permissionModeMeta(mode: String): PermissionModeMeta = when (mode) {
@@ -52,24 +63,28 @@ internal fun permissionModeMeta(mode: String): PermissionModeMeta = when (mode) 
         name = "Plan 模式",
         subtitle = "只读代码与设计稿，产出计划文档；禁 shell、禁设计写入",
         color = V2Colors.indigo,
+        icon = Icons.Outlined.Description,
     )
     "unattended" -> PermissionModeMeta(
         mode = "unattended",
         name = "免审核",
         subtitle = "全部自动放行，适合无人值守长任务；选前请确认任务范围可控",
-        color = V2Colors.rose700,
+        color = V2Colors.rose,
+        icon = Icons.Outlined.GppBad,
     )
     "full" -> PermissionModeMeta(
         mode = "full",
         name = "完全访问",
         subtitle = "跳过逐步审批，可直写工作区与执行命令；受保护对象仍需你逐次点头",
-        color = V2Colors.rose,
+        color = V2Colors.blue700,
+        icon = Icons.Outlined.LockOpen,
     )
     else -> PermissionModeMeta(
         mode = "normal",
         name = "正常模式",
         subtitle = "低风险命令自动放行，高风险命令会停下来等你允许",
-        color = V2Colors.accent,
+        color = V2Colors.amber700,
+        icon = Icons.Outlined.GppMaybe,
     )
 }
 
@@ -118,17 +133,19 @@ internal fun PermissionModePill(mode: String, enabled: Boolean = true, onClick: 
 @Composable
 internal fun FullAccessNotice(mode: String = "full") {
     val unattended = mode == "unattended"
+    // 和权限面板保持一致：免审核用警示红，完全访问用放行蓝，两个高权限模式不撞色。
+    val meta = permissionModeMeta(mode)
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(V2Colors.rose.copy(alpha = .08f))
-            .border(1.dp, V2Colors.rose.copy(alpha = .22f), RoundedCornerShape(10.dp))
+            .background(meta.color.copy(alpha = .08f))
+            .border(1.dp, meta.color.copy(alpha = .22f), RoundedCornerShape(10.dp))
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Outlined.Security, null, tint = V2Colors.rose, modifier = Modifier.size(11.dp))
+        Icon(meta.icon, null, tint = meta.color, modifier = Modifier.size(11.dp))
         Spacer(Modifier.width(6.dp))
         Label(
             if (unattended) {
@@ -137,7 +154,7 @@ internal fun FullAccessNotice(mode: String = "full") {
                 "完全访问 · 高风险命令不再逐条询问；密钥文件与系统服务仍会问你"
             },
             8.5f,
-            V2Colors.rose700,
+            if (unattended) V2Colors.rose700 else meta.color,
         )
     }
 }
@@ -191,13 +208,31 @@ private fun PermissionModeOption(
     Row(
         Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) V2Colors.ink(.045f) else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(vertical = 14.dp),
+            .padding(horizontal = 10.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 每项左侧一个模式图标：颜色与标题一致，深浅色都清晰。
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(meta.color.copy(alpha = .11f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                meta.icon,
+                contentDescription = null,
+                tint = meta.color,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Label(meta.name, 15f, V2Colors.ink(.92f), weight = FontWeight.Medium)
+                Label(meta.name, 15f, meta.color, weight = FontWeight.SemiBold)
                 if (meta.mode == "unattended") {
                     Spacer(Modifier.width(6.dp))
                     Label("风险自负", 11f, V2Colors.rose, weight = FontWeight.Medium)
@@ -208,7 +243,7 @@ private fun PermissionModeOption(
         }
         if (selected) {
             Spacer(Modifier.width(12.dp))
-            Icon(Icons.Outlined.Check, null, tint = V2Colors.ink(.85f), modifier = Modifier.size(18.dp))
+            Icon(Icons.Outlined.Check, null, tint = meta.color, modifier = Modifier.size(18.dp))
         }
     }
 }

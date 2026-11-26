@@ -656,8 +656,10 @@ fun AgentPickerSheet(
             options.forEach { option ->
                 val agent = option.agent
                 val selectedAgent = agent.id == chat.agentId
-                // 分组头：Agent 名 + 当前胶囊 + 角色说明
+                // 分组头：官方运行时图标 + Agent 名 + 当前胶囊 + 角色说明
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    AgentRuntimeIcon(agent.runtime, size = 22.dp)
+                    Spacer(Modifier.width(8.dp))
                     Label(agent.name, 15f, V2Colors.ink(.92f), FontWeight.SemiBold)
                     Spacer(Modifier.width(8.dp))
                     if (selectedAgent) {
