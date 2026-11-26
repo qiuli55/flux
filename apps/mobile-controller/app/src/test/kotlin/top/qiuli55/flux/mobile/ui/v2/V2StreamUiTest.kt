@@ -206,7 +206,6 @@ class V2StreamUiTest {
                 extraTop = 0.dp,
                 showBack = false,
                 onBack = {},
-                onOpenLogs = {},
                 onDelete = {},
                 onOpenAgentPicker = {},
                 onSend = {},

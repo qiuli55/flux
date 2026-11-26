@@ -1,9 +1,9 @@
 """GitHub 账号与仓库访问。
 
-授权走 OAuth App 的设备码流程（无回调地址、无 client_secret）：本服务向 GitHub
-申请 device_code + user_code，用户在自己的浏览器里授权，之后轮询换取 access_token。
-设备码流程若未在 OAuth App 里开启（GitHub 返回 `device_flow_disabled`），可以退回
-「粘贴 Personal Access Token」的方式，两条路最终落到同一份加密登录态。
+主路径是 OAuth App 的 Authorization Code（带 PKCE）：App 打开系统浏览器跳到 GitHub
+授权页，GitHub 回跳 `FLUX_GITHUB_REDIRECT_URI`（默认 `flux://github-link`），服务端
+用 state + verifier + client_secret 换 access_token。历史上还有设备码流程（无需回调
+地址与 client_secret）和手工令牌回退，二者保留以免打断旧脚本，但 App 主 UI 只走授权码。
 
 令牌用密钥库主密钥（`SecretBox`）信封加密后落盘（0600），`status()` 只回登录名 /
 头像 / scope 这类展示字段，绝不下发令牌本身。仓库读写都走 REST，私有仓库只要
@@ -13,15 +13,17 @@ scope 里有 `repo` 就能看到。
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -33,20 +35,35 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
+_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 _DEVICE_CODE_URL = "https://github.com/login/device/code"
 _ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+_AUTHORIZATION_GRANT = "authorization_code"
 
 #: 一次设备码登录的最长寿命（GitHub 侧 900 秒），留一点余量兜底
 _DEVICE_MAX_SECONDS = 15 * 60.0
 #: 已结束的登录会话在内存里保留多久（够前端轮询到终态即可）
 _LOGIN_KEEP_SECONDS = 10 * 60.0
+#: 授权码回调的 state / PKCE verifier 保留多久（GitHub 授权码 10 分钟有效）
+_OAUTH_STATE_SECONDS = 10 * 60.0
 #: 列仓库单页上限（GitHub 允许 100）
 _MAX_PER_PAGE = 100
 #: 令牌密文文件上限：正常只有几百字节
 _MAX_ACCOUNT_BYTES = 1 << 20
 
 _PENDING = "pending"
+
+
+@dataclass
+class _OAuthFlow:
+    """一次 Authorization Code 授权：state 与 PKCE verifier 只留在服务端。"""
+
+    state: str
+    code_verifier: str
+    redirect_uri: str
+    created_at: float
+    expires_at: float
 
 
 @dataclass
@@ -80,6 +97,7 @@ class GitHubService:
         self._settings = settings
         self._vault = key_vault
         self._logins: dict[str, _DeviceLogin] = {}
+        self._oauth_flows: dict[str, _OAuthFlow] = {}
         self._client: httpx.AsyncClient | None = None
         self._account: dict[str, Any] | None = None
         self._loaded = False
@@ -194,6 +212,8 @@ class GitHubService:
                 "scopes": None,
                 "updated_at": None,
                 "device_flow_ready": bool((self._settings.github_client_id or "").strip()),
+                "oauth_ready": self.oauth_ready,
+                "oauth_redirect_uri": self.oauth_redirect_uri,
                 "pending_login": self._latest_pending(),
             }
         return {
@@ -205,8 +225,121 @@ class GitHubService:
             "scopes": account.get("scopes"),
             "updated_at": account.get("updated_at"),
             "device_flow_ready": bool((self._settings.github_client_id or "").strip()),
+            "oauth_ready": self.oauth_ready,
+            "oauth_redirect_uri": self.oauth_redirect_uri,
             "pending_login": self._latest_pending(),
         }
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        """授权回跳地址；未配置时回落到手机端的自定义 scheme。"""
+        return (self._settings.github_redirect_uri or "").strip() or "flux://github-link"
+
+    @property
+    def oauth_ready(self) -> bool:
+        """授权码换票需要 client_id + client_secret 都配置齐全。"""
+        return bool(
+            (self._settings.github_client_id or "").strip()
+            and (self._settings.github_client_secret or "").strip()
+        )
+
+    # --- Authorization Code 登录（浏览器跳转 + PKCE） ---
+
+    async def start_oauth(self) -> dict[str, Any]:
+        """创建 state + PKCE verifier，返回 GitHub 授权页地址。
+
+        verifier 只留在服务端内存；客户端拿到的 state 是一次性凭据，兑换时
+        必须原样带回，回调里再用它找回 verifier 完成换票。
+        """
+        client_id = (self._settings.github_client_id or "").strip()
+        if not client_id:
+            raise ConfigurationError(
+                "未配置 GitHub OAuth App 的 client_id",
+                details={"setting": "FLUX_GITHUB_CLIENT_ID"},
+            )
+        self._reap_oauth()
+        verifier = _pkce_verifier()
+        state = secrets.token_urlsafe(32)
+        redirect_uri = self.oauth_redirect_uri
+        now = time.monotonic()
+        self._oauth_flows[state] = _OAuthFlow(
+            state=state,
+            code_verifier=verifier,
+            redirect_uri=redirect_uri,
+            created_at=now,
+            expires_at=now + _OAUTH_STATE_SECONDS,
+        )
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": self._settings.github_scopes,
+            "state": state,
+            "code_challenge": _pkce_challenge(verifier),
+            "code_challenge_method": "S256",
+            "allow_signup": "true",
+        }
+        logger.info("GitHub 授权码登录开始 redirect=%s", redirect_uri)
+        return {
+            "state": state,
+            "authorize_url": f"{_AUTHORIZE_URL}?{urlencode(params)}",
+            "redirect_uri": redirect_uri,
+            "expires_in": int(_OAUTH_STATE_SECONDS),
+            "oauth_ready": self.oauth_ready,
+        }
+
+    async def complete_oauth(self, code: str, state: str) -> dict[str, Any]:
+        """用浏览器带回的 code + state 换 access_token，并写入现有加密登录态。
+
+        state 一次性消费；缺少 client_secret 时返回明确的配置错误（不伪造成功）。
+        """
+        value = (code or "").strip()
+        if not value:
+            raise ValidationError("缺少 GitHub 授权码", details={"param": "code"})
+        flow = self._oauth_flows.pop((state or "").strip(), None)
+        if flow is None:
+            raise ValidationError(
+                "授权状态已失效，请重新连接 GitHub",
+                details={"param": "state"},
+            )
+        if time.monotonic() > flow.expires_at:
+            raise ValidationError("授权已过期，请重新连接 GitHub", details={"param": "state"})
+        client_id = (self._settings.github_client_id or "").strip()
+        client_secret = (self._settings.github_client_secret or "").strip()
+        if not client_secret:
+            raise ConfigurationError(
+                "未配置 GitHub OAuth App 的 client_secret，无法用授权码换取令牌",
+                details={"setting": "FLUX_GITHUB_CLIENT_SECRET"},
+            )
+        data = await self._post_form(
+            _ACCESS_TOKEN_URL,
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": value,
+                "redirect_uri": flow.redirect_uri,
+                "grant_type": _AUTHORIZATION_GRANT,
+                "code_verifier": flow.code_verifier,
+            },
+        )
+        error = str(data.get("error") or "")
+        if error:
+            raise ProviderError(
+                _oauth_error_message(error, str(data.get("error_description") or "")),
+                details={"error": error},
+            )
+        token = str(data.get("access_token") or "")
+        if not token:
+            raise ProviderError("GitHub 未返回 access_token", details={"response": data})
+        profile, scopes = await self._fetch_user(token)
+        self._persist(token, profile, kind="oauth", scopes=scopes or str(data.get("scope") or ""))
+        logger.info("GitHub 授权码登录成功 login=%s", profile.get("login"))
+        return self.status()
+
+    def _reap_oauth(self) -> None:
+        now = time.monotonic()
+        for state, flow in list(self._oauth_flows.items()):
+            if now - flow.created_at > _OAUTH_STATE_SECONDS:
+                self._oauth_flows.pop(state, None)
 
     # --- 设备码登录 ---
 
@@ -653,6 +786,31 @@ def _clean_path(path: str) -> str:
     if ".." in value.split("/"):
         raise ValidationError("文件路径不能包含 ..", details={"param": "path"})
     return value
+
+
+def _pkce_verifier() -> str:
+    """43–128 字符的 base64url verifier（RFC 7636）。"""
+    return secrets.token_urlsafe(64)
+
+
+def _pkce_challenge(verifier: str) -> str:
+    """S256: base64url(sha256(verifier))，无填充。"""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _oauth_error_message(code: str, description: str = "") -> str:
+    if code == "bad_verification_code":
+        return "GitHub 授权码无效或已使用，请重新连接 GitHub"
+    if code == "redirect_uri_mismatch":
+        return "GitHub 回调地址与 OAuth App 里登记的 Callback URL 不一致"
+    if code == "incorrect_client_credentials":
+        return "GitHub OAuth App 的 client_id / client_secret 不匹配"
+    if code == "access_denied":
+        return "用户取消了 GitHub 授权"
+    if description:
+        return f"GitHub 授权失败：{description}"
+    return f"GitHub 授权失败：{code}" if code else "GitHub 授权失败"
 
 
 def _device_error_message(code: str) -> str:

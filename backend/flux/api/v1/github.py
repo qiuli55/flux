@@ -1,20 +1,26 @@
 """GitHub API：账号授权、仓库浏览与提交。
 
-授权走 OAuth App 设备码流程；令牌由服务层加密落盘，本层响应里永远不出现令牌。
+主授权链路是 Authorization Code（PKCE）：`/oauth/start` 返回 GitHub 授权页地址，
+浏览器回跳后 App 把 code + state 交给 `/oauth/callback` 换票。设备码与手工令牌
+作为旧客户端回退保留。令牌由服务层加密落盘，本层响应里永远不出现令牌。
 仓库读取覆盖用户可见的全部仓库（含私有），提交与建 PR 是显式动作，不会被 Agent
 静默触发（MCP 侧另有权限门与审批标记）。
 """
 
 from __future__ import annotations
 
+import html
+
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import HTMLResponse
 
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
-from flux.errors import NotFoundError
+from flux.errors import AIOSError, NotFoundError
 from flux.schemas.api import (
     GitHubCommitRequest,
+    GitHubOAuthCallbackRequest,
     GitHubPullRequestCreate,
     GitHubTokenRequest,
 )
@@ -45,6 +51,64 @@ async def device_login_state(
     if state is None:
         raise NotFoundError(f"登录会话不存在或已过期：{flow_id}", details={"flow_id": flow_id})
     return ok(state)
+
+
+@router.post("/oauth/start")
+async def start_oauth(
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """创建 state + PKCE，返回 GitHub 授权页地址（App 用系统浏览器打开）。"""
+    return ok(await container.github.start_oauth())
+
+
+@router.post("/oauth/callback")
+async def complete_oauth(
+    payload: GitHubOAuthCallbackRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """App 回传浏览器拿到的 code + state，服务端换票并保存登录态。"""
+    return ok(await container.github.complete_oauth(payload.code, payload.state))
+
+
+@router.get("/oauth/callback", response_class=HTMLResponse)
+async def complete_oauth_browser(
+    code: str = Query(default=""),
+    state: str = Query(default=""),
+    container: Container = Depends(get_container),
+) -> HTMLResponse:
+    """浏览器直达的后端 HTTPS 回调（桌面 / 网页以后用）；返回一张结果页。"""
+    if not code.strip():
+        return _oauth_html("授权失败", "缺少授权码，请回到 Flux 重新连接 GitHub", ok=False)
+    try:
+        status = await container.github.complete_oauth(code, state)
+    except AIOSError as exc:
+        return _oauth_html("授权失败", exc.message, ok=False)
+    login = str(status.get("login") or "").strip()
+    detail = (
+        f"已连接 @{login}，可以回到 Flux 继续。"
+        if login
+        else "已连接 GitHub，可以回到 Flux 继续。"
+    )
+    return _oauth_html("授权成功", detail, ok=True)
+
+
+def _oauth_html(title: str, message: str, *, ok: bool) -> HTMLResponse:
+    color = "#059669" if ok else "#e11d48"
+    body = (
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\" />"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+        f"<title>{html.escape(title)}</title></head>"
+        "<body style=\"margin:0;min-height:100vh;display:flex;align-items:center;"
+        "justify-content:center;background:#f6f7f9;color:#1d1f23;"
+        "font-family:system-ui,-apple-system,sans-serif;\">"
+        "<main style=\"max-width:420px;padding:32px 24px;text-align:center;\">"
+        f"<h1 style=\"font-size:20px;margin:0 0 10px;color:{color};\">"
+        f"{html.escape(title)}</h1>"
+        "<p style=\"font-size:14px;line-height:1.7;color:#52565e;margin:0;\">"
+        f"{html.escape(message)}</p>"
+        "</main></body></html>"
+    )
+    return HTMLResponse(body, status_code=200 if ok else 400)
 
 
 @router.post("/token")

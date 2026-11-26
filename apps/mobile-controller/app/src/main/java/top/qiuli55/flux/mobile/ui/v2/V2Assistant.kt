@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -402,7 +403,7 @@ private fun AssistantSettingsCard(
         mutableStateOf(state.settings.maxConcurrentRuns.toString())
     }
 
-    WhiteCard(Modifier.fillMaxWidth()) {
+    WhiteCard(Modifier.fillMaxWidth().imePadding()) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Row(
                 Modifier

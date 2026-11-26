@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.builtins.ListSerializer
@@ -95,13 +96,6 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
-        /** bot 展示名；为空时后端沿用 description。 */
-        botName: String? = null,
-        /** bot 头像形状 / 颜色（后端 avatar.py 枚举）。 */
-        avatarShape: String? = null,
-        avatarColor: String? = null,
-        /** false = 先建对话不立刻跑第一轮（建 bot / 拉进群时用）。 */
-        start: Boolean = true,
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -115,91 +109,10 @@ class FluxApi(
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
             }
             put("origin", origin)
-            if (!botName.isNullOrBlank()) put("bot_name", botName.trim())
-            if (!avatarShape.isNullOrBlank()) put("avatar_shape", avatarShape)
-            if (!avatarColor.isNullOrBlank()) put("avatar_color", avatarColor)
-            if (!start) put("start", false)
             putAttachmentIds(attachmentIds)
         }
         return post("api/v1/tasks", body)
     }
-
-    /* ---------------- 内部群聊（/api/v1/groups） ---------------- */
-
-    suspend fun listGroups(): List<ChatGroup> = get("api/v1/groups")
-
-    suspend fun createGroup(
-        name: String,
-        memberIds: List<String>,
-        description: String? = null,
-        projectId: String? = null,
-        maxRounds: Int = 2,
-        adminTaskId: String? = null,
-    ): ChatGroup = post(
-        "api/v1/groups",
-        buildJsonObject {
-            put("name", name.trim())
-            if (!description.isNullOrBlank()) put("description", description.trim())
-            if (!projectId.isNullOrBlank()) put("project_id", projectId)
-            put("max_rounds", maxRounds)
-            if (!adminTaskId.isNullOrBlank()) put("admin_task_id", adminTaskId)
-            putJsonArray("member_ids") { memberIds.forEach { add(JsonPrimitive(it)) } }
-        },
-    )
-
-    suspend fun getGroup(groupId: String): ChatGroup = get("api/v1/groups/$groupId")
-
-    suspend fun deleteGroup(groupId: String): JsonElement = delete("api/v1/groups/$groupId")
-
-    /** 加成员返回更新后的成员列表。 */
-    suspend fun addGroupMember(groupId: String, taskId: String): List<ChatGroupMember> = post(
-        "api/v1/groups/$groupId/members",
-        buildJsonObject { put("task_id", taskId) },
-    )
-
-    suspend fun removeGroupMember(groupId: String, taskId: String): JsonElement =
-        delete("api/v1/groups/$groupId/members/$taskId")
-
-    /**
-     * 调整成员：角色（admin/member）、模型、权限预设。只传要改的项，返回最新成员列表。
-     * model 传空串表示清除覆盖、回到默认模型。
-     */
-    suspend fun updateGroupMember(
-        groupId: String,
-        taskId: String,
-        role: String? = null,
-        model: String? = null,
-        keyId: String? = null,
-        permissionMode: String? = null,
-    ): List<ChatGroupMember> = patch(
-        "api/v1/groups/$groupId/members/$taskId",
-        buildJsonObject {
-            if (role != null) put("role", role)
-            if (model != null) put("model", model)
-            if (keyId != null) put("key_id", keyId)
-            if (permissionMode != null) put("permission_mode", permissionMode)
-        },
-    )
-
-    /** 分层记忆：本群 + 团队（都由编排器在 epoch 结束时压缩写入）。 */
-    suspend fun getGroupMemory(groupId: String): ChatGroupMemoryState =
-        get("api/v1/groups/$groupId/memory")
-
-    /** 群消息增量拉取：afterSeq 之后的至多 limit 条，has_more 表示还有。 */
-    suspend fun listGroupMessages(
-        groupId: String,
-        afterSeq: Int = 0,
-        limit: Int = 200,
-    ): ChatGroupMessagePage =
-        get("api/v1/groups/$groupId/messages?after_seq=$afterSeq&limit=$limit")
-
-    suspend fun sendGroupMessage(groupId: String, content: String): ChatGroupSendOutcome = post(
-        "api/v1/groups/$groupId/messages",
-        buildJsonObject { put("content", content.trim()) },
-    )
-
-    suspend fun interruptGroup(groupId: String): ChatGroupInterruptOutcome =
-        post("api/v1/groups/$groupId/interrupt", buildJsonObject {})
 
     suspend fun getTask(taskId: String): Task = get("api/v1/tasks/$taskId")
 
@@ -752,20 +665,17 @@ class FluxApi(
 
     suspend fun githubAccount(): GitHubAccountStatus = get("api/v1/github/status")
 
-    /** 发起设备码登录：返回授权地址与用户码。 */
-    suspend fun startGitHubLogin(): GitHubLoginSession =
-        post("api/v1/github/device/start", buildJsonObject {})
+    /** 授权码登录第一步：拿 GitHub 授权页地址，App 用系统浏览器打开。 */
+    suspend fun startGitHubLogin(): GitHubOAuthStart =
+        post("api/v1/github/oauth/start", buildJsonObject {})
 
-    suspend fun githubLoginState(flowId: String): GitHubLoginSession =
-        get("api/v1/github/device/${Uri.encode(flowId)}")
-
-    /** Personal Access Token 回退：OAuth App 未开启设备码流程时用。 */
-    suspend fun saveGitHubToken(token: String): GitHubAccountStatus =
+    /** 浏览器回跳后，把 code + state 交给服务端换票并写入加密登录态。 */
+    suspend fun completeGitHubLogin(code: String, state: String): GitHubAccountStatus =
         post(
-            "api/v1/github/token",
+            "api/v1/github/oauth/callback",
             buildJsonObject {
-                put("token", token.trim())
-                put("kind", "pat")
+                put("code", code)
+                put("state", state)
             },
         )
 
@@ -886,7 +796,10 @@ class FluxApi(
                 throw FluxApiException("invalid_response", "服务端返回格式无法识别：${it.message ?: "未知格式"}")
             }
             if (!envelope.success) {
-                throw FluxApiException(envelope.code.ifBlank { "api_error" }, envelope.message.ifBlank { "服务端请求失败" })
+                throw FluxApiException(
+                    envelope.code.ifBlank { "api_error" },
+                    envelope.message.ifBlank { fallbackApiMessage(it.code) },
+                )
             }
             val data = envelope.data ?: throw FluxApiException("empty_data", "服务端响应缺少 data")
             json.decodeFromJsonElement(serializer<T>(), data)
@@ -923,19 +836,8 @@ class FluxApi(
     private fun url(path: String): String = config.baseUrl.trimEnd('/') + "/" + path.trimStart('/')
 
     private fun apiExceptionFrom(text: String, status: Int): FluxApiException {
-        val envelope = runCatching { json.decodeFromString<Envelope<JsonElement>>(text) }.getOrNull()
-        if (envelope != null && !envelope.success) {
-            return FluxApiException(
-                envelope.code.ifBlank {
-                    when (status) { 401 -> "unauthenticated"; 403 -> "forbidden"; else -> "http_$status" }
-                },
-                envelope.message.ifBlank { "HTTP $status" },
-            )
-        }
-        return FluxApiException(
-            when (status) { 401 -> "unauthenticated"; 403 -> "forbidden"; 404 -> "not_found"; else -> "http_$status" },
-            "请求失败（HTTP $status）",
-        )
+        val info = parseApiError(text, status)
+        return FluxApiException(info.code, info.message)
     }
 
     companion object {
@@ -952,4 +854,87 @@ class FluxApi(
             return value.trimEnd('/')
         }
     }
+}
+// ---------------------------------------------------------------- 错误文案
+
+/** 从错误响应里解析出的、可以直接展示给用户的信息。 */
+internal data class ApiErrorInfo(val code: String, val message: String)
+
+private val apiErrorJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    explicitNulls = false
+}
+
+/**
+ * 把后端错误体转成可读文案。
+ *
+ * 兼容三种真实形态：
+ *  - Flux 统一信封：`{"success":false,"code":"...","message":"..."}`
+ *  - FastAPI / Starlette：`{"detail":"..."}` 或校验错误列表
+ *  - 上游原样透传：`{"message":"Not Found"}` / `{"error":"...","error_description":"..."}`
+ *
+ * 只有完全拿不到可读信息时，才退回带状态码含义的兜底文案。
+ */
+internal fun parseApiError(text: String, status: Int): ApiErrorInfo {
+    val root = runCatching { apiErrorJson.parseToJsonElement(text) as? JsonObject }.getOrNull()
+    val code = root?.stringValue("code").orEmpty()
+    val message = root?.let(::readableApiDetail).orEmpty()
+    return ApiErrorInfo(
+        code.ifBlank { defaultApiErrorCode(status) },
+        message.ifBlank { fallbackApiMessage(status) },
+    )
+}
+
+internal fun fallbackApiMessage(status: Int): String = when (status) {
+    400 -> "请求参数有误（HTTP 400）"
+    401 -> "登录状态已失效，请重新登录"
+    403 -> "没有权限执行这个操作"
+    404 -> "未找到接口或资源（HTTP 404）"
+    409 -> "资源已被更新，请刷新后重试"
+    422 -> "请求参数校验失败"
+    429 -> "请求过于频繁，请稍后再试"
+    in 200..299 -> "服务端请求失败"
+    in 500..599 -> "服务器出错了（HTTP $status）"
+    else -> "请求失败（HTTP $status）"
+}
+
+private fun defaultApiErrorCode(status: Int): String = when (status) {
+    401 -> "unauthenticated"
+    403 -> "forbidden"
+    404 -> "not_found"
+    409 -> "conflict"
+    422 -> "validation_error"
+    else -> "http_$status"
+}
+
+private fun JsonObject.stringValue(key: String): String? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+
+private fun readableApiDetail(root: JsonObject): String {
+    root.stringValue("message")?.let { return it }
+    root.stringValue("error_description")?.let { return it }
+    root.stringValue("error")?.let { return it }
+    return when (val detail = root["detail"]) {
+        is JsonPrimitive -> detail.contentOrNull?.trim().orEmpty()
+        is JsonArray -> {
+            val parts = detail.mapNotNull(::validationDetail).distinct()
+            if (parts.isEmpty()) "" else "请求参数校验失败：" + parts.joinToString("；")
+        }
+        is JsonObject -> validationDetail(detail).orEmpty()
+        else -> ""
+    }
+}
+
+/** FastAPI 校验错误的一条：`{loc:["body","title"], msg:"Field required", ...}`。 */
+private fun validationDetail(element: JsonElement): String? {
+    val obj = element as? JsonObject
+        ?: return (element as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+    val message = obj.stringValue("msg") ?: obj.stringValue("message") ?: return null
+    val location = (obj["loc"] as? JsonArray)
+        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        ?.filterNot { it in setOf("body", "query", "path") }
+        ?.joinToString(".")
+        .orEmpty()
+    return if (location.isBlank()) message else "$location：$message"
 }

@@ -15,8 +15,7 @@ import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
   ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
   CapabilityImportOutcome, CapabilityKind,
-  CapabilityScanReport, Change, ChatGroup, ChatGroupInterruptOutcome, ChatGroupMember,
-  ChatGroupMessagePage, ChatGroupSendOutcome,
+  CapabilityScanReport, Change,
   ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
@@ -380,37 +379,4 @@ export const api = {
       `/supervisor/tickets/${encodeURIComponent(ticketId)}/stop`,
       { note },
     ),
-  /** 内部群聊：群 CRUD、成员、消息轮询（非流式）、打断 */
-  listGroups: () => getData<ChatGroup[]>("GET", "/groups"),
-  createGroup: (body: {
-    name: string;
-    project_id?: string | null;
-    description?: string | null;
-    max_rounds?: number;
-    member_ids?: string[];
-  }) => getData<ChatGroup>("POST", "/groups", body),
-  getGroup: (groupId: string) => getData<ChatGroup>("GET", `/groups/${groupId}`),
-  deleteGroup: (groupId: string) =>
-    getData<{ deleted: boolean }>("DELETE", `/groups/${groupId}`),
-  addGroupMember: (groupId: string, taskId: string) =>
-    getData<ChatGroupMember[]>("POST", `/groups/${groupId}/members`, { task_id: taskId }),
-  removeGroupMember: (groupId: string, taskId: string) =>
-    getData<{ removed: boolean; members: ChatGroupMember[] }>(
-      "DELETE",
-      `/groups/${groupId}/members/${taskId}`,
-    ),
-  listGroupMessages: (groupId: string, options?: { afterSeq?: number; limit?: number }) =>
-    getData<ChatGroupMessagePage>(
-      "GET",
-      `/groups/${groupId}/messages${query({
-        after_seq: options?.afterSeq?.toString(),
-        limit: options?.limit?.toString(),
-      })}`,
-    ),
-  sendGroupMessage: (groupId: string, content: string) =>
-    getData<ChatGroupSendOutcome>("POST", `/groups/${groupId}/messages`, { content }),
-  interruptGroup: (groupId: string) =>
-    getData<ChatGroupInterruptOutcome>("POST", `/groups/${groupId}/interrupt`),
-  /** 群成员候选：全部对话（bot） */
-  listBotCandidates: () => getData<Task[]>("GET", "/tasks?limit=200"),
 };

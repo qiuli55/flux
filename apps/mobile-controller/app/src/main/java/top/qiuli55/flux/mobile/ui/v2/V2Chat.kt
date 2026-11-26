@@ -171,7 +171,6 @@ fun V2ChatScreen(
     extraTop: androidx.compose.ui.unit.Dp,
     showBack: Boolean = true,
     onBack: () -> Unit,
-    onOpenLogs: () -> Unit,
     onDelete: () -> Unit,
     onOpenAgentPicker: () -> Unit,
     onSend: (String) -> Unit,
@@ -525,13 +524,6 @@ fun V2ChatScreen(
                             },
                         )
                     }
-                    DropdownMenuItem(
-                        text = { Label("执行日志", 12f, V2Colors.ink(.88f)) },
-                        onClick = {
-                            headerMenuOpen = false
-                            onOpenLogs()
-                        },
-                    )
                     if (canSwitchAgent) {
                         DropdownMenuItem(
                             text = { Label("切换 Agent 与模型", 12f, V2Colors.ink(.88f)) },
@@ -618,10 +610,13 @@ fun V2ChatScreen(
                         ) { NewChatHero() }
                     }
                 }
-                val firstTime = messages.firstOrNull()?.time
+                val firstMessage = messages.firstOrNull()
+                val firstTime = firstMessage?.time
                 if (!firstTime.isNullOrBlank()) {
                     // 日期分隔：与设计稿一致，只在首条消息上方标一次时间
-                    item(key = "date-separator") { ChatDateSeparator(firstTime) }
+                    item(key = "date-separator") {
+                        ChatDateSeparator(firstTime, firstMessage?.createdAtEpoch)
+                    }
                 }
                 itemsIndexed(
                     messages,
@@ -1213,12 +1208,36 @@ private fun BubbleMenuItem(icon: ImageVector, label: String, enabled: Boolean, o
 }
 
 @Composable
-private fun ChatDateSeparator(time: String) {
+private fun ChatDateSeparator(time: String, epochSec: Long?) {
     Box(
         Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Label("今天 $time", 10.5f, V2Colors.ink(.30f))
+        Label("${chatDateLabel(epochSec)} $time", 10.5f, V2Colors.ink(.30f))
+    }
+}
+
+/**
+ * 消息日期标签：按设备本地时区比较，今天 / 昨天 / 具体日期。
+ *
+ * 时间戳缺失（历史演示数据）时退回「今天」，与原行为一致。
+ */
+internal fun chatDateLabel(
+    epochSec: Long?,
+    now: java.time.Instant = java.time.Instant.now(),
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): String {
+    if (epochSec == null) return "今天"
+    val date = java.time.Instant.ofEpochSecond(epochSec).atZone(zone).toLocalDate()
+    val today = now.atZone(zone).toLocalDate()
+    return when (date) {
+        today -> "今天"
+        today.minusDays(1) -> "昨天"
+        else -> date.format(
+            java.time.format.DateTimeFormatter.ofPattern(
+                if (date.year == today.year) "M月d日" else "yyyy年M月d日",
+            ),
+        )
     }
 }
 

@@ -75,8 +75,7 @@ class V2ComposerLayoutTest {
                         messages = emptyList(),
                         extraTop = 0.dp,
                         onBack = {},
-                        onOpenLogs = {},
-                        onDelete = {},
+                                onDelete = {},
                         onOpenAgentPicker = {},
                         onSend = { sent += it },
                         agentOptions = listOf(

@@ -80,7 +80,6 @@ import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.CodexLoginSession
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
-import top.qiuli55.flux.mobile.data.GitHubLoginSession
 import top.qiuli55.flux.mobile.data.GitHubRepo
 
 // ================================================================== 设置
@@ -112,15 +111,12 @@ fun SettingsSheet(
     onRefreshCodex: () -> Unit,
     onOpenCodexUrl: (String) -> Unit,
     githubAccount: GitHubAccountStatus?,
-    githubLogin: GitHubLoginSession?,
     githubLoading: Boolean,
     githubRepos: List<GitHubRepo>,
     githubReposLoading: Boolean,
     onGitHubLogin: () -> Unit,
     onGitHubLogout: () -> Unit,
     onRefreshGitHub: () -> Unit,
-    onOpenGitHubUrl: (String) -> Unit,
-    onSaveGitHubToken: (String) -> Unit,
     onLoadGitHubRepos: () -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
@@ -269,11 +265,10 @@ fun SettingsSheet(
             }
 
             Spacer(Modifier.height(12.dp))
-            // GitHub 账号：用设备码授权或粘贴 PAT，读全部仓库（含私有）并提交
+            // GitHub 账号：浏览器授权码，读全部仓库（含私有）并提交
             WhiteCard(Modifier.fillMaxWidth()) {
                 GitHubAccountHeader(
                     account = githubAccount,
-                    login = githubLogin,
                     loading = githubLoading,
                 )
                 ThinDivider(V2Colors.ink(.05f))
@@ -289,18 +284,10 @@ fun SettingsSheet(
                     SettingsActionRow(
                         icon = Icons.Outlined.Link,
                         title = if (githubLoading) "正在启动授权…" else "连接 GitHub",
-                        description = "设备码授权，可读取全部仓库（含私有）",
+                        description = "在浏览器授权，自动回到 Flux；可读取全部仓库（含私有）",
                         danger = false,
                         onClick = onGitHubLogin,
                     )
-                }
-                if (githubLogin != null && (githubLogin.isPending || githubLogin.status == "failed")) {
-                    ThinDivider(V2Colors.ink(.05f))
-                    GitHubLoginPanel(githubLogin, onOpenUrl = onOpenGitHubUrl)
-                }
-                if (githubAccount?.loggedIn != true) {
-                    ThinDivider(V2Colors.ink(.05f))
-                    GitHubTokenField(onSubmit = onSaveGitHubToken)
                 }
                 if (githubAccount?.loggedIn == true) {
                     ThinDivider(V2Colors.ink(.05f))
@@ -497,241 +484,6 @@ private fun StrengthOption(text: String, selected: Boolean, modifier: Modifier =
         Label(text, 11.5f, if (selected) V2Colors.ink else V2Colors.ink(.40f))
     }
 }
-
-// ================================================================== 实时日志
-
-private enum class LogFilter(val label: String) {
-    ALL("全部"), INFO("信息"), WARN("警告"), ERROR("错误")
-}
-
-@Composable
-fun LogsSheet(
-    logs: List<V2Log>,
-    onAppendHeartbeat: () -> Unit,
-    onClear: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var filter by remember { mutableStateOf(LogFilter.ALL) }
-    var following by remember { mutableStateOf(true) }
-    // 清空日志不可撤销：先确认，避免误触抹掉排障信息。
-    var clearConfirmOpen by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(following) {
-        if (following) {
-            while (true) {
-                delay(6000)
-                onAppendHeartbeat()
-            }
-        }
-    }
-    LaunchedEffect(logs.size, following) {
-        if (following && logs.isNotEmpty()) {
-            listState.animateScrollToItem(logs.lastIndex)
-        }
-    }
-
-    val visible = remember(logs, filter) {
-        when (filter) {
-            LogFilter.ALL -> logs
-            LogFilter.INFO -> logs.filter { it.level == V2LogLevel.INFO }
-            LogFilter.WARN -> logs.filter { it.level == V2LogLevel.WARN }
-            LogFilter.ERROR -> logs.filter { it.level == V2LogLevel.ERROR }
-        }
-    }
-
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
-        SheetHeader(
-            title = "实时日志",
-            subtitle = "Flux Kernel v2.1 · 每 6 秒追加一条心跳",
-            onClose = onDismiss,
-        )
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(V2Colors.surface(.92f))
-                .padding(horizontal = 20.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                FilterPill("全部", logs.size, filter == LogFilter.ALL) {
-                    Log.i(FLUX_UX_LOG_TAG, "log filter=ALL")
-                    filter = LogFilter.ALL
-                }
-                FilterPill("信息", logs.count { it.level == V2LogLevel.INFO }, filter == LogFilter.INFO) {
-                    Log.i(FLUX_UX_LOG_TAG, "log filter=INFO")
-                    filter = LogFilter.INFO
-                }
-                FilterPill("警告", logs.count { it.level == V2LogLevel.WARN }, filter == LogFilter.WARN) {
-                    Log.i(FLUX_UX_LOG_TAG, "log filter=WARN")
-                    filter = LogFilter.WARN
-                }
-                FilterPill("错误", logs.count { it.level == V2LogLevel.ERROR }, filter == LogFilter.ERROR) {
-                    Log.i(FLUX_UX_LOG_TAG, "log filter=ERROR")
-                    filter = LogFilter.ERROR
-                }
-            }
-            Spacer(Modifier.width(8.dp))
-            // 视觉上仍是原来的小胶囊，但可点区域扩到 48dp，避免点到旁边。
-            Box(
-                Modifier
-                    .defaultMinSize(48.dp, 48.dp)
-                    .testTag(V2UxTags.LOG_FOLLOW)
-                    .clickable {
-                        following = !following
-                        Log.i(FLUX_UX_LOG_TAG, "log follow toggled following=$following")
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (following) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.ink(.06f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .background(if (following) V2Colors.cyan500 else V2Colors.ink(.30f), CircleShape),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Label(
-                        if (following) "跟随" else "暂停",
-                        10f,
-                        if (following) V2Colors.cyan700 else V2Colors.ink(.40f),
-                    )
-                }
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Label(
-                "${logs.size} 条 · 保留最近 240 条",
-                9.5f,
-                V2Colors.ink(.24f),
-                mono = true,
-                modifier = Modifier.weight(1f),
-            )
-            Box(
-                Modifier
-                    .defaultMinSize(48.dp, 48.dp)
-                    .testTag(V2UxTags.LOG_CLEAR)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable {
-                        Log.i(FLUX_UX_LOG_TAG, "log clear tapped: ask for confirmation")
-                        clearConfirmOpen = true
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.DeleteSweep, null, tint = V2Colors.ink(.40f), modifier = Modifier.size(12.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Label("清空", 10f, V2Colors.ink(.40f))
-                }
-            }
-        }
-        if (visible.isEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            Label("暂无日志", 10f, V2Colors.ink(.30f), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                state = listState,
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(visible, key = { "${it.time}-${it.message}" }) { entry ->
-                    Row(Modifier.fillMaxWidth()) {
-                        Label(entry.time, 10f, V2Colors.ink(.22f), mono = true)
-                        Spacer(Modifier.width(8.dp))
-                        Label(
-                            when (entry.level) {
-                                V2LogLevel.INFO -> "INFO"
-                                V2LogLevel.WARN -> "WARN"
-                                V2LogLevel.ERROR -> "ERROR"
-                            },
-                            10f,
-                            when (entry.level) {
-                                V2LogLevel.INFO -> V2Colors.cyan700.copy(alpha = .70f)
-                                V2LogLevel.WARN -> V2Colors.amber700.copy(alpha = .90f)
-                                V2LogLevel.ERROR -> V2Colors.rose
-                            },
-                            mono = true,
-                            modifier = Modifier.width(34.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Label(
-                            entry.message,
-                            10f,
-                            V2Colors.ink(.58f),
-                            mono = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-        }
-    }
-    if (clearConfirmOpen) {
-        FluxConfirmDialog(
-            title = "清空日志？",
-            message = "本机缓存的日志会被全部删除，排障信息无法恢复。",
-            confirmLabel = "清空",
-            dismissLabel = "取消",
-            onConfirm = {
-                Log.i(FLUX_UX_LOG_TAG, "log clear confirmed by user count=${logs.size}")
-                clearConfirmOpen = false
-                onClear()
-            },
-            onDismiss = {
-                Log.i(FLUX_UX_LOG_TAG, "log clear cancelled; keep logs")
-                clearConfirmOpen = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun FilterPill(label: String, count: Int, selected: Boolean, onClick: () -> Unit) {
-    // 视觉胶囊保持原尺寸，点击区域扩到 48dp。
-    Box(
-        Modifier
-            .defaultMinSize(48.dp, 48.dp)
-            .testTag(V2UxTags.LOG_FILTER_PREFIX + label)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(if (selected) V2Colors.cyan500.copy(alpha = .10f) else V2Colors.surface(.35f))
-                .border(
-                    1.dp,
-                    if (selected) V2Colors.accent.copy(alpha = .20f) else V2Colors.ink(.07f),
-                    RoundedCornerShape(999.dp),
-                )
-                .padding(horizontal = 10.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Label(label, 11f, if (selected) V2Colors.ink(.95f) else V2Colors.ink(.40f))
-            Spacer(Modifier.width(5.dp))
-            Label(
-                count.toString(),
-                10f,
-                if (selected) V2Colors.cyan700 else V2Colors.ink(.28f),
-                mono = true,
-            )
-        }
-    }
-}
-
-// ================================================================== 新建对话
 
 @Composable
 fun NewChatSheet(
@@ -1124,14 +876,12 @@ private fun CodexLoginPanel(session: CodexLoginSession, onOpenUrl: (String) -> U
 @Composable
 private fun GitHubAccountHeader(
     account: GitHubAccountStatus?,
-    login: GitHubLoginSession?,
     loading: Boolean,
 ) {
     val loggedIn = account?.loggedIn == true
     val subtitle = when {
         loggedIn -> listOfNotNull(account?.login?.let { "@$it" }, account?.name).joinToString(" · ")
             .ifBlank { "已连接 GitHub" }
-        login?.isPending == true -> "等待浏览器授权…"
         loading -> "读取账号状态…"
         account == null -> "账号状态暂不可用"
         else -> "未连接 · 连接后可读写全部仓库"
@@ -1157,128 +907,6 @@ private fun GitHubAccountHeader(
                 Label("已连接", 9.5f, V2Colors.accent, FontWeight.SemiBold)
             }
         }
-    }
-}
-
-@Composable
-private fun GitHubLoginPanel(session: GitHubLoginSession, onOpenUrl: (String) -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember(session.userCode) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-        if (session.status == "failed" || session.status == "expired") {
-            Label(if (session.status == "expired") "设备码已过期" else "授权失败", 11f, V2Colors.rose, FontWeight.Medium)
-            Spacer(Modifier.height(4.dp))
-            Label(session.message.ifBlank { "请重新发起连接" }, 9.5f, V2Colors.ink(.38f))
-            return@Column
-        }
-        Label("1. 打开 GitHub 授权页", 10.5f, V2Colors.ink(.45f))
-        if (session.verificationUri.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(V2Colors.accent.copy(alpha = .10f))
-                    .clickable { onOpenUrl(session.verificationUri) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Language, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Label("打开授权页", 12f, V2Colors.accent, FontWeight.Medium, modifier = Modifier.weight(1f))
-                Icon(Icons.Outlined.KeyboardArrowRight, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
-            }
-        }
-        if (session.userCode.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Label("2. 输入设备码", 10.5f, V2Colors.ink(.45f))
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Label(
-                    session.userCode,
-                    22f,
-                    V2Colors.ink(.90f),
-                    FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                    mono = true,
-                )
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(V2Colors.ink(.06f))
-                        .clickable {
-                            clipboard.setText(AnnotatedString(session.userCode))
-                            copied = true
-                        }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                ) {
-                    Label(if (copied) "已复制" else "复制", 10.5f, V2Colors.ink(.55f))
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Label("授权完成后这里会自动更新，无需手动刷新", 9.5f, V2Colors.ink(.34f))
-    }
-}
-
-@Composable
-private fun GitHubTokenField(onSubmit: (String) -> Unit) {
-    var token by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-        Label("或用个人访问令牌（PAT）", 10.5f, V2Colors.ink(.45f))
-        Spacer(Modifier.height(6.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = 44.dp)
-                .background(V2Colors.ink(.04f), RoundedCornerShape(12.dp))
-                .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (token.isEmpty()) {
-                Label("粘贴 ghp_… / github_pat_…", 12f, V2Colors.ink(.28f))
-            }
-            BasicTextField(
-                value = token,
-                onValueChange = { token = it },
-                singleLine = true,
-                textStyle = TextStyle(
-                    color = V2Colors.ink(.90f),
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                ),
-                cursorBrush = SolidColor(V2Colors.accent),
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        if (token.isBlank()) V2Colors.ink(.05f) else V2Colors.accent.copy(alpha = .12f)
-                    )
-                    .clickable {
-                        if (token.isNotBlank()) {
-                            onSubmit(token.trim())
-                            token = ""
-                        }
-                    }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-            ) {
-                Label(
-                    "保存令牌",
-                    11f,
-                    if (token.isBlank()) V2Colors.ink(.30f) else V2Colors.accent,
-                    FontWeight.SemiBold,
-                )
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Label("令牌只存放在服务端加密密钥库，不会回传到手机", 9.5f, V2Colors.ink(.34f))
     }
 }
 

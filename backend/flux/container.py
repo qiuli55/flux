@@ -149,7 +149,7 @@ class Container:
     conversation_summarizer: ConversationSummarizer = field(init=False)
     #: 任务对话的实时增量（SSE）：进程内广播，最终消息仍以数据库为准
     task_stream: TaskStreamHub = field(init=False)
-    #: 内部多 bot 群聊：群/成员/消息/epoch 读写 + 有限轮编排
+    #: 历史群聊（产品已下线）：只保留仓储/编排，供读取旧数据，不再有 HTTP 入口
     group_repo: GroupRepository = field(init=False)
     groups: GroupOrchestrator = field(init=False)
     proposal_repo: ProposalRepository = field(init=False)
@@ -249,7 +249,7 @@ class Container:
         # 对话交接摘要：新对话带旧对话前情时使用，与助手共用平台模型通道
         self.conversation_summarizer = ConversationSummarizer(self.router)
         self.task_stream = TaskStreamHub()
-        # 内部多 bot 群聊：复用任务仓储读每个 bot 的私聊，复用平台模型通道发言
+        # 历史群聊编排（已下线）：仅为旧数据保留，不再被 API 挂载
         self.group_repo = GroupRepository(self.session_factory)  # type: ignore[attr-defined]
         self.groups = GroupOrchestrator(
             self.group_repo,

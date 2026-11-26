@@ -65,7 +65,6 @@ class V2ChatSafetyTest {
                 messages = emptyList(),
                 extraTop = 0.dp,
                 onBack = { backCount++ },
-                onOpenLogs = {},
                 onDelete = {},
                 onOpenAgentPicker = {},
                 onSend = { sent += it },

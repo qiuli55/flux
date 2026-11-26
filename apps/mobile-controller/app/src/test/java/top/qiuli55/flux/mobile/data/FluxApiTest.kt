@@ -51,6 +51,47 @@ class FluxApiTest {
     }
 
     @Test
+    fun parseApiError_prefersFluxEnvelopeMessage() {
+        val info = parseApiError(
+            """{"success":false,"code":"artifact_conflict","message":"产物已被更新，请刷新后再改","data":null}""",
+            409,
+        )
+        assertEquals("artifact_conflict", info.code)
+        assertEquals("产物已被更新，请刷新后再改", info.message)
+    }
+
+    @Test
+    fun parseApiError_readsFastApiDetailString() {
+        val info = parseApiError("""{"detail":"Not Found"}""", 404)
+        assertEquals("not_found", info.code)
+        assertEquals("Not Found", info.message)
+    }
+
+    @Test
+    fun parseApiError_readsFastApiValidationList() {
+        val info = parseApiError(
+            """{"detail":[{"loc":["body","title"],"msg":"Field required","type":"missing"}]}""",
+            422,
+        )
+        assertEquals("validation_error", info.code)
+        assertEquals("请求参数校验失败：title：Field required", info.message)
+    }
+
+    @Test
+    fun parseApiError_fallsBackWithStatusMeaningInsteadOfBareHttpCode() {
+        val info = parseApiError("", 404)
+        assertEquals("not_found", info.code)
+        assertEquals("未找到接口或资源（HTTP 404）", info.message)
+    }
+
+    @Test
+    fun parseApiError_emptyEnvelopeMessageStillFallsBack() {
+        val info = parseApiError("""{"success":false,"code":"","message":""}""", 500)
+        assertEquals("http_500", info.code)
+        assertEquals("服务器出错了（HTTP 500）", info.message)
+    }
+
+    @Test
     fun decodePolledTaskEventsList() {
         // 中转模式轮询 /tasks/{id}/events 拿到的事件数组：结构与 /stream 一致
         val events = json.decodeFromString<List<TaskStreamEvent>>(

@@ -535,7 +535,6 @@ fun V2TaskChatScreen(
     extraTop: Dp,
     showBack: Boolean = true,
     onBack: () -> Unit,
-    onOpenLogs: () -> Unit,
     onRequestDelete: () -> Unit,
     /** 上下文快满时选择「新建并带摘要」：把旧对话摘要交给外层去开一段新对话。 */
     onHandoffReady: (HandoffSummary) -> Unit = {},
@@ -643,7 +642,14 @@ fun V2TaskChatScreen(
         }
         if (secured.isEmpty() && task != null && task.description.isNotBlank()) {
             // 任务描述本身就是用户的第一条需求：还没有消息时先把它当成首条用户消息展示。
-            listOf(V2Message(V2MessageRole.USER, task.description.trim(), clockLabel(task.createdAt)))
+            listOf(
+                V2Message(
+                    V2MessageRole.USER,
+                    task.description.trim(),
+                    clockLabel(task.createdAt),
+                    createdAtEpoch = parseEpochSeconds(task.createdAt),
+                ),
+            )
         } else {
             secured
         }
@@ -671,7 +677,6 @@ fun V2TaskChatScreen(
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
-            onOpenLogs = onOpenLogs,
             onDelete = onRequestDelete,
             onOpenAgentPicker = {},
             onSend = { text ->
@@ -783,19 +788,19 @@ private fun TaskMessage.toV2Message(): V2Message? {
     // 设计稿卡片：payload 里带设计稿摘要与第一屏预览，点开进原生画布
     if (kind == "design_card") {
         parseDesignCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, designCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, designCard = card)
         }
     }
     // 已发布的页面 / 文档：payload 只带类型、标题与摘要，正文留在产物详情里
     if (kind == "artifact_card") {
         parseArtifactCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, artifactCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, artifactCard = card)
         }
     }
     // Plan 模式产出的计划卡：标题 + 步骤 + 涉及文件 + 计划文档路径
     if (kind == "plan_card") {
         parsePlanCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, planCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, planCard = card)
         }
     }
     // 审批卡：payload.decision 是决策记录本身（含 kind / meta.command / status / chosen）
@@ -808,6 +813,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 mapped,
                 text,
                 clockLabel(createdAt),
+                createdAtEpoch = parseEpochSeconds(createdAt),
                 kind = kind,
                 approvalCard = card.copy(expired = card.expired || expired),
             )
@@ -820,6 +826,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 mapped,
                 text,
                 clockLabel(createdAt),
+                createdAtEpoch = parseEpochSeconds(createdAt),
                 kind = kind,
                 secureInputCard = card,
             )
@@ -832,6 +839,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
             mapped,
             text,
             clockLabel(createdAt),
+            createdAtEpoch = parseEpochSeconds(createdAt),
             kind = kind,
             handoffFrom = root?.stringField("from_agent").orEmpty(),
             handoffTo = root?.stringField("to_agent").orEmpty(),
@@ -841,13 +849,13 @@ private fun TaskMessage.toV2Message(): V2Message? {
     if (kind == "attachments") {
         val files = parseAttachmentFiles(payload)
         if (files.isNotEmpty()) {
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, attachments = files)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, attachments = files)
         }
     }
     if (text.isEmpty()) return null
     // run_finished 携带 run_id：答案气泡上方据此显示「任务耗时」入口
     val runId = if (kind == "run_finished") payloadRunId(payload) else ""
-    return V2Message(mapped, text, clockLabel(createdAt), kind = kind, runId = runId)
+    return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, runId = runId)
 }
 
 /** 从消息 payload 里取 run_id（run_finished 才有）。 */
