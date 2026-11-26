@@ -34,6 +34,8 @@ PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "design.list",
         "design.get",
         "design.revisions",
+        "artifact.list",
+        "artifact.get",
         "github.list_repos",
         "github.read_file",
         "plan.write",
@@ -80,6 +82,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
         "can": [
             "workspace.read/search/tree/diff",
             "design.list/get/revisions",
+            "artifact.list/get",
             "github.list_repos / github.read_file",
             "plan.write",
             "memory.remember",
@@ -89,6 +92,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
             "github.commit / github.create_pr",
             "proposal.create/preview",
             "design.create/update/ai/revert/share/icon_create",
+            "artifact.publish",
         ],
     },
     PermissionMode.NORMAL.value: {
@@ -98,6 +102,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
             "全部只读工具",
             "proposal.create/preview",
             "design.*",
+            "artifact.*",
             "github.list_repos / read_file / commit / create_pr",
         ],
         "cannot": ["未经允许的高风险命令", "任何模式的受保护对象"],

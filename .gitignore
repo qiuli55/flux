@@ -19,6 +19,12 @@ venv/
 *.db
 data/
 artifacts/
+# 例外：后端 artifacts 领域包是源码，不是运行期制品
+!backend/flux/core/artifacts/
+!backend/flux/core/artifacts/**
+# 例外目录里的缓存仍按运行期制品忽略
+backend/flux/core/artifacts/__pycache__/
+backend/flux/core/artifacts/**/*.py[cod]
 # 例外：前端源码目录 src/data/ 是代码而不是运行期数据，必须入库
 !apps/web-dashboard/src/data/
 # 例外：Android 源码里的 data 包是代码而不是运行期数据

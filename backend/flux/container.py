@@ -26,6 +26,7 @@ from flux.core.agent_runtime.runtimes.service import TaskRunService
 from flux.core.agent_runtime.session_repository import TaskRuntimeSessionRepository
 from flux.core.agent_runtime.trace import RunTraceRecorder
 from flux.core.agent_runtime.trace_repository import RunTraceRepository
+from flux.core.artifacts.repository import ArtifactRepository
 from flux.core.billing.service import BillingService
 from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
@@ -136,6 +137,8 @@ class Container:
     brain_refresher: BrainRefresher = field(init=False)
     memory_repo: MemoryRepository = field(init=False)
     memory: MemoryService = field(init=False)
+    #: Artifacts 成品（页面 / 文档）落 artifacts 表；设计稿仍由 Luma 代理聚合
+    artifacts: ArtifactRepository = field(init=False)
     task_repo: TaskRepository = field(init=False)
     key_vault: KeyVaultService = field(init=False)
     task_runs: TaskRunBridge = field(init=False)
@@ -316,6 +319,7 @@ class Container:
         # 写入必须走受控路径（用户 REST / 平台代码），Agent 面只有只读的 memory.recall
         self.memory_repo = MemoryRepository(self.session_factory)  # type: ignore[attr-defined]
         self.memory = MemoryService(self.memory_repo, brain=self.brain)
+        self.artifacts = ArtifactRepository(self.session_factory)  # type: ignore[attr-defined]
         # 账号级用户记忆：本地只做缓存，云端是权威存储；同步失败不影响本地读写
         self.memory_prefs = MemoryPrefsStore(
             self.settings.memory_prefs_path,
