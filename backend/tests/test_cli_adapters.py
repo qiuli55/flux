@@ -165,6 +165,65 @@ def test_parse_event_normalizes_lines() -> None:
     }
 
 
+def test_generic_tool_event_normalizes_display_fields() -> None:
+    """通用 CLI 词表也要补齐时间线字段（generic / 未来接入的 adapter 共用）。"""
+    from flux.core.agent_runtime.runtimes.cli import (
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_RESULT,
+        _normalize_event,
+    )
+
+    started = _normalize_event(
+        {
+            "type": "tool_call",
+            "tool": "bash",
+            "input": {"command": "ls -la"},
+            "id": "call-1",
+        },
+        "r1",
+        "generic",
+    )
+    assert started.type == EVENT_TOOL_CALL
+    assert started.data["name"] == "bash"
+    assert "ls -la" in started.data["detail"]
+    assert started.data["status"] == "running"
+    assert started.data["call_id"] == "call-1"
+
+    finished = _normalize_event(
+        {
+            "type": "tool_result",
+            "tool": "bash",
+            "output": "a.txt",
+            "id": "call-1",
+        },
+        "r1",
+        "generic",
+    )
+    assert finished.type == EVENT_TOOL_RESULT
+    assert finished.data["status"] == "completed"
+    assert finished.data["output"] == "a.txt"
+    assert finished.data["call_id"] == "call-1"
+
+    # 参数在 arguments / part.state.input 里也要认得出来
+    arguments = _normalize_event(
+        {"type": "tool_call", "tool": "read", "arguments": '{"file_path":"a.py"}'},
+        "r1",
+        "generic",
+    )
+    assert "a.py" in arguments.data["detail"]
+
+    part_state = _normalize_event(
+        {
+            "type": "tool_call",
+            "part": {"tool": "write", "state": {"input": {"path": "b.py"}}},
+        },
+        "r1",
+        "generic",
+    )
+    assert part_state.data["name"] == "write"
+    assert "b.py" in part_state.data["detail"]
+
+
 def test_handshake_carries_protocol_and_capabilities() -> None:
     adapter = OpenCodeAdapter(
         which=lambda _: "/usr/local/bin/opencode", probe_runner=_installed("1.18.29")

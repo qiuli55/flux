@@ -1,6 +1,8 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -14,8 +16,8 @@ import top.qiuli55.flux.mobile.data.TaskStreamEvent
 /**
  * 流式归约器的纯 JVM 测试（不依赖 Android / Compose）。
  *
- * 覆盖：增量合并、结构事件前强制 flush、思考与工具状态流转、
- * 重连去重、部分输出保留、取消、退避序列。
+ * 覆盖：阶段时间线（思考 / 正文 / 命令组 / 工具组交替）、增量合并、结构事件前强制 flush、
+ * 工具状态流转、跨 runtime 的统一事件合同、收尾（settle）与迟到事件、重连去重、退避序列。
  */
 class StreamReducerTest {
 
@@ -38,6 +40,9 @@ class StreamReducerTest {
     private fun thinking(seq: Int, text: String) =
         event(seq, "run_event", "kind" to "thinking", "text" to text)
 
+    private fun text(seq: Int, value: String) =
+        event(seq, "run_event", "kind" to "text", "text" to value)
+
     private fun tool(
         seq: Int,
         callId: String,
@@ -45,6 +50,7 @@ class StreamReducerTest {
         name: String = "shell",
         detail: String = "",
         output: String = "",
+        category: String = "command",
     ) = event(
         seq,
         "run_event",
@@ -54,8 +60,22 @@ class StreamReducerTest {
         "detail" to detail,
         "output" to output,
         "status" to status,
-        "category" to "command",
+        "category" to category,
     )
+
+    private fun types(): List<StreamStageType> =
+        reducer.snapshot().stages.map { stage ->
+            when (stage) {
+                is StreamThoughtStage -> StreamStageType.THOUGHT
+                is StreamTextStage -> StreamStageType.TEXT
+                is StreamToolGroupStage -> stage.type
+            }
+        }
+
+    private fun group(index: Int): StreamToolGroupStage =
+        reducer.snapshot().stages.filterIsInstance<StreamToolGroupStage>()[index]
+
+    // ------------------------------------------------------------ 阶段时间线
 
     @Test
     fun `deltas are buffered until flush`() {
@@ -64,10 +84,11 @@ class StreamReducerTest {
 
         // 未 flush 前 UI 快照不变：每条 token 都不触发整页重组
         assertEquals("", reducer.snapshot().liveText)
+        assertTrue(reducer.snapshot().stages.isEmpty())
 
         val flushed = reducer.flush()
         assertEquals("Hello world", flushed.liveText)
-        assertNull(flushed.liveLabel)
+        assertEquals(listOf(StreamStageType.TEXT), types())
         assertTrue(flushed.liveActive)
     }
 
@@ -79,29 +100,44 @@ class StreamReducerTest {
 
         val snapshot = reducer.snapshot()
         // 工具事件到达时先把已缓冲正文落进快照，再追加步骤，顺序不会颠倒
-        assertEquals("partial answer", snapshot.liveText)
+        assertEquals(listOf(StreamStageType.TEXT, StreamStageType.COMMAND), types())
+        assertEquals("partial answer", (snapshot.stages[0] as StreamTextStage).text)
         assertEquals(1, snapshot.tools.size)
         assertEquals(StreamToolStatus.RUNNING, snapshot.tools[0].status)
     }
 
     @Test
-    fun `reasoning streams while active and collapses after assistant message`() {
+    fun `thinking streams while active and collapses when text arrives`() {
         now = 5_000L
         reducer.apply(thinking(1, "先看日志"))
         reducer.flush()
-        var reasoning = reducer.snapshot().reasoning
-        assertNotNull(reasoning)
-        assertTrue(reasoning!!.active)
-        assertEquals("先看日志", reasoning.text)
+        var thought = reducer.snapshot().thoughtStages.single()
+        assertTrue(thought.active)
+        assertEquals("先看日志", thought.text)
 
         now = 8_000L
-        reducer.apply(event(2, "assistant_message"))
-        reasoning = reducer.snapshot().reasoning
-        assertNotNull(reasoning)
-        assertFalse(reasoning!!.active)
-        assertEquals(5_000L, reasoning.startedAtMs)
-        assertEquals(3_000L, reasoning.elapsedMs(now))
-        assertEquals(3_000L, reasoning.endedAtMs!! - reasoning.startedAtMs)
+        reducer.apply(text(2, "好的，我开始查。"))
+        reducer.flush()
+        thought = reducer.snapshot().thoughtStages.single()
+        assertFalse(thought.active)
+        assertEquals(5_000L, thought.startedAtMs)
+        assertEquals(3_000L, thought.elapsedMs(now))
+        assertEquals(3_000L, thought.endedAtMs!! - thought.startedAtMs)
+        // 思考与正文是两个阶段，先思考后正文
+        assertEquals(listOf(StreamStageType.THOUGHT, StreamStageType.TEXT), types())
+    }
+
+    @Test
+    fun `text then thinking keeps event order even when both were buffered`() {
+        // 极端交错：正文增量还没 flush，思考增量就到了
+        reducer.apply(delta(1, "先给结论。"))
+        reducer.apply(thinking(2, "再解释原因。"))
+        reducer.flush()
+
+        val stages = reducer.snapshot().stages
+        assertEquals(listOf(StreamStageType.TEXT, StreamStageType.THOUGHT), types())
+        assertEquals("先给结论。", (stages[0] as StreamTextStage).text)
+        assertEquals("再解释原因。", (stages[1] as StreamThoughtStage).text)
     }
 
     @Test
@@ -119,6 +155,38 @@ class StreamReducerTest {
     }
 
     @Test
+    fun `tool events without call id merge by name`() {
+        // 老 generic adapter 可能不带 call_id：开始 + 收尾仍要合并成一张卡
+        reducer.apply(
+            event(
+                1,
+                "run_event",
+                "kind" to "tool",
+                "name" to "bash",
+                "detail" to "ls",
+                "status" to "running",
+                "category" to "command",
+            ),
+        )
+        reducer.apply(
+            event(
+                2,
+                "run_event",
+                "kind" to "tool",
+                "output" to "a.txt",
+                "status" to "completed",
+                "category" to "command",
+            ),
+        )
+
+        val snapshot = reducer.snapshot()
+        assertEquals(1, snapshot.tools.size)
+        assertEquals(StreamToolStatus.DONE, snapshot.tools.single().status)
+        assertEquals("bash", snapshot.tools.single().name)
+        assertEquals("a.txt", snapshot.tools.single().output)
+    }
+
+    @Test
     fun `failed tool keeps failed status`() {
         reducer.apply(tool(1, "call-2", "running", detail = "make"))
         reducer.apply(tool(2, "call-2", "failed", output = "exit 2"))
@@ -126,31 +194,231 @@ class StreamReducerTest {
     }
 
     @Test
-    fun `run finished completes running tools`() {
-        reducer.apply(tool(1, "call-3", "running"))
+    fun `command batches and tool batches form separate groups`() {
+        reducer.apply(tool(1, "c1", "running", detail = "ls"))
+        reducer.apply(tool(2, "c1", "completed", output = "a.txt"))
+        reducer.apply(tool(3, "c2", "running", detail = "cat package.json"))
+        reducer.apply(tool(4, "c2", "completed"))
+        reducer.apply(text(5, "前端在 apps/web。"))
+        reducer.flush()
+        reducer.apply(tool(6, "t1", "running", name = "read_file", detail = "src/a.ts", category = "read"))
+        // 收尾事件通常不带工具名（后端会留空），不能把上一帧的 read_file 覆盖成兜底 shell
+        reducer.apply(tool(7, "t1", "completed", name = "", output = "42 行", category = "read"))
+
+        assertEquals(
+            listOf(StreamStageType.COMMAND, StreamStageType.TEXT, StreamStageType.TOOL),
+            types(),
+        )
+        assertEquals(2, group(0).steps.size)
+        assertFalse(group(0).open)
+        assertFalse(group(0).active)
+        assertEquals("read_file", group(1).steps.single().name)
+    }
+
+    @Test
+    fun `multiple text summaries alternate with tool groups`() {
+        reducer.apply(thinking(1, "先确认目录。"))
+        reducer.flush()
+        reducer.apply(text(2, "先看结构。"))
+        reducer.flush()
+        reducer.apply(tool(3, "c1", "running", detail = "ls apps/"))
+        reducer.apply(tool(4, "c1", "completed", output = "web"))
+        reducer.apply(text(5, "前端在 apps/web。"))
+        reducer.flush()
+        reducer.apply(tool(6, "c2", "running", detail = "npm run dev"))
+        reducer.apply(tool(7, "c2", "completed", output = "ready"))
+        reducer.apply(text(8, "服务已启动。"))
+        reducer.flush()
+
+        assertEquals(
+            listOf(
+                StreamStageType.THOUGHT,
+                StreamStageType.TEXT,
+                StreamStageType.COMMAND,
+                StreamStageType.TEXT,
+                StreamStageType.COMMAND,
+                StreamStageType.TEXT,
+            ),
+            types(),
+        )
+        assertEquals(3, reducer.snapshot().textStages.size)
+        assertEquals(2, reducer.snapshot().toolGroups.size)
+    }
+
+    @Test
+    fun `background command completion after text updates the original group in place`() {
+        reducer.apply(tool(1, "bg", "running", detail = "npm run dev"))
+        reducer.apply(text(2, "趁服务启动，我先写结论。"))
+        reducer.flush()
+        // 组已经被正文关闭，但命令仍在跑；完成事件必须回到原组，而不是新开一张卡
+        reducer.apply(tool(3, "bg", "completed", output = "ready"))
+
+        val groups = reducer.snapshot().toolGroups
+        assertEquals(1, groups.size)
+        assertEquals(StreamToolStatus.DONE, groups[0].steps.single().status)
+        assertEquals(listOf(StreamStageType.COMMAND, StreamStageType.TEXT), types())
+    }
+
+    // ------------------------------------------------------------ 统一事件合同
+
+    /**
+     * 同一套规范化事件分别由 Claude Code / Codex / OpenCode / DSH / generic 的原始事件映射而来。
+     * 只要字段统一，reducer 产出的阶段序列就完全一致——UI 不需要按 runtime 分支。
+     */
+    @Test
+    fun `every runtime produces the same stage timeline from normalized events`() {
+        val runtimes = listOf(
+            // claude_code：Bash + Read，category 由后端 classify_tool 给出
+            listOf(
+                thinking(1, "先看看目录"),
+                text(2, "我查一下。"),
+                tool(3, "cc-1", "running", name = "Bash", detail = "ls", category = "command"),
+                tool(4, "cc-1", "completed", output = "a.txt", category = "command"),
+                tool(5, "cc-2", "running", name = "Read", detail = "{\"file_path\":\"a.ts\"}", category = "read"),
+                tool(6, "cc-2", "completed", output = "42 行", category = "read"),
+            ),
+            // codex：command_execution / mcp_tool_call
+            listOf(
+                thinking(1, "先看看目录"),
+                text(2, "我查一下。"),
+                tool(3, "cx-1", "running", name = "shell", detail = "ls", category = "command"),
+                tool(4, "cx-1", "completed", output = "a.txt", category = "command"),
+                tool(5, "cx-2", "running", name = "Read", detail = "{\"file_path\":\"a.ts\"}", category = "read"),
+                tool(6, "cx-2", "completed", output = "42 行", category = "read"),
+            ),
+            // opencode：tool_use part → bash / read
+            listOf(
+                thinking(1, "先看看目录"),
+                text(2, "我查一下。"),
+                tool(3, "oc-1", "running", name = "bash", detail = "ls", category = "command"),
+                tool(4, "oc-1", "completed", output = "a.txt", category = "command"),
+                tool(5, "oc-2", "running", name = "read", detail = "{\"file_path\":\"a.ts\"}", category = "read"),
+                tool(6, "oc-2", "completed", output = "42 行", category = "read"),
+            ),
+            // DSH 内置 Agent：tool/call → tool/result
+            listOf(
+                thinking(1, "先看看目录"),
+                text(2, "我查一下。"),
+                tool(3, "dsh-1", "running", name = "bash", detail = "ls", category = "command"),
+                tool(4, "dsh-1", "completed", output = "a.txt", category = "command"),
+                tool(5, "dsh-2", "running", name = "read", detail = "{\"file_path\":\"a.ts\"}", category = "read"),
+                tool(6, "dsh-2", "completed", output = "42 行", category = "read"),
+            ),
+            // generic CLI：唯一差异是没有 category（老 adapter），只能靠 name 归类
+            listOf(
+                thinking(1, "先看看目录"),
+                text(2, "我查一下。"),
+                tool(3, "g-1", "running", name = "run_command", detail = "ls", category = ""),
+                tool(4, "g-1", "completed", output = "a.txt", category = ""),
+                tool(5, "g-2", "running", name = "read_file", detail = "{\"file_path\":\"a.ts\"}", category = ""),
+                tool(6, "g-2", "completed", output = "42 行", category = ""),
+            ),
+        )
+
+        val timelines = runtimes.map { fixture ->
+            val local = TaskStreamReducer { now }
+            fixture.forEach { local.apply(it) }
+            local.flush()
+            local.snapshot().stages.map { stage ->
+                when (stage) {
+                    is StreamThoughtStage -> "thought"
+                    is StreamTextStage -> "text"
+                    is StreamToolGroupStage ->
+                        if (stage.command) "commands(${stage.steps.size})" else "tools(${stage.steps.size})"
+                }
+            }
+        }
+
+        val expected = listOf("thought", "text", "commands(1)", "tools(1)")
+        timelines.forEach { timeline -> assertEquals(expected, timeline) }
+    }
+
+    @Test
+    fun `tool events are never swallowed into plain text`() {
+        reducer.apply(text(1, "开始执行。"))
+        reducer.apply(tool(2, "c1", "running", detail = "ls"))
+        reducer.flush()
+        reducer.apply(text(3, "命令跑完了。"))
+        reducer.flush()
+
+        val snapshot = reducer.snapshot()
+        assertTrue(snapshot.toolGroups.isNotEmpty())
+        assertEquals("ls", snapshot.tools.single().detail)
+        // 正文仍然完整，但工具步骤没有被并进正文
+        assertEquals("开始执行。命令跑完了。", snapshot.liveText)
+    }
+
+    // ------------------------------------------------------------ 收尾 / 稳定性
+
+    @Test
+    fun `run terminal closes groups and drops streaming text but keeps process`() {
+        reducer.apply(text(1, "最终答案"))
+        reducer.flush()
+        reducer.apply(tool(2, "call-3", "running", detail = "make"))
+        reducer.apply(event(3, "run_finished"))
+
+        val snapshot = reducer.snapshot()
+        assertFalse(snapshot.liveActive)
+        assertTrue(snapshot.textStages.isEmpty())
+        // 思考/命令作为过程记录保留，运行中的步骤收尾为完成
+        assertEquals(StreamToolStatus.DONE, snapshot.tools.single().status)
+        assertNotNull(snapshot.runEndedAtMs)
+    }
+
+    @Test
+    fun `late deltas after run terminal are ignored and do not resurrect the bubble`() {
+        reducer.apply(text(1, "最终答案"))
+        reducer.flush()
         reducer.apply(event(2, "run_finished"))
-        assertEquals(StreamToolStatus.DONE, reducer.snapshot().tools[0].status)
+        assertEquals(StreamApply.IGNORED, reducer.apply(delta(3, "迟到的增量")))
+        reducer.flush()
+
+        val snapshot = reducer.snapshot()
+        assertEquals("", snapshot.liveText)
+        assertFalse(snapshot.liveActive)
+        assertTrue(snapshot.stages.isEmpty())
+        assertNotNull(snapshot.runEndedAtMs)
+
+        // 新一轮开始后重新接受增量
+        reducer.apply(event(4, "run_started"))
+        reducer.apply(delta(5, "新回复"))
+        reducer.flush()
+        assertEquals("新回复", reducer.snapshot().liveText)
+        assertTrue(reducer.snapshot().liveActive)
+    }
+
+    @Test
+    fun `settle finished is idempotent and keeps thought and tools`() {
+        now = 10_000L
+        reducer.apply(thinking(1, "先看日志"))
+        reducer.flush()
+        reducer.apply(tool(2, "c1", "running", detail = "ls"))
+        now = 20_000L
+
+        val first = reducer.settleFinished()
+        val second = reducer.settleFinished()
+
+        assertEquals(first.stages, second.stages)
+        assertEquals(first.revision, second.revision)
+        assertFalse(second.liveActive)
+        assertEquals(1, second.thoughtStages.size)
+        assertEquals(1, second.toolGroups.size)
+        assertEquals(StreamToolStatus.DONE, second.tools.single().status)
+        assertEquals(20_000L, second.runEndedAtMs)
+    }
+
+    @Test
+    fun `settle after terminal tolerates late tool events`() {
+        reducer.apply(event(1, "run_finished"))
+        // 收尾后仍有工具补发：不崩、不重新点亮运行条
+        reducer.apply(tool(2, "c1", "completed", output = "late"))
+        reducer.settleFinished()
+        assertEquals("", reducer.snapshot().liveText)
         assertFalse(reducer.snapshot().liveActive)
     }
 
     @Test
-    fun `reconnect replay with older seq is deduped`() {
-        reducer.apply(delta(10, "already rendered"))
-        reducer.flush()
-        assertEquals("already rendered", reducer.snapshot().liveText)
-
-        // 重连后服务端从边界重发：seq 10 不允许再追加一次
-        val outcome = reducer.apply(delta(10, "already rendered"))
-        assertEquals(StreamApply.DUPLICATE, outcome)
-        assertEquals(1, reducer.snapshot().duplicateEvents)
-
-        reducer.apply(delta(11, " + next"))
-        reducer.flush()
-        assertEquals("already rendered + next", reducer.snapshot().liveText)
-    }
-
-    @Test
-    fun `assistant error keeps partial output and fails running tools`() {
+    fun `assistant error keeps partial text and fails running tools`() {
         reducer.apply(delta(1, "写了一半的答复"))
         reducer.flush()
         reducer.apply(tool(2, "call-4", "running"))
@@ -196,33 +464,38 @@ class StreamReducerTest {
     }
 
     @Test
-    fun `disconnect and open drive connection state and backoff attempt`() {
-        reducer.onConnecting()
-        assertEquals(StreamConnection.CONNECTING, reducer.snapshot().connection)
+    fun `reconnect replay with older seq is deduped`() {
+        reducer.apply(delta(10, "already rendered"))
+        reducer.flush()
+        assertEquals("already rendered", reducer.snapshot().liveText)
 
-        reducer.onOpen()
-        assertEquals(StreamConnection.LIVE, reducer.snapshot().connection)
+        val outcome = reducer.apply(delta(10, "already rendered"))
+        assertEquals(StreamApply.DUPLICATE, outcome)
+        assertEquals(1, reducer.snapshot().duplicateEvents)
 
-        val first = reducer.onDisconnected()
-        assertEquals(StreamConnection.RECONNECTING, first.connection)
-        assertEquals(1, first.reconnectAttempt)
-        assertEquals(2, reducer.onDisconnected().reconnectAttempt)
-
-        // 重新连上后退避归零，下一次断线从 1s 重新开始
-        val reopened = reducer.onOpen()
-        assertEquals(StreamConnection.LIVE, reopened.connection)
-        assertEquals(0, reopened.reconnectAttempt)
+        reducer.apply(delta(11, " + next"))
+        reducer.flush()
+        assertEquals("already rendered + next", reducer.snapshot().liveText)
     }
 
     @Test
-    fun `reconnect backoff is exponential and capped`() {
-        assertEquals(1_000L, reconnectDelayMs(0))
-        assertEquals(1_000L, reconnectDelayMs(1))
-        assertEquals(2_000L, reconnectDelayMs(2))
-        assertEquals(4_000L, reconnectDelayMs(3))
-        assertEquals(8_000L, reconnectDelayMs(4))
-        assertEquals(15_000L, reconnectDelayMs(5))
-        assertEquals(15_000L, reconnectDelayMs(20))
+    fun `malformed event payloads never throw`() {
+        val messy = TaskStreamEvent(
+            seq = 1,
+            type = "run_event",
+            data = buildJsonObject {
+                put("kind", "tool")
+                put("call_id", JsonPrimitive("c1"))
+                // 本该是字符串的字段给对象/数组：解析失败只当缺省，不能让整页闪退
+                put("name", JsonObject(mapOf("bad" to JsonPrimitive(true))))
+                put("detail", JsonArray(listOf(JsonPrimitive(1))))
+                put("status", JsonPrimitive("completed"))
+            },
+        )
+        reducer.apply(messy)
+        reducer.apply(delta(2, "ok"))
+        assertEquals("ok", reducer.flush().liveText)
+        assertEquals(1, reducer.snapshot().tools.size)
     }
 
     @Test
@@ -234,6 +507,20 @@ class StreamReducerTest {
             reducer.flush()
         }
         assertEquals(STREAM_TEXT_LIMIT, reducer.snapshot().liveText.length)
+    }
+
+    @Test
+    fun `stage count is bounded for pathological runs`() {
+        var seq = 1
+        repeat(STREAM_STAGE_LIMIT + 20) { index ->
+            reducer.apply(thinking(seq++, "思考 $index"))
+            reducer.flush()
+            reducer.apply(text(seq++, "正文 $index"))
+            reducer.flush()
+        }
+        assertTrue(reducer.snapshot().stages.size <= STREAM_STAGE_LIMIT)
+        // 最后一段一定保留（可能是正在生成的内容）
+        assertTrue(reducer.snapshot().stages.last() is StreamTextStage)
     }
 
     @Test
@@ -262,9 +549,70 @@ class StreamReducerTest {
         val snapshot = reducer.startRun("正在思考…")
 
         assertEquals("", snapshot.liveText)
-        assertTrue(snapshot.tools.isEmpty())
+        assertTrue(snapshot.stages.isEmpty())
         assertTrue(snapshot.liveActive)
         assertEquals(8, snapshot.lastSeq)
+    }
+
+    @Test
+    fun `assistant start keeps process stages and starts a new text run`() {
+        reducer.apply(thinking(1, "思考"))
+        reducer.flush()
+        reducer.apply(tool(2, "c1", "running", detail = "ls"))
+        reducer.apply(event(3, "assistant_start"))
+        reducer.apply(delta(4, "新的回复"))
+        reducer.flush()
+
+        val snapshot = reducer.snapshot()
+        // 旧的过程阶段不丢，新的正文接在后面
+        assertEquals(1, snapshot.toolGroups.size)
+        assertEquals(listOf(StreamStageType.THOUGHT, StreamStageType.COMMAND, StreamStageType.TEXT), types())
+        assertEquals("新的回复", snapshot.liveText)
+        assertTrue(snapshot.liveActive)
+    }
+
+    @Test
+    fun `assistant message drops streaming text but keeps process stages`() {
+        reducer.apply(thinking(1, "思考"))
+        reducer.flush()
+        reducer.apply(delta(2, "已落库的回复"))
+        reducer.flush()
+        reducer.apply(event(3, "assistant_message"))
+
+        val snapshot = reducer.snapshot()
+        assertFalse(snapshot.liveActive)
+        assertTrue(snapshot.textStages.isEmpty())
+        assertEquals(1, snapshot.thoughtStages.size)
+    }
+
+    @Test
+    fun `disconnect and open drive connection state and backoff attempt`() {
+        reducer.onConnecting()
+        assertEquals(StreamConnection.CONNECTING, reducer.snapshot().connection)
+
+        reducer.onOpen()
+        assertEquals(StreamConnection.LIVE, reducer.snapshot().connection)
+
+        val first = reducer.onDisconnected()
+        assertEquals(StreamConnection.RECONNECTING, first.connection)
+        assertEquals(1, first.reconnectAttempt)
+        assertEquals(2, reducer.onDisconnected().reconnectAttempt)
+
+        // 重新连上后退避归零，下一次断线从 1s 重新开始
+        val reopened = reducer.onOpen()
+        assertEquals(StreamConnection.LIVE, reopened.connection)
+        assertEquals(0, reopened.reconnectAttempt)
+    }
+
+    @Test
+    fun `reconnect backoff is exponential and capped`() {
+        assertEquals(1_000L, reconnectDelayMs(0))
+        assertEquals(1_000L, reconnectDelayMs(1))
+        assertEquals(2_000L, reconnectDelayMs(2))
+        assertEquals(4_000L, reconnectDelayMs(3))
+        assertEquals(8_000L, reconnectDelayMs(4))
+        assertEquals(15_000L, reconnectDelayMs(5))
+        assertEquals(15_000L, reconnectDelayMs(20))
     }
 
     @Test
