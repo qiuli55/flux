@@ -683,7 +683,11 @@ fun FluxV2Root() {
                                 ?: app.deviceLabel,
                             deviceCount = if (app.account != null) app.devices.size else 1,
                             memoryCount = app.memories.size,
-                            billingNote = if (app.billingError != null) "刷新失败" else "额度正常",
+                            billingNote = if (app.billingError != null) {
+                                "部分官方额度不可用"
+                            } else {
+                                app.billing?.headline ?: "暂无数据"
+                            },
                             version = BuildConfig.VERSION_NAME,
                             connectorCount = app.connectors.count { it.status == "connected" },
                             subscriptionCount = listOf(
