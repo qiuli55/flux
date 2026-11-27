@@ -673,7 +673,14 @@ fun SheetFrame(
     val handleZone = with(density) { 96.dp.toPx() }
     val fraction by animateFloatAsState(
         targetValue = if (expanded) 1f else maxHeightFraction,
-        animationSpec = if (reduce) tween(120) else spring(stiffness = 360f, dampingRatio = .34f),
+        animationSpec = if (reduce) {
+            tween(V2_SHEET_REDUCE_MOTION_MS)
+        } else {
+            spring(
+                dampingRatio = V2_SHEET_STANDARD_DAMPING,
+                stiffness = V2_SHEET_STANDARD_STIFFNESS,
+            )
+        },
         label = "sheet-fraction",
     )
 
@@ -719,49 +726,50 @@ fun SheetFrame(
                             tracker.addPosition(change.uptimeMillis, change.position)
                             total += dy
                             if (kotlin.math.abs(total) > 4f) moved = true
-                            val next = if (expanded) {
-                                total.coerceIn(-heightPx * .1f, heightPx)
-                            } else {
-                                total.coerceIn(-heightPx * .25f, heightPx)
-                            }
+                            // 上限内 1:1 跟手，向上越界走橡胶带，不再硬 clamp。
+                            val next = v2SheetDragOffset(total, heightPx, expanded)
                             scope.launch { offsetY.snapTo(next) }
                             change.consume()
                         }
                         val velocity = tracker.calculateVelocity().y
-                        if (!moved) {
-                            scope.launch {
-                                offsetY.animateTo(0f, spring(stiffness = 420f, dampingRatio = .4f))
-                            }
-                            return@awaitEachGesture
-                        }
                         val dismissThreshold = with(density) { 90.dp.toPx() }
                         val expandThreshold = with(density) { 56.dp.toPx() }
-                        when {
-                            expanded && (total > dismissThreshold || velocity > 700f) -> {
+                        val release = if (!moved) {
+                            V2SheetRelease.Settle
+                        } else {
+                            v2SheetReleaseAction(
+                                dragPx = total,
+                                velocityY = velocity,
+                                heightPx = heightPx,
+                                expanded = expanded,
+                                dismissThresholdPx = dismissThreshold,
+                                expandThresholdPx = expandThreshold,
+                            )
+                        }
+                        when (release) {
+                            V2SheetRelease.Collapse -> {
                                 expanded = false
                                 haptics?.play(V2HapticLevel.TICK)
-                                scope.launch {
-                                    offsetY.animateTo(0f, spring(stiffness = 380f, dampingRatio = .42f))
-                                }
                             }
-                            !expanded && total > 0 && (total > heightPx * .3f || velocity > 600f) -> {
-                                scope.launch {
-                                    offsetY.animateTo(heightPx.coerceAtLeast(1f), tween(180))
-                                    onDismiss()
-                                }
-                            }
-                            !expanded && (total < -expandThreshold || velocity < -600f) -> {
+                            V2SheetRelease.Expand -> {
                                 expanded = true
                                 haptics?.play(V2HapticLevel.TICK)
-                                scope.launch {
-                                    offsetY.animateTo(0f, spring(stiffness = 360f, dampingRatio = .38f))
-                                }
                             }
-                            else -> {
-                                scope.launch {
-                                    offsetY.animateTo(0f, spring(stiffness = 380f, dampingRatio = .42f))
-                                }
-                            }
+                            V2SheetRelease.Dismiss, V2SheetRelease.Settle -> Unit
+                        }
+                        val plan = v2SheetMotionPlan(
+                            release = release,
+                            heightPx = heightPx,
+                            velocityY = velocity,
+                            reduceMotion = reduce,
+                        )
+                        scope.launch {
+                            offsetY.animateTo(
+                                targetValue = plan.targetOffsetPx,
+                                animationSpec = plan.spec,
+                                initialVelocity = plan.initialVelocity,
+                            )
+                            if (release == V2SheetRelease.Dismiss) onDismiss()
                         }
                     }
                 },
