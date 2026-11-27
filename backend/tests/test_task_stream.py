@@ -161,6 +161,129 @@ def test_relay_forwards_tool_and_thinking_fields() -> None:
     assert step["kind"] == "thinking" and step["text"] == "" and step["phase"] == "step_start"
 
 
+def test_relay_normalizes_tool_events_across_runtimes() -> None:
+    """Claude / Codex / OpenCode / DSH / generic 的原始事件都归一成同一套手机端字段。"""
+
+    async def scenario() -> list[dict]:
+        records = [
+            # claude_code: assistant tool_use / user tool_result
+            {
+                "run_id": "r1",
+                "event_type": "tool_call",
+                "name": "Bash",
+                "detail": "ls -la",
+                "status": "running",
+                "call_id": "c1",
+            },
+            # codex: item.started / item.completed command_execution
+            {
+                "run_id": "r1",
+                "event_type": "tool_call",
+                "name": "shell",
+                "detail": "ls -la",
+                "status": "in_progress",
+                "call_id": "c2",
+            },
+            # opencode: tool_use part
+            {
+                "run_id": "r1",
+                "event_type": "tool_call",
+                "name": "bash",
+                "detail": "ls -la",
+                "status": "running",
+                "call_id": "c3",
+            },
+            # DSH 内置 Agent: session.event tool/call
+            {
+                "run_id": "r1",
+                "event_type": "tool/call",
+                "name": "bash",
+                "detail": {"command": "ls -la"},
+                "status": "running",
+                "call_id": "c4",
+            },
+            # generic: 没有 status 的收尾事件也要能收口
+            {
+                "run_id": "r1",
+                "event_type": "tool_result",
+                "name": "run_command",
+                "output": "a.txt",
+                "call_id": "c5",
+            },
+        ]
+        hub = TaskStreamHub()
+        hub.bind_run("r1", "t1")
+        bus = EventBus()
+        TaskStreamRelay(hub).attach(bus)
+        for record in records:
+            await bus.publish(Events.DSH_EVENT, record)
+        stream = hub.stream("t1")
+        payloads: list[dict] = []
+        for _ in records:
+            event = await anext(stream)
+            assert event is not None
+            payloads.append(event.data)
+        await stream.aclose()
+        return payloads
+
+    payloads = asyncio.run(scenario())
+    for payload in payloads:
+        # 前端只认这套字段：kind / name / detail / status / call_id / category
+        assert payload["kind"] == "tool"
+        assert payload["name"]
+        # 收尾事件可以只带输出（没有命令行），但至少要有一样可展示内容
+        assert payload.get("detail") or payload.get("output")
+        assert payload["status"]
+        assert payload["call_id"]
+        assert payload["category"] == "command"
+    # 收尾事件缺 status 时按事件类型兜底成 completed，命令组才能及时收起
+    assert payloads[-1]["status"] == "completed"
+    assert payloads[-1]["output"] == "a.txt"
+
+
+def test_relay_forwards_text_and_thinking_for_every_runtime() -> None:
+    """正文 / 思考的事件名各 runtime 不同，但转发出去的 kind 必须一致。"""
+
+    async def scenario() -> list[dict]:
+        records = [
+            {"run_id": "r1", "event_type": "message", "text": "正文 A"},
+            {"run_id": "r1", "event_type": "assistant/message", "text": "正文 B"},
+            {"run_id": "r1", "event_type": "text", "text": "正文 C"},
+            {"run_id": "r1", "event_type": "thinking", "text": "思考 A"},
+            {"run_id": "r1", "event_type": "reasoning", "text": "思考 B"},
+        ]
+        hub = TaskStreamHub()
+        hub.bind_run("r1", "t1")
+        bus = EventBus()
+        TaskStreamRelay(hub).attach(bus)
+        for record in records:
+            await bus.publish(Events.DSH_EVENT, record)
+        stream = hub.stream("t1")
+        payloads: list[dict] = []
+        for _ in records:
+            event = await anext(stream)
+            assert event is not None
+            payloads.append(event.data)
+        await stream.aclose()
+        return payloads
+
+    payloads = asyncio.run(scenario())
+    assert [payload["kind"] for payload in payloads] == [
+        "text",
+        "text",
+        "text",
+        "thinking",
+        "thinking",
+    ]
+    assert [payload["text"] for payload in payloads] == [
+        "正文 A",
+        "正文 B",
+        "正文 C",
+        "思考 A",
+        "思考 B",
+    ]
+
+
 def test_relay_redacts_secrets_in_tool_output() -> None:
     """工具输出可能带凭据：进 SSE 前必须打码。"""
 

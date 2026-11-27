@@ -275,6 +275,12 @@ def _split_text(text: str, parts: int = TEXT_CHUNK_PARTS) -> list[str]:
     return [text[index : index + size] for index in range(0, len(text), size)]
 
 
+def _is_result_event(event_type: str) -> bool:
+    """工具事件是不是「收尾」（完成/输出）而不是「开始」。"""
+    lowered = event_type.strip().lower()
+    return "result" in lowered or "output" in lowered or lowered.endswith(("_end", "/end"))
+
+
 def _event_kind(event_type: str) -> str:
     """把运行时事件归成手机端时间线的四类：thinking / tool / text / error。"""
     lowered = event_type.strip().lower()
@@ -357,6 +363,10 @@ def _event_payload(body: dict[str, Any], event_type: str) -> dict[str, Any]:
             and not fields.get("call_id")
         ):
             return {}
+        # 状态缺失时按事件语义兜底：收尾事件不能还标成 running，
+        # 否则「命令组」要等整个 Run 结束才收起。
+        if not fields.get("status"):
+            fields["status"] = "completed" if _is_result_event(event_type) else "running"
         return {"kind": kind, **fields}
 
     text = _event_text(body) if kind != "thinking" else str(body.get("text") or "")

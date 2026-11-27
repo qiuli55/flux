@@ -2194,13 +2194,73 @@ def _normalize_opencode_event(parsed: dict[str, Any], run_id: str, runtime_id: s
     return RuntimeEvent(EVENT_STATUS, run_id, data)
 
 
+def _generic_tool_fields(parsed: dict[str, Any], event_type: str) -> dict[str, Any]:
+    """通用 CLI 词表（tool_call / tool_result）→ 统一时间线字段。
+
+    Codex / opencode / Claude Code 各有自己的归一化函数；generic adapter 与未来接入的
+    CLI 只要吐出统一词表的 `{"type":"tool_call","tool":"bash","input":{...}}`，
+    也必须带齐 name / detail / output / status / call_id，手机端才能画出同一种命令卡。
+    """
+    part = parsed.get("part") if isinstance(parsed.get("part"), dict) else {}
+    item = parsed.get("item") if isinstance(parsed.get("item"), dict) else {}
+    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    payload = state.get("input") if isinstance(state.get("input"), dict) else {}
+
+    name = (
+        parsed.get("name")
+        or parsed.get("tool")
+        or part.get("tool")
+        or part.get("name")
+        or item.get("tool")
+        or item.get("name")
+    )
+    detail = parsed.get("detail") or parsed.get("command")
+    if not detail:
+        detail = parsed.get("arguments") or parsed.get("input") or payload
+    output = parsed.get("output")
+    if not isinstance(output, str) or not output.strip():
+        output = parsed.get("result") or state.get("output")
+    status = parsed.get("status") or state.get("status")
+    if not status:
+        # 收尾事件没写状态时按事件类型兜底，避免手机端一直转圈到 Run 结束。
+        status = "completed" if event_type == EVENT_TOOL_RESULT else "running"
+    call_id = (
+        parsed.get("call_id")
+        or parsed.get("callID")
+        or parsed.get("callId")
+        or parsed.get("id")
+        or part.get("callID")
+        or part.get("id")
+        or item.get("id")
+    )
+
+    fields: dict[str, Any] = {"status": str(status)}
+    if isinstance(name, str) and name.strip():
+        fields["name"] = _clip(name, 80)
+    if detail:
+        fields["detail"] = _clip(detail, _TOOL_DETAIL_CHARS)
+    if output:
+        fields["output"] = _clip(output, _TOOL_OUTPUT_CHARS)
+    if isinstance(call_id, str) and call_id.strip():
+        fields["call_id"] = call_id
+    title = parsed.get("title") or state.get("title")
+    if isinstance(title, str) and title.strip():
+        fields["title"] = _clip(title, _TOOL_DETAIL_CHARS)
+    return fields
+
+
 def _normalize_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> RuntimeEvent:
     raw_type = str(parsed.get("type") or "").strip().lower()
     event_type = _EVENT_TYPE_MAP.get(raw_type)
     if event_type is None:
         # 未知类型不吞：有 text 归 message，否则按 status 记录原始事件
         event_type = EVENT_MESSAGE if _text_of(parsed) else EVENT_STATUS
-    return RuntimeEvent(event_type, run_id, {**parsed, "runtime_id": runtime_id})
+    data = {**parsed, "runtime_id": runtime_id}
+    if event_type in (EVENT_TOOL_CALL, EVENT_TOOL_RESULT):
+        # 工具事件统一补齐字段：不管适配器把参数放在 input / arguments / part.state，
+        # 到 SSE 之前都变成 name / detail / output / status / call_id。
+        data.update(_generic_tool_fields(parsed, event_type))
+    return RuntimeEvent(event_type, run_id, data)
 
 
 #: codex `exec --json` 真实事件（codex-cli 0.157.1 实测，2026-10-06）：
@@ -2243,7 +2303,9 @@ def _normalize_codex_event(parsed: dict[str, Any], run_id: str, runtime_id: str)
                 {**data, **_codex_item_fields(item)},
             )
         if "tool" in item_type:
-            return RuntimeEvent(EVENT_TOOL_RESULT, run_id, data)
+            # 非 tool_call 的 tool item（完成/输出）也带上能展示的字段；
+            # 拿不到 call_id 时转发层会按空收尾事件丢弃，不会凭空多一张卡。
+            return RuntimeEvent(EVENT_TOOL_RESULT, run_id, {**data, **_codex_item_fields(item)})
         # 其它 item：只记状态，不进答复
         return RuntimeEvent(EVENT_STATUS, run_id, {**data, "phase": item_type or raw_type})
     mapped = _EVENT_TYPE_MAP.get(raw_type)

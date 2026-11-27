@@ -473,7 +473,9 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 // 以及「流式气泡 + 落库消息」两份同样的回复。这里以接口状态为准收尾。
                 val snapshot = _state.value.stream
                 val settleLive = shouldSettleLiveBubble(finished, messages, snapshot.liveText)
-                val stream = if (settleLive && snapshot.liveActive) {
+                // liveActive 已经为 false（例如 assistant_error / 手动停止后）但阶段里还留着
+                // 部分正文：任务落定后同样要收尾，否则流式气泡会和落库消息同时挂着。
+                val stream = if (settleLive && (snapshot.liveActive || snapshot.stages.isNotEmpty())) {
                     Log.i(FLUX_STREAM_LOG_TAG, "refresh settles live bubble finished=$finished")
                     streamReducer.settleFinished()
                 } else {

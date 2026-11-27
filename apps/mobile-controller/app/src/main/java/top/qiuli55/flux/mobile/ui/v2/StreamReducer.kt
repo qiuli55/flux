@@ -16,21 +16,41 @@ import top.qiuli55.flux.mobile.data.TaskStreamEvent
  *    已经渲染过的正文不会再来一遍。
  *  - 连接状态、终态错误、取消都只改这里，UI 只消费不可变快照。
  *
+ * 快照是一串**按时间排列的阶段**（思考 / 正文 / 命令组 / 工具组），而不是
+ * 「一段 reasoning + 一段正文 + 一个工具列表」。这样思考、小结、命令、正文可以在
+ * 同一条助手消息里多次交替 —— 所有 runtime 只要产出同一套 `run_event`
+ * （kind = thinking / text / tool），前端就自动得到同一个效果，不需要按 Agent 名分支。
+ *
  * 本类不依赖 Android（无 Log），可直接在 JVM 单测里跑。
  */
 enum class StreamConnection { IDLE, CONNECTING, LIVE, RECONNECTING, FAILED }
 
 enum class StreamToolStatus { RUNNING, DONE, FAILED }
 
-/** 一次 Run 的推理内容：同一轮的多段 thinking 合并成一段，收起后只占一行。 */
-data class StreamReasoning(
+/** 阶段类型：思考 / 正文 / 命令组 / 工具组。 */
+enum class StreamStageType { THOUGHT, TEXT, COMMAND, TOOL }
+
+/** 时间线阶段；[id] 在一次归约器生命周期内单调唯一，供 Compose 记住展开状态。 */
+sealed interface StreamStage {
+    val id: String
+}
+
+/** 一段思考：同一批增量合并，遇到正文 / 命令 / 结束就收起。 */
+data class StreamThoughtStage(
+    override val id: String,
     val text: String = "",
     val startedAtMs: Long = 0L,
     val endedAtMs: Long? = null,
     val active: Boolean = false,
-) {
+) : StreamStage {
     fun elapsedMs(nowMs: Long): Long = ((endedAtMs ?: nowMs) - startedAtMs).coerceAtLeast(0L)
 }
+
+/** 一段流式正文（Markdown 小结）；工具步骤之间可以出现多段。 */
+data class StreamTextStage(
+    override val id: String,
+    val text: String = "",
+) : StreamStage
 
 /** 一次工具调用；同名 `call_id` 的 started / completed 事件合并到同一步。 */
 data class StreamToolStep(
@@ -43,15 +63,37 @@ data class StreamToolStep(
     val paths: List<String> = emptyList(),
 )
 
+/**
+ * 一组连续的工具调用（父级可折叠）。
+ *
+ * [open] 表示时间线是否还停在这一组；[active] 额外包含「组内仍有命令在跑」——
+ * 后台命令在正文继续后完成时，组早已关闭，但行上的蓝点要一直亮到真正结束。
+ */
+data class StreamToolGroupStage(
+    override val id: String,
+    val type: StreamStageType,
+    val steps: List<StreamToolStep> = emptyList(),
+    val startedAtMs: Long = 0L,
+    val endedAtMs: Long? = null,
+    val open: Boolean = true,
+) : StreamStage {
+    val command: Boolean get() = type == StreamStageType.COMMAND
+    val running: Boolean get() = steps.any { it.status == StreamToolStatus.RUNNING }
+    val active: Boolean get() = open || running
+    fun elapsedMs(nowMs: Long): Long = ((endedAtMs ?: nowMs) - startedAtMs).coerceAtLeast(0L)
+}
+
 data class StreamErrorLine(val id: Int, val text: String)
 
-/** UI 消费的不可变快照；[revision] 只在真正需要重绘时变化（flush / 结构事件）。 */
+/**
+ * UI 消费的不可变快照；[revision] 只在真正需要重绘时变化（flush / 结构事件）。
+ *
+ * [liveText] / [tools] 等是为兼容既有调用方保留的派生视图，唯一真源是 [stages]。
+ */
 data class StreamUiSnapshot(
-    val liveText: String = "",
+    val stages: List<StreamStage> = emptyList(),
     val liveLabel: String? = null,
     val liveActive: Boolean = false,
-    val reasoning: StreamReasoning? = null,
-    val tools: List<StreamToolStep> = emptyList(),
     val errorLines: List<StreamErrorLine> = emptyList(),
     val connection: StreamConnection = StreamConnection.IDLE,
     val terminalError: String? = null,
@@ -60,17 +102,37 @@ data class StreamUiSnapshot(
     val reconnectAttempt: Int = 0,
     /** 重连时被 seq 去重挡掉的事件数，便于日志与单测断言。 */
     val duplicateEvents: Int = 0,
-    /** 本轮开始时间：摘要行「运行了 N 条命令 · 时长」用。0 = 未记录（历史快照）。 */
+    /** 本轮开始时间：底部「共用时」用。0 = 未记录（历史快照）。 */
     val runStartedAtMs: Long = 0L,
     /** 本轮结束时间；null 表示仍在进行。 */
     val runEndedAtMs: Long? = null,
     val revision: Int = 0,
 ) {
+    val thoughtStages: List<StreamThoughtStage>
+        get() = stages.filterIsInstance<StreamThoughtStage>()
+
+    val textStages: List<StreamTextStage>
+        get() = stages.filterIsInstance<StreamTextStage>()
+
+    val toolGroups: List<StreamToolGroupStage>
+        get() = stages.filterIsInstance<StreamToolGroupStage>()
+
+    /** 所有正文按时间拼接：判断「落库消息是否已包含这段流式正文」用。 */
+    val liveText: String
+        get() = textStages.joinToString("") { it.text }
+
+    val tools: List<StreamToolStep>
+        get() = toolGroups.flatMap { it.steps }
+
     val hasActivity: Boolean
-        get() = reasoning != null || tools.isNotEmpty() || errorLines.isNotEmpty()
+        get() = stages.isNotEmpty() || errorLines.isNotEmpty()
 
     val runningTools: Int
         get() = tools.count { it.status == StreamToolStatus.RUNNING }
+
+    /** 最近一段思考的视图（日志 / 旧调用方用）。 */
+    val reasoning: StreamThoughtStage?
+        get() = thoughtStages.lastOrNull()
 
     /** 本轮已运行时长；没有开始时间时返回 0，UI 不显示时长。 */
     fun elapsedMs(nowMs: Long): Long =
@@ -92,11 +154,17 @@ internal enum class StreamApply {
     IGNORED,
 }
 
-/** 正文只留尾部一段，长任务不无限堆积。 */
+/** 单段正文上限：长任务不无限堆积。 */
 internal const val STREAM_TEXT_LIMIT = 3000
 
-/** 推理内容上限：思考过程可能很长，收起后仍保留最近一段可回看。 */
+/** 单段思考上限：思考过程可能很长，收起后仍保留最近一段可回看。 */
 internal const val STREAM_REASONING_LIMIT = 4000
+
+/**
+ * 阶段总数上限：异常长的 Run 也不能让快照无限膨胀。
+ * 超出时丢最早的阶段，但始终保留最后一段（可能是正在跑的组/正文）。
+ */
+internal const val STREAM_STAGE_LIMIT = 64
 
 /**
  * 指数退避：第 1 次重试 1s，之后 2s / 4s / 8s / 15s 封顶。
@@ -118,9 +186,21 @@ internal class TaskStreamReducer(
     private val pendingText = StringBuilder()
     private val pendingReasoning = StringBuilder()
 
+    /** 单调递增的阶段 id：重连/续传时不会与已经渲染的 `remember` 撞车。 */
+    private var nextStageId = 0
+
+    /**
+     * 本轮是否已经落定（run_status / 终态错误 / 用户停止 / refresh 收尾）。
+     * 落定之后迟到的正文增量和工具事件一律忽略——否则会把已经收起的运行条
+     * 重新点亮、把「已结束」改回「进行中」（收尾阶段最常见的状态错乱）。
+     */
+    private var settled = false
+
     fun snapshot(): StreamUiSnapshot = state
 
     fun hasPendingDeltas(): Boolean = pendingText.isNotEmpty() || pendingReasoning.isNotEmpty()
+
+    private fun newId(prefix: String): String = "$prefix-${nextStageId++}"
 
     /**
      * 应用一条事件。
@@ -136,17 +216,27 @@ internal class TaskStreamReducer(
             }
             state = state.copy(lastSeq = event.seq)
         }
+        if (settled && event.type in LATE_IGNORED_TYPES) {
+            // 落定后仍可能收到重连补发的旧增量：丢弃，且不创建新阶段。
+            dropPending()
+            return StreamApply.IGNORED
+        }
         return when (event.type) {
-            "assistant_start" -> structural {
-                it.copy(
-                    liveActive = true,
-                    liveText = "",
-                    liveLabel = "正在生成回复…",
-                    terminalError = null,
-                    cancelled = false,
-                    runStartedAtMs = it.runStartedAtMs.takeIf { start -> start > 0 } ?: now(),
-                    runEndedAtMs = null,
-                )
+            "assistant_start" -> {
+                // 新的助手回复开始：旧的过程阶段保留（同一轮 Agent 可能还在跑），
+                // 只把上一段时间线收起，后续正文会接在新的 TextStage 上。
+                settled = false
+                structural {
+                    it.copy(
+                        liveActive = true,
+                        liveLabel = "正在生成回复…",
+                        terminalError = null,
+                        cancelled = false,
+                        stages = closeTrailing(it.stages, now()),
+                        runStartedAtMs = it.runStartedAtMs.takeIf { start -> start > 0 } ?: now(),
+                        runEndedAtMs = null,
+                    )
+                }
             }
 
             "assistant_delta" -> {
@@ -160,6 +250,9 @@ internal class TaskStreamReducer(
                     }
                     StreamApply.BUFFERED
                 } else {
+                    // 思考增量还攒在缓冲里就来了正文：说明思考已经结束，先把它落进时间线，
+                    // 否则 flush 时正文会跑到思考前面。
+                    flushReasoningOnly()
                     pendingText.append(text)
                     // 正文一到就不再显示「正在生成」占位；真正重组等 flush。
                     state = state.copy(
@@ -172,12 +265,11 @@ internal class TaskStreamReducer(
             }
 
             "assistant_message" -> structural {
+                // 这一条回复已经落库；正文以历史消息为准，过程阶段保留下来回看。
                 it.copy(
                     liveActive = false,
-                    liveText = "",
                     liveLabel = null,
-                    reasoning = endReasoning(it.reasoning),
-                    tools = finishRunning(it.tools),
+                    stages = closeAll(it.stages, now()).let { stages -> dropText(stages) },
                     runEndedAtMs = it.runEndedAtMs ?: now(),
                 )
             }
@@ -186,66 +278,44 @@ internal class TaskStreamReducer(
                 val message = string(event, "error")
                     .ifBlank { string(event, "text") }
                     .ifBlank { "回复中断" }
-                structural {
+                // 先 flush 再落定：错误前已经缓冲的正文必须保留下来。
+                val outcome = structural {
                     it.copy(
                         liveActive = false,
                         liveLabel = null,
                         // 保留已经生成的正文：用户至少能看到停在哪
                         terminalError = message,
-                        reasoning = endReasoning(it.reasoning),
+                        stages = closeAll(it.stages, now(), failure = true),
                         runEndedAtMs = it.runEndedAtMs ?: now(),
-                        tools = it.tools.map { step ->
-                            if (step.status == StreamToolStatus.RUNNING) {
-                                step.copy(status = StreamToolStatus.FAILED)
-                            } else {
-                                step
-                            }
-                        },
                     )
                 }
+                settled = true
+                outcome
             }
 
-            "run_started" -> structural {
-                it.copy(
-                    liveActive = true,
-                    liveText = "",
-                    liveLabel = "正在思考…",
-                    reasoning = null,
-                    tools = emptyList(),
-                    errorLines = emptyList(),
-                    terminalError = null,
-                    cancelled = false,
-                    runStartedAtMs = now(),
-                    runEndedAtMs = null,
-                )
+            "run_started" -> startFresh {
+                it.copy(liveLabel = "正在思考…")
             }
 
             "run_event" -> applyRunEvent(event)
 
-            "run_status", "run_finished" -> structural {
-                it.copy(
-                    liveActive = false,
-                    liveText = "",
-                    liveLabel = null,
-                    reasoning = endReasoning(it.reasoning),
-                    tools = finishRunning(it.tools),
-                    runEndedAtMs = it.runEndedAtMs ?: now(),
-                )
+            "run_status", "run_finished" -> {
+                // 先 flush（终态前缓冲的最后一段可能还要给「部分输出」用），再落定。
+                val outcome = structural {
+                    it.copy(
+                        liveActive = false,
+                        liveLabel = null,
+                        stages = closeAll(it.stages, now()).let { stages -> dropText(stages) },
+                        runEndedAtMs = it.runEndedAtMs ?: now(),
+                    )
+                }
+                settled = true
+                outcome
             }
 
-            "user_message" -> structural {
-                it.copy(
-                    liveActive = false,
-                    liveText = "",
-                    liveLabel = null,
-                    reasoning = null,
-                    tools = emptyList(),
-                    errorLines = emptyList(),
-                    terminalError = null,
-                    cancelled = false,
-                    runStartedAtMs = 0L,
-                    runEndedAtMs = null,
-                )
+            "user_message" -> {
+                settled = false
+                resetActivityState()
             }
 
             else -> StreamApply.IGNORED
@@ -262,14 +332,14 @@ internal class TaskStreamReducer(
     /** 手动停止 / 取消：保留已生成正文，运行中的工具标成已结束，避免一直转圈。 */
     fun markCancelled(): StreamUiSnapshot {
         flushInternal()
+        settled = true
         state = touch(
             state.copy(
                 liveActive = false,
                 liveLabel = null,
                 cancelled = true,
                 terminalError = null,
-                reasoning = endReasoning(state.reasoning),
-                tools = finishRunning(state.tools),
+                stages = closeAll(state.stages, now()),
                 runEndedAtMs = state.runEndedAtMs ?: now(),
             ),
         )
@@ -278,14 +348,20 @@ internal class TaskStreamReducer(
 
     /** 任务已到终态（refresh 兜底）：收尾流式气泡，但保留思考/工具供回看。 */
     fun settleFinished(): StreamUiSnapshot {
+        // refresh 可能连续触发多次：已经收尾且没有新的流式正文时不再产生新 revision，
+        // 避免对话页在结束时被无意义地反复重组。
+        if (settled && !hasPendingDeltas() && !state.liveActive && state.textStages.isEmpty()) {
+            return state
+        }
         flushInternal()
+        settled = true
         state = touch(
             state.copy(
                 liveActive = false,
-                liveText = "",
                 liveLabel = null,
-                reasoning = endReasoning(state.reasoning),
-                tools = finishRunning(state.tools),
+                // 最终答复已经落库成正式消息：丢掉流式正文，避免同一段话显示两遍；
+                // 思考与命令是过程记录，保留在活动卡里（结束后默认收起）。
+                stages = dropText(closeAll(state.stages, now())),
                 runEndedAtMs = state.runEndedAtMs ?: now(),
             ),
         )
@@ -294,41 +370,13 @@ internal class TaskStreamReducer(
 
     /** 新一轮开始（用户发消息 / 手动 start）：清空上一轮过程，保留连接与 seq 水位。 */
     fun startRun(label: String = "正在思考…"): StreamUiSnapshot {
-        dropPending()
-        state = touch(
-            state.copy(
-                liveActive = true,
-                liveText = "",
-                liveLabel = label,
-                reasoning = null,
-                tools = emptyList(),
-                errorLines = emptyList(),
-                terminalError = null,
-                cancelled = false,
-                runStartedAtMs = now(),
-                runEndedAtMs = null,
-            ),
-        )
+        startFreshSnapshot(label)
         return state
     }
 
     /** 只清本轮内容，不动连接状态与去重水位。 */
     fun resetActivity(): StreamUiSnapshot {
-        dropPending()
-        state = touch(
-            state.copy(
-                liveActive = false,
-                liveText = "",
-                liveLabel = null,
-                reasoning = null,
-                tools = emptyList(),
-                errorLines = emptyList(),
-                terminalError = null,
-                cancelled = false,
-                runStartedAtMs = 0L,
-                runEndedAtMs = null,
-            ),
-        )
+        startFreshSnapshot(label = null)
         return state
     }
 
@@ -338,9 +386,8 @@ internal class TaskStreamReducer(
         state = touch(
             state.copy(
                 liveActive = false,
-                liveText = "",
                 liveLabel = null,
-                reasoning = endReasoning(state.reasoning),
+                stages = dropText(closeAll(state.stages, now())),
                 connection = StreamConnection.IDLE,
                 reconnectAttempt = 0,
                 runEndedAtMs = if (state.runStartedAtMs > 0) state.runEndedAtMs ?: now() else null,
@@ -381,21 +428,15 @@ internal class TaskStreamReducer(
      */
     fun onTerminal(message: String): StreamUiSnapshot {
         flushInternal()
+        settled = true
         state = touch(
             state.copy(
                 connection = StreamConnection.FAILED,
                 terminalError = message.ifBlank { "实时连接失败" },
                 liveActive = false,
                 liveLabel = null,
-                reasoning = endReasoning(state.reasoning),
+                stages = closeAll(state.stages, now(), failure = true),
                 runEndedAtMs = state.runEndedAtMs ?: now(),
-                tools = state.tools.map { step ->
-                    if (step.status == StreamToolStatus.RUNNING) {
-                        step.copy(status = StreamToolStatus.FAILED)
-                    } else {
-                        step
-                    }
-                },
             ),
         )
         return state
@@ -403,6 +444,8 @@ internal class TaskStreamReducer(
 
     /** 用户点「重试」：清掉错误、重置退避，回到正在连接。 */
     fun retry(): StreamUiSnapshot {
+        // 重连后还可能收到这一轮的后续事件，允许重新进入时间线。
+        settled = false
         state = touch(
             state.copy(
                 connection = StreamConnection.CONNECTING,
@@ -420,27 +463,27 @@ internal class TaskStreamReducer(
         val text = string(event, "text")
         when (kind) {
             "thinking" -> {
+                val timestamp = now()
                 if (text.isBlank()) {
                     flushInternal()
-                    val reasoning = state.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
                     state = touch(
                         state.copy(
-                            reasoning = reasoning.copy(active = true),
+                            stages = openThought(state.stages, timestamp),
                             liveActive = true,
                             liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
-                            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: timestamp,
                             runEndedAtMs = null,
                         ),
                     )
                     return StreamApply.COMMITTED
                 }
+                // 正文还攒在缓冲里就来了思考：先把正文落进时间线，顺序才不会反。
+                flushTextOnly()
                 // 推理也是逐段到达，和正文一样先进缓冲，避免一条一条重组。
-                val reasoning = state.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
                 state = state.copy(
-                    reasoning = reasoning.copy(active = true),
                     liveActive = true,
                     liveLabel = if (state.liveText.isEmpty()) "正在思考…" else state.liveLabel,
-                    runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                    runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: timestamp,
                     runEndedAtMs = null,
                 )
                 pendingReasoning.append(text)
@@ -449,7 +492,16 @@ internal class TaskStreamReducer(
 
             "tool" -> {
                 flushInternal()
-                state = touch(applyToolEvent(event))
+                val timestamp = now()
+                state = touch(
+                    state.copy(
+                        stages = applyTool(event, state.stages, timestamp),
+                        liveActive = true,
+                        liveLabel = toolLabel(event),
+                        runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: timestamp,
+                        runEndedAtMs = null,
+                    ),
+                )
                 return StreamApply.COMMITTED
             }
 
@@ -476,6 +528,7 @@ internal class TaskStreamReducer(
                     )
                     return StreamApply.BUFFERED
                 }
+                flushReasoningOnly()
                 pendingText.append(text)
                 state = state.copy(
                     liveActive = true,
@@ -488,46 +541,207 @@ internal class TaskStreamReducer(
         return StreamApply.IGNORED
     }
 
-    private fun applyToolEvent(event: TaskStreamEvent): StreamUiSnapshot {
-        val callId = string(event, "call_id").ifBlank { "tool-${event.seq}" }
+    /**
+     * 工具事件：先按 `call_id` 在已有阶段里原地合并（后台命令在正文之后完成也能对上），
+     * 找不到才决定追加到当前组还是新开一组。
+     */
+    private fun applyTool(event: TaskStreamEvent, stages: List<StreamStage>, timestamp: Long): List<StreamStage> {
+        val callId = resolveCallId(event, stages)
+        val category = string(event, "category")
+        val existingGroupIndex = stages.indexOfLast { stage ->
+            stage is StreamToolGroupStage && stage.steps.any { it.id == callId }
+        }
+        if (existingGroupIndex >= 0) {
+            val group = stages[existingGroupIndex] as StreamToolGroupStage
+            val stepIndex = group.steps.indexOfFirst { it.id == callId }
+            val steps = group.steps.toMutableList()
+            steps[stepIndex] = mergeStep(steps[stepIndex], event)
+            val updated = settleGroup(group.copy(steps = steps), timestamp)
+            return stages.toMutableList().also { it[existingGroupIndex] = updated }
+        }
+
+        val type = stageTypeFor(category, string(event, "name"))
+        val step = newStep(callId, event)
+        val trailing = stages.lastOrNull()
+        if (trailing is StreamToolGroupStage && trailing.open && trailing.type == type) {
+            val updated = trailing.copy(steps = trailing.steps + step)
+            return stages.dropLast(1) + updated
+        }
+        val closed = closeTrailing(stages, timestamp)
+        return closed + StreamToolGroupStage(
+            id = newId("group"),
+            type = type,
+            steps = listOf(step),
+            startedAtMs = timestamp,
+            open = true,
+        )
+    }
+
+    /**
+     * 没有 `call_id` 的 adapter（老 generic / 第三方 CLI）也不能画成两张卡：
+     * 收尾事件按「最近一个同名且仍在运行」的步骤兜底匹配。
+     */
+    private fun resolveCallId(event: TaskStreamEvent, stages: List<StreamStage>): String {
+        val raw = string(event, "call_id")
+        if (raw.isNotBlank()) return raw
+        val status = toolStatus(string(event, "status"))
+        if (status != StreamToolStatus.RUNNING) {
+            val name = string(event, "name")
+            val match = stages.asReversed()
+                .asSequence()
+                .filterIsInstance<StreamToolGroupStage>()
+                .flatMap { group -> group.steps.asReversed().asSequence() }
+                .firstOrNull { step ->
+                    step.status == StreamToolStatus.RUNNING &&
+                        (name.isBlank() || step.name == name || step.name == "tool")
+                }
+            if (match != null) return match.id
+        }
+        return "tool-${event.seq}"
+    }
+
+    private fun mergeStep(previous: StreamToolStep, event: TaskStreamEvent): StreamToolStep {
         val name = string(event, "name")
         val detail = string(event, "detail")
         val output = string(event, "output")
         val statusRaw = string(event, "status")
         val category = string(event, "category")
         val paths = strings(event, "paths")
-        val steps = state.tools.toMutableList()
-        val index = steps.indexOfFirst { it.id == callId }
-        if (index >= 0) {
-            // codex 的同一 item 先 started 再 completed：按 call_id 合并成一张卡；
-            // 收尾事件可能只带输出与状态（DSH），不能整条覆盖掉已有的命令与分类。
-            val previous = steps[index]
-            steps[index] = previous.copy(
-                name = name.takeIf { it.isNotBlank() && it != "tool" } ?: previous.name,
-                detail = detail.ifBlank { previous.detail },
-                output = output.ifBlank { previous.output },
-                status = if (statusRaw.isBlank()) previous.status else toolStatus(statusRaw),
-                category = category.ifBlank { previous.category },
-                paths = if (paths.isNotEmpty()) paths else previous.paths,
-            )
-        } else {
-            steps += StreamToolStep(
-                id = callId,
-                name = name.ifBlank { "tool" },
-                detail = detail,
-                output = output,
-                status = toolStatus(statusRaw),
-                category = category,
-                paths = paths,
-            )
-        }
-        return state.copy(
-            tools = steps,
-            liveActive = true,
-            liveLabel = if (state.liveText.isEmpty()) "正在执行命令…" else state.liveLabel,
-            runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: now(),
-            runEndedAtMs = null,
+        return previous.copy(
+            name = name.takeIf { it.isNotBlank() && it != "tool" } ?: previous.name,
+            detail = detail.ifBlank { previous.detail },
+            output = output.ifBlank { previous.output },
+            status = if (statusRaw.isBlank()) previous.status else toolStatus(statusRaw),
+            category = category.ifBlank { previous.category },
+            paths = if (paths.isNotEmpty()) paths else previous.paths,
         )
+    }
+
+    private fun newStep(callId: String, event: TaskStreamEvent): StreamToolStep = StreamToolStep(
+        id = callId,
+        name = string(event, "name").ifBlank { "tool" },
+        detail = string(event, "detail"),
+        output = string(event, "output"),
+        status = toolStatus(string(event, "status")),
+        category = string(event, "category"),
+        paths = strings(event, "paths"),
+    )
+
+    /** 一组里最后一帧结束后冻结结束时间；仍在跑则继续沿用开始时间。 */
+    private fun settleGroup(
+        group: StreamToolGroupStage,
+        timestamp: Long,
+    ): StreamToolGroupStage {
+        val ended = if (group.open || group.running) null else group.endedAtMs ?: timestamp
+        return group.copy(endedAtMs = ended)
+    }
+
+    /** 新阶段开始：上一组 / 上一段思考收起（时间线已经走过它们）。 */
+    private fun closeTrailing(stages: List<StreamStage>, timestamp: Long): List<StreamStage> {
+        val last = stages.lastOrNull() ?: return stages
+        return when (last) {
+            is StreamToolGroupStage -> {
+                if (last.open) {
+                    stages.dropLast(1) + settleGroup(
+                        last.copy(open = false),
+                        timestamp,
+                    )
+                } else {
+                    stages
+                }
+            }
+
+            is StreamThoughtStage -> {
+                if (last.active) {
+                    stages.dropLast(1) + last.copy(active = false, endedAtMs = last.endedAtMs ?: timestamp)
+                } else {
+                    stages
+                }
+            }
+
+            is StreamTextStage -> stages
+        }
+    }
+
+    private fun openThought(stages: List<StreamStage>, timestamp: Long): List<StreamStage> {
+        val last = stages.lastOrNull()
+        if (last is StreamThoughtStage && last.active) return stages
+        return closeTrailing(stages, timestamp) + StreamThoughtStage(
+            id = newId("thought"),
+            startedAtMs = timestamp,
+            active = true,
+        )
+    }
+
+    private fun appendText(stages: List<StreamStage>, text: String): List<StreamStage> {
+        val last = stages.lastOrNull()
+        if (last is StreamTextStage) {
+            val updated = last.copy(text = (last.text + text).takeLast(STREAM_TEXT_LIMIT))
+            return stages.dropLast(1) + updated
+        }
+        // 思考/工具后面重新出现正文：先把上一段收起，再开新的正文段。
+        val closed = closeTrailing(stages, now())
+        return closed + StreamTextStage(id = newId("text"), text = text.takeLast(STREAM_TEXT_LIMIT))
+    }
+
+    private fun appendReasoning(stages: List<StreamStage>, text: String): List<StreamStage> {
+        val last = stages.lastOrNull()
+        if (last is StreamThoughtStage) {
+            val updated = last.copy(
+                text = (last.text + text).takeLast(STREAM_REASONING_LIMIT),
+                active = true,
+                endedAtMs = null,
+            )
+            return stages.dropLast(1) + updated
+        }
+        val opened = openThought(stages, now())
+        val thought = opened.last() as StreamThoughtStage
+        return opened.dropLast(1) + thought.copy(text = text.takeLast(STREAM_REASONING_LIMIT))
+    }
+
+    /** 收尾：所有阶段都不再处于「正在发生」状态；失败收尾把未完成的步骤标红。 */
+    private fun closeAll(
+        stages: List<StreamStage>,
+        timestamp: Long,
+        failure: Boolean = false,
+    ): List<StreamStage> = stages.map { stage ->
+        when (stage) {
+            is StreamThoughtStage -> stage.copy(
+                active = false,
+                endedAtMs = stage.endedAtMs ?: timestamp,
+            )
+
+            is StreamToolGroupStage -> settleGroup(
+                stage.copy(
+                    open = false,
+                    steps = stage.steps.map { step ->
+                        if (step.status == StreamToolStatus.RUNNING) {
+                            step.copy(
+                                status = if (failure) {
+                                    StreamToolStatus.FAILED
+                                } else {
+                                    StreamToolStatus.DONE
+                                },
+                            )
+                        } else {
+                            step
+                        }
+                    },
+                ),
+                timestamp,
+            )
+
+            is StreamTextStage -> stage
+        }
+    }
+
+    private fun dropText(stages: List<StreamStage>): List<StreamStage> =
+        stages.filterNot { it is StreamTextStage }
+
+    private fun capStages(stages: List<StreamStage>): List<StreamStage> {
+        if (stages.size <= STREAM_STAGE_LIMIT) return stages
+        // 丢最早的；保留最后一段（可能是正在跑的组 / 正文）
+        return stages.takeLast(STREAM_STAGE_LIMIT)
     }
 
     private inline fun structural(block: (StreamUiSnapshot) -> StreamUiSnapshot): StreamApply {
@@ -536,8 +750,68 @@ internal class TaskStreamReducer(
         return StreamApply.COMMITTED
     }
 
+    private inline fun startFresh(block: (StreamUiSnapshot) -> StreamUiSnapshot): StreamApply {
+        dropPending()
+        settled = false
+        state = touch(
+            block(
+                state.copy(
+                    stages = emptyList(),
+                    liveActive = true,
+                    liveLabel = null,
+                    errorLines = emptyList(),
+                    terminalError = null,
+                    cancelled = false,
+                    runStartedAtMs = now(),
+                    runEndedAtMs = null,
+                ),
+            ),
+        )
+        return StreamApply.COMMITTED
+    }
+
+    private fun startFreshSnapshot(label: String?) {
+        dropPending()
+        settled = false
+        state = touch(
+            state.copy(
+                stages = emptyList(),
+                liveActive = label != null,
+                liveLabel = label,
+                errorLines = emptyList(),
+                terminalError = null,
+                cancelled = false,
+                runStartedAtMs = now(),
+                runEndedAtMs = null,
+            ),
+        )
+    }
+
+    private fun resetActivityState(): StreamApply {
+        dropPending()
+        settled = false
+        state = touch(
+            state.copy(
+                stages = emptyList(),
+                liveActive = false,
+                liveLabel = null,
+                errorLines = emptyList(),
+                terminalError = null,
+                cancelled = false,
+                runStartedAtMs = 0L,
+                runEndedAtMs = null,
+            ),
+        )
+        return StreamApply.COMMITTED
+    }
+
     private fun flushInternal() {
         if (!hasPendingDeltas()) return
+        if (settled) {
+            // 已经落定：迟到的增量直接丢弃，绝不把结束状态改回进行中。
+            dropPending()
+            return
+        }
         val text = pendingText.toString()
         val reasoningText = pendingReasoning.toString()
         pendingText.setLength(0)
@@ -545,7 +819,7 @@ internal class TaskStreamReducer(
         var next = state
         if (text.isNotEmpty()) {
             next = next.copy(
-                liveText = (next.liveText + text).takeLast(STREAM_TEXT_LIMIT),
+                stages = capStages(appendText(next.stages, text)),
                 liveLabel = null,
                 liveActive = true,
                 runStartedAtMs = next.runStartedAtMs.takeIf { it > 0 } ?: now(),
@@ -553,15 +827,49 @@ internal class TaskStreamReducer(
             )
         }
         if (reasoningText.isNotEmpty()) {
-            val reasoning = next.reasoning ?: StreamReasoning(startedAtMs = now(), active = true)
             next = next.copy(
-                reasoning = reasoning.copy(
-                    text = (reasoning.text + reasoningText).takeLast(STREAM_REASONING_LIMIT),
-                    active = true,
-                ),
+                stages = capStages(appendReasoning(next.stages, reasoningText)),
+                liveActive = true,
+                runStartedAtMs = next.runStartedAtMs.takeIf { it > 0 } ?: now(),
+                runEndedAtMs = null,
             )
         }
         state = touch(next)
+    }
+
+    /**
+     * 只把某一类缓冲落进快照。正文与思考交替时先 flush 对方，
+     * 保证时间线顺序与事件到达顺序一致（不看 Agent / runtime 名）。
+     */
+    private fun flushTextOnly() {
+        if (pendingText.isEmpty()) return
+        val text = pendingText.toString()
+        pendingText.setLength(0)
+        val nowMs = now()
+        state = touch(
+            state.copy(
+                stages = capStages(appendText(state.stages, text)),
+                liveLabel = null,
+                liveActive = true,
+                runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: nowMs,
+                runEndedAtMs = null,
+            ),
+        )
+    }
+
+    private fun flushReasoningOnly() {
+        if (pendingReasoning.isEmpty()) return
+        val text = pendingReasoning.toString()
+        pendingReasoning.setLength(0)
+        val nowMs = now()
+        state = touch(
+            state.copy(
+                stages = capStages(appendReasoning(state.stages, text)),
+                liveActive = true,
+                runStartedAtMs = state.runStartedAtMs.takeIf { it > 0 } ?: nowMs,
+                runEndedAtMs = null,
+            ),
+        )
     }
 
     private fun dropPending() {
@@ -569,13 +877,21 @@ internal class TaskStreamReducer(
         pendingReasoning.setLength(0)
     }
 
-    private fun endReasoning(reasoning: StreamReasoning?): StreamReasoning? =
-        reasoning?.copy(active = false, endedAtMs = reasoning.endedAtMs ?: now())
-
-    private fun finishRunning(tools: List<StreamToolStep>): List<StreamToolStep> =
-        tools.map { step ->
-            if (step.status == StreamToolStatus.RUNNING) step.copy(status = StreamToolStatus.DONE) else step
+    private fun toolLabel(event: TaskStreamEvent): String =
+        if (stageTypeFor(string(event, "category"), string(event, "name")) == StreamStageType.COMMAND) {
+            "正在运行命令…"
+        } else {
+            "正在调用工具…"
         }
+
+    private fun stageTypeFor(category: String, name: String): StreamStageType {
+        if (category.equals("command", ignoreCase = true)) return StreamStageType.COMMAND
+        if (category.isBlank() && name.trim().lowercase() in COMMAND_NAMES) {
+            // 旧后端 / 第三方 adapter 没带 category 时，至少别把 shell 命令画成普通工具。
+            return StreamStageType.COMMAND
+        }
+        return StreamStageType.TOOL
+    }
 
     private fun touch(next: StreamUiSnapshot): StreamUiSnapshot =
         next.copy(revision = state.revision + 1)
@@ -593,4 +909,14 @@ internal class TaskStreamReducer(
         runCatching {
             (event.data[key] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
         }.getOrDefault(emptyList())
+
+    private companion object {
+        /** 落定后不再接受的时间线增量（结构事件仍然处理）。 */
+        val LATE_IGNORED_TYPES = setOf("assistant_delta", "run_event")
+
+        val COMMAND_NAMES = setOf(
+            "bash", "shell", "sh", "command", "command_execution",
+            "exec", "execute", "local_shell", "run_command", "terminal", "cmd", "powershell",
+        )
+    }
 }

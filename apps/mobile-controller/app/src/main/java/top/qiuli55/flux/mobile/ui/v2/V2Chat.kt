@@ -367,7 +367,24 @@ fun V2ChatScreen(
         label = "chat-composer-border",
     )
 
-    val showLiveBubble = stream.liveActive || stream.liveText.isNotBlank()
+    // 有阶段时整段过程（思考 / 正文 / 命令组 / 工具组）由同一个 item 顺序渲染；
+    // 还没收到任何阶段时仍保留原来的「正在生成」等待气泡。
+    // 列表 key 必须唯一：服务端在收尾瞬间（落库消息 + 增量补发）偶尔会给出重复 id，
+    // LazyColumn 遇到重复 key 会直接抛 IllegalArgumentException 闪退。
+    // 先按 id 去重，再给缺 id / 冲突项补一个确定性的后缀。
+    val displayedMessages = remember(messages) {
+        val seenIds = HashSet<String>()
+        val seenKeys = HashSet<String>()
+        messages.filter { message ->
+            message.id.isBlank() || seenIds.add(message.id)
+        }.mapIndexed { index, message ->
+            val base = message.id.ifBlank { "chat-message-$index" }
+            val unique = if (seenKeys.add(base)) base else "$base#$index"
+            message to unique
+        }
+    }
+    val showStages = stream.hasActivity
+    val showLiveBubble = !showStages && (stream.liveActive || stream.liveText.isNotBlank())
     val showStreamStatus = stream.terminalError != null ||
         stream.cancelled ||
         stream.connection == StreamConnection.RECONNECTING ||
@@ -376,11 +393,11 @@ fun V2ChatScreen(
     // 目标索引按当前内容自己算（摘要卡 / 消息 / 执行过程 / 流式气泡 / 等待行 / 状态行），
     // 不能依赖 layoutInfo（首帧还没量出来，会得到 0 并停在最早的消息）。
     val bottomIndex = (if (!chat.pendingSummary.isNullOrBlank()) 1 else 0) +
-        (if (chat.pendingSummary.isNullOrBlank() && messages.isEmpty() && chat.conversationId == null) 1 else 0) +
-        (if (!messages.firstOrNull()?.time.isNullOrBlank()) 1 else 0) +
-        messages.size +
+        (if (chat.pendingSummary.isNullOrBlank() && displayedMessages.isEmpty() && chat.conversationId == null) 1 else 0) +
+        (if (!displayedMessages.firstOrNull()?.first?.time.isNullOrBlank()) 1 else 0) +
+        displayedMessages.size +
         (if (pendingChangeCount > 0 && onOpenChanges != null) 1 else 0) +
-        (if (stream.hasActivity) 1 else 0) +
+        (if (showStages) 1 else 0) +
         (if (showLiveBubble) 1 else if (sending) 1 else 0) +
         (if (showStreamStatus) 1 else 0) - 1
 
@@ -408,8 +425,9 @@ fun V2ChatScreen(
     }
     // 跟随模式：内容一变化就贴底；非跟随模式只记「有新内容」，绝不再把用户拽下去。
     LaunchedEffect(
-        messages.size,
+        displayedMessages.size,
         stream.revision,
+        showStages,
         showLiveBubble,
         sending,
         bottomIndex,
@@ -597,7 +615,7 @@ fun V2ChatScreen(
                 if (!chat.pendingSummary.isNullOrBlank()) {
                     // 新对话开篇：只带上一段对话的摘要，不搬旧消息
                     item { SummaryCard(chat.pendingSummary, "刚刚", note = "从上一段对话接手") }
-                } else if (messages.isEmpty() && chat.conversationId == null) {
+                } else if (displayedMessages.isEmpty() && chat.conversationId == null) {
                     // 新对话空态：居中提示可以做什么（设计稿 07）
                     item(key = "new-chat-hero") {
                         Box(
@@ -606,7 +624,7 @@ fun V2ChatScreen(
                         ) { NewChatHero() }
                     }
                 }
-                val firstMessage = messages.firstOrNull()
+                val firstMessage = displayedMessages.firstOrNull()?.first
                 val firstTime = firstMessage?.time
                 if (!firstTime.isNullOrBlank()) {
                     // 日期分隔：与设计稿一致，只在首条消息上方标一次时间
@@ -615,10 +633,12 @@ fun V2ChatScreen(
                     }
                 }
                 itemsIndexed(
-                    messages,
-                    // 稳定 key：流式增量刷新时历史气泡不会被当成新 item 重建（滚动位置也不跳）
-                    key = { index, message -> message.id.ifBlank { "chat-message-$index" } },
-                ) { index, message ->
+                    displayedMessages,
+                    // 稳定且唯一 key：流式增量刷新时历史气泡不会被当成新 item 重建（滚动位置也不跳），
+                    // 收尾时的重复 id 也不会撞 key 崩溃。
+                    key = { _, entry -> entry.second },
+                ) { index, entry ->
+                    val message = entry.first
                     // 不做入场动画：像微信一样，消息直接出现。
                     // 待审批卡已固定在输入框上方，列表里不再重复渲染（避免两处按钮）。
                     val pinned = message.kind == "decision" &&
@@ -649,15 +669,18 @@ fun V2ChatScreen(
                         )
                     }
                 }
-                if (stream.hasActivity) {
-                    // 执行过程：思考可折叠（结束后默认收起），工具步骤带运行/完成/失败状态。
-                    // 固定 key：正文增量刷新时卡片不会被重建，展开状态也不会被重置。
-                    item(key = "stream-activity") {
-                        StreamActivityCard(stream)
+                if (showStages) {
+                    // 多阶段时间线：思考 / 正文小结 / 命令组 / 工具组按发生顺序穿插。
+                    // 固定 key：正文增量刷新时整条消息不重建，展开状态也不会被重置。
+                    item(key = "stream-stages") {
+                        StreamStagesColumn(
+                            stream = stream,
+                            onOpenUrl = onOpenUrl,
+                            onSend = onSend,
+                        )
                     }
-                }
-                if (showLiveBubble) {
-                    // 正文气泡固定 key：每个增量只重绘这一条，不重建整个列表。
+                } else if (showLiveBubble) {
+                    // 还没有任何阶段（刚开始生成）：保留原来的等待气泡。
                     // 终态错误 / 手动停止时 liveActive=false，但保留已生成的部分输出。
                     item(key = "live-streaming") {
                         StreamingRow(

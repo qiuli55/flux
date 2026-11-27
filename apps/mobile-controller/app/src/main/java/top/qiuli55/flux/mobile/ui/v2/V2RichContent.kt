@@ -305,12 +305,14 @@ internal fun RichMessageBody(
     onAction: (String) -> Unit = {},
 ) {
     val blocks = remember(text) { RichContentParser.parse(text) }
+    // 流式末尾的闪烁光标：按 530ms 节奏切换，不占整页重组（只有这一处 Text 变化）。
+    val cursorOn = rememberBlinkCursor(streaming)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         blocks.forEachIndexed { index, block ->
             when (block) {
                 is RichBlock.Paragraph -> {
                     val cursor = streaming && index == blocks.lastIndex
-                    val body = if (cursor) block.text + "▍" else block.text
+                    val body = if (cursor && cursorOn) block.text + "▍" else block.text
                     Text(
                         text = inlineStyled(body),
                         color = V2Colors.ink(.82f),
@@ -328,7 +330,7 @@ internal fun RichMessageBody(
         }
         // 光标只在最后一段正文里；如果尾巴是代码/表格/卡片，单独补一行，
         // 流式时始终能看到「还在写」，又不会把 ▍ 塞进代码内容里。
-        if (streaming && blocks.isNotEmpty() && blocks.last() !is RichBlock.Paragraph) {
+        if (streaming && cursorOn && blocks.isNotEmpty() && blocks.last() !is RichBlock.Paragraph) {
             Text(
                 text = "▍",
                 color = V2Colors.ink(.50f),
@@ -337,6 +339,23 @@ internal fun RichMessageBody(
             )
         }
     }
+}
+
+/** 流式光标闪烁：只在 streaming 时循环，停止后回到常亮（不再占用协程）。 */
+@Composable
+private fun rememberBlinkCursor(enabled: Boolean): Boolean {
+    var on by remember { mutableStateOf(true) }
+    LaunchedEffect(enabled) {
+        if (!enabled) {
+            on = true
+            return@LaunchedEffect
+        }
+        while (true) {
+            delay(530L)
+            on = !on
+        }
+    }
+    return on
 }
 
 /** 标题对齐截图里「总结」「证据」的层级：一级最粗最大，往下逐级收。 */
