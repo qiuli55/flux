@@ -390,6 +390,26 @@ fun V2ChatScreen(
         stream.cancelled ||
         stream.connection == StreamConnection.RECONNECTING ||
         stream.connection == StreamConnection.FAILED
+    // 时间线的最后一段正文就是本轮的最终答复：落库消息只保留头像/名称，正文由时间线
+    // 末尾补上，避免「整篇答案顶在最上面、过程 log 全堆在下面」。
+    val lastAgentEntry = displayedMessages.lastOrNull { it.first.role == V2MessageRole.AGENT }
+    val lastAgentMessage = lastAgentEntry?.first
+    val trailingStreamText = (stream.stages.lastOrNull() as? StreamTextStage)?.text.orEmpty()
+    // 只对普通文字答复做合成。任务跑完时最终答复落库的 kind 是 run_finished（正文就是
+    // Agent 的最终回复原文），聊天接口则是 text；安全输入卡正文会跟卡片一起渲染，排除。
+    val answerFollowsTimeline = showStages &&
+        !stream.liveActive &&
+        lastAgentMessage != null &&
+        lastAgentMessage.kind != "secure_input" &&
+        streamAnswerMatchesPersisted(trailingStreamText, lastAgentMessage.text)
+    // 顶部「已执行 N 步 · 用时 …」和底部「共用时」是两套时钟。收尾后只要底部那条
+    // 「共用时」能画出来（有本轮起止时间），就只保留它，执行详情入口也由那行 meta 提供。
+    // 流式进行中 / 没有本轮计时时仍保留顶部胶囊：那是另一轮或唯一可用的耗时。
+    val streamOwnsDuration = showStages &&
+        !stream.liveActive &&
+        stream.runStartedAtMs > 0L &&
+        stream.runEndedAtMs != null &&
+        lastAgentEntry != null
     // 微信式：消息直接出现，不做错峰入场；进入对话与新增消息都瞬时贴底，不慢慢滚到底。
     // 目标索引按当前内容自己算（摘要卡 / 消息 / 执行过程 / 流式气泡 / 等待行 / 状态行），
     // 不能依赖 layoutInfo（首帧还没量出来，会得到 0 并停在最早的消息）。
@@ -397,6 +417,8 @@ fun V2ChatScreen(
         (if (chat.pendingSummary.isNullOrBlank() && displayedMessages.isEmpty() && chat.conversationId == null) 1 else 0) +
         (if (!displayedMessages.firstOrNull()?.first?.time.isNullOrBlank()) 1 else 0) +
         displayedMessages.size +
+        (if (showStages) 1 else 0) +
+        (if (answerFollowsTimeline) 1 else 0) +
         (if (pendingChangeCount > 0 && onOpenChanges != null) 1 else 0) +
         (if (showStages) 1 else 0) +
         (if (showLiveBubble) 1 else if (sending) 1 else 0) +
@@ -645,6 +667,7 @@ fun V2ChatScreen(
                     val pinned = message.kind == "decision" &&
                         message.approvalCard?.id == pendingApproval?.id
                     if (pinned) return@itemsIndexed
+                    val isStreamedAnswer = answerFollowsTimeline && entry.second == lastAgentEntry?.second
                     MessageRow(
                         message = message,
                         run = runSummaries[message.runId],
@@ -657,10 +680,39 @@ fun V2ChatScreen(
                         onLongPress = openBubbleMenu,
                         onSubmitSecureInput = onSubmitSecureInput,
                         secureInputBusy = secureInputBusy,
+                        hideAnswerBody = isStreamedAnswer,
+                        showRunSummary = !(streamOwnsDuration && entry.second == lastAgentEntry?.second),
                     )
+                }
+                if (showStages) {
+                    // 多阶段时间线：思考 / 中途正文 / 命令组 / 工具组按发生顺序穿插。
+                    // 终态时最后一段正文交给落库消息补在时间线末尾，UI 不会把整篇答案顶在最上面。
+                    // 固定 key：正文增量刷新时整条消息不重建，展开状态也不会被重置。
+                    item(key = "stream-stages") {
+                        StreamStagesColumn(
+                            stream = stream,
+                            onOpenUrl = onOpenUrl,
+                            onSend = onSend,
+                            omitTrailingAnswer = answerFollowsTimeline,
+                            showFooter = false,
+                        )
+                    }
+                }
+                if (answerFollowsTimeline && lastAgentMessage != null) {
+                    // 最终答复 = 内容的最后一块：接在全部过程步骤之后，文字用完整落库正文
+                    // （流式单段有长度上限，避免长回答被截断）。
+                    item(key = "stream-final-answer") {
+                        AgentAnswerBody(
+                            message = lastAgentMessage,
+                            onOpenUrl = onOpenUrl,
+                            onSend = onSend,
+                            onLongPress = openBubbleMenu,
+                        )
+                    }
                 }
                 val openChanges = onOpenChanges
                 if (pendingChangeCount > 0 && openChanges != null) {
+                    // 文件审核卡放在最终结果之后、短 meta 附近，不插在正文和过程之间。
                     item(key = "pending-changes") {
                         PendingChangesCard(
                             count = pendingChangeCount,
@@ -671,13 +723,16 @@ fun V2ChatScreen(
                     }
                 }
                 if (showStages) {
-                    // 多阶段时间线：思考 / 正文小结 / 命令组 / 工具组按发生顺序穿插。
-                    // 固定 key：正文增量刷新时整条消息不重建，展开状态也不会被重置。
-                    item(key = "stream-stages") {
-                        StreamStagesColumn(
+                    // 结束后只留一行短 meta（共用时）；同一行也是本轮的执行详情入口。
+                    val traceRun = lastAgentMessage?.runId?.let { runSummaries[it] }
+                    item(key = "stream-footer") {
+                        StreamRunFooter(
                             stream = stream,
-                            onOpenUrl = onOpenUrl,
-                            onSend = onSend,
+                            onOpenTrace = if (traceRun != null) {
+                                ({ onOpenRunTrace(traceRun.runId) })
+                            } else {
+                                null
+                            },
                         )
                     }
                 } else if (showLiveBubble) {
@@ -1624,6 +1679,10 @@ private fun MessageRow(
     /** 安全输入卡片提交：messageId 是卡片消息本身，value 是用户粘贴的密钥。 */
     onSubmitSecureInput: (String, String) -> Unit = { _, _ -> },
     secureInputBusy: Boolean = false,
+    /** 本轮最终正文已经由时间线末尾单独渲染：这里只保留头像/名称，不再重复整篇答案。 */
+    hideAnswerBody: Boolean = false,
+    /** 时间线在场时底部「共用时」是唯一用时，隐藏顶部这枚耗时胶囊避免两个时钟打架。 */
+    showRunSummary: Boolean = true,
 ) {
     var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
     val secureCard = message.secureInputCard
@@ -1731,20 +1790,22 @@ private fun MessageRow(
                         maxLines = 1,
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                if (run != null) {
-                    RunDurationRow(run) { onOpenRunTrace(run.runId) }
-                }
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
-                        .v2CombinedPressable(
-                            pressScale = .99f,
-                            onLongClick = { onLongPress(message, bubbleBounds) },
-                        ) {},
-                ) {
-                    RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
+                if (!hideAnswerBody) {
+                    Spacer(Modifier.height(8.dp))
+                    if (showRunSummary && run != null) {
+                        RunDurationRow(run) { onOpenRunTrace(run.runId) }
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
+                            .v2CombinedPressable(
+                                pressScale = .99f,
+                                onLongClick = { onLongPress(message, bubbleBounds) },
+                            ) {},
+                    ) {
+                        RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
+                    }
                 }
             }
         }
@@ -1768,6 +1829,34 @@ private fun MessageRow(
                 }
             }
         }
+    }
+}
+
+/**
+ * 时间线之后的最终答复：用落库消息的完整正文渲染，接在全部过程步骤后面。
+ *
+ * 与 [MessageRow] 里的正文保持同样的排版（Agent 名称行已经在时间线上方渲染过）
+ * 和长按菜单行为；两者不会同时出现，所以同一段最终答复只会画一遍。
+ */
+@Composable
+private fun AgentAnswerBody(
+    message: V2Message,
+    onOpenUrl: (String) -> Unit,
+    onSend: (String) -> Unit,
+    onLongPress: (V2Message, Rect) -> Unit,
+) {
+    var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(end = 20.dp)
+            .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
+            .v2CombinedPressable(
+                pressScale = .99f,
+                onLongClick = { onLongPress(message, bubbleBounds) },
+            ) {},
+    ) {
+        RichMessageBody(message.text, onOpenUrl = onOpenUrl, onAction = onSend)
     }
 }
 

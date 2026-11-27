@@ -267,7 +267,8 @@ internal fun dropStaleStreamEvents(events: List<TaskStreamEvent>): List<TaskStre
  * 两条判据都会单独出现：
  *  - 任务已经到终态，但终态事件丢了/晚到 → 运行条会一直亮着；
  *  - 这条正文已经被落库成正式消息 → 流式气泡与历史气泡同时在场，同一段话显示两遍。
- * 两种情况都必须把 [TaskDetailUiState.stream] 里的实时正文清掉，历史消息才是唯一事实来源。
+ * 两种情况都应收起 [TaskDetailUiState.stream] 里还在进行中的阶段；时间线本身保留事件顺序，
+ * 最终正文由时间线末段与落库消息合成展示（见 V2ChatScreen），不会各画一遍。
  */
 internal fun shouldSettleLiveBubble(
     finished: Boolean,
@@ -528,7 +529,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                     contextUsage = contextDeferred.await(),
                     run = runDeferred.await(),
                     runs = runsDeferred.await(),
-                    // 思考 / 工具过程保留在活动卡里（结束时默认收起），最终答复仍以落库消息为准
+                    // 时间线按事件顺序保留思考 / 中途正文 / 命令组 / 最终正文；
+                    // 最终正文由落库消息接在时间线末尾，不再整篇顶在前面重复一遍。
                     stream = stream,
                 )
             } catch (e: FluxApiException) {

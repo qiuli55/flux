@@ -17,10 +17,12 @@ import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import top.qiuli55.flux.mobile.data.TaskRunSummary
 
 /**
  * 多阶段流式输出的 Compose 交互测试（Robolectric，JVM 上跑）。
@@ -136,6 +138,19 @@ class V2StreamUiTest {
     }
 
     // ------------------------------------------------------------ 文案（纯函数）
+
+    @Test
+    fun `stream answer matching detects the duplicated final answer`() {
+        // 完整相等：流式最终正文就是落库正文
+        assertTrue(streamAnswerMatchesPersisted("  最终答案  ", "最终答案"))
+        // 明显不同的两段：不能误判成重复
+        assertTrue(!streamAnswerMatchesPersisted("中途小结", "最终答案"))
+        // 长回答被 3000 字上限截成尾部：落库正文以流式尾部结尾也算同一段
+        val tail = "尾".repeat(STREAM_TEXT_LIMIT)
+        assertTrue(streamAnswerMatchesPersisted(tail, "开头".repeat(500) + tail))
+        // 短正文不做「后缀」兜底，避免把碰巧同尾的短句误判成重复
+        assertTrue(!streamAnswerMatchesPersisted("答案", "这是另一段答案"))
+    }
 
     @Test
     fun `activity label and group title follow stage state`() {
@@ -403,51 +418,142 @@ class V2StreamUiTest {
     }
 
     @Test
-    fun `settling a live stream leaves reviewable process and no duplicated answer`() {
-        var snapshot by mutableStateOf(
-            StreamUiSnapshot(
-                stages = listOf(
-                    StreamTextStage(id = "text-1", text = "流式答案"),
-                    StreamToolGroupStage(
-                        id = "group-1",
-                        type = StreamStageType.COMMAND,
-                        steps = listOf(commandStep("c1", "pytest -q", StreamToolStatus.RUNNING)),
-                        startedAtMs = System.currentTimeMillis(),
-                        open = true,
+    fun `finished timeline keeps thought mid text command and final answer in order`() {
+        val ended = System.currentTimeMillis()
+        val started = ended - 9_000L
+        rule.setContent {
+            StreamStagesColumn(
+                StreamUiSnapshot(
+                    stages = listOf(
+                        StreamThoughtStage(
+                            id = "thought-1",
+                            text = "先确认目录。",
+                            startedAtMs = started,
+                            endedAtMs = started + 2_000L,
+                            active = false,
+                        ),
+                        StreamTextStage(id = "text-1", text = "先看一下项目结构。"),
+                        StreamToolGroupStage(
+                            id = "group-1",
+                            type = StreamStageType.COMMAND,
+                            steps = listOf(commandStep("c1", "ls apps/", StreamToolStatus.DONE, output = "web")),
+                            startedAtMs = started + 3_000L,
+                            endedAtMs = started + 5_000L,
+                            open = false,
+                        ),
+                        StreamTextStage(id = "text-2", text = "前端已启动，结果如下。"),
                     ),
+                    liveActive = false,
+                    runStartedAtMs = started,
+                    runEndedAtMs = ended,
                 ),
-                liveActive = true,
-                runStartedAtMs = System.currentTimeMillis(),
-            ),
-        )
-        rule.setContent { StreamStagesColumn(snapshot) }
-
-        rule.onNodeWithTag(V2StreamTags.text("text-1")).assertIsDisplayed()
-
-        // 收尾：正文交给落库消息（这里只验证流式正文消失），过程保留
-        rule.runOnIdle {
-            val ended = snapshot.runStartedAtMs + 5_000L
-            snapshot = StreamUiSnapshot(
-                stages = listOf(
-                    StreamToolGroupStage(
-                        id = "group-1",
-                        type = StreamStageType.COMMAND,
-                        steps = listOf(commandStep("c1", "pytest -q", StreamToolStatus.DONE)),
-                        startedAtMs = snapshot.runStartedAtMs,
-                        endedAtMs = ended,
-                        open = false,
-                    ),
-                ),
-                liveActive = false,
-                runStartedAtMs = snapshot.runStartedAtMs,
-                runEndedAtMs = ended,
-                revision = 2,
             )
         }
-        rule.waitForIdle()
-        rule.onNodeWithTag(V2StreamTags.text("text-1")).assertDoesNotExist()
+
+        // 收尾后时间线仍按发生顺序：思考 → 中途正文 → 命令组 → 最终正文。
+        // 不能把最终正文顶到最上面，也不能把中途正文/命令组整段堆到结果下面。
+        val thoughtTop = rule.onNodeWithTag(V2StreamTags.REASONING).fetchSemanticsNode().boundsInRoot.top
+        val midTop = rule.onNodeWithTag(V2StreamTags.text("text-1")).fetchSemanticsNode().boundsInRoot.top
+        val groupTop = rule.onNodeWithTag(V2StreamTags.group("group-1")).fetchSemanticsNode().boundsInRoot.top
+        val finalTop = rule.onNodeWithTag(V2StreamTags.text("text-2")).fetchSemanticsNode().boundsInRoot.top
+        assertTrue(thoughtTop < midTop)
+        assertTrue(midTop < groupTop)
+        assertTrue(groupTop < finalTop)
+
+        // 过程保持收起；结束后只剩一行用时
+        rule.onNodeWithText("思考过程").assertIsDisplayed()
         rule.onNodeWithText("运行了 1 条命令").assertIsDisplayed()
-        rule.onNodeWithText("共用时 5秒").assertIsDisplayed()
+        rule.onNodeWithText("共用时 9秒").assertIsDisplayed()
+    }
+
+    @Test
+    fun `completed answer follows process timeline once with a single duration`() {
+        val finalAnswer = "最终答复：前端已启动，状态码 200。"
+        val user = V2Message(
+            role = V2MessageRole.USER,
+            text = "你现在是 opencode 吗",
+            time = "11:20",
+            id = "m-user",
+        )
+        // 真实任务跑完时最终答复落库的 kind 是 run_finished，正文就是 Agent 的最终回复原文
+        val agent = V2Message(
+            role = V2MessageRole.AGENT,
+            text = finalAnswer,
+            time = "11:35",
+            id = "m-final",
+            kind = "run_finished",
+            runId = "run-1",
+        )
+        val stream = StreamUiSnapshot(
+            stages = listOf(
+                StreamThoughtStage(
+                    id = "thought-1",
+                    text = "先确认目录。",
+                    startedAtMs = 1_000L,
+                    endedAtMs = 3_000L,
+                    active = false,
+                ),
+                StreamTextStage(id = "text-1", text = "先看一下项目结构。"),
+                StreamToolGroupStage(
+                    id = "group-1",
+                    type = StreamStageType.COMMAND,
+                    steps = listOf(commandStep("c1", "ls apps/", StreamToolStatus.DONE, output = "web")),
+                    startedAtMs = 4_000L,
+                    endedAtMs = 5_000L,
+                    open = false,
+                ),
+                StreamTextStage(id = "text-2", text = finalAnswer),
+            ),
+            liveActive = false,
+            runStartedAtMs = 1_000L,
+            runEndedAtMs = 13_000L,
+            revision = 5,
+        )
+        val run = TaskRunSummary(
+            runId = "run-1",
+            status = "finished",
+            durationMs = 29 * 60_000L + 51_000L,
+            commands = 45,
+        )
+        rule.setContent {
+            V2ChatScreen(
+                chat = chatState(),
+                messages = listOf(user, agent),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                stream = stream,
+                runSummaries = mapOf("run-1" to run),
+                pendingChangeCount = 7,
+                pendingChangeAdded = 629,
+                pendingChangeRemoved = 0,
+                onOpenChanges = {},
+            )
+        }
+
+        // 同一段最终答复只出现一次：不再既在历史气泡里、又在时间线里各画一遍
+        rule.onAllNodesWithText(finalAnswer, useUnmergedTree = true).assertCountEquals(1)
+
+        // 顺序：中途正文 → 命令组 → 最终答复 → 文件审核卡。
+        // 整页消息列表带 clickable 会合并语义，这里必须查未合并树才能定位内部节点。
+        val midTop = rule.onNodeWithTag(V2StreamTags.text("text-1"), useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        val groupTop = rule.onNodeWithTag(V2StreamTags.group("group-1"), useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        val answerTop = rule.onNodeWithText(finalAnswer, useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        val cardTop = rule.onNodeWithText("7 个文件改动待审核", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(midTop < groupTop)
+        assertTrue(groupTop < answerTop)
+        assertTrue(answerTop < cardTop)
+
+        // 只有底部一处用时，顶部「已执行 N 步 · 用时 …」不再和它对不上
+        rule.onAllNodesWithText("共用时", substring = true, useUnmergedTree = true).assertCountEquals(1)
+        rule.onAllNodesWithText("已执行", substring = true, useUnmergedTree = true).assertCountEquals(0)
     }
 
     // ------------------------------------------------------------ 连接状态

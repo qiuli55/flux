@@ -43,6 +43,15 @@ class StreamReducerTest {
     private fun text(seq: Int, value: String) =
         event(seq, "run_event", "kind" to "text", "text" to value)
 
+    /** 与后端一致：落库消息带 kind，只有 text / secure_input 才是本轮最终答复。 */
+    private fun assistantMessage(seq: Int, kind: String = "text") = TaskStreamEvent(
+        seq = seq,
+        type = "assistant_message",
+        data = buildJsonObject {
+            put("message", buildJsonObject { put("kind", kind) })
+        },
+    )
+
     private fun tool(
         seq: Int,
         callId: String,
@@ -351,17 +360,20 @@ class StreamReducerTest {
     // ------------------------------------------------------------ 收尾 / 稳定性
 
     @Test
-    fun `run terminal closes groups and drops streaming text but keeps process`() {
-        reducer.apply(text(1, "最终答案"))
+    fun `run terminal keeps text in place and closes groups`() {
+        reducer.apply(text(1, "中途小结"))
         reducer.flush()
         reducer.apply(tool(2, "call-3", "running", detail = "make"))
         reducer.apply(event(3, "run_finished"))
 
         val snapshot = reducer.snapshot()
         assertFalse(snapshot.liveActive)
-        assertTrue(snapshot.textStages.isEmpty())
-        // 思考/命令作为过程记录保留，运行中的步骤收尾为完成
+        // 正文不能因为终态被丢掉：它仍留在时间线原来的位置
+        assertEquals(listOf(StreamStageType.TEXT, StreamStageType.COMMAND), types())
+        assertEquals("中途小结", snapshot.liveText)
+        // 运行中的步骤收尾为完成
         assertEquals(StreamToolStatus.DONE, snapshot.tools.single().status)
+        assertFalse(group(0).open)
         assertNotNull(snapshot.runEndedAtMs)
     }
 
@@ -374,9 +386,10 @@ class StreamReducerTest {
         reducer.flush()
 
         val snapshot = reducer.snapshot()
-        assertEquals("", snapshot.liveText)
+        // 终态正文保留，但迟到的增量不会追加进时间线
+        assertEquals("最终答案", snapshot.liveText)
+        assertEquals(listOf(StreamStageType.TEXT), types())
         assertFalse(snapshot.liveActive)
-        assertTrue(snapshot.stages.isEmpty())
         assertNotNull(snapshot.runEndedAtMs)
 
         // 新一轮开始后重新接受增量
@@ -388,23 +401,58 @@ class StreamReducerTest {
     }
 
     @Test
-    fun `settle finished is idempotent and keeps thought and tools`() {
+    fun `settle finished is idempotent and keeps thought text and tools`() {
         now = 10_000L
         reducer.apply(thinking(1, "先看日志"))
         reducer.flush()
-        reducer.apply(tool(2, "c1", "running", detail = "ls"))
+        reducer.apply(text(2, "中途正文"))
+        reducer.flush()
+        reducer.apply(tool(3, "c1", "running", detail = "ls"))
         now = 20_000L
 
         val first = reducer.settleFinished()
         val second = reducer.settleFinished()
 
+        // 幂等 settle 不得把正文丢掉，也不得再产生新 revision
         assertEquals(first.stages, second.stages)
         assertEquals(first.revision, second.revision)
         assertFalse(second.liveActive)
+        assertEquals(listOf(StreamStageType.THOUGHT, StreamStageType.TEXT, StreamStageType.COMMAND), types())
+        assertEquals("中途正文", second.textStages.single().text)
         assertEquals(1, second.thoughtStages.size)
         assertEquals(1, second.toolGroups.size)
         assertEquals(StreamToolStatus.DONE, second.tools.single().status)
         assertEquals(20_000L, second.runEndedAtMs)
+    }
+
+    @Test
+    fun `settled timeline keeps interleaved text in event order with the final answer last`() {
+        reducer.apply(thinking(1, "先确认目录。"))
+        reducer.flush()
+        reducer.apply(text(2, "先看一下项目结构。"))
+        reducer.flush()
+        reducer.apply(tool(3, "c1", "running", detail = "ls apps/"))
+        reducer.apply(tool(4, "c1", "completed", output = "web"))
+        reducer.apply(text(5, "## 结果\n\n前端已启动。"))
+        reducer.flush()
+        reducer.apply(event(6, "run_finished"))
+
+        val snapshot = reducer.snapshot()
+        assertEquals(
+            listOf(
+                StreamStageType.THOUGHT,
+                StreamStageType.TEXT,
+                StreamStageType.COMMAND,
+                StreamStageType.TEXT,
+            ),
+            types(),
+        )
+        // 中途正文保留在命令组之前，最终正文仍是最后一块
+        assertEquals("先看一下项目结构。", (snapshot.stages[1] as StreamTextStage).text)
+        assertEquals("## 结果\n\n前端已启动。", (snapshot.stages.last() as StreamTextStage).text)
+        assertFalse(snapshot.thoughtStages.single().active)
+        assertFalse(snapshot.toolGroups.single().open)
+        assertFalse(snapshot.liveActive)
     }
 
     @Test
@@ -572,17 +620,46 @@ class StreamReducerTest {
     }
 
     @Test
-    fun `assistant message drops streaming text but keeps process stages`() {
+    fun `assistant message keeps streaming text in place and closes process stages`() {
         reducer.apply(thinking(1, "思考"))
         reducer.flush()
         reducer.apply(delta(2, "已落库的回复"))
         reducer.flush()
-        reducer.apply(event(3, "assistant_message"))
+        reducer.apply(assistantMessage(3))
 
         val snapshot = reducer.snapshot()
         assertFalse(snapshot.liveActive)
-        assertTrue(snapshot.textStages.isEmpty())
+        // 落库之后时间线仍完整：思考在前、正文在后，不再把正文删掉
+        assertEquals(listOf(StreamStageType.THOUGHT, StreamStageType.TEXT), types())
+        assertEquals("已落库的回复", snapshot.textStages.single().text)
         assertEquals(1, snapshot.thoughtStages.size)
+        assertFalse(snapshot.thoughtStages.single().active)
+
+        // 文字回复落库后，迟到的增量不能把已结束的气泡复活
+        assertEquals(StreamApply.IGNORED, reducer.apply(delta(4, "迟到的补充")))
+        reducer.flush()
+        assertEquals("已落库的回复", reducer.snapshot().liveText)
+    }
+
+    @Test
+    fun `mid run approval message does not swallow later process events`() {
+        // 审批 / 计划消息也会以 assistant_message 落库，但一轮还没结束：
+        // 后续的思考 / 命令 / 正文必须继续进入时间线。
+        reducer.apply(tool(1, "c1", "running", detail = "ls"))
+        reducer.apply(assistantMessage(2, kind = "decision"))
+        reducer.apply(text(3, "批准后继续。"))
+        reducer.flush()
+        reducer.apply(tool(4, "c2", "running", detail = "cat package.json"))
+
+        val snapshot = reducer.snapshot()
+        // 中间消息没有把这一轮判死：后续过程仍在继续
+        assertTrue(snapshot.liveActive)
+        assertEquals(
+            listOf(StreamStageType.COMMAND, StreamStageType.TEXT, StreamStageType.COMMAND),
+            types(),
+        )
+        assertEquals("批准后继续。", snapshot.textStages.single().text)
+        assertEquals(2, snapshot.toolGroups.size)
     }
 
     @Test

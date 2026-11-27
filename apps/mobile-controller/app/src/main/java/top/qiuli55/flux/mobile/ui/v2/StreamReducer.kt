@@ -264,14 +264,21 @@ internal class TaskStreamReducer(
                 }
             }
 
-            "assistant_message" -> structural {
-                // 这一条回复已经落库；正文以历史消息为准，过程阶段保留下来回看。
-                it.copy(
-                    liveActive = false,
-                    liveLabel = null,
-                    stages = closeAll(it.stages, now()).let { stages -> dropText(stages) },
-                    runEndedAtMs = it.runEndedAtMs ?: now(),
-                )
+            "assistant_message" -> {
+                // 这一条回复已经落库：时间线原样保留（思考 / 中途正文 / 命令组 / 最终正文
+                // 都在各自发生的位置），只把进行中的阶段收起，不再把正文从时间线里删掉。
+                val outcome = structural {
+                    it.copy(
+                        liveActive = false,
+                        liveLabel = null,
+                        stages = closeAll(it.stages, now()),
+                        runEndedAtMs = it.runEndedAtMs ?: now(),
+                    )
+                }
+                // 审批 / 计划这类助手消息会在一轮执行中途落库（approvals / plan_tools），
+                // 后面还有 run_event；只有真正的文字回复落库才代表本轮结束，才忽略迟到增量。
+                if (persistedReplyKind(event) in FINAL_REPLY_KINDS) settled = true
+                outcome
             }
 
             "assistant_error" -> {
@@ -301,11 +308,12 @@ internal class TaskStreamReducer(
 
             "run_status", "run_finished" -> {
                 // 先 flush（终态前缓冲的最后一段可能还要给「部分输出」用），再落定。
+                // 时间线保持事件顺序：中途正文与最终正文都留在原位，最终正文仍是最后一块。
                 val outcome = structural {
                     it.copy(
                         liveActive = false,
                         liveLabel = null,
-                        stages = closeAll(it.stages, now()).let { stages -> dropText(stages) },
+                        stages = closeAll(it.stages, now()),
                         runEndedAtMs = it.runEndedAtMs ?: now(),
                     )
                 }
@@ -346,11 +354,12 @@ internal class TaskStreamReducer(
         return state
     }
 
-    /** 任务已到终态（refresh 兜底）：收尾流式气泡，但保留思考/工具供回看。 */
+    /** 任务已到终态（refresh 兜底）：收起进行中的阶段，完整时间线原样保留供回看。 */
     fun settleFinished(): StreamUiSnapshot {
-        // refresh 可能连续触发多次：已经收尾且没有新的流式正文时不再产生新 revision，
-        // 避免对话页在结束时被无意义地反复重组。
-        if (settled && !hasPendingDeltas() && !state.liveActive && state.textStages.isEmpty()) {
+        // refresh 可能连续触发多次：已经收尾且没有新的流式增量时不再产生新 revision，
+        // 避免对话页在结束时被无意义地反复重组。正文不再被丢掉，所以这里也不能再拿
+        // 「textStages 为空」当幂等条件，否则第二次 settle 会把最后一段正文漏掉。
+        if (settled && !hasPendingDeltas() && !state.liveActive) {
             return state
         }
         flushInternal()
@@ -359,9 +368,8 @@ internal class TaskStreamReducer(
             state.copy(
                 liveActive = false,
                 liveLabel = null,
-                // 最终答复已经落库成正式消息：丢掉流式正文，避免同一段话显示两遍；
-                // 思考与命令是过程记录，保留在活动卡里（结束后默认收起）。
-                stages = dropText(closeAll(state.stages, now())),
+                // 思考 / 中途正文 / 命令组 / 最终正文都留在时间线原位，只是不再处于「进行中」。
+                stages = closeAll(state.stages, now()),
                 runEndedAtMs = state.runEndedAtMs ?: now(),
             ),
         )
@@ -380,14 +388,14 @@ internal class TaskStreamReducer(
         return state
     }
 
-    /** 离开对话页：断开连接，停掉流式光标，但保留已收到的过程。 */
+    /** 离开对话页：断开连接，停掉流式光标，但保留已收到的时间线（含正文）。 */
     fun stopStream(): StreamUiSnapshot {
         dropPending()
         state = touch(
             state.copy(
                 liveActive = false,
                 liveLabel = null,
-                stages = dropText(closeAll(state.stages, now())),
+                stages = closeAll(state.stages, now()),
                 connection = StreamConnection.IDLE,
                 reconnectAttempt = 0,
                 runEndedAtMs = if (state.runStartedAtMs > 0) state.runEndedAtMs ?: now() else null,
@@ -735,9 +743,6 @@ internal class TaskStreamReducer(
         }
     }
 
-    private fun dropText(stages: List<StreamStage>): List<StreamStage> =
-        stages.filterNot { it is StreamTextStage }
-
     private fun capStages(stages: List<StreamStage>): List<StreamStage> {
         if (stages.size <= STREAM_STAGE_LIMIT) return stages
         // 丢最早的；保留最后一段（可能是正在跑的组 / 正文）
@@ -902,6 +907,16 @@ internal class TaskStreamReducer(
         else -> StreamToolStatus.RUNNING
     }
 
+    /** 落库消息的 kind：审批 / 计划 / 交接等中间消息与真正的文字回复要区别对待。 */
+    private fun persistedReplyKind(event: TaskStreamEvent): String =
+        runCatching {
+            (event.data["message"] as? JsonObject)
+                ?.get("kind")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                .orEmpty()
+        }.getOrDefault("")
+
     private fun string(event: TaskStreamEvent, key: String): String =
         runCatching { event.data[key]?.jsonPrimitive?.contentOrNull.orEmpty() }.getOrDefault("")
 
@@ -913,6 +928,9 @@ internal class TaskStreamReducer(
     private companion object {
         /** 落定后不再接受的时间线增量（结构事件仍然处理）。 */
         val LATE_IGNORED_TYPES = setOf("assistant_delta", "run_event")
+
+        /** 落库后代表「本轮文字回复已结束」的消息类型；审批 / 计划等中间消息不在内。 */
+        val FINAL_REPLY_KINDS = setOf("text", "secure_input")
 
         val COMMAND_NAMES = setOf(
             "bash", "shell", "sh", "command", "command_execution",
