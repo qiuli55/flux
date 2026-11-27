@@ -535,7 +535,6 @@ fun V2TaskChatScreen(
     extraTop: Dp,
     showBack: Boolean = true,
     onBack: () -> Unit,
-    onOpenLogs: () -> Unit,
     onRequestDelete: () -> Unit,
     /** 上下文快满时选择「新建并带摘要」：把旧对话摘要交给外层去开一段新对话。 */
     onHandoffReady: (HandoffSummary) -> Unit = {},
@@ -574,8 +573,12 @@ fun V2TaskChatScreen(
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
     val agentId = task?.agentId.orEmpty()
-    val option = agentsForDevice(device).firstOrNull { it.agent.id == agentId }
+    val agentOptionsForChat = agentsForDevice(device)
+    val option = agentOptionsForChat.firstOrNull { it.agent.id == agentId }
     val models = option?.models ?: emptyList()
+    // 执行中切换 Agent 会排队：模型菜单按「本轮结束后生效的 Agent」取清单，
+    // 避免把旧 Agent 的模型带进新 Agent 的下拉（真正切换后后端会清掉模型覆盖）。
+    val effectiveAgentId = task?.pendingAgentId ?: agentId
     // 任务级模型覆盖优先（带 key 归属）；没有覆盖时用该 Agent 的第一个可用模型。
     val currentKeyId = task?.apiKeyId?.takeIf { it.isNotBlank() }
     val selectedModel = task?.model?.takeIf { it.isNotBlank() }?.let { modelId ->
@@ -643,7 +646,14 @@ fun V2TaskChatScreen(
         }
         if (secured.isEmpty() && task != null && task.description.isNotBlank()) {
             // 任务描述本身就是用户的第一条需求：还没有消息时先把它当成首条用户消息展示。
-            listOf(V2Message(V2MessageRole.USER, task.description.trim(), clockLabel(task.createdAt)))
+            listOf(
+                V2Message(
+                    V2MessageRole.USER,
+                    task.description.trim(),
+                    clockLabel(task.createdAt),
+                    createdAtEpoch = parseEpochSeconds(task.createdAt),
+                ),
+            )
         } else {
             secured
         }
@@ -671,7 +681,6 @@ fun V2TaskChatScreen(
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
-            onOpenLogs = onOpenLogs,
             onDelete = onRequestDelete,
             onOpenAgentPicker = {},
             onSend = { text ->
@@ -712,10 +721,10 @@ fun V2TaskChatScreen(
             suggestions = emptyList(),
             showHandoff = false,
             // 当前设备上已配置的 Agent 就地下拉切换，历史消息保留。
-            agentOptions = if (canSwitchAgent) agentsForDevice(chat.device) else emptyList(),
+            agentOptions = if (canSwitchAgent) agentOptionsForChat else emptyList(),
             onSwitchAgent = { vm.switchAgent(it) },
-            // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型）。
-            modelOptions = if (canSwitchModel) models else emptyList(),
+            // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型），跟随待切换 Agent。
+            modelOptions = if (canSwitchModel) modelsForAgent(agentOptionsForChat, effectiveAgentId) else emptyList(),
             onSwitchModel = { vm.switchModel(it.model, it.keyId) },
             contextUsage = usage,
             contextPromptVisible = contextPromptVisible,
@@ -783,19 +792,19 @@ private fun TaskMessage.toV2Message(): V2Message? {
     // 设计稿卡片：payload 里带设计稿摘要与第一屏预览，点开进原生画布
     if (kind == "design_card") {
         parseDesignCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, designCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, designCard = card)
         }
     }
     // 已发布的页面 / 文档：payload 只带类型、标题与摘要，正文留在产物详情里
     if (kind == "artifact_card") {
         parseArtifactCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, artifactCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, artifactCard = card)
         }
     }
     // Plan 模式产出的计划卡：标题 + 步骤 + 涉及文件 + 计划文档路径
     if (kind == "plan_card") {
         parsePlanCard(payload)?.let { card ->
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, planCard = card)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, planCard = card)
         }
     }
     // 审批卡：payload.decision 是决策记录本身（含 kind / meta.command / status / chosen）
@@ -808,6 +817,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 mapped,
                 text,
                 clockLabel(createdAt),
+                createdAtEpoch = parseEpochSeconds(createdAt),
                 kind = kind,
                 approvalCard = card.copy(expired = card.expired || expired),
             )
@@ -820,6 +830,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
                 mapped,
                 text,
                 clockLabel(createdAt),
+                createdAtEpoch = parseEpochSeconds(createdAt),
                 kind = kind,
                 secureInputCard = card,
             )
@@ -832,6 +843,7 @@ private fun TaskMessage.toV2Message(): V2Message? {
             mapped,
             text,
             clockLabel(createdAt),
+            createdAtEpoch = parseEpochSeconds(createdAt),
             kind = kind,
             handoffFrom = root?.stringField("from_agent").orEmpty(),
             handoffTo = root?.stringField("to_agent").orEmpty(),
@@ -841,13 +853,13 @@ private fun TaskMessage.toV2Message(): V2Message? {
     if (kind == "attachments") {
         val files = parseAttachmentFiles(payload)
         if (files.isNotEmpty()) {
-            return V2Message(mapped, text, clockLabel(createdAt), kind = kind, attachments = files)
+            return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, attachments = files)
         }
     }
     if (text.isEmpty()) return null
     // run_finished 携带 run_id：答案气泡上方据此显示「任务耗时」入口
     val runId = if (kind == "run_finished") payloadRunId(payload) else ""
-    return V2Message(mapped, text, clockLabel(createdAt), kind = kind, runId = runId)
+    return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, runId = runId)
 }
 
 /** 从消息 payload 里取 run_id（run_finished 才有）。 */

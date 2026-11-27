@@ -67,9 +67,8 @@ async def _task_for_run(ctx: ToolContext) -> uuid.UUID:
     return run.task_id
 
 
-async def _publish_message(ctx: ToolContext, artifact) -> str:
+async def _publish_message(ctx: ToolContext, artifact, task_id: uuid.UUID) -> str:
     """把成品写成一条卡片消息；正文只给一句提示，内容本身留在产物详情里。"""
-    task_id = await _task_for_run(ctx)
     title = artifact.title
     content = f"已发布{_type_label(artifact.type)}「{title}」，点开查看完整内容"
     data = artifact.to_dict(include_content=False)
@@ -105,6 +104,9 @@ def _type_label(kind: str) -> str:
 async def artifact_publish(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]:
     reject_unknown(params, {"type", "title", "content", "artifact_id"})
     artifact_id = optional_str(params, "artifact_id")
+    # 产物要记住自己来自哪段对话，App 详情页才能跳回来源任务；更新时保留既有字段。
+    task_id = await _task_for_run(ctx)
+    source_meta = {"task_id": str(task_id)}
 
     if artifact_id is not None:
         if artifact_id.startswith("design:"):
@@ -120,16 +122,18 @@ async def artifact_publish(ctx: ToolContext, params: dict[str, Any]) -> dict[str
                     f"产物类型是 {existing.type}，不能按 {kind} 更新",
                     details={"param": "type"},
                 )
-        artifact = await ctx.container.artifacts.update(artifact_id, title=title, content=content)
+        artifact = await ctx.container.artifacts.update(
+            artifact_id, title=title, content=content, meta=source_meta
+        )
     else:
         kind = _require_publish_type(params.get("type"))
         title = require_str(params, "title")
         content = _content(params, required=True) or ""
         artifact = await ctx.container.artifacts.create(
-            type=kind, title=title[:160], content=content
+            type=kind, title=title[:160], content=content, meta=source_meta
         )
 
-    message_id = await _publish_message(ctx, artifact)
+    message_id = await _publish_message(ctx, artifact, task_id)
     return {
         "published": True,
         "artifact_id": str(artifact.id),

@@ -73,7 +73,7 @@ class TaskCreateRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     # 对话来源（2026-11-03）：助理页建的任务传 assistant，首页普通对话保持默认 chat。
     origin: TaskOrigin = TaskOrigin.CHAT
-    # Bot 档案（2026-11-04）：每条对话都是一个 bot，群聊里用名称 + 头像区分。
+    # Bot 档案（2026-11-04）：每条对话都是一个 bot，历史群聊里用名称 + 头像区分。
     # 头像只接受「形状 × 颜色」组合，取值见 flux.core.group.avatar。
     bot_name: str | None = Field(default=None, max_length=64)
     avatar_shape: str | None = Field(default=None, max_length=32)
@@ -437,6 +437,13 @@ class GitHubTokenRequest(BaseModel):
     kind: str = Field(default="pat", max_length=32)
 
 
+class GitHubOAuthCallbackRequest(BaseModel):
+    """App 把浏览器回跳的授权码与 state 交回服务端换票。"""
+
+    code: str = Field(min_length=1, max_length=1024)
+    state: str = Field(min_length=1, max_length=256)
+
+
 class GitHubFileWrite(BaseModel):
     """一次提交里的单个文件。"""
 
@@ -567,7 +574,7 @@ class SupervisorSubscriptionRequest(BaseModel):
 
 
 class GroupCreateRequest(BaseModel):
-    """创建一个内部多 bot 群聊；成员是已有的 bot 对话（tasks.id）。"""
+    """历史群聊创建请求（对应路由已下线，仅保留 schema 兼容旧脚本）。"""
 
     name: str = Field(min_length=1, max_length=128)
     project_id: str | None = None

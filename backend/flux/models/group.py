@@ -1,4 +1,4 @@
-"""内部多 bot 群聊的持久化模型。
+"""历史群聊的持久化模型（产品已下线，仅保留旧数据读取）。
 
 一个群只负责「谁在一起聊、聊了什么」；每个 bot 本身就是一条 `tasks` 记录
 （bot 名称与头像落在 tasks 上）。群聊消息单独存表，不复用 task_messages：
@@ -31,7 +31,7 @@ from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class ChatGroup(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """一个内部群聊。"""
+    """历史内部群聊记录（不再创建新的群）。"""
 
     __tablename__ = "chat_groups"
 
@@ -225,7 +225,7 @@ class ChatGroupEpoch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class ChatGroupMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """群聊里的一条消息（用户 / bot / 系统）。"""
+    """历史群聊里的一条消息（用户 / bot / 系统）。"""
 
     __tablename__ = "chat_group_messages"
     __table_args__ = (Index("ix_chat_group_messages_group_seq", "group_id", "seq"),)

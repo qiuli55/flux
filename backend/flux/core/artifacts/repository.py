@@ -78,6 +78,7 @@ class ArtifactRepository:
         title: str | None = None,
         content: str | None = None,
         base_version: int | None = None,
+        meta: dict | None = None,
     ) -> Artifact:
         async with self._session_factory() as session:
             artifact = await session.get(Artifact, _as_uuid(artifact_id))
@@ -99,6 +100,9 @@ class ArtifactRepository:
                 artifact.title = title[:160]
             if content is not None:
                 artifact.content = content
+            if meta:
+                # 合并而不是覆盖：更新正文时不能把已有来源字段（如 task_id）弄丢。
+                artifact.meta = {**(artifact.meta or {}), **meta}
             artifact.version += 1
             await session.commit()
             await session.refresh(artifact)

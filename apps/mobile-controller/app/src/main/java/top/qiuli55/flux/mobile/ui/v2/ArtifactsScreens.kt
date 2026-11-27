@@ -1,6 +1,7 @@
 package top.qiuli55.flux.mobile.ui.v2
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -33,13 +34,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.DesignServices
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +53,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -492,6 +504,7 @@ fun ArtifactDetailScreen(
     onBack: () -> Unit,
     onSave: (String, String) -> Unit,
     onDelete: (String) -> Unit,
+    onOpenSourceTask: (String) -> Unit = {},
     onDismissMessages: () -> Unit,
 ) {
     val artifact = state.detail?.takeIf { it.id == artifactId }
@@ -499,11 +512,26 @@ fun ArtifactDetailScreen(
     var content by remember(artifactId) { mutableStateOf("") }
     var editing by remember(artifactId) { mutableStateOf(false) }
     var deleteOpen by remember(artifactId) { mutableStateOf(false) }
+    val context = LocalContext.current
 
-    LaunchedEffect(artifact?.id, artifact?.version) {
+    // 只按产物 id 初始化本地草稿：保存冲突后刷新版本号不能把用户正在改的内容冲掉。
+    LaunchedEffect(artifact?.id) {
         val loaded = artifact ?: return@LaunchedEffect
         title = loaded.title
         content = loaded.content.orEmpty()
+    }
+
+    fun shareArtifact() {
+        val current = artifact ?: return
+        val doc = current.type == "doc"
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = if (doc) "text/markdown" else "text/html"
+            putExtra(Intent.EXTRA_SUBJECT, title.ifBlank { current.title })
+            putExtra(Intent.EXTRA_TEXT, content)
+        }
+        context.startActivity(
+            Intent.createChooser(intent, if (doc) "导出 Markdown" else "导出 HTML"),
+        )
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -526,6 +554,18 @@ fun ArtifactDetailScreen(
                         Spacer(Modifier.width(8.dp))
                     }
                     if (artifact != null) {
+                        RoundIconButton(
+                            Icons.Outlined.Share,
+                            onClick = { shareArtifact() },
+                            size = 34.dp,
+                            iconSize = 16.dp,
+                            contentDescription = if (artifact.type == "doc") {
+                                "导出 Markdown"
+                            } else {
+                                "导出 HTML"
+                            },
+                        )
+                        Spacer(Modifier.width(8.dp))
                         RoundIconButton(
                             Icons.Outlined.Delete,
                             onClick = { deleteOpen = true },
@@ -557,6 +597,25 @@ fun ArtifactDetailScreen(
                         editing = editing,
                         onToggle = { editing = !editing },
                     )
+                    if (state.error != null) {
+                        // 保存失败 / 版本冲突后保留本地草稿，给一个明确的“再试一次”入口。
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Label("这次修改还没有保存", 10.5f, V2Colors.rose, FontWeight.Medium)
+                            Spacer(Modifier.weight(1f))
+                            GhostButton(
+                                if (state.saving) "正在重试…" else "重试保存",
+                                onClick = { if (!state.saving) onSave(title, content) },
+                            )
+                        }
+                    }
+                    artifact.sourceTaskId?.let { taskId ->
+                        Spacer(Modifier.height(8.dp))
+                        SourceConversationRow(
+                            taskId = taskId,
+                            onOpen = { onOpenSourceTask(taskId) },
+                        )
+                    }
                     Spacer(Modifier.height(10.dp))
                     if (editing) {
                         ArtifactEditor(
@@ -564,7 +623,7 @@ fun ArtifactDetailScreen(
                             content = content,
                             onTitleChange = { title = it.take(60) },
                             onContentChange = { content = it },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).imePadding(),
                         )
                     } else if (artifact.type == "page") {
                         ArtifactHtmlPreview(
@@ -689,7 +748,11 @@ private fun ArtifactHtmlPreview(html: String, versionKey: String, modifier: Modi
     }
 }
 
-/** 简易 Markdown：标题加粗放大、`- ` 加项目符号，其余按段落排；不引第三方渲染器。 */
+/**
+ * 文档预览：覆盖标题、有序 / 无序列表、代码块、引用、链接与粗体 / 斜体。
+ *
+ * 不引入第三方 Markdown 渲染器；解析器只做常用语法的只读展示，源码模式仍可编辑。
+ */
 @Composable
 private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
     Column(
@@ -702,39 +765,206 @@ private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
         val lines = content.split('\n')
-        lines.forEach { raw ->
-            val line = raw.trimEnd()
-            when {
-                line.isBlank() -> Spacer(Modifier.height(8.dp))
-                line.startsWith("### ") -> {
-                    Label(line.removePrefix("### "), 14f, V2Colors.ink(.92f), FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
+        var index = 0
+        while (index < lines.size) {
+            val raw = lines[index].trimEnd()
+            val trimmed = raw.trimStart()
+            if (trimmed.startsWith("```")) {
+                val code = mutableListOf<String>()
+                index += 1
+                while (index < lines.size && !lines[index].trimStart().startsWith("```")) {
+                    code.add(lines[index])
+                    index += 1
                 }
-                line.startsWith("## ") -> {
-                    Label(line.removePrefix("## "), 16f, V2Colors.ink(.94f), FontWeight.SemiBold)
+                if (index < lines.size) index += 1 // 跳过收尾的 ```
+                CodeBlock(code.joinToString("\n"))
+                continue
+            }
+            when {
+                raw.isBlank() -> Spacer(Modifier.height(8.dp))
+                Regex("^#{1,6}\\s+").containsMatchIn(trimmed) -> {
+                    val level = trimmed.takeWhile { it == '#' }.length
+                    val size = when (level) {
+                        1 -> 19f
+                        2 -> 16f
+                        3 -> 14f
+                        4 -> 13f
+                        else -> 12f
+                    }
+                    MarkdownInlineText(
+                        text = trimmed.drop(level).trimStart(),
+                        size = size,
+                        color = V2Colors.ink(.95f),
+                        weight = if (level <= 2) FontWeight.Bold else FontWeight.SemiBold,
+                    )
                     Spacer(Modifier.height(5.dp))
                 }
-                line.startsWith("# ") -> {
-                    Label(line.removePrefix("# "), 19f, V2Colors.ink(.95f), FontWeight.Bold)
-                    Spacer(Modifier.height(6.dp))
+                Regex("^[-*+]\\s+").containsMatchIn(trimmed) -> {
+                    MarkdownListRow(
+                        marker = "•",
+                        text = trimmed.drop(2),
+                    )
                 }
-                line.startsWith("- ") || line.startsWith("* ") -> {
-                    Row {
-                        Label("•", 12f, V2Colors.ink(.5f))
-                        Spacer(Modifier.width(7.dp))
-                        Label(line.substring(2), 12.5f, V2Colors.ink(.78f))
+                Regex("^\\d+[.)]\\s+").containsMatchIn(trimmed) -> {
+                    val marker = trimmed.substringBefore(' ').trimEnd('.', ')')
+                    MarkdownListRow(marker = "$marker.", text = trimmed.substringAfter(' ').trimStart())
+                }
+                trimmed.startsWith("> ") || trimmed == ">" -> {
+                    Row(Modifier.fillMaxWidth()) {
+                        Box(
+                            Modifier
+                                .width(2.dp)
+                                .heightIn(min = 18.dp)
+                                .background(V2Colors.ink(.18f)),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        MarkdownInlineText(
+                            text = trimmed.removePrefix(">").trimStart(),
+                            size = 12.5f,
+                            color = V2Colors.ink(.55f),
+                            modifier = Modifier.weight(1f),
+                        )
                     }
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(4.dp))
+                }
+                Regex("^-{3,}$").matches(trimmed) -> {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .height(1.dp)
+                            .background(V2Colors.ink(.08f)),
+                    )
                 }
                 else -> {
-                    Label(line, 12.5f, V2Colors.ink(.78f))
-                    Spacer(Modifier.height(2.dp))
+                    MarkdownInlineText(raw, 12.5f, V2Colors.ink(.78f))
+                    Spacer(Modifier.height(3.dp))
                 }
             }
+            index += 1
         }
         if (content.isBlank()) {
             Label("还没有内容，切到「源码」写点什么。", 12f, V2Colors.ink(.35f))
         }
+    }
+}
+
+@Composable
+private fun MarkdownListRow(marker: String, text: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+        Label(marker, 12f, V2Colors.ink(.5f), modifier = Modifier.width(20.dp))
+        MarkdownInlineText(text, 12.5f, V2Colors.ink(.78f), modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun CodeBlock(code: String) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(V2Colors.ink(.05f))
+            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Label(code.ifBlank { " " }, 11f, V2Colors.ink(.82f), mono = true)
+    }
+}
+
+@Composable
+private fun MarkdownInlineText(
+    text: String,
+    size: Float,
+    color: Color,
+    weight: FontWeight = FontWeight.Normal,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = inlineMarkdown(text),
+        modifier = modifier,
+        color = color,
+        fontSize = size.sp,
+        fontWeight = weight,
+        lineHeight = (size * 1.55f).sp,
+    )
+}
+
+/**
+ * 行内 Markdown：`**粗体**`、`*斜体*`、`_斜体_`、`` `代码` ``、`[文字](链接)`。
+ *
+ * 链接以「文字 (URL)」展示，保证在不能跳转的预览里也能读到地址。
+ */
+internal fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+    val pattern = Regex(
+        """\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<![\w])_(.+?)_(?![\w])|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)""",
+    )
+    var last = 0
+    for (match in pattern.findAll(text)) {
+        if (match.range.first > last) append(text.substring(last, match.range.first))
+        val values = match.groupValues
+        when {
+            values[1].isNotEmpty() ->
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(values[1]) }
+            values[2].isNotEmpty() ->
+                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(values[2]) }
+            values[3].isNotEmpty() ->
+                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(values[3]) }
+            values[4].isNotEmpty() ->
+                withStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Monospace,
+                        background = V2Colors.ink(.06f),
+                    ),
+                ) { append(values[4]) }
+            values[5].isNotEmpty() -> {
+                withStyle(
+                    SpanStyle(
+                        textDecoration = TextDecoration.Underline,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                ) { append(values[5]) }
+                withStyle(SpanStyle(color = V2Colors.ink(.42f))) {
+                    append(" (${values[6]})")
+                }
+            }
+            else -> append(match.value)
+        }
+        last = match.range.last + 1
+    }
+    if (last < text.length) append(text.substring(last))
+}
+
+@Composable
+private fun SourceConversationRow(taskId: String, onOpen: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(V2Colors.ink(.04f))
+            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.Chat,
+            contentDescription = null,
+            tint = V2Colors.ink(.55f),
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Label("打开来源对话", 12f, V2Colors.ink(.82f), FontWeight.Medium)
+            Spacer(Modifier.height(2.dp))
+            Label("这段产物由对话发布 · ${taskId.take(8)}", 9.5f, V2Colors.ink(.38f), maxLines = 1)
+        }
+        Icon(
+            Icons.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = V2Colors.ink(.32f),
+            modifier = Modifier.size(16.dp),
+        )
     }
 }
 

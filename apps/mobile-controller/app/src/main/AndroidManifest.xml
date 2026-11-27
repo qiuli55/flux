@@ -35,12 +35,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- GitHub OAuth 回跳：flux://auth?code=... -->
+            <!-- Flux 云账号 OAuth 回跳：flux://auth?code=... -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="flux" android:host="auth" />
+            </intent-filter>
+            <!-- 链接 GitHub 仓库权限的回跳：flux://github-link?code=&state= -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="flux" android:host="github-link" />
             </intent-filter>
         </activity>
 

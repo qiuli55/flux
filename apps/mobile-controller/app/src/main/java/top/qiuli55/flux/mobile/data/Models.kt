@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -169,105 +170,11 @@ data class Task(
     /** bot 头像颜色（12 选一，顺序与后端 avatar.py 一致）。 */
     @SerialName("avatar_color") val avatarColor: String = "violet",
 ) {
-    /** 列表/群聊里展示的 bot 名称。 */
+    /** 对话列表里展示的 bot 名称（历史数据可能带 bot_name）。 */
     val displayName: String
         get() = botName?.takeIf { it.isNotBlank() }
             ?: description.take(24).ifBlank { "未命名 Bot" }
 }
-
-/* ---------------- 内部群聊（/api/v1/groups） ---------------- */
-
-/** 群成员 = 一个对话（bot）的公开档案。 */
-@Serializable
-data class ChatGroupMember(
-    @SerialName("task_id") val taskId: String = "",
-    val name: String = "",
-    val description: String = "",
-    @SerialName("avatar_shape") val avatarShape: String = "circle",
-    @SerialName("avatar_color") val avatarColor: String = "violet",
-    val status: String = "",
-    /** admin = 群主（每轮先发言并负责拉人）；member = 普通成员。 */
-    val role: String = "member",
-    /** 该 bot 在群里的模型覆盖；null = 沿用默认模型。 */
-    val model: String? = null,
-    @SerialName("api_key_id") val apiKeyId: String? = null,
-    /** plan = 只读+计划 / normal = 高风险审批 / full = 跳过逐步审批。 */
-    @SerialName("permission_mode") val permissionMode: String = "normal",
-) {
-    val isAdmin: Boolean get() = role == "admin"
-}
-
-/** 分层记忆：scope=group 为本群，scope=team 为跨群共享。 */
-@Serializable
-data class ChatGroupMemory(
-    @SerialName("group_id") val groupId: String? = null,
-    val scope: String = "group",
-    val content: String = "",
-    @SerialName("up_to_seq") val upToSeq: Int = 0,
-    @SerialName("updated_at") val updatedAt: String? = null,
-)
-
-/** GET /groups/{id}/memory 的返回；都没压缩过时两项为 null。 */
-@Serializable
-data class ChatGroupMemoryState(
-    val group: ChatGroupMemory? = null,
-    val team: ChatGroupMemory? = null,
-)
-
-/** 一个内部群。 */
-@Serializable
-data class ChatGroup(
-    val id: String = "",
-    val name: String = "",
-    @SerialName("project_id") val projectId: String? = null,
-    val description: String? = null,
-    /** 每轮最多发言轮数闸门（1~5）。 */
-    @SerialName("max_rounds") val maxRounds: Int = 2,
-    val status: String = "",
-    @SerialName("last_message_at") val lastMessageAt: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-    /** 列表接口只给数量，members 为空数组。 */
-    @SerialName("member_count") val memberCount: Int = 0,
-    val members: List<ChatGroupMember> = emptyList(),
-)
-
-/** 一条群消息。 */
-@Serializable
-data class ChatGroupMessage(
-    val id: String = "",
-    @SerialName("group_id") val groupId: String = "",
-    /** 群内自增游标，轮询用 after_seq。 */
-    val seq: Int = 0,
-    /** 发言的 bot；用户 / 系统消息为 null。 */
-    @SerialName("task_id") val taskId: String? = null,
-    @SerialName("author_name") val authorName: String = "",
-    /** user / assistant / system。 */
-    val role: String = "",
-    val kind: String = "text",
-    val content: String = "",
-    val payload: JsonElement? = null,
-    @SerialName("epoch_id") val epochId: String? = null,
-    @SerialName("created_at") val createdAt: String? = null,
-)
-
-@Serializable
-data class ChatGroupMessagePage(
-    val messages: List<ChatGroupMessage> = emptyList(),
-    @SerialName("has_more") val hasMore: Boolean = false,
-)
-
-@Serializable
-data class ChatGroupSendOutcome(
-    val message: ChatGroupMessage = ChatGroupMessage(),
-    @SerialName("epoch_id") val epochId: String = "",
-    val mentioned: List<String> = emptyList(),
-)
-
-@Serializable
-data class ChatGroupInterruptOutcome(
-    val interrupted: Boolean = false,
-    @SerialName("epoch_id") val epochId: String? = null,
-)
 
 /** 安全输入提交的返回：任务 + 落库后的密钥（只有掩码）+「已存储」回执消息。 */
 @Serializable
@@ -551,10 +458,17 @@ data class Artifact(
     @SerialName("updated_at") val updatedAt: String = "",
     val content: String? = null,
     val preview: DesignPreview? = null,
+    /** 产物元数据；artifact.publish 会写入来源 task_id。 */
+    val metadata: JsonObject = JsonObject(emptyMap()),
 ) {
     /** design 类型对应的 Luma 设计稿 id；其它类型为 null。 */
     val designId: String?
         get() = if (type == "design") id.removePrefix("design:").takeIf { it.isNotBlank() } else null
+
+    /** 由 Agent 通过 artifact.publish 写入的来源对话；API 手工创建的产物为 null。 */
+    val sourceTaskId: String?
+        get() = (metadata["task_id"] as? JsonPrimitive)?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
 }
 
 // ------------------------------------------------------------------ 设计工作室
@@ -927,22 +841,19 @@ data class GitHubAccountStatus(
     val scopes: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("device_flow_ready") val deviceFlowReady: Boolean = false,
-    @SerialName("pending_login") val pendingLogin: GitHubLoginSession? = null,
+    @SerialName("oauth_ready") val oauthReady: Boolean = false,
+    @SerialName("oauth_redirect_uri") val oauthRedirectUri: String? = null,
 )
 
-/** GitHub 设备码登录会话：user_code + verification_uri 给用户授权，status 供轮询。 */
+/** GitHub 授权码登录起点：授权页地址 + 服务端保存的 state。 */
 @Serializable
-data class GitHubLoginSession(
-    @SerialName("flow_id") val flowId: String = "",
-    /** pending / success / failed / expired / cancelled */
-    val status: String = "pending",
-    @SerialName("user_code") val userCode: String = "",
-    @SerialName("verification_uri") val verificationUri: String = "",
-    val message: String = "",
+data class GitHubOAuthStart(
+    val state: String = "",
+    @SerialName("authorize_url") val authorizeUrl: String = "",
+    @SerialName("redirect_uri") val redirectUri: String = "",
     @SerialName("expires_in") val expiresIn: Int = 0,
-) {
-    val isPending: Boolean get() = status == "pending"
-}
+    @SerialName("oauth_ready") val oauthReady: Boolean = false,
+)
 
 /** 一个 GitHub 仓库；私有仓库 isPrivate=true。 */
 @Serializable

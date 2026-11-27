@@ -82,6 +82,16 @@ object V2Colors {
     val rose700: Color get() = if (dark) Color(0xFFFDA4AF) else Color(0xFFBE123C)
     val emerald: Color get() = Color(0xFF10B981)
     val emerald700: Color get() = if (dark) Color(0xFF34D399) else Color(0xFF047857)
+    /**
+     * 上下文占用环 / 完全访问标题的强调蓝。
+     *
+     * 整站仍是黑白主色，这个蓝只用于「上下文环形进度」这一处仪表语义，
+     * 以及需要和黄色（正常模式）、红色（免审核）区分开的完全访问模式。
+     */
+    val blue: Color get() = if (dark) Color(0xFF60A5FA) else Color(0xFF2563EB)
+    val blue700: Color get() = if (dark) Color(0xFF93C5FD) else Color(0xFF1D4ED8)
+    /** 上下文环的灰色底环：深浅色都保持可见但不抢正文。 */
+    val ringTrack: Color get() = if (dark) Color(0x33F4F4F5) else Color(0x1F0A0A0B)
     // 这两个旧名字原先是紫/靛，现在统一成中性灰阶（浅色深灰、深色浅灰）。
     val indigo: Color get() = if (dark) Color(0xFFA1A1AA) else Color(0xFF52525B)
     val violet: Color get() = if (dark) Color(0xFFD4D4D8) else Color(0xFF3F3F46)

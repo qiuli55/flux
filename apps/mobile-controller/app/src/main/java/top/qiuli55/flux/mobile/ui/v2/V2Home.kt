@@ -73,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
-import top.qiuli55.flux.mobile.data.ChatGroup
 
 /**
  * 「对话」一级页面：大标题 + 设备筛选 + 助理入口 + 最近对话。
@@ -85,15 +84,11 @@ fun V2HomeScreen(
     device: String,
     onDeviceChange: (String) -> Unit,
     conversations: List<V2Conversation>,
-    groups: List<ChatGroup>,
-    groupsLoading: Boolean = false,
     extraTop: androidx.compose.ui.unit.Dp,
     onOpenArtifacts: () -> Unit,
     onOpenAssistant: () -> Unit,
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
-    onOpenGroup: (ChatGroup) -> Unit,
-    onCreateGroup: () -> Unit,
     onNewChat: () -> Unit,
     onRefresh: () -> Unit = {},
 ) {
@@ -124,14 +119,6 @@ fun V2HomeScreen(
                     demoAgent(conversation.agentId).name.lowercase().contains(normalized))
         }
     }
-    val filteredGroups = remember(groups, normalized) {
-        groups.filter { group ->
-            normalized.isEmpty() ||
-                group.name.lowercase().contains(normalized) ||
-                group.members.any { it.name.lowercase().contains(normalized) }
-        }
-    }
-
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             HomeHeader(
@@ -179,8 +166,7 @@ fun V2HomeScreen(
                     item {
                         WhiteCard(Modifier.padding(horizontal = 16.dp)) {
                             Column {
-                                val empty = filteredConversations.isEmpty() &&
-                                    filteredGroups.isEmpty() && !groupsLoading
+                                val empty = filteredConversations.isEmpty()
                                 if (empty) {
                                     EmptyConversations(
                                         searching = normalized.isNotEmpty(),
@@ -222,18 +208,10 @@ fun V2HomeScreen(
                                             },
                                         )
                                     }
-                                    if (index != filteredConversations.lastIndex || filteredGroups.isNotEmpty()) {
+                                    if (index != filteredConversations.lastIndex) {
                                         RowDivider()
                                     }
                                 }
-                                filteredGroups.forEachIndexed { index, group ->
-                                    GroupRow(group = group, onClick = { onOpenGroup(group) })
-                                    if (index != filteredGroups.lastIndex) RowDivider()
-                                }
-                                if (filteredConversations.isNotEmpty() || filteredGroups.isNotEmpty()) {
-                                    RowDivider()
-                                }
-                                NewGroupRow(onClick = onCreateGroup)
                             }
                         }
                     }
@@ -584,56 +562,6 @@ private fun ConversationStatusLine(conversation: V2Conversation) {
             if (status == V2TaskStatus.FAILED) V2Colors.rose else V2Colors.ink(.45f),
             maxLines = 1,
         )
-    }
-}
-
-@Composable
-private fun GroupRow(group: ChatGroup, onClick: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .99f, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Label(
-                group.name,
-                17f,
-                V2Colors.ink(.92f),
-                FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-            )
-            Spacer(Modifier.width(10.dp))
-            Label(
-                relativeTime(group.lastMessageAt ?: group.createdAt),
-                13f,
-                V2Colors.ink(.32f),
-                maxLines = 1,
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Label("${group.memberCount} 个 Bot · 群聊", 13f, V2Colors.ink(.42f), maxLines = 1)
-    }
-}
-
-@Composable
-private fun NewGroupRow(onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .v2Pressable(pressScale = .99f, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Outlined.Add,
-            contentDescription = null,
-            tint = V2Colors.ink(.42f),
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(10.dp))
-        Label("新建群聊", 15f, V2Colors.ink(.62f), FontWeight.Medium)
     }
 }
 

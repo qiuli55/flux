@@ -19,12 +19,11 @@ import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
 
 /**
- * 设置 / 日志 / 记忆面板的误触保护（Robolectric / JVM）。
+ * 设置 / 记忆面板的误触保护（Robolectric / JVM）。
  *
  * 覆盖：
  *  - 退出登录：先确认，取消不退出，确认只退出一次；
- *  - 清空日志：先确认，取消保留日志，确认才清空；
- *  - 密集小胶囊（日志筛选、跟随、清空、记忆操作）的触摸目标 >= 48dp。
+ *  - 密集小胶囊（记忆操作）的触摸目标 >= 48dp。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [33], qualifiers = "w400dp-h800dp-mdpi")
@@ -34,7 +33,6 @@ class V2DestructiveConfirmTest {
     val rule = createComposeRule()
 
     private var logoutCount = 0
-    private var clearCount = 0
 
     private fun renderSettings() {
         logoutCount = 0
@@ -65,15 +63,12 @@ class V2DestructiveConfirmTest {
                 onRefreshCodex = {},
                 onOpenCodexUrl = {},
                 githubAccount = null,
-                githubLogin = null,
                 githubLoading = false,
                 githubRepos = emptyList(),
                 githubReposLoading = false,
                 onGitHubLogin = {},
                 onGitHubLogout = {},
                 onRefreshGitHub = {},
-                onOpenGitHubUrl = {},
-                onSaveGitHubToken = {},
                 onLoadGitHubRepos = {},
                 onManualConnect = {},
                 onLogout = { logoutCount++ },
@@ -83,22 +78,6 @@ class V2DestructiveConfirmTest {
                 onDismiss = {},
             )
         }
-        rule.waitForIdle()
-    }
-
-    private fun renderLogs() {
-        clearCount = 0
-        rule.setContent {
-            LogsSheet(
-                logs = listOf(V2Log("12:00:00", V2LogLevel.INFO, "已连接内核")),
-                onAppendHeartbeat = {},
-                onClear = { clearCount++ },
-                onDismiss = {},
-            )
-        }
-        rule.waitForIdle()
-        // 停掉 6 秒心跳循环，避免测试时钟空转。
-        rule.onNodeWithTag(V2UxTags.LOG_FOLLOW).performClick()
         rule.waitForIdle()
     }
 
@@ -130,38 +109,6 @@ class V2DestructiveConfirmTest {
         rule.onNodeWithTag(FluxConfirmTags.CONFIRM).performClick()
         rule.waitForIdle()
         assertEquals(1, logoutCount)
-    }
-
-    @Test
-    fun `log clear asks first and cancel keeps the entries`() {
-        renderLogs()
-        rule.onNodeWithTag(V2UxTags.LOG_CLEAR).performClick()
-        rule.waitForIdle()
-
-        rule.onNodeWithText("清空日志？").assertIsDisplayed()
-        assertEquals(0, clearCount)
-
-        rule.onNodeWithTag(FluxConfirmTags.DISMISS).performClick()
-        rule.waitForIdle()
-        assertEquals(0, clearCount)
-    }
-
-    @Test
-    fun `confirming log clear clears once`() {
-        renderLogs()
-        rule.onNodeWithTag(V2UxTags.LOG_CLEAR).performClick()
-        rule.waitForIdle()
-        rule.onNodeWithTag(FluxConfirmTags.CONFIRM).performClick()
-        rule.waitForIdle()
-        assertEquals(1, clearCount)
-    }
-
-    @Test
-    fun `log toolbar controls are at least 48dp tall`() {
-        renderLogs()
-        assertMinTouchTarget(V2UxTags.LOG_FILTER_PREFIX + "全部")
-        assertMinTouchTarget(V2UxTags.LOG_FOLLOW)
-        assertMinTouchTarget(V2UxTags.LOG_CLEAR)
     }
 
     @Test

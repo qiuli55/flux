@@ -73,12 +73,15 @@ class FakeArtifactRepo:
         title: str | None = None,
         content: str | None = None,
         base_version: int | None = None,
+        meta: dict | None = None,
     ) -> Artifact:
         artifact = await self.get(artifact_id)
         if title is not None:
             artifact.title = title[:160]
         if content is not None:
             artifact.content = content
+        if meta:
+            artifact.meta = {**(artifact.meta or {}), **meta}
         artifact.version += 1
         return artifact
 
@@ -128,12 +131,14 @@ async def test_publish_creates_artifact_and_card_message() -> None:
     assert result["type"] == "page"
     assert result["title"] == "发布说明"
     assert result["version"] == 1
-    # 产物落库
+    # 产物落库，并记住来源对话（App 详情页据此跳回）
     stored = await artifacts.get(result["artifact_id"])
     assert stored.content == "<h1>v1</h1>"
+    assert stored.meta["task_id"] == str(task_id)
     # 对话里只有卡片消息，正文不拼接 URL
     assert len(task_repo.messages) == 1
     message = task_repo.messages[0]
+    assert message.payload["metadata"]["task_id"] == str(task_id)
     assert message.kind == "artifact_card"
     assert "http" not in message.content
     assert message.payload["artifact_id"] == result["artifact_id"]
@@ -142,7 +147,8 @@ async def test_publish_creates_artifact_and_card_message() -> None:
 
 
 async def test_publish_with_artifact_id_updates_existing() -> None:
-    ctx, (task_repo, artifacts) = _ctx("run-1", uuid.uuid4())
+    task_id = uuid.uuid4()
+    ctx, (task_repo, artifacts) = _ctx("run-1", task_id)
     created = await TOOLS["artifact.publish"].handler(
         ctx, {"type": "doc", "title": "周报", "content": "# v1"}
     )
@@ -154,6 +160,8 @@ async def test_publish_with_artifact_id_updates_existing() -> None:
     assert updated["title"] == "周报"
     stored = await artifacts.get(created["artifact_id"])
     assert stored.content == "# v2"
+    # 更新不能丢掉首次发布时写入的来源 task_id
+    assert stored.meta["task_id"] == str(task_id)
     assert [message.kind for message in task_repo.messages] == ["artifact_card", "artifact_card"]
     assert task_repo.messages[-1].payload["version"] == 2
 

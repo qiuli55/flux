@@ -198,6 +198,12 @@ class Settings(BaseSettings):
     # 该 OAuth App 必须勾选 "Enable Device Flow"，否则 GitHub 会返回 device_flow_disabled
     # （此时仍可退回到粘贴 Personal Access Token 的方式）。
     github_client_id: str = "Ov23li4zYbYUuu07mqB0"
+    # Authorization Code（可选 PKCE）换票用的 client_secret：只能由部署环境注入，
+    # 仓库里不写任何真实值；为空时 /github/oauth/callback 会返回明确错误而不是崩溃。
+    github_client_secret: str | None = None
+    # 授权完成后 GitHub 回跳的地址，必须与 OAuth App 里登记的 Callback URL 一致。
+    # 手机端用自定义 scheme（flux://github-link）；以后桌面 / 网页可改成后端 HTTPS 回调。
+    github_redirect_uri: str = "flux://github-link"
     # repo = 全部仓库（含私有）读写；read:org = 读取组织归属（列仓库时需要）
     github_scopes: str = "repo read:org"
     # GitHub REST 根地址；GitHub Enterprise 可改成 https://<host>/api/v3

@@ -17,6 +17,8 @@ data class V2Agent(
     val tint: Color,
     /** 是否原生逐 token 流式；false 时界面标注「非逐字流式」。 */
     val nativeStreaming: Boolean = true,
+    /** 执行该 Agent 的 runtime（dsh / codex / opencode / claude-code），用于匹配官方图标。 */
+    val runtime: String = "",
 )
 
 /** 一个可选模型：keyId 非空表示来自密钥库。 */
@@ -122,6 +124,8 @@ data class V2Message(
     val role: V2MessageRole,
     val text: String,
     val time: String,
+    /** 消息时间戳（epoch 秒，UTC）；用于日期分隔显示今天 / 昨天 / 具体日期。 */
+    val createdAtEpoch: Long? = null,
     /** 服务端消息 id：LazyColumn 的稳定 key，流式刷新时不重建整列。空串时 UI 用下标兜底。 */
     val id: String = "",
     /** text = 普通消息；summary = 前情摘要；attachments = 附件消息；design_card = 设计稿卡片；
@@ -251,58 +255,20 @@ data class V2Task(
     val note: String? = null,
 )
 
-enum class V2LogLevel { INFO, WARN, ERROR }
-
-data class V2Log(val time: String, val level: V2LogLevel, val message: String)
-
-// ------------------------------------------------------------------ 演示数据
-
-val demoAgents = listOf(
-    V2Agent("arch", "CodeArchitect", "云端架构重构", 42, 2, V2Colors.accent),
-    V2Agent("ops", "DevOps-Pipeline", "CI/CD 自动化", 18, 1, V2Colors.violet),
-    V2Agent("sec", "Security-Auditor", "安全漏洞扫描", 7, 0, Color(0xFF059669)),
-)
-
-private fun models(vararg names: String): List<V2ModelOption> = names.map { V2ModelOption(it, it) }
-
-val demoDevices = listOf(
-    V2Device(
-        "MacBook Pro",
-        V2DeviceKind.LAPTOP,
-        listOf(
-            V2DeviceAgent("arch", models("Claude Opus 4.5", "GPT-5.2", "DeepSeek-V3.2")),
-            V2DeviceAgent("ops", models("Claude Sonnet 4.6", "GPT-5.1-Codex")),
-            V2DeviceAgent("sec", models("Claude Sonnet 4.6", "DeepSeek-V3.2")),
-        ),
-    ),
-    V2Device(
-        "Studio",
-        V2DeviceKind.DESKTOP,
-        listOf(
-            V2DeviceAgent("arch", models("Claude Opus 4.5", "Qwen3-Coder-480B")),
-            V2DeviceAgent("ops", models("GPT-5.1-Codex")),
-        ),
-    ),
-    V2Device(
-        "iPhone",
-        V2DeviceKind.PHONE,
-        listOf(
-            V2DeviceAgent("sec", models("DeepSeek-V3.2", "Claude Haiku 4.5")),
-        ),
-    ),
-)
+// ------------------------------------------------------------------ 运行时注册表
 
 const val ALL_DEVICES = "全部设备"
 
 /**
  * 运行时数据注册表。
  *
- * v2 页面历史上直接读 demo 数据，改为从 [V2Registry] 读；未登录 / 演示态时回落到 demo 内容，
- * 真实登录成功后由 V2AppViewModel 注入真实 Agent / 设备。
+ * 模型选择只展示后端 `GET /agents` 返回的原生模型 + 已启用密钥库模型；
+ * 注册表初始为空，不再内置任何演示 Agent / 设备 / 模型名，避免登录后
+ * 在首个刷新返回前把不可用的花名当成可选项。
  */
 object V2Registry {
-    var agents: List<V2Agent> by mutableStateOf(demoAgents)
-    var devices: List<V2Device> by mutableStateOf(demoDevices)
+    var agents: List<V2Agent> by mutableStateOf(emptyList())
+    var devices: List<V2Device> by mutableStateOf(emptyList())
     var models: List<String> by mutableStateOf(emptyList())
     /** 后端每个 Agent 的可用模型（原生 + key 库）；空 = 回落到全局模型。 */
     var agentModels: Map<String, List<V2ModelOption>> by mutableStateOf(emptyMap())
@@ -351,6 +317,16 @@ fun agentsForDevice(deviceName: String): List<V2AgentOption> {
     }
     return options.ifEmpty { listOf(V2AgentOption(fallbackAgent, globalModelOptions())) }
 }
+
+/**
+ * 当前选中 Agent 的模型清单。
+ *
+ * Agent 与模型不是一个下拉里的两级菜单：切换 Agent 后，模型入口必须立刻只展示
+ * 新 Agent 实际支持的模型（后端 `spec.models` + 已启用 `spec.key_models`）。
+ * 找不到对应 Agent 时返回空列表，让 UI 明确禁用模型入口，而不是沿用上一个 Agent 的模型。
+ */
+fun modelsForAgent(options: List<V2AgentOption>, agentId: String?): List<V2ModelOption> =
+    options.firstOrNull { it.agent.id == agentId }?.models.orEmpty()
 
 fun deviceKind(name: String): V2DeviceKind =
     V2Registry.devices.firstOrNull { it.name == name }?.kind ?: V2DeviceKind.LAPTOP
@@ -536,24 +512,6 @@ val demoTasks = listOf(
     ),
     V2Task("t-304", "静态代码安全扫描", "sec", "P2", V2TaskStatus.DONE, 100),
     V2Task("t-305", "清理 90 天前的构建缓存", "ops", "P3", V2TaskStatus.CANCELED, 0),
-)
-
-val demoInitialLogs = listOf(
-    V2Log("--:--:--", V2LogLevel.INFO, "Flux Kernel v2.1 已连接 · 会话 #4821"),
-    V2Log("--:--:--", V2LogLevel.INFO, "已同步 3 个 Agent 的运行状态"),
-    V2Log("--:--:--", V2LogLevel.WARN, "检测到高危 SQL 操作，等待人工确认"),
-    V2Log("--:--:--", V2LogLevel.INFO, "快照 snap-20261022-0210 生成完毕"),
-)
-
-val demoHeartbeats = listOf(
-    V2LogLevel.INFO to "健康检查通过 · api-gateway-03 延迟 96ms",
-    V2LogLevel.INFO to "索引重建进度 68%，预计还需 4 分钟",
-    V2LogLevel.WARN to "web-console 灰度错误率 0.42%，接近阈值 0.5%",
-    V2LogLevel.INFO to "任务队列写入 1 条新记录",
-    V2LogLevel.INFO to "安全扫描完成，未发现新增高危漏洞",
-    V2LogLevel.WARN to "限流触发 · 来源 10.0.4.18 命中 429 阈值",
-    V2LogLevel.INFO to "自动快照保留策略生效，清理 2 份过期备份",
-    V2LogLevel.INFO to "worker-02 心跳正常，负载 31%",
 )
 
 val demoChatSuggestions = listOf("集群现在怎么样？", "回滚最近一次部署", "查看异常日志", "给出扩容建议")

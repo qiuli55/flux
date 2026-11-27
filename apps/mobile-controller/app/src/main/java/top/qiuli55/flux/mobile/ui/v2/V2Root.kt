@@ -1,5 +1,7 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -62,6 +64,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.BuildConfig
+import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.update.UpdateCenter
@@ -96,9 +99,6 @@ private sealed interface V2Route {
     data object Chat : V2Route
 
     data object Terminals : V2Route
-
-    /** 内部多 Bot 群聊（整页，不用 Sheet）。 */
-    data class GroupChat(val groupId: String) : V2Route
 
     data class TaskDetail(val taskId: String) : V2Route
     data class TaskChat(val taskId: String) : V2Route
@@ -141,9 +141,6 @@ fun FluxV2Root() {
     var chatOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var device by remember { mutableStateOf(ALL_DEVICES) }
 
-    val logs = remember { mutableStateListOf<V2Log>() }
-    var heartbeatIndex by remember { mutableIntStateOf(0) }
-
     var chat by remember { mutableStateOf<V2ChatState?>(null) }
     val chatMessages = remember { mutableStateListOf<V2Message>() }
     // 新建对话的附件是页面本地状态：离开草稿页就清空，避免残留一组没人发送的附件
@@ -154,16 +151,29 @@ fun FluxV2Root() {
     // 全局触感控制器：设置里的开关只改 enabled，不重建振动器
     val hapticsController = remember(context) { createV2Haptics(context) }
 
+    // GitHub 授权码回跳（flux://github-link）：交给后端换票，成功后刷新账号与仓库。
+    LaunchedEffect(Unit) {
+        GitHubLinkBus.events.collect { event ->
+            vm.completeGitHubLogin(event.code, event.state)
+        }
+    }
+    // 授权码登录第一步拿到的授权页地址：用系统浏览器打开，回跳才会回到本 App。
+    LaunchedEffect(app.githubAuthorizeUrl) {
+        val url = app.githubAuthorizeUrl ?: return@LaunchedEffect
+        val opened = runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.isSuccess
+        vm.clearGitHubAuthorizeUrl()
+        if (!opened) {
+            Toast.makeText(context, "没有可用的浏览器，无法打开 GitHub 授权页", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     var settingsOpen by remember { mutableStateOf(false) }
     var keyVaultOpen by remember { mutableStateOf(false) }
     var memoryOpen by remember { mutableStateOf(false) }
     var billingOpen by remember { mutableStateOf(false) }
-    var logsOpen by remember { mutableStateOf(false) }
     var newChatOpen by remember { mutableStateOf(false) }
-    var createGroupOpen by remember { mutableStateOf(false) }
-    var createBotOpen by remember { mutableStateOf(false) }
-    // 从建群面板点「新建 Bot」时，创建完要回到建群面板继续选人
-    var createBotReturnToGroup by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
     // 画布有未保存改动时，返回先问一句：保存并退出 / 放弃 / 继续编辑
@@ -184,13 +194,6 @@ fun FluxV2Root() {
     var strict by remember { mutableStateOf(false) }
     SideEffect { hapticsController.enabled = haptics }
 
-    LaunchedEffect(Unit) {
-        if (logs.isEmpty()) {
-            val time = nowTime()
-            demoInitialLogs.forEach { logs.add(it.copy(time = time)) }
-        }
-    }
-
     // 退回登录 / 设备页时清掉上一轮的页面状态
     LaunchedEffect(app.boot) {
         if (app.boot != V2Boot.READY) {
@@ -210,7 +213,6 @@ fun FluxV2Root() {
             when (route) {
                 V2Route.Home -> {
                     vm.refresh(quiet = true)
-                    vm.loadGroups(quiet = true)
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Artifacts -> artifactsVm.load(quiet = true)
@@ -437,18 +439,9 @@ fun FluxV2Root() {
         route = V2Route.Chat
     }
 
-    fun appendHeartbeat() {
-        val heartbeat = demoHeartbeats[heartbeatIndex % demoHeartbeats.size]
-        heartbeatIndex += 1
-        logs.add(V2Log(nowTime(), heartbeat.first, heartbeat.second))
-        while (logs.size > 240) {
-            logs.removeAt(0)
-        }
-    }
-
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
-        settingsOpen || keyVaultOpen || logsOpen || newChatOpen ||
-        createGroupOpen || createBotOpen || agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
+        settingsOpen || keyVaultOpen || newChatOpen ||
+        agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
         designExitOpen || memoryOpen
 
     BackHandler(enabled = hasBack) {
@@ -461,15 +454,9 @@ fun FluxV2Root() {
             }
             manualConnectOpen -> manualConnectOpen = false
             agentPickerOpen -> agentPickerOpen = false
-            createBotOpen -> {
-                createBotOpen = false
-                createBotReturnToGroup = false
-            }
-            createGroupOpen -> createGroupOpen = false
             newChatOpen -> newChatOpen = false
             keyVaultOpen -> keyVaultOpen = false
             memoryOpen -> memoryOpen = false
-            logsOpen -> logsOpen = false
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
                   is V2Route.TaskDetail -> taskOrigin
@@ -479,10 +466,6 @@ fun FluxV2Root() {
                   is V2Route.Diff -> V2Route.Changes(current.taskId)
                   is V2Route.Run -> V2Route.TaskDetail(current.taskId)
                   is V2Route.Terminal -> V2Route.Terminals
-                  is V2Route.GroupChat -> {
-                      vm.closeGroupChat()
-                      V2Route.Home
-                  }
                   is V2Route.Browser -> current.origin
                   is V2Route.ArtifactDetail -> {
                       artifactsVm.closeDetail()
@@ -555,8 +538,6 @@ fun FluxV2Root() {
                             device = device,
                             onDeviceChange = { device = it },
                             conversations = app.conversations,
-                            groups = app.groupChat.groups,
-                            groupsLoading = app.groupChat.loadingGroups,
                             extraTop = extraTop,
                             onOpenArtifacts = { route = V2Route.Artifacts },
                             onOpenAssistant = { openAssistant() },
@@ -565,67 +546,9 @@ fun FluxV2Root() {
                                 deleteConversationError = null
                                 deleteConversationId = it.id
                             },
-                            onOpenGroup = { route = V2Route.GroupChat(it.id) },
-                            onCreateGroup = { createGroupOpen = true },
                             onNewChat = { newChatOpen = true },
-                            onRefresh = {
-                                vm.refresh(quiet = true)
-                                vm.loadGroups(quiet = true)
-                            },
+                            onRefresh = { vm.refresh(quiet = true) },
                         )
-
-                        is V2Route.GroupChat -> {
-                            LaunchedEffect(current.groupId) { vm.openGroupChat(current.groupId) }
-                            DisposableEffect(current.groupId) {
-                                onDispose { vm.closeGroupChat() }
-                            }
-                            GroupChatScreen(
-                                state = app.groupChat,
-                                botCandidates = app.botCandidates,
-                                extraTop = extraTop,
-                                showBack = showBack,
-                                onBack = {
-                                    vm.closeGroupChat()
-                                    route = V2Route.Home
-                                },
-                                onSend = { vm.sendGroupMessage(current.groupId, it) },
-                                onInterrupt = { vm.interruptGroupChat(current.groupId) },
-                                onAddMember = { vm.addGroupMember(current.groupId, it) },
-                                onRemoveMember = { vm.removeGroupMember(current.groupId, it) },
-                                onSetRole = { taskId, role ->
-                                    vm.updateGroupMember(
-                                        current.groupId,
-                                        taskId,
-                                        role = role,
-                                    )
-                                },
-                                onSetPermission = { taskId, mode ->
-                                    vm.updateGroupMember(
-                                        current.groupId,
-                                        taskId,
-                                        permissionMode = mode,
-                                    )
-                                },
-                                onSetModel = { taskId, model, keyId ->
-                                    vm.updateGroupMember(
-                                        current.groupId,
-                                        taskId,
-                                        model = model,
-                                        keyId = keyId,
-                                    )
-                                },
-                                onLoadMemory = { vm.loadGroupMemory(current.groupId) },
-                                onCreateBot = {
-                                    createBotReturnToGroup = false
-                                    createBotOpen = true
-                                },
-                                onDeleteGroup = {
-                                    vm.deleteGroupChat(current.groupId) { error ->
-                                        if (error.isEmpty()) route = V2Route.Home
-                                    }
-                                },
-                            )
-                        }
 
                         V2Route.Assistant -> V2AssistantScreen(
                             state = assistantState,
@@ -687,6 +610,10 @@ fun FluxV2Root() {
                             onSave = { title, content -> artifactsVm.save(title, content) },
                             onDelete = { artifactId ->
                                 artifactsVm.delete(artifactId) { route = V2Route.Artifacts }
+                            },
+                            onOpenSourceTask = { taskId ->
+                                // 返回时仍回到这份产物详情，用户不会丢掉上下文。
+                                openChat(taskId, V2Route.ArtifactDetail(current.artifactId))
                             },
                             onDismissMessages = { artifactsVm.clearMessages() },
                         )
@@ -831,7 +758,6 @@ fun FluxV2Root() {
                                         draftAttachmentError = null
                                         route = V2Route.Home
                                     },
-                                    onOpenLogs = { logsOpen = true },
                                     onDelete = {
                                         chat = null
                                         chatMessages.clear()
@@ -895,6 +821,28 @@ fun FluxV2Root() {
                                     },
                                     // 新建对话不是从设备接续的历史会话，不需要接续横幅。
                                     showHandoff = false,
+                                    // 新对话也在输入栏里就地切 Agent / 模型：
+                                    // 切 Agent 后模型清单立刻换成新 Agent 支持的模型（后端注入）。
+                                    agentOptions = agentsForDevice(active.device),
+                                    modelOptions = modelsForAgent(
+                                        agentsForDevice(active.device),
+                                        active.agentId,
+                                    ),
+                                    onSwitchAgent = { agentId ->
+                                        val nextOptions = agentsForDevice(active.device)
+                                        val firstModel = modelsForAgent(nextOptions, agentId).firstOrNull()
+                                        chat = chat?.copy(
+                                            agentId = agentId,
+                                            model = firstModel?.model.orEmpty(),
+                                            modelKeyId = firstModel?.keyId,
+                                        )
+                                    },
+                                    onSwitchModel = { option ->
+                                        chat = chat?.copy(
+                                            model = option.model,
+                                            modelKeyId = option.keyId,
+                                        )
+                                    },
                                     onDecisionModeChange = { mode -> chat = chat?.copy(decisionMode = mode) },
                                     // 新建对话还没有任务：模式只记在本地，发首条消息时随建任务请求带上
                                     onPermissionModeChange = { mode -> chat = chat?.copy(permissionMode = mode) },
@@ -931,7 +879,6 @@ fun FluxV2Root() {
                                     chatMessages.clear()
                                 }
                             },
-                            onOpenLogs = { logsOpen = true },
                             onRequestDelete = {
                                 deleteConversationError = null
                                 deleteConversationId = current.taskId
@@ -1020,7 +967,6 @@ fun FluxV2Root() {
                                         V2RailItem.PROFILE -> route = V2Route.Profile
                                     }
                                 },
-                                onOpenLogs = { logsOpen = true },
                             )
                             Box(Modifier.width(1.dp).fillMaxHeight().background(V2Colors.ink(.07f)))
                             Box(
@@ -1085,14 +1031,12 @@ fun FluxV2Root() {
                     }
 
                     val flash = app.error ?: app.notice
-                        ?: app.groupChat.error ?: app.groupChat.notice
-                    val flashIsError = app.error != null || app.groupChat.error != null
+                    val flashIsError = app.error != null
                     // 提示条到点自动收起：错误留久一点，成功提示更快消失，避免长期糊在顶栏。
                     LaunchedEffect(flash) {
                         if (flash != null) {
                             delay(if (flashIsError) 5000L else 2600L)
                             vm.clearMessages()
-                            vm.clearGroupMessages()
                         }
                     }
                     if (flash != null) {
@@ -1103,10 +1047,7 @@ fun FluxV2Root() {
                                 .padding(top = 8.dp, start = 16.dp, end = 16.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (flashIsError) V2Colors.rose else V2Colors.emerald700)
-                                .clickable {
-                                    vm.clearMessages()
-                                    vm.clearGroupMessages()
-                                }
+                                .clickable { vm.clearMessages() }
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                         ) {
                             Label(flash, 10.5f, Color.White)
@@ -1157,18 +1098,12 @@ fun FluxV2Root() {
                                 openInternalBrowser(url)
                             },
                             githubAccount = app.githubAccount,
-                            githubLogin = app.githubLogin,
                             githubLoading = app.githubLoading,
                             githubRepos = app.githubRepos,
                             githubReposLoading = app.githubReposLoading,
                             onGitHubLogin = { vm.startGitHubLogin() },
                             onGitHubLogout = { vm.logoutGitHubAccount() },
                             onRefreshGitHub = { vm.loadGitHubAccount() },
-                            onOpenGitHubUrl = { url ->
-                                settingsOpen = false
-                                openInternalBrowser(url)
-                            },
-                            onSaveGitHubToken = { token -> vm.saveGitHubToken(token) },
                             onLoadGitHubRepos = { vm.loadGitHubRepos() },
                             onManualConnect = {
                                 settingsOpen = false
@@ -1243,68 +1178,12 @@ fun FluxV2Root() {
                         )
                     }
 
-                    if (logsOpen) {
-                        LogsSheet(
-                            logs = logs,
-                            onAppendHeartbeat = { appendHeartbeat() },
-                            onClear = { logs.clear() },
-                            onDismiss = { logsOpen = false },
-                        )
-                    }
-
                     if (newChatOpen) {
                         NewChatSheet(
                             device = device,
                             options = agentsForDevice(device),
                             onPick = { createChat(it) },
                             onDismiss = { newChatOpen = false },
-                        )
-                    }
-
-                    if (createGroupOpen) {
-                        CreateGroupSheet(
-                            candidates = app.botCandidates,
-                            onCreateBot = {
-                                createGroupOpen = false
-                                createBotReturnToGroup = true
-                                createBotOpen = true
-                            },
-                            onCreate = { name, description, rounds, memberIds, adminTaskId ->
-                                vm.createGroup(
-                                    name,
-                                    description,
-                                    rounds,
-                                    memberIds,
-                                    adminTaskId,
-                                ) { group ->
-                                    if (group != null) {
-                                        createGroupOpen = false
-                                        route = V2Route.GroupChat(group.id)
-                                    }
-                                }
-                            },
-                            onDismiss = { createGroupOpen = false },
-                        )
-                    }
-
-                    if (createBotOpen) {
-                        CreateBotSheet(
-                            onCreate = { name, shape, color, done ->
-                                vm.createBot(name, shape, color) { error ->
-                                    done(error)
-                                    if (error.isEmpty()) {
-                                        createBotOpen = false
-                                        if (createBotReturnToGroup) {
-                                            createGroupOpen = true
-                                        }
-                                        createBotReturnToGroup = false
-                                    }
-                                }
-                            },
-                            onDismiss = {
-                                createBotOpen = false
-                                createBotReturnToGroup = false
-                            },
                         )
                     }
 
@@ -1411,7 +1290,6 @@ fun FluxV2Root() {
 private fun V2NavRail(
     selected: V2RailItem,
     onSelect: (V2RailItem) -> Unit,
-    onOpenLogs: () -> Unit,
 ) {
     Column(
         Modifier
@@ -1455,7 +1333,6 @@ private fun V2NavRail(
 
         Spacer(Modifier.weight(1f))
 
-        RailButton(Icons.Outlined.ShowChart, "日志", selected = false, onClick = onOpenLogs)
         Spacer(Modifier.height(12.dp))
         Box(
             Modifier
@@ -1558,6 +1435,5 @@ private fun v2RouteDepth(route: V2Route): Int = when (route) {
     is V2Route.Changes -> 3
     is V2Route.Run -> 3
     is V2Route.Terminal -> 2
-    is V2Route.GroupChat -> 2
     is V2Route.Diff -> 4
 }

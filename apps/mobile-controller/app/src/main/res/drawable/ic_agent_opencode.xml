@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OpenCode 官方标记（方框 + 内块）。
+  来源：OpenCode 官网 favicon（https://opencode.ai/favicon.svg）。
+  只截取官方 SVG 的两个 path，去掉深色底，保留官方几何形状，未重绘。
+  OpenCode 仓库：https://github.com/sst/opencode（MIT）。
+  商标归 OpenCode 项目所有，仅用于标识执行运行时 opencode。
+  许可与来源说明见 assets/AGENT_ICONS_ATTRIBUTION.md。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path
+        android:fillColor="@color/agent_icon_ink_muted"
+        android:pathData="M320 224V352H192V224H320Z" />
+    <path
+        android:fillColor="@color/agent_icon_ink"
+        android:fillType="evenOdd"
+        android:pathData="M384 416H128V96H384V416ZM320 160H192V352H320V160Z" />
+</vector>

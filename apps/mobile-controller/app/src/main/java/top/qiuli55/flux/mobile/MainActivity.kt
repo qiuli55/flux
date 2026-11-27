@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
 import top.qiuli55.flux.mobile.data.CloudAuthBus
+import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Root
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Theme
 import top.qiuli55.flux.mobile.ui.v2.V2Colors
@@ -43,11 +44,20 @@ class MainActivity : ComponentActivity() {
         handleAuthRedirect(intent)
     }
 
-    /** GitHub OAuth 完成后浏览器回跳 flux://auth?code=...，把授权码交给登录模块。 */
+    /**
+     * OAuth 回跳分流：
+     * - `flux://auth?code=...`：Flux 云账号登录（复用 B 机账号服务，保持原样）；
+     * - `flux://github-link?code=&state=`：给 Agent 链接 GitHub 仓库权限，交给设置页换票。
+     */
     private fun handleAuthRedirect(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme == "flux" && data.host == "auth") {
-            CloudAuthBus.publish(data.getQueryParameter("code").orEmpty())
+        if (data.scheme != "flux") return
+        when (data.host) {
+            "auth" -> CloudAuthBus.publish(data.getQueryParameter("code").orEmpty())
+            "github-link" -> GitHubLinkBus.publish(
+                code = data.getQueryParameter("code").orEmpty(),
+                state = data.getQueryParameter("state").orEmpty(),
+            )
         }
     }
 }

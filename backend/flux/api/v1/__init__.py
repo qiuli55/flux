@@ -14,7 +14,6 @@ from flux.api.v1 import (
     dsh,
     git,
     github,
-    groups,
     health,
     ide,
     installations,
@@ -36,7 +35,7 @@ api_v1_router.include_router(billing.router)
 api_v1_router.include_router(keys.router)
 api_v1_router.include_router(installations.router)
 api_v1_router.include_router(tasks.router)
-api_v1_router.include_router(groups.router)
+# 群聊已从产品下线：`core/group` 暂时保留，但不再对外挂载 /api/v1/groups。
 api_v1_router.include_router(workspace.router)
 api_v1_router.include_router(terminal.router)
 api_v1_router.include_router(ide.router)

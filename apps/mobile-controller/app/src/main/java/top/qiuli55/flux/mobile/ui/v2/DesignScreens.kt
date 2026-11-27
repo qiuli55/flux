@@ -2268,7 +2268,9 @@ private fun LayerSheet(
         SheetHeader("图层", "${rows.size} 个图层 · 越靠上越顶层", onClose = onDismiss)
 
         when {
-            targetId != null -> Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            targetId != null -> Column(
+                Modifier.fillMaxWidth().imePadding().padding(horizontal = 20.dp),
+            ) {
                 DesignFieldTitle("重命名图层")
                 DesignInput(
                     value = renameText,

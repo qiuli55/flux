@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色模式下的 Agent 图标墨色：与 V2Colors.ink / ink(.55) 对齐。 -->
+    <color name="agent_icon_ink">#F4F4F5</color>
+    <color name="agent_icon_ink_muted">#A1A1AA</color>
+</resources>
