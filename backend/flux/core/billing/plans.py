@@ -13,15 +13,15 @@
 {
   "plans": [
     {
-      "key": "claude-max",
-      "label": "Claude Max",
-      "vendor": "Anthropic",
-      "model_prefixes": ["claude", "anthropic"],
-      "runtime_ids": ["claude-code"],
+      "key": "my-plan",
+      "label": "My Plan",
+      "vendor": "Example",
+      "model_prefixes": ["my-plan"],
+      "runtime_ids": ["my-runtime"],
       "windows": ["5h", "weekly", "monthly"],
       "fallback_model": "deepseek/deepseek-flash",
       "quota_usd": 100,
-      "source": {"kind": "cli", "command": "claude usage --json", "timeout": 20}
+      "source": {"kind": "cli", "command": "my-usage-cli usage --json", "timeout": 20}
     }
   ]
 }
@@ -29,6 +29,9 @@
 
 `source.kind` 支持 `cli`（跑命令、解析 JSON）与 `http`（GET 一个额度接口）；
 省略 `source` 就是"只记账，不限额"。同 key 的自定义套餐会覆盖内置定义。
+
+注意：Claude 订阅目前**没有**可脚本化的官方额度接口（`/usage` 只在交互式会话里），
+不要用示例名去猜一个 CLI 命令；需要接官方额度时，先确认上游文档给了稳定的机器接口。
 """
 
 from __future__ import annotations
@@ -183,8 +186,9 @@ class PlanDefinition:
 def default_plans() -> dict[str, PlanDefinition]:
     """内置套餐（顺序即前端展示顺序）。
 
-    Codex / Claude 默认只记账、不限额：它们的官方额度没有稳定公开接口，
-    需要时用自定义套餐文件补 `source`（HTTP 端点或本机 CLI 命令）。
+    Codex 有官方额度来源（登录 ChatGPT 后采集 `rate_limit` 窗口）；
+    Claude 订阅仍没有稳定、可脚本化的官方额度接口，只做本地记账。
+    需要私有额度来源时，用自定义套餐文件补 `source`（HTTP 端点或本机 CLI 命令）。
     """
     return {
         PLAN_OPENCODE_GO: PlanDefinition(
