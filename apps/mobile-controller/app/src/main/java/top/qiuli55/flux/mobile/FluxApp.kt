@@ -2,6 +2,7 @@ package top.qiuli55.flux.mobile
 
 import android.app.Application
 import top.qiuli55.flux.mobile.data.FluxEnv
+import top.qiuli55.flux.mobile.notify.NotificationChannels
 import top.qiuli55.flux.mobile.update.UpdateCenter
 
 /**
@@ -15,5 +16,7 @@ class FluxApp : Application() {
         super.onCreate()
         FluxEnv.install(this)
         UpdateCenter.install(this)
+        // 渠道要在第一次发通知前就存在；设置页也靠它读取渠道开关状态。
+        NotificationChannels.ensure(this)
     }
 }

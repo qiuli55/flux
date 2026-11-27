@@ -20,6 +20,10 @@ import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
 import top.qiuli55.flux.mobile.data.materializeSharedAttachments
 import top.qiuli55.flux.mobile.data.parseShareIntent
+import top.qiuli55.flux.mobile.notify.FluxLaunch
+import top.qiuli55.flux.mobile.notify.OpenTaskBus
+import top.qiuli55.flux.mobile.notify.clearOpenTaskExtras
+import top.qiuli55.flux.mobile.notify.parseFluxLaunch
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Root
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Theme
 import top.qiuli55.flux.mobile.ui.v2.V2Colors
@@ -35,9 +39,9 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightStatusBars = true
             isAppearanceLightNavigationBars = true
         }
-        handleAuthRedirect(intent)
-        // 进程重建时系统可能把旧的分享 intent 再带回来；只在首次创建时消费，避免重复落草稿。
-        if (savedInstanceState == null) handleShareIntent(intent)
+        // 进程重建时系统可能把旧的分享 / 通知 intent 再带回来；只在首次创建时消费，
+        // 避免重复落草稿或重复跳转。OAuth 回跳仍然每次都处理（凭据不能丢）。
+        handleIncomingIntent(intent, consumeColdStartPayload = savedInstanceState == null)
         setContent {
             FluxV2Theme {
                 Box(Modifier.fillMaxSize().background(V2Colors.bg)) {
@@ -50,9 +54,32 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleAuthRedirect(intent)
-        // singleTask：应用已在前台时再分享，只会走这里，不会重新 onCreate。
-        handleShareIntent(intent)
+        // singleTask：应用已在前台时再分享 / 点通知，只会走这里，不会重新 onCreate。
+        handleIncomingIntent(intent, consumeColdStartPayload = true)
+    }
+
+    /**
+     * 启动 Intent 分流：通知点击 / OAuth 回跳 / 系统分享互不干扰。
+     *
+     * 通知点击消费后立刻清掉 extra，旋转或重建不会重复跳转；分享的消费与清理由
+     * [handleShareIntent] 完成。
+     */
+    private fun handleIncomingIntent(intent: Intent?, consumeColdStartPayload: Boolean) {
+        when (val launch = parseFluxLaunch(intent)) {
+            is FluxLaunch.OpenTask -> {
+                if (!consumeColdStartPayload) return
+                clearOpenTaskExtras(intent)
+                OpenTaskBus.publish(launch.taskId, launch.reason)
+            }
+            is FluxLaunch.OAuth -> when (launch.host) {
+                // flux://auth?code=...：Flux 云账号登录（复用 B 机账号服务，保持原样）
+                "auth" -> CloudAuthBus.publish(launch.code)
+                // flux://github-link?code=&state=：给 Agent 链接 GitHub 仓库权限
+                "github-link" -> GitHubLinkBus.publish(code = launch.code, state = launch.state)
+            }
+            FluxLaunch.Share -> if (consumeColdStartPayload) handleShareIntent(intent)
+            FluxLaunch.None -> Unit
+        }
     }
 
     /**
@@ -79,23 +106,6 @@ class MainActivity : ComponentActivity() {
                 materializeSharedAttachments(appContext, parsed)
             }
             ShareIntakeBus.publish(prepared)
-        }
-    }
-
-    /**
-     * OAuth 回跳分流：
-     * - `flux://auth?code=...`：Flux 云账号登录（复用 B 机账号服务，保持原样）；
-     * - `flux://github-link?code=&state=`：给 Agent 链接 GitHub 仓库权限，交给设置页换票。
-     */
-    private fun handleAuthRedirect(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (data.scheme != "flux") return
-        when (data.host) {
-            "auth" -> CloudAuthBus.publish(data.getQueryParameter("code").orEmpty())
-            "github-link" -> GitHubLinkBus.publish(
-                code = data.getQueryParameter("code").orEmpty(),
-                state = data.getQueryParameter("state").orEmpty(),
-            )
         }
     }
 }

@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -37,6 +38,14 @@ class SettingsStore(context: Context) {
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
         val TOKEN = stringPreferencesKey("token")
+    }
+
+    /** 本机提醒 / 动效开关；缺失时按 [NotificationPrefs] 的默认值处理。 */
+    private object PrefKeys {
+        val DECISION_ALERTS = booleanPreferencesKey("pref_decision_alerts")
+        val TASK_ALERTS = booleanPreferencesKey("pref_task_alerts")
+        val HAPTICS = booleanPreferencesKey("pref_haptics")
+        val REDUCE_MOTION = booleanPreferencesKey("pref_reduce_motion")
     }
 
     /** 账号模式（与手动连接并存）：云地址、令牌、当前选中的设备。 */
@@ -132,6 +141,34 @@ class SettingsStore(context: Context) {
         appContext.fluxSettingsStore.edit { prefs ->
             prefs[Keys.BASE_URL] = baseUrl.trim()
             prefs[Keys.TOKEN] = encryptToken(token)
+        }
+    }
+
+    /**
+     * 本机提醒与动效偏好。
+     *
+     * 旧版本没有这些键，读取时回落到默认值（决策提醒开、任务完成提醒关、
+     * 触感开、减少动态关），不会因为升级把用户已有的界面习惯改掉。
+     */
+    val notificationPrefs: Flow<NotificationPrefs> = appContext.fluxSettingsStore.data
+        .catch { error ->
+            if (error is IOException) emit(emptyPreferences()) else throw error
+        }
+        .map { prefs ->
+            NotificationPrefs(
+                decisionAlerts = prefs[PrefKeys.DECISION_ALERTS] ?: true,
+                taskAlerts = prefs[PrefKeys.TASK_ALERTS] ?: false,
+                haptics = prefs[PrefKeys.HAPTICS] ?: true,
+                reduceMotion = prefs[PrefKeys.REDUCE_MOTION] ?: false,
+            )
+        }
+
+    suspend fun saveNotificationPrefs(prefs: NotificationPrefs) {
+        appContext.fluxSettingsStore.edit { stored ->
+            stored[PrefKeys.DECISION_ALERTS] = prefs.decisionAlerts
+            stored[PrefKeys.TASK_ALERTS] = prefs.taskAlerts
+            stored[PrefKeys.HAPTICS] = prefs.haptics
+            stored[PrefKeys.REDUCE_MOTION] = prefs.reduceMotion
         }
     }
 
