@@ -631,24 +631,12 @@ private fun DesignPreviewThumb(
             // 解析放在绘制 lambda 外：Canvas 每帧重绘都会执行 lambda，列表滚动时不能反复量字。
             val resolved = remember(preview.nodes) { resolver.resolve(preview.nodes) }
             Canvas(Modifier.fillMaxSize()) {
-                val scale = min(size.width / preview.w, size.height / preview.h)
-                val origin = Offset(
-                    (size.width - preview.w * scale) / 2f,
-                    (size.height - preview.h * scale) / 2f,
+                drawDesignPreview(
+                    preview = preview,
+                    resolved = resolved,
+                    bg = designColor(preview.bg ?: summary.bg, DesignSpec.SHELL_TOP),
+                    cover = false,
                 )
-                translate(origin.x, origin.y) {
-                    scale(scale, scale, pivot = Offset.Zero) {
-                        with(DesignPainter) {
-                            drawScreen(
-                                nodes = resolved,
-                                width = preview.w,
-                                height = preview.h,
-                                bg = designColor(preview.bg ?: summary.bg, DesignSpec.SHELL_TOP),
-                                device = false,
-                            )
-                        }
-                    }
-                }
             }
         }
     }
@@ -676,24 +664,73 @@ internal fun DesignMiniPreview(
             // 同上：绘制期只做几何变换，节点解析只在预览数据变化时做一次。
             val resolved = remember(preview.nodes) { resolver.resolve(preview.nodes) }
             Canvas(Modifier.fillMaxSize()) {
-                val scale = min(size.width / preview.w, size.height / preview.h)
-                val origin = Offset(
-                    (size.width - preview.w * scale) / 2f,
-                    (size.height - preview.h * scale) / 2f,
+                drawDesignPreview(
+                    preview = preview,
+                    resolved = resolved,
+                    bg = designColor(preview.bg ?: bg, DesignSpec.SHELL_TOP),
+                    cover = false,
                 )
-                translate(origin.x, origin.y) {
-                    scale(scale, scale, pivot = Offset.Zero) {
-                        with(DesignPainter) {
-                            drawScreen(
-                                nodes = resolved,
-                                width = preview.w,
-                                height = preview.h,
-                                bg = designColor(preview.bg ?: bg, DesignSpec.SHELL_TOP),
-                                device = false,
-                            )
-                        }
-                    }
-                }
+            }
+        }
+    }
+}
+
+/**
+ * Artifacts 列表卡片封面：沿用 [DesignMiniPreview] 的离线绘制路径，但按 cover 裁切铺满封面。
+ *
+ * 调用方先确认 [preview] 有节点；没有预览时用占位图标，不要在这里画空画板。
+ */
+@Composable
+internal fun DesignCoverPreview(
+    modifier: Modifier,
+    preview: DesignPreview,
+    bg: String?,
+) {
+    val measurer = rememberTextMeasurer()
+    val resolver = rememberDesignResolver(measurer)
+    // 节点解析只在预览数据变化时做一次，滚动时 Canvas 每帧只做几何变换。
+    val resolved = remember(preview.nodes) { resolver.resolve(preview.nodes) }
+    Canvas(modifier) {
+        drawDesignPreview(
+            preview = preview,
+            resolved = resolved,
+            bg = designColor(preview.bg ?: bg, DesignSpec.SHELL_TOP),
+            cover = true,
+        )
+    }
+}
+
+/**
+ * 把设计稿第一屏画进当前画布。
+ *
+ * [cover] = false 时完整居中（工作室 / 对话卡片缩略图）；true 时按较大边缩放并居中裁切，
+ * 让 Artifacts 卡片封面能填满区域、看出内容大概长什么样。
+ */
+private fun DrawScope.drawDesignPreview(
+    preview: DesignPreview,
+    resolved: List<ResolvedNode>,
+    bg: Color,
+    cover: Boolean,
+) {
+    val scale = if (cover) {
+        max(size.width / preview.w, size.height / preview.h)
+    } else {
+        min(size.width / preview.w, size.height / preview.h)
+    }
+    val origin = Offset(
+        (size.width - preview.w * scale) / 2f,
+        (size.height - preview.h * scale) / 2f,
+    )
+    translate(origin.x, origin.y) {
+        scale(scale, scale, pivot = Offset.Zero) {
+            with(DesignPainter) {
+                drawScreen(
+                    nodes = resolved,
+                    width = preview.w,
+                    height = preview.h,
+                    bg = bg,
+                    device = false,
+                )
             }
         }
     }
