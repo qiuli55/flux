@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import json
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,10 +111,15 @@ def claude_argv(
     return tuple(argv)
 
 
-def claude_mcp_config(url: str, token: str | None, run_id: str) -> str:
-    """`--mcp-config` 文件内容：Flux MCP 端点 + 一次性 Bearer 令牌。
+def claude_mcp_config(
+    url: str,
+    token: str | None,
+    run_id: str,
+    extra_servers: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str:
+    """`--mcp-config` 文件内容：Flux MCP 端点 + 用户自定义 MCP 连接器。
 
-    令牌为 None（MCP 注入关闭）时返回空 server 表，不写任何凭据。
+    令牌为 None（MCP 注入关闭）时不写 Flux 凭据，但自定义连接器仍然保留。
     """
     payload: dict[str, Any] = {"mcpServers": {}}
     if token is not None:
@@ -126,6 +131,15 @@ def claude_mcp_config(url: str, token: str | None, run_id: str) -> str:
             "url": url,
             "headers": headers,
         }
+    for name, spec in (extra_servers or {}).items():
+        if str(name) == "flux":
+            continue
+        remote_url = str(spec.get("url") or "").strip()
+        if remote_url:
+            payload["mcpServers"][str(name)] = {
+                "type": "http",
+                "url": remote_url,
+            }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 

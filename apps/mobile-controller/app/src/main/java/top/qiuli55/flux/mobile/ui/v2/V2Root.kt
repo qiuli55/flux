@@ -64,6 +64,7 @@ import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
+import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
@@ -79,6 +80,10 @@ private sealed interface V2Route {
     data class ArtifactDetail(val artifactId: String) : V2Route
     /** 「我的」：账号与全部管理入口（设备、终端、密钥、额度、记忆、偏好）。 */
     data object Profile : V2Route
+    /** 「我的」二级页：连接器（GitHub + 自定义 MCP）。 */
+    data object Connectors : V2Route
+    /** 「我的」二级页：统一订阅登录入口（ChatGPT / Claude Code）。 */
+    data object Subscriptions : V2Route
     data object DesignCanvas : V2Route
 
     /**
@@ -158,12 +163,18 @@ fun FluxV2Root() {
     LaunchedEffect(Unit) {
         GitHubLinkBus.events.collect { event ->
             vm.completeGitHubLogin(event.code, event.state)
+            // 内置浏览器完成回跳后回到来源页，不要让用户停在授权页。
+            val current = route
+            if (current is V2Route.Browser) route = current.origin
         }
     }
     var settingsOpen by remember { mutableStateOf(false) }
     var keyVaultOpen by remember { mutableStateOf(false) }
     var memoryOpen by remember { mutableStateOf(false) }
     var billingOpen by remember { mutableStateOf(false) }
+    var customConnectorOpen by remember { mutableStateOf(false) }
+    var githubSheetOpen by remember { mutableStateOf(false) }
+    var connectorDetail by remember { mutableStateOf<McpConnector?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
@@ -218,7 +229,21 @@ fun FluxV2Root() {
                 V2Route.Assistant -> assistantVm.load(quiet = true)
                 V2Route.Artifacts -> artifactsVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
-                V2Route.Profile -> vm.loadMemories()
+                V2Route.Profile -> {
+                    vm.loadMemories()
+                    // 「我的」上的入口会显示已连接数量：进页时顺手刷新一次。
+                    vm.loadCodexAccount()
+                    vm.loadClaudeAccount()
+                    vm.loadConnectors(quiet = true)
+                }
+                V2Route.Connectors -> {
+                    vm.loadConnectors()
+                    vm.loadGitHubAccount()
+                }
+                V2Route.Subscriptions -> {
+                    vm.loadCodexAccount()
+                    vm.loadClaudeAccount()
+                }
                 else -> Unit
             }
         }
@@ -438,7 +463,8 @@ fun FluxV2Root() {
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
         settingsOpen || keyVaultOpen || newChatOpen ||
         agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
-        designExitOpen || memoryOpen
+        designExitOpen || memoryOpen || customConnectorOpen || githubSheetOpen ||
+        connectorDetail != null
 
     BackHandler(enabled = hasBack) {
         when {
@@ -453,6 +479,9 @@ fun FluxV2Root() {
             newChatOpen -> newChatOpen = false
             keyVaultOpen -> keyVaultOpen = false
             memoryOpen -> memoryOpen = false
+            customConnectorOpen -> customConnectorOpen = false
+            githubSheetOpen -> githubSheetOpen = false
+            connectorDetail != null -> connectorDetail = null
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
                   is V2Route.TaskDetail -> taskOrigin
@@ -462,6 +491,7 @@ fun FluxV2Root() {
                   is V2Route.Diff -> V2Route.Changes(current.taskId)
                   is V2Route.Run -> V2Route.TaskDetail(current.taskId)
                   is V2Route.Terminal -> V2Route.Terminals
+                  V2Route.Connectors, V2Route.Subscriptions -> V2Route.Profile
                   is V2Route.Browser -> current.origin
                   is V2Route.ArtifactDetail -> {
                       artifactsVm.closeDetail()
@@ -655,8 +685,15 @@ fun FluxV2Root() {
                             memoryCount = app.memories.size,
                             billingNote = if (app.billingError != null) "刷新失败" else "额度正常",
                             version = BuildConfig.VERSION_NAME,
+                            connectorCount = app.connectors.count { it.status == "connected" },
+                            subscriptionCount = listOf(
+                                app.codexAccount?.loggedIn == true,
+                                app.claudeAccount?.loggedIn == true,
+                            ).count { it },
                             extraTop = extraTop,
                             onOpenDevices = { vm.showDevices() },
+                            onOpenConnectors = { route = V2Route.Connectors },
+                            onOpenSubscriptions = { route = V2Route.Subscriptions },
                             onOpenTerminals = { route = V2Route.Terminals },
                             onOpenKeys = {
                                 keyVaultOpen = true
@@ -679,6 +716,57 @@ fun FluxV2Root() {
                             },
                             onOpenSettings = { settingsOpen = true },
                             onCheckUpdate = { UpdateCenter.checkManually() },
+                        )
+
+                        V2Route.Connectors -> ConnectorsScreen(
+                            connectors = app.connectors,
+                            loading = app.connectorsLoading,
+                            error = app.connectorsError,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Profile },
+                            onReload = { vm.loadConnectors() },
+                            onAdd = { customConnectorOpen = true },
+                            onGitHub = { githubSheetOpen = true },
+                            onReconnect = { item ->
+                                if (item.id == "github") {
+                                    githubSheetOpen = false
+                                    vm.startGitHubLogin()
+                                } else {
+                                    vm.probeConnector(item.id) { failure ->
+                                        if (failure != null) {
+                                            Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            },
+                            onOpenCustom = { connectorDetail = it },
+                            onDismissMessages = { vm.clearMessages() },
+                        )
+
+                        V2Route.Subscriptions -> SubscriptionsScreen(
+                            codexAccount = app.codexAccount,
+                            codexLogin = app.codexLogin,
+                            codexLoading = app.codexLoading,
+                            claudeAccount = app.claudeAccount,
+                            claudeLogin = app.claudeLogin,
+                            claudeLoading = app.claudeLoading,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Profile },
+                            onRefresh = {
+                                vm.loadCodexAccount()
+                                vm.loadClaudeAccount()
+                            },
+                            onCodexLogin = { vm.startCodexLogin() },
+                            onCodexLogout = { vm.logoutCodexAccount() },
+                            onOpenCodexUrl = { openInternalBrowser(it) },
+                            onClaudeLogin = { vm.startClaudeLogin() },
+                            onClaudeLogout = { vm.logoutClaudeAccount() },
+                            onSubmitClaudeCode = { loginId, code, onResult ->
+                                vm.submitClaudeLoginCode(loginId, code, onResult)
+                            },
+                            onOpenClaudeUrl = { openInternalBrowser(it) },
                         )
 
                         V2Route.DesignCanvas -> DesignCanvasScreen(
@@ -962,7 +1050,9 @@ fun FluxV2Root() {
                                     V2Route.Designs,
                                     V2Route.DesignCanvas,
                                     is V2Route.ArtifactDetail -> V2RailItem.ARTIFACTS
-                                    V2Route.Profile -> V2RailItem.PROFILE
+                                    V2Route.Profile,
+                                    V2Route.Connectors,
+                                    V2Route.Subscriptions -> V2RailItem.PROFILE
                                     else -> V2RailItem.CHATS
                                 },
                                 onSelect = { item ->
@@ -1092,24 +1182,6 @@ fun FluxV2Root() {
                                 memoryOpen = true
                                 vm.loadMemories()
                             },
-                            codexAccount = app.codexAccount,
-                            codexLogin = app.codexLogin,
-                            codexLoading = app.codexLoading,
-                            onCodexLogin = { vm.startCodexLogin() },
-                            onCodexLogout = { vm.logoutCodexAccount() },
-                            onRefreshCodex = { vm.loadCodexAccount() },
-                            onOpenCodexUrl = { url ->
-                                settingsOpen = false
-                                openInternalBrowser(url)
-                            },
-                            githubAccount = app.githubAccount,
-                            githubLoading = app.githubLoading,
-                            githubRepos = app.githubRepos,
-                            githubReposLoading = app.githubReposLoading,
-                            onGitHubLogin = { vm.startGitHubLogin() },
-                            onGitHubLogout = { vm.logoutGitHubAccount() },
-                            onRefreshGitHub = { vm.loadGitHubAccount() },
-                            onLoadGitHubRepos = { vm.loadGitHubRepos() },
                             onManualConnect = {
                                 settingsOpen = false
                                 manualConnectOpen = true
@@ -1122,6 +1194,49 @@ fun FluxV2Root() {
                             updateBadge = update.kind != UpdateKind.HIDDEN,
                             onCheckUpdate = { UpdateCenter.checkManually() },
                             onDismiss = { settingsOpen = false },
+                        )
+                    }
+
+                    if (customConnectorOpen) {
+                        CustomConnectorSheet(
+                            onDismiss = { customConnectorOpen = false },
+                            onSubmit = { name, url, onResult ->
+                                vm.addConnector(name, url) { failure ->
+                                    if (failure == null) customConnectorOpen = false
+                                    onResult(failure)
+                                }
+                            },
+                        )
+                    }
+
+                    if (githubSheetOpen) {
+                        GitHubConnectorSheet(
+                            account = app.githubAccount,
+                            repos = app.githubRepos,
+                            reposLoading = app.githubReposLoading,
+                            loading = app.githubLoading,
+                            onRefreshRepos = { vm.loadGitHubRepos() },
+                            onLogout = {
+                                vm.logoutGitHubAccount()
+                                githubSheetOpen = false
+                            },
+                            onDismiss = { githubSheetOpen = false },
+                        )
+                    }
+
+                    connectorDetail?.let { selected ->
+                        // 探测后状态可能已变：优先用列表里的最新副本渲染。
+                        val current = app.connectors.firstOrNull { it.id == selected.id } ?: selected
+                        CustomConnectorDetailSheet(
+                            item = current,
+                            onDismiss = { connectorDetail = null },
+                            onProbe = { id, onResult -> vm.probeConnector(id, onResult) },
+                            onDelete = { id, onResult ->
+                                vm.deleteConnector(id) { failure ->
+                                    if (failure == null) connectorDetail = null
+                                    onResult(failure)
+                                }
+                            },
                         )
                     }
 
@@ -1431,6 +1546,7 @@ private fun RailButton(
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
+    V2Route.Connectors, V2Route.Subscriptions -> 1
     V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2

@@ -7,6 +7,7 @@ from flux.api.v1 import (
     artifacts,
     billing,
     capabilities,
+    claude_account,
     codex_account,
     connectors,
     deliveries,
@@ -18,6 +19,7 @@ from flux.api.v1 import (
     ide,
     installations,
     keys,
+    mcp_connectors,
     memory,
     models,
     projects,
@@ -52,6 +54,8 @@ api_v1_router.include_router(artifacts.router)
 api_v1_router.include_router(deliveries.router)
 api_v1_router.include_router(uploads.router)
 api_v1_router.include_router(codex_account.router)
+api_v1_router.include_router(claude_account.router)
+api_v1_router.include_router(mcp_connectors.router)
 api_v1_router.include_router(supervisor.router)
 
 __all__ = ["api_v1_router"]

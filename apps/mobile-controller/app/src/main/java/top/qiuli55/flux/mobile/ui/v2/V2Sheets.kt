@@ -52,7 +52,6 @@ import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.Waves
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,9 +62,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -74,13 +71,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.AccountSession
-import top.qiuli55.flux.mobile.data.CodexAccountStatus
-import top.qiuli55.flux.mobile.data.CodexLoginSession
-import top.qiuli55.flux.mobile.data.GitHubAccountStatus
-import top.qiuli55.flux.mobile.data.GitHubRepo
 
 // ================================================================== 设置
 
@@ -103,21 +95,6 @@ fun SettingsSheet(
     onOpenTerminals: () -> Unit,
     onOpenKeyVault: () -> Unit,
     onOpenMemories: () -> Unit,
-    codexAccount: CodexAccountStatus?,
-    codexLogin: CodexLoginSession?,
-    codexLoading: Boolean,
-    onCodexLogin: () -> Unit,
-    onCodexLogout: () -> Unit,
-    onRefreshCodex: () -> Unit,
-    onOpenCodexUrl: (String) -> Unit,
-    githubAccount: GitHubAccountStatus?,
-    githubLoading: Boolean,
-    githubRepos: List<GitHubRepo>,
-    githubReposLoading: Boolean,
-    onGitHubLogin: () -> Unit,
-    onGitHubLogout: () -> Unit,
-    onRefreshGitHub: () -> Unit,
-    onLoadGitHubRepos: () -> Unit,
     onManualConnect: () -> Unit,
     onLogout: () -> Unit,
     updateHint: String,
@@ -128,11 +105,6 @@ fun SettingsSheet(
     val accountLine = account?.email?.takeIf { it.isNotBlank() } ?: "手动连接 · $deviceName"
     // 退出登录会清掉本机令牌，属于不可撤销操作：先确认再执行。
     var logoutConfirmOpen by remember { mutableStateOf(false) }
-    // 每次打开设置都拉一次账号态；有未完成的设备码登录会继续轮询
-    LaunchedEffect(Unit) {
-        onRefreshCodex()
-        onRefreshGitHub()
-    }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         Column(
             Modifier
@@ -234,69 +206,6 @@ fun SettingsSheet(
                         else -> "账号"
                     },
                 )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            // ChatGPT 账号（Codex 订阅通道）：用账号订阅额度跑 codex，不走 API Key
-            WhiteCard(Modifier.fillMaxWidth()) {
-                CodexAccountHeader(account = codexAccount, login = codexLogin, loading = codexLoading)
-                ThinDivider(V2Colors.ink(.05f))
-                if (codexAccount?.loggedIn == true) {
-                    SettingsActionRow(
-                        icon = Icons.Outlined.Logout,
-                        title = "退出 ChatGPT 账号",
-                        description = "退出后 Codex Run 不再使用订阅额度",
-                        danger = true,
-                        onClick = onCodexLogout,
-                    )
-                } else {
-                    SettingsActionRow(
-                        icon = Icons.Outlined.Link,
-                        title = if (codexLoading) "正在启动登录…" else "登录 ChatGPT",
-                        description = "在浏览器输入设备码，用订阅额度执行任务",
-                        danger = false,
-                        onClick = onCodexLogin,
-                    )
-                }
-                if (codexLogin != null && (codexLogin.isPending || codexLogin.status == "failed")) {
-                    ThinDivider(V2Colors.ink(.05f))
-                    CodexLoginPanel(codexLogin, onOpenUrl = onOpenCodexUrl)
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            // GitHub 账号：浏览器授权码，读全部仓库（含私有）并提交
-            WhiteCard(Modifier.fillMaxWidth()) {
-                GitHubAccountHeader(
-                    account = githubAccount,
-                    loading = githubLoading,
-                )
-                ThinDivider(V2Colors.ink(.05f))
-                if (githubAccount?.loggedIn == true) {
-                    SettingsActionRow(
-                        icon = Icons.Outlined.Logout,
-                        title = "退出 GitHub 账号",
-                        description = "退出后 Agent 无法读写你的仓库",
-                        danger = true,
-                        onClick = onGitHubLogout,
-                    )
-                } else {
-                    SettingsActionRow(
-                        icon = Icons.Outlined.Link,
-                        title = if (githubLoading) "正在启动授权…" else "连接 GitHub",
-                        description = "在浏览器授权，自动回到 Flux；可读取全部仓库（含私有）",
-                        danger = false,
-                        onClick = onGitHubLogin,
-                    )
-                }
-                if (githubAccount?.loggedIn == true) {
-                    ThinDivider(V2Colors.ink(.05f))
-                    GitHubRepoList(
-                        repos = githubRepos,
-                        loading = githubReposLoading,
-                        onRefresh = onLoadGitHubRepos,
-                    )
-                }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -437,7 +346,7 @@ private fun ToggleRow(
 }
 
 @Composable
-private fun SettingsActionRow(
+internal fun SettingsActionRow(
     icon: ImageVector,
     title: String,
     description: String,
@@ -741,248 +650,6 @@ fun AgentPickerSheet(
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
             )
-        }
-    }
-}
-
-// ---------------------------------------------------------------- ChatGPT 账号
-
-private fun codexPlanLabel(plan: String?): String = when (plan?.lowercase()) {
-    "plus" -> "Plus"
-    "pro" -> "Pro"
-    "team", "business" -> "Team"
-    "enterprise" -> "Enterprise"
-    "edu", "education" -> "Edu"
-    "free" -> "Free"
-    null, "" -> "账号"
-    else -> plan.replaceFirstChar { it.uppercase() }
-}
-
-@Composable
-private fun CodexAccountHeader(
-    account: CodexAccountStatus?,
-    login: CodexLoginSession?,
-    loading: Boolean,
-) {
-    val loggedIn = account?.loggedIn == true
-    val plan = codexPlanLabel(account?.plan)
-    val subtitle = when {
-        loggedIn && account?.plan == "free" -> "Free 套餐 · 本地 Codex 用 GPT-5.6 Luna（额度较少）"
-        loggedIn -> account?.email ?: "已连接 ChatGPT 账号"
-        login?.isPending == true -> "等待浏览器授权…"
-        loading -> "读取账号状态…"
-        account == null -> "账号状态暂不可用"
-        else -> "未登录 · 登录后使用订阅额度"
-    }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Outlined.SmartToy, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Label("ChatGPT 账号", 13.5f, V2Colors.ink(.90f))
-            Spacer(Modifier.height(2.dp))
-            Label(subtitle, 10f, V2Colors.ink(.36f), maxLines = 1)
-        }
-        if (loggedIn) {
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(
-                        if (account?.plan == "free") {
-                            V2Colors.ink(.07f)
-                        } else {
-                            V2Colors.accent.copy(alpha = .12f)
-                        }
-                    )
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-            ) {
-                Label(
-                    plan,
-                    9.5f,
-                    if (account?.plan == "free") V2Colors.ink(.42f) else V2Colors.accent,
-                    FontWeight.SemiBold,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CodexLoginPanel(session: CodexLoginSession, onOpenUrl: (String) -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember(session.code) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-        if (session.status == "failed") {
-            Label("登录失败", 11f, V2Colors.rose, FontWeight.Medium)
-            Spacer(Modifier.height(4.dp))
-            Label(session.message.ifBlank { "codex 登录进程已退出" }, 9.5f, V2Colors.ink(.38f))
-            return@Column
-        }
-        Label("1. 打开授权页并登录 ChatGPT", 10.5f, V2Colors.ink(.45f))
-        if (session.url.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(V2Colors.accent.copy(alpha = .10f))
-                    .clickable { onOpenUrl(session.url) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Language, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Label("打开授权页", 12f, V2Colors.accent, FontWeight.Medium, modifier = Modifier.weight(1f))
-                Icon(Icons.Outlined.KeyboardArrowRight, null, tint = V2Colors.accent, modifier = Modifier.size(16.dp))
-            }
-        }
-        if (session.code.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Label("2. 输入设备码（15 分钟内有效）", 10.5f, V2Colors.ink(.45f))
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Label(
-                    session.code,
-                    22f,
-                    V2Colors.ink(.90f),
-                    FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(V2Colors.ink(.06f))
-                        .clickable {
-                            clipboard.setText(AnnotatedString(session.code))
-                            copied = true
-                        }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                ) {
-                    Label(if (copied) "已复制" else "复制", 10.5f, V2Colors.ink(.55f))
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Label("授权完成后这里会自动更新，无需手动刷新", 9.5f, V2Colors.ink(.34f))
-    }
-}
-
-// ---------------------------------------------------------------- GitHub 账号
-
-@Composable
-private fun GitHubAccountHeader(
-    account: GitHubAccountStatus?,
-    loading: Boolean,
-) {
-    val loggedIn = account?.loggedIn == true
-    val subtitle = when {
-        loggedIn -> listOfNotNull(account?.login?.let { "@$it" }, account?.name).joinToString(" · ")
-            .ifBlank { "已连接 GitHub" }
-        loading -> "读取账号状态…"
-        account == null -> "账号状态暂不可用"
-        else -> "未连接 · 连接后可读写全部仓库"
-    }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Outlined.Code, null, tint = V2Colors.ink(.55f), modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Label("GitHub 账号", 13.5f, V2Colors.ink(.90f))
-            Spacer(Modifier.height(2.dp))
-            Label(subtitle, 10f, V2Colors.ink(.36f), maxLines = 1)
-        }
-        if (loggedIn) {
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(V2Colors.accent.copy(alpha = .12f))
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-            ) {
-                Label("已连接", 9.5f, V2Colors.accent, FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun GitHubRepoList(
-    repos: List<GitHubRepo>,
-    loading: Boolean,
-    onRefresh: () -> Unit,
-) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Label(
-                if (repos.isEmpty()) "我的仓库" else "我的仓库 · ${repos.size}",
-                10.5f,
-                V2Colors.ink(.45f),
-                modifier = Modifier.weight(1f),
-            )
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onRefresh)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Label(
-                    if (loading) "加载中…" else "刷新",
-                    10.5f,
-                    if (loading) V2Colors.ink(.30f) else V2Colors.accent,
-                    FontWeight.Medium,
-                )
-            }
-        }
-        when {
-            repos.isEmpty() && !loading -> {
-                Spacer(Modifier.height(8.dp))
-                Label("还没有读到仓库，点「刷新」重试", 10.5f, V2Colors.ink(.34f))
-            }
-            else -> repos.take(10).forEach { repo ->
-                Spacer(Modifier.height(9.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Label(
-                                repo.fullName.ifBlank { repo.name },
-                                12.5f,
-                                V2Colors.ink(.86f),
-                                FontWeight.Medium,
-                                modifier = Modifier.weight(1f, fill = false),
-                                maxLines = 1,
-                            )
-                            if (repo.isPrivate) {
-                                Spacer(Modifier.width(6.dp))
-                                Box(
-                                    Modifier
-                                        .clip(RoundedCornerShape(5.dp))
-                                        .background(V2Colors.ink(.07f))
-                                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                                ) {
-                                    Label("私有", 8.5f, V2Colors.ink(.45f), FontWeight.Medium)
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(2.dp))
-                        Label(
-                            listOfNotNull(
-                                repo.language?.takeIf { it.isNotBlank() },
-                                repo.defaultBranch.ifBlank { "main" },
-                            ).joinToString(" · "),
-                            9.5f,
-                            V2Colors.ink(.34f),
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
-        }
-        if (repos.size > 10) {
-            Spacer(Modifier.height(8.dp))
-            Label("仅显示最近更新的 10 个仓库", 9.5f, V2Colors.ink(.30f))
         }
     }
 }

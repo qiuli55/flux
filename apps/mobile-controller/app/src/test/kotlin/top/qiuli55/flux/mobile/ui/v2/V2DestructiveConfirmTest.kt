@@ -15,7 +15,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
-import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
 
 /**
@@ -55,21 +54,6 @@ class V2DestructiveConfirmTest {
                 onOpenTerminals = {},
                 onOpenKeyVault = {},
                 onOpenMemories = {},
-                codexAccount = CodexAccountStatus(),
-                codexLogin = null,
-                codexLoading = false,
-                onCodexLogin = {},
-                onCodexLogout = {},
-                onRefreshCodex = {},
-                onOpenCodexUrl = {},
-                githubAccount = null,
-                githubLoading = false,
-                githubRepos = emptyList(),
-                githubReposLoading = false,
-                onGitHubLogin = {},
-                onGitHubLogout = {},
-                onRefreshGitHub = {},
-                onLoadGitHubRepos = {},
                 onManualConnect = {},
                 onLogout = { logoutCount++ },
                 updateHint = "",

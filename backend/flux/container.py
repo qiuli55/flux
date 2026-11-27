@@ -16,6 +16,7 @@ from flux.cloud.memory_sync import CloudMemorySync
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.adapters import build_default_adapters
+from flux.core.agent_runtime.claude_account import ClaudeAccountService
 from flux.core.agent_runtime.codex_account import CodexAccountService
 from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.installation import InstallationRepository, InstallationService
@@ -60,6 +61,7 @@ from flux.core.knowledge import (
     KnowledgeWorker,
 )
 from flux.core.mcp.auth import AgentTokenService
+from flux.core.mcp_connectors import McpConnectorService
 from flux.core.memory.prefs import MemoryPrefsStore
 from flux.core.memory.repository import MemoryRepository
 from flux.core.memory.service import MemoryService
@@ -162,6 +164,10 @@ class Container:
     capability_import: CapabilityImportService = field(init=False)
     #: ChatGPT 账号（Codex 订阅通道）：设备码登录与 Run 时的 auth.json 注入
     codex_account: CodexAccountService = field(init=False)
+    #: Claude Code 订阅（claude.ai）：官方 setup-token 登录与 Run 时的环境注入
+    claude_account: ClaudeAccountService = field(init=False)
+    #: 设置页「连接器」：自定义 MCP 服务器探测、持久化与 Run 注入视图
+    mcp_connectors: McpConnectorService = field(init=False)
     #: 计费与套餐额度（本地账本 + 官方快照对账 + 闸门）；必须容器级单例，
     #: 因为 CliRuntime 每个 Run 新建实例，实例内缓存跨 run 不共享。
     billing: BillingService = field(init=False)
@@ -422,6 +428,9 @@ class Container:
         # 不新建生命周期。
         # ChatGPT 账号登录态由它提供：codex Run 会把 auth.json 注入隔离 CODEX_HOME。
         self.codex_account = CodexAccountService(self.settings)
+        # Claude Code 订阅登录态与自定义 MCP 连接器存储（都只读写 Flux 自己的目录）
+        self.claude_account = ClaudeAccountService(self.settings)
+        self.mcp_connectors = McpConnectorService(self.settings)
         # 计费账本与额度闸门：CLI runtime 的每一步用量都落到这里；先于 TaskRunService
         # 装配，因为 Run 创建前的额度检查要读它。
         self.billing = BillingService(self.settings, self.session_factory)  # type: ignore[attr-defined]

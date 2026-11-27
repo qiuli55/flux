@@ -610,3 +610,16 @@ class GroupMessageCreateRequest(BaseModel):
     """在群里发一条消息；会打断正在进行的 epoch 并开启新一轮。"""
 
     content: str = Field(min_length=1, max_length=8000)
+
+
+class ClaudeLoginCodeRequest(BaseModel):
+    """把 Claude 授权页显示的 `code#state` 粘回登录进程。"""
+
+    code: str = Field(min_length=1, max_length=4096)
+
+
+class McpConnectorCreateRequest(BaseModel):
+    """新增自定义 MCP 连接器：名称 + Streamable HTTP 端点。"""
+
+    name: str = Field(min_length=1, max_length=64)
+    url: str = Field(min_length=1, max_length=2048)
