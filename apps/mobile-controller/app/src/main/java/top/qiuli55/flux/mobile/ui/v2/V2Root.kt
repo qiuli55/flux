@@ -1,7 +1,5 @@
 package top.qiuli55.flux.mobile.ui.v2
 
-import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -141,6 +139,11 @@ fun FluxV2Root() {
     var chatOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var device by remember { mutableStateOf(ALL_DEVICES) }
 
+    // 对话链接、Codex / GitHub 授权页一律交给 App 内的浏览器，不跳系统浏览器
+    fun openInternalBrowser(url: String) {
+        route = V2Route.Browser(url, route)
+    }
+
     var chat by remember { mutableStateOf<V2ChatState?>(null) }
     val chatMessages = remember { mutableStateListOf<V2Message>() }
     // 新建对话的附件是页面本地状态：离开草稿页就清空，避免残留一组没人发送的附件
@@ -157,18 +160,6 @@ fun FluxV2Root() {
             vm.completeGitHubLogin(event.code, event.state)
         }
     }
-    // 授权码登录第一步拿到的授权页地址：用系统浏览器打开，回跳才会回到本 App。
-    LaunchedEffect(app.githubAuthorizeUrl) {
-        val url = app.githubAuthorizeUrl ?: return@LaunchedEffect
-        val opened = runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        }.isSuccess
-        vm.clearGitHubAuthorizeUrl()
-        if (!opened) {
-            Toast.makeText(context, "没有可用的浏览器，无法打开 GitHub 授权页", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     var settingsOpen by remember { mutableStateOf(false) }
     var keyVaultOpen by remember { mutableStateOf(false) }
     var memoryOpen by remember { mutableStateOf(false) }
@@ -176,6 +167,16 @@ fun FluxV2Root() {
     var newChatOpen by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
+
+    // 授权码登录第一步拿到的 GitHub 授权页也走内置浏览器；flux://github-link 回跳由
+    // shouldOverrideUrlLoading 交回系统，再由 MainActivity 分发给 GitHubLinkBus。
+    LaunchedEffect(app.githubAuthorizeUrl) {
+        val url = app.githubAuthorizeUrl ?: return@LaunchedEffect
+        settingsOpen = false
+        openInternalBrowser(url)
+        vm.clearGitHubAuthorizeUrl()
+    }
+
     // 画布有未保存改动时，返回先问一句：保存并退出 / 放弃 / 继续编辑
     var designExitOpen by remember { mutableStateOf(false) }
     // 画布来源：从设计列表进默认回列表；从对话卡片进则回原对话
@@ -261,11 +262,6 @@ fun FluxV2Root() {
         artifactOrigin = route
         artifactsVm.open(artifactId)
         route = V2Route.ArtifactDetail(artifactId)
-    }
-
-    // 对话里的链接一律交给 App 内的浏览器，不跳系统浏览器
-    fun openInternalBrowser(url: String) {
-        route = V2Route.Browser(url, route)
     }
 
     fun createChat(option: V2AgentOption, assistant: Boolean = false) {
@@ -673,6 +669,13 @@ fun FluxV2Root() {
                             onOpenMemories = {
                                 memoryOpen = true
                                 vm.loadMemories()
+                            },
+                            // 独立入口：从「我的」开一个空白浏览会话，不占底栏 Tab
+                            onOpenBrowser = {
+                                route = V2Route.Browser(
+                                    url = blankBrowserSessionUrl(),
+                                    origin = V2Route.Profile,
+                                )
                             },
                             onOpenSettings = { settingsOpen = true },
                             onCheckUpdate = { UpdateCenter.checkManually() },

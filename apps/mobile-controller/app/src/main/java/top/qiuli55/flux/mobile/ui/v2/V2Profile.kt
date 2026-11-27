@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
@@ -55,6 +56,7 @@ fun V2ProfileScreen(
     onOpenKeys: () -> Unit,
     onOpenBilling: () -> Unit,
     onOpenMemories: () -> Unit,
+    onOpenBrowser: () -> Unit,
     onOpenSettings: () -> Unit,
     onCheckUpdate: () -> Unit,
 ) {
@@ -113,6 +115,14 @@ fun V2ProfileScreen(
 
         Spacer(Modifier.height(14.dp))
         V2SettingsCard {
+            // 独立浏览入口：不新增底栏 Tab，从「我的」直接开一个空白会话再输入网址
+            V2SettingRow(
+                icon = Icons.Outlined.Language,
+                title = "内置浏览器",
+                onClick = onOpenBrowser,
+                value = "输入网址",
+                showDivider = true,
+            )
             V2SettingRow(
                 icon = Icons.Outlined.NotificationsNone,
                 title = "通知与偏好",
