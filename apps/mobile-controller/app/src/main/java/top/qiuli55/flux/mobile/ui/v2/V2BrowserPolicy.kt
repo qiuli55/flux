@@ -1,5 +1,8 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import java.net.URI
+import java.net.URLDecoder
+
 /**
  * 内置浏览器的会话策略。
  *
@@ -131,4 +134,188 @@ internal fun shouldBlockPreviewRequest(
         "about", "data", "blob", "javascript" -> false
         else -> true
     }
+}
+
+// ------------------------------------------------------------------ User-Agent
+
+/**
+ * 站点会话默认桌面 UA：很多登录 / OAuth 页面在手机 UA 下会跳去「打开 App」或给残缺版，
+ * 桌面 UA 能直接在 App 内完成登录。字符串集中放在 Policy，方便单测锁住。
+ *
+ * 离线预览不改 UA：它是本地渲染的设计稿，不需要站点兼容逻辑。
+ */
+internal const val DESKTOP_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+internal const val MOBILE_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+/** 返回 null 表示保持 WebView 系统默认 UA（离线预览）。 */
+internal fun browserUserAgent(policy: V2BrowserPolicy, desktopMode: Boolean): String? =
+    when {
+        policy.isOfflinePreview -> null
+        desktopMode -> DESKTOP_USER_AGENT
+        else -> MOBILE_USER_AGENT
+    }
+
+// ------------------------------------------------------------------ 下载
+
+/** 解析出只可能是 http(s) 的 host；非网页 URL 返回 null。java.net.URI，便于 JVM 单测。 */
+internal fun httpUrlHost(url: String?): String? {
+    val text = url?.trim().orEmpty()
+    if (text.isEmpty()) return null
+    val uri = runCatching { URI(text) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase() ?: return null
+    if (scheme != "http" && scheme != "https") return null
+    return uri.host?.takeIf { it.isNotBlank() }?.lowercase()
+}
+
+/**
+ * 只有站点会话的 http(s) 下载才交给系统 DownloadManager。
+ * data / blob / file / content 等一律不接：它们可以被用来把任意本地内容写到磁盘。
+ */
+internal fun isDownloadUrlAllowed(policy: V2BrowserPolicy, url: String?): Boolean {
+    if (policy.isOfflinePreview) return false
+    val host = httpUrlHost(url) ?: return false
+    return host != PREVIEW_HOST
+}
+
+/** 下载文件名：Content-Disposition 优先，其次 URL 路径；都不可用时给 download。 */
+internal fun downloadFileName(
+    contentDisposition: String?,
+    url: String?,
+    mimeType: String?,
+): String {
+    val raw = parseContentDispositionName(contentDisposition)
+        ?: urlPathFileName(url)
+        ?: "download"
+    val cleaned = sanitizeFileName(raw).ifBlank { "download" }
+    return ensureExtension(cleaned, mimeType)
+}
+
+private fun parseContentDispositionName(header: String?): String? {
+    val text = header?.trim().orEmpty()
+    if (text.isEmpty()) return null
+    // RFC 5987: filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf
+    val encoded = Regex("""filename\*\s*=\s*([^']*)'[^']*'([^;]+)""", RegexOption.IGNORE_CASE)
+        .find(text)
+    if (encoded != null) {
+        val charset = encoded.groupValues[1].ifBlank { "UTF-8" }
+        val value = encoded.groupValues[2].trim().trim('"')
+        return runCatching { URLDecoder.decode(value, charset) }.getOrDefault(value)
+    }
+    Regex("""filename\s*=\s*"([^"]*)"""", RegexOption.IGNORE_CASE)
+        .find(text)
+        ?.let { return it.groupValues[1] }
+    Regex("""filename\s*=\s*([^;]+)""", RegexOption.IGNORE_CASE)
+        .find(text)
+        ?.let { return it.groupValues[1].trim().trim('"') }
+    return null
+}
+
+private fun urlPathFileName(url: String?): String? {
+    val text = url?.trim().orEmpty()
+    if (text.isEmpty()) return null
+    val path = runCatching { URI(text).path }.getOrNull().orEmpty()
+    return path.substringAfterLast('/').takeIf { it.isNotBlank() }
+}
+
+private fun sanitizeFileName(raw: String): String {
+    // 去掉任何路径前缀，避免 ../ 或绝对路径被 DownloadManager 当成目录
+    val base = raw.substringAfterLast('/').substringAfterLast('\\')
+    val cleaned = buildString {
+        for (ch in base) {
+            when {
+                ch.code < 0x20 || ch.code == 0x7f -> append(' ')
+                ch == '"' || ch == '<' || ch == '>' || ch == '|' || ch == ':' || ch == '*' || ch == '?' -> append('_')
+                else -> append(ch)
+            }
+        }
+    }.trim()
+    if (cleaned == "." || cleaned == "..") return ""
+    return cleaned.take(120)
+}
+
+private val EXTENSION_BY_MIME = mapOf(
+    "application/pdf" to "pdf",
+    "application/zip" to "zip",
+    "application/json" to "json",
+    "application/octet-stream" to "bin",
+    "application/vnd.android.package-archive" to "apk",
+    "text/plain" to "txt",
+    "text/csv" to "csv",
+    "text/html" to "html",
+    "image/jpeg" to "jpg",
+    "image/png" to "png",
+    "image/gif" to "gif",
+    "image/webp" to "webp",
+    "image/svg+xml" to "svg",
+    "audio/mpeg" to "mp3",
+    "video/mp4" to "mp4",
+)
+
+private fun ensureExtension(name: String, mimeType: String?): String {
+    // name 已经 sanitize 掉路径分隔符，这里只看有没有扩展名
+    if (name.contains('.')) return name
+    val mime = mimeType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+    val ext = EXTENSION_BY_MIME[mime] ?: return name
+    return "$name.$ext"
+}
+
+// ------------------------------------------------------------------ 返回键
+
+/** 硬件 / 手势返回在浏览器页里的处理顺序。 */
+internal enum class V2BrowserBackAction {
+    CLOSE_JS_DIALOG,
+    CLOSE_PERMISSION,
+    CLOSE_POPUP,
+    CLOSE_FIND,
+    CLOSE_HISTORY,
+    WEBVIEW_BACK,
+    EXIT,
+}
+
+/**
+ * 返回键优先级：先关掉最上层的 App 内弹层，再让 WebView 后退，最后才退出浏览器页。
+ * 纯函数，保证「硬件返回不会直接把正在登录的页面整个关掉」。
+ */
+internal fun decideBrowserBack(
+    jsDialogOpen: Boolean = false,
+    permissionOpen: Boolean = false,
+    popupOpen: Boolean = false,
+    findOpen: Boolean = false,
+    historyOpen: Boolean = false,
+    canGoBack: Boolean = false,
+): V2BrowserBackAction = when {
+    jsDialogOpen -> V2BrowserBackAction.CLOSE_JS_DIALOG
+    permissionOpen -> V2BrowserBackAction.CLOSE_PERMISSION
+    popupOpen -> V2BrowserBackAction.CLOSE_POPUP
+    findOpen -> V2BrowserBackAction.CLOSE_FIND
+    historyOpen -> V2BrowserBackAction.CLOSE_HISTORY
+    canGoBack -> V2BrowserBackAction.WEBVIEW_BACK
+    else -> V2BrowserBackAction.EXIT
+}
+
+// ------------------------------------------------------------------ 权限 / 历史
+
+/** 把 WebView 的权限资源翻成给用户看的名字；未知资源也明确说「页面请求的权限」。 */
+internal fun webPermissionLabel(resources: Array<out String>?): String {
+    val names = resources?.toList().orEmpty().mapNotNull { resource ->
+        when (resource) {
+            "android.webkit.resource.VIDEO_CAPTURE" -> "摄像头"
+            "android.webkit.resource.AUDIO_CAPTURE" -> "麦克风"
+            "android.webkit.resource.PROTECTED_MEDIA_ID" -> "受保护媒体"
+            else -> null
+        }
+    }.distinct()
+    return if (names.isEmpty()) "页面请求的权限" else names.joinToString("、")
+}
+
+/** 站点历史只记录真实网页；离线预览、about:blank、file/data 都不写。 */
+internal fun shouldRecordHistory(policy: V2BrowserPolicy, url: String?): Boolean {
+    if (!policy.persistsCookies) return false
+    val host = httpUrlHost(url) ?: return false
+    return host != PREVIEW_HOST
 }
