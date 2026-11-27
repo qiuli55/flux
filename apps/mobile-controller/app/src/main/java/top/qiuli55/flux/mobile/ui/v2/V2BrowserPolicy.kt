@@ -83,6 +83,94 @@ internal fun normalizeUrl(raw: String): String {
 internal fun browserStartUrl(raw: String?): String = normalizeUrl(raw.orEmpty())
 
 /**
+ * 地址栏「前往」的目标。空输入返回 null：按 Go 不应该把当前页悄悄换成 about:blank，
+ * 这是用户在地址栏清空后误触最常见的丢页方式。
+ */
+internal fun browserNavigationTarget(raw: String?): String? {
+    val text = raw?.trim().orEmpty()
+    if (text.isEmpty()) return null
+    return normalizeUrl(text)
+}
+
+/**
+ * 当前页面可用于「复制链接 / 分享 / 在系统浏览器打开」的地址。
+ *
+ * 优先 WebView 的真实页面地址（用户可能只改了一半地址栏），其次地址栏内容；
+ * 离线预览、about:blank、file/data 等没有可分享链接的会话返回 null。
+ */
+internal fun browserShareableUrl(
+    policy: V2BrowserPolicy,
+    pageUrl: String?,
+    addressText: String?,
+): String? {
+    if (policy.isOfflinePreview) return null
+    val page = pageUrl?.trim().orEmpty()
+    if (shouldRecordHistory(policy, page)) return page
+    return browserNavigationTarget(addressText)?.takeIf { shouldRecordHistory(policy, it) }
+}
+
+// ------------------------------------------------------------------ 会话恢复
+
+/**
+ * 只有空白入口（「我的」里的内置浏览器）才恢复上次页面；用户明确点开某个链接时
+ * 始终以那个链接为准，避免用上一次的页面顶掉当前请求。
+ */
+internal fun shouldRestoreBrowserSession(
+    policy: V2BrowserPolicy,
+    requestedUrl: String?,
+): Boolean {
+    if (!policy.persistsCookies) return false
+    val text = requestedUrl?.trim().orEmpty()
+    return text.isEmpty() || text == "about:blank"
+}
+
+/** 只恢复真实网页；about:blank / 预览 / file 等不算「上次的页面」。 */
+internal fun restorableBrowserUrl(policy: V2BrowserPolicy, savedUrl: String?): String? {
+    if (!policy.persistsCookies) return null
+    val text = savedUrl?.trim().orEmpty()
+    return text.takeIf { shouldRecordHistory(policy, it) }
+}
+
+/**
+ * 进入站点会话时实际加载的地址：空白入口恢复上次页面，明确链接直接打开。
+ * 恢复不了（没有记录 / 进程刚清过）时退回 about:blank。
+ */
+internal fun browserEntryUrl(
+    policy: V2BrowserPolicy,
+    requestedUrl: String?,
+    savedUrl: String?,
+): String {
+    val requested = browserStartUrl(requestedUrl)
+    if (!shouldRestoreBrowserSession(policy, requestedUrl)) return requested
+    return restorableBrowserUrl(policy, savedUrl) ?: requested
+}
+
+/**
+ * 失败页「重试」的目标：优先当前页 / 地址栏，其次进入浏览器时的地址。
+ * 离线预览返回 null，由 UI 改为重新 loadData。
+ */
+internal fun browserRetryUrl(
+    policy: V2BrowserPolicy,
+    pageUrl: String?,
+    entryUrl: String?,
+    addressText: String?,
+): String? {
+    if (policy.isOfflinePreview) return null
+    return browserShareableUrl(policy, pageUrl, addressText)
+        ?: restorableBrowserUrl(policy, entryUrl)
+}
+
+// ------------------------------------------------------------------ 页内查找
+
+/** 页内查找状态：没输入不显示，0 个匹配明确写「无结果」，不要停在 0/0。 */
+internal fun browserFindStatus(query: String, active: Int, total: Int): String? {
+    if (query.isBlank()) return null
+    if (total <= 0) return "无结果"
+    val current = active.coerceIn(1, total)
+    return "$current/$total"
+}
+
+/**
  * 地址栏显示文本：空白会话留空并展示占位提示，而不是把 about:blank 摆在地址栏里。
  */
 internal fun browserAddressText(raw: String?): String {
@@ -136,6 +224,169 @@ internal fun shouldBlockPreviewRequest(
     }
 }
 
+// ------------------------------------------------------------------ 失败态
+
+/** 失败页的类别，决定标题、说明和可用动作。 */
+internal enum class V2BrowserFailureKind {
+    /** 主框架加载失败（DNS、连接、协议等）。 */
+    LOAD,
+
+    /** 网络不可用 / 超时；文案要直接提示检查网络。 */
+    NO_NETWORK,
+
+    /** 服务器返回 4xx / 5xx。 */
+    HTTP,
+
+    /** 证书不受信任，已取消加载。 */
+    SSL,
+
+    /** 离线预览试图访问真实站点，已拦截。 */
+    PREVIEW_BLOCKED,
+}
+
+/**
+ * 一次主框架加载失败。UI 只负责展示，分类、文案和可用动作都由这里决定，
+ * 便于在 JVM 单测里锁住「SSL / HTTP 错误不会被后续事件冲掉」。
+ */
+internal data class V2BrowserFailure(
+    val kind: V2BrowserFailureKind,
+    val message: String,
+    val failedUrl: String? = null,
+    val statusCode: Int? = null,
+    val detail: String? = null,
+) {
+    val title: String
+        get() = when (kind) {
+            V2BrowserFailureKind.LOAD -> "页面打不开"
+            V2BrowserFailureKind.NO_NETWORK -> "网络不可用"
+            V2BrowserFailureKind.HTTP -> "网页返回 ${statusCode ?: "错误"}"
+            V2BrowserFailureKind.SSL -> "证书不受信任"
+            V2BrowserFailureKind.PREVIEW_BLOCKED -> "预览已拦截外部请求"
+        }
+
+    /** 预览被拦截不是「再试一次」能解决的，重试按钮只在真正可重试时出现。 */
+    val canRetry: Boolean get() = kind != V2BrowserFailureKind.PREVIEW_BLOCKED
+
+    /**
+     * 失败页可以显式交给系统浏览器；这是用户主动选择，不改变内置浏览器自己
+     * 只信任 A / B 机证书、预览不联网的边界。预览的合成域名不算可外开的链接。
+     */
+    val canOpenExternally: Boolean
+        get() = kind != V2BrowserFailureKind.PREVIEW_BLOCKED &&
+            browserShareableUrl(SITE_BROWSER_POLICY, failedUrl, null) != null
+
+    /** HTTP 错误页通常仍有服务端内容（如 404 说明页），允许用户收起错误层查看。 */
+    val canShowPageAnyway: Boolean get() = kind == V2BrowserFailureKind.HTTP
+}
+
+private fun browserFailureDetail(description: String?): String? =
+    description?.trim()?.takeIf { it.isNotEmpty() }
+
+internal fun browserLoadFailure(
+    failedUrl: String?,
+    networkUnavailable: Boolean,
+    description: String?,
+): V2BrowserFailure = if (networkUnavailable) {
+    V2BrowserFailure(
+        kind = V2BrowserFailureKind.NO_NETWORK,
+        message = "网络连接不可用或已超时。检查 Wi-Fi / 移动网络后再试一次。",
+        failedUrl = failedUrl,
+        detail = browserFailureDetail(description),
+    )
+} else {
+    V2BrowserFailure(
+        kind = V2BrowserFailureKind.LOAD,
+        message = "页面没有加载成功。可以重试，或在系统浏览器中打开。",
+        failedUrl = failedUrl,
+        detail = browserFailureDetail(description),
+    )
+}
+
+internal fun browserHttpFailure(failedUrl: String?, statusCode: Int): V2BrowserFailure {
+    val reason = httpStatusReason(statusCode)
+    return V2BrowserFailure(
+        kind = V2BrowserFailureKind.HTTP,
+        message = buildString {
+            append("服务器返回 HTTP $statusCode")
+            if (reason != null) append("（$reason）")
+            append("。可以重试，或先收起错误页查看服务端返回的内容。")
+        },
+        failedUrl = failedUrl,
+        statusCode = statusCode,
+    )
+}
+
+internal fun browserSslFailure(host: String?, failedUrl: String?): V2BrowserFailure {
+    val displayHost = host?.trim()?.takeIf { it.isNotEmpty() } ?: "该网站"
+    return V2BrowserFailure(
+        kind = V2BrowserFailureKind.SSL,
+        message = "证书不受信任：$displayHost。内置浏览器只信任 A 机与 B 机的自签证书，" +
+            "其他站点的证书异常会被取消。",
+        failedUrl = failedUrl,
+        detail = "已取消加载，没有向该站点继续发送页面内容。",
+    )
+}
+
+internal fun browserPreviewBlockedFailure(): V2BrowserFailure = V2BrowserFailure(
+    kind = V2BrowserFailureKind.PREVIEW_BLOCKED,
+    message = "离线预览不会加载外部网络资源，也不会把站点 cookie 带出去。",
+)
+
+/** 常见 HTTP 状态的中文说明；没有对应文案时只显示状态码。 */
+internal fun httpStatusReason(statusCode: Int): String? = when (statusCode) {
+    400 -> "请求无效"
+    401 -> "需要登录或登录已过期"
+    403 -> "没有访问权限"
+    404 -> "页面不存在"
+    408 -> "请求超时"
+    410 -> "页面已失效"
+    429 -> "请求过于频繁"
+    500 -> "服务器内部错误"
+    502 -> "网关错误"
+    503 -> "服务暂不可用"
+    504 -> "网关超时"
+    else -> null
+}
+
+/**
+ * 失败原因只从具体到笼统：SSL / HTTP 已经说明问题时，WebView 随后补发的通用
+ * 加载错误不能把具体文案冲掉。
+ */
+internal fun preferredBrowserFailure(
+    current: V2BrowserFailure?,
+    incoming: V2BrowserFailure?,
+): V2BrowserFailure? = when {
+    incoming == null -> current
+    current == null -> incoming
+    current.kind == V2BrowserFailureKind.SSL &&
+        incoming.kind != V2BrowserFailureKind.SSL -> current
+    current.kind == V2BrowserFailureKind.HTTP &&
+        incoming.kind == V2BrowserFailureKind.LOAD -> current
+    else -> incoming
+}
+
+/**
+ * 进度回调只更新进度条，绝不负责清错误。
+ *
+ * 之前的实现在 progress >= 100 时把 errorText 置空，SSL / HTTP 错误页刚出现就被
+ * 同一次加载的完成回调冲掉；这里用纯 reducer 把行为固定下来。
+ */
+internal data class V2BrowserProgressState(
+    val progress: Float = 0f,
+    val failure: V2BrowserFailure? = null,
+)
+
+internal fun applyBrowserProgress(
+    state: V2BrowserProgressState,
+    percent: Int,
+): V2BrowserProgressState = state.copy(
+    progress = percent.coerceIn(0, 100) / 100f,
+)
+
+/** 这些 WebView 错误码按「没网 / 连不上」呈现，而不是笼统的页面错误。 */
+internal fun isBrowserNetworkErrorCode(errorCode: Int): Boolean =
+    errorCode in setOf(-2, -6, -7, -8)
+
 // ------------------------------------------------------------------ User-Agent
 
 /**
@@ -180,6 +431,23 @@ internal fun isDownloadUrlAllowed(policy: V2BrowserPolicy, url: String?): Boolea
     if (policy.isOfflinePreview) return false
     val host = httpUrlHost(url) ?: return false
     return host != PREVIEW_HOST
+}
+
+/**
+ * DownloadManager 的失败原因（COLUMN_REASON）翻成中文。未知原因返回 null，
+ * UI 至少保留「下载失败」而不是给一个看不懂的数字。
+ */
+internal fun downloadFailureReason(reason: Int): String? = when (reason) {
+    1001 -> "文件写入失败"
+    1002 -> "服务器返回了无法处理的响应"
+    1004 -> "下载过程中网络数据出错"
+    1005 -> "重定向次数过多"
+    1006 -> "存储空间不足"
+    1007 -> "找不到存储设备"
+    1008 -> "无法断点续传"
+    1009 -> "同名文件已存在"
+    1010 -> "系统阻止了这次下载"
+    else -> null
 }
 
 /** 下载文件名：Content-Disposition 优先，其次 URL 路径；都不可用时给 download。 */
