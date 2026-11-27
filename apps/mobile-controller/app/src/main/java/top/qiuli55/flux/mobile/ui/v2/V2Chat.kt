@@ -57,7 +57,6 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Dashboard
@@ -879,35 +878,17 @@ fun V2ChatScreen(
                         enabled = canSwitchModel && modelOptions.isNotEmpty() && !locked,
                         onClick = { modelMenuOpen = true },
                     )
-                    DropdownMenu(
+                    FluxModelMenu(
                         expanded = modelMenuOpen && modelOptions.isNotEmpty(),
                         onDismissRequest = { modelMenuOpen = false },
-                        modifier = Modifier.background(V2Colors.surface),
-                    ) {
-                        modelOptions.forEach { option ->
+                        options = modelOptions,
+                        currentModel = chat.model,
+                        currentModelKeyId = chat.modelKeyId,
+                        onPick = { option ->
                             val selected = option.model == chat.model && option.keyId == chat.modelKeyId
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Label(option.label, 12f, V2Colors.ink(.88f), mono = true)
-                                        if (selected) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Icon(
-                                                Icons.Outlined.Check,
-                                                null,
-                                                tint = V2Colors.cyan700,
-                                                modifier = Modifier.size(13.dp),
-                                            )
-                                        }
-                                    }
-                                },
-                                onClick = {
-                                    modelMenuOpen = false
-                                    if (!selected) onSwitchModel(option)
-                                },
-                            )
-                        }
-                    }
+                            if (!selected) onSwitchModel(option)
+                        },
+                    )
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -953,57 +934,19 @@ fun V2ChatScreen(
                                 }
                             },
                         )
-                        DropdownMenu(
+                        FluxAgentMenu(
                             expanded = agentMenuOpen && agentOptions.isNotEmpty(),
                             onDismissRequest = { agentMenuOpen = false },
-                            modifier = Modifier.background(V2Colors.surface),
-                        ) {
-                            agentOptions.forEach { option ->
-                                val selected = option.agent.id == chat.agentId
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                AgentRuntimeIcon(option.agent.runtime, size = 18.dp)
-                                                Spacer(Modifier.width(7.dp))
-                                                Label(option.agent.name, 12f, V2Colors.ink(.90f), FontWeight.Medium)
-                                                if (!option.agent.nativeStreaming) {
-                                                    Spacer(Modifier.width(5.dp))
-                                                    NonStreamingBadge()
-                                                }
-                                                if (selected) {
-                                                    Spacer(Modifier.width(6.dp))
-                                                    Icon(
-                                                        Icons.Outlined.Check,
-                                                        null,
-                                                        tint = V2Colors.cyan700,
-                                                        modifier = Modifier.size(13.dp),
-                                                    )
-                                                }
-                                            }
-                                            Spacer(Modifier.height(2.dp))
-                                            Label(
-                                                option.models.firstOrNull()
-                                                    ?.let { "${option.agent.role} · ${it.label}" }
-                                                    ?: option.agent.role,
-                                                9.5f,
-                                                V2Colors.ink(.40f),
-                                                maxLines = 1,
-                                            )
-                                            if (option.agent.id == pendingAgentId) {
-                                                Spacer(Modifier.height(2.dp))
-                                                Label("本轮结束后切换", 8.5f, V2Colors.amber700, mono = true)
-                                            }
-                                        }
-                                    },
-                                    onClick = {
-                                        agentMenuOpen = false
-                                        // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
-                                        if (!selected || pendingAgentId != null) onSwitchAgent(option.agent.id)
-                                    },
-                                )
-                            }
-                        }
+                            options = agentOptions,
+                            currentAgentId = chat.agentId,
+                            currentModel = chat.model,
+                            currentModelKeyId = chat.modelKeyId,
+                            pendingAgentId = pendingAgentId,
+                            onPick = { agentId ->
+                                // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
+                                if (agentId != chat.agentId || pendingAgentId != null) onSwitchAgent(agentId)
+                            },
+                        )
                     }
                 }
                 Spacer(Modifier.width(2.dp))
