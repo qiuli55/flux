@@ -414,6 +414,8 @@ class V2AppViewModel : FluxViewModel() {
         summaryFrom: String? = null,
         attachmentIds: List<String> = emptyList(),
         origin: String = "chat",
+        /** 简单问题传 false：建任务后由服务端助手回复，不启动电脑 Agent。 */
+        start: Boolean = true,
         /** 建任务失败：调用方用它在本地回滚乐观气泡，并保留草稿让用户直接重试。 */
         onFailed: (String) -> Unit = {},
         onCreated: (String) -> Unit,
@@ -442,6 +444,7 @@ class V2AppViewModel : FluxViewModel() {
                     summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
                     attachmentIds = attachmentIds,
                     origin = origin,
+                    start = start,
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)

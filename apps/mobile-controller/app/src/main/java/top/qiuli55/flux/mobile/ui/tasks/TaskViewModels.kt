@@ -34,9 +34,11 @@ import top.qiuli55.flux.mobile.ui.v2.AttachmentDraftStatus
 import top.qiuli55.flux.mobile.ui.v2.ComposerAttachmentController
 import top.qiuli55.flux.mobile.ui.v2.ComposerAttachmentDraft
 import top.qiuli55.flux.mobile.ui.v2.FLUX_STREAM_LOG_TAG
+import top.qiuli55.flux.mobile.ui.v2.SimpleQuestionRouter
 import top.qiuli55.flux.mobile.ui.v2.StreamApply
 import top.qiuli55.flux.mobile.ui.v2.StreamUiSnapshot
 import top.qiuli55.flux.mobile.ui.v2.TaskStreamReducer
+import top.qiuli55.flux.mobile.ui.v2.assistantRequestsExecution
 import top.qiuli55.flux.mobile.ui.v2.attachmentSendBlocker
 import top.qiuli55.flux.mobile.ui.v2.isFinished
 import top.qiuli55.flux.mobile.ui.v2.readable
@@ -781,7 +783,10 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     private fun handleStreamSideEffect(event: TaskStreamEvent) {
         val current = _state.value
         when (event.type) {
-            "assistant_message", "run_started", "run_status", "run_finished" -> refresh(quiet = true)
+            // user_message 也要立刻刷新：助手调用要等模型返回，不能让用户发完消息后
+            // 对话页空白好几秒（新对话首条消息尤其明显）。
+            "user_message", "assistant_message", "run_started", "run_status", "run_finished" ->
+                refresh(quiet = true)
             "assistant_error" -> {
                 val reason = streamString(event, "error").ifBlank { "回复中断" }
                 Log.w(
@@ -848,14 +853,21 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             cancelledByUser = false
             applyStreamSnapshot(streamReducer.resetActivity())
             _state.value = _state.value.withSendStarted()
+            // 简单问题：由服务端助手直接回答，不启动电脑 Agent。判定是纯函数，UI 不做 if。
+            val simple = SimpleQuestionRouter.isSimple(content, attachmentIds.size)
             try {
                 val api = api()
-                // 已结束的对话：新消息走续跑，重开任务并起新一轮 Agent Run；
-                // 进行中的对话：仍走追加消息由助手回话。
-                val outcome = if (current.task?.isFinished == true) {
-                    api.continueTask(taskId, content, attachmentIds)
-                } else {
-                    api.sendMessage(taskId, content, attachmentIds)
+                val outcome = when {
+                    // 已结束对话 + 需要执行：重开任务并起新一轮电脑 Agent（今天的续跑路径）
+                    current.task?.isFinished == true && !simple ->
+                        api.continueTask(taskId, content, attachmentIds)
+
+                    // 已结束对话 + 简单追问：只重开对话取服务端助手回复，不起 Run
+                    current.task?.isFinished == true ->
+                        api.continueTask(taskId, content, attachmentIds, start = false)
+
+                    // 进行中的对话：保持现有助手路径，不额外 start 一轮 Agent
+                    else -> api.sendMessage(taskId, content, attachmentIds)
                 }
                 // 发送成功：清空附件；失败时保留，用户可以直接重试
                 attachmentController.clear()
@@ -864,12 +876,131 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 refresh()
                 // 上次连接重试耗尽后流是停的：新一轮消息发出时顺手把实时流重新建起来
                 if (!streamEnabled) startStream()
+                // 模型明确说「这件事只能实际执行」：不能把用户留在一条答不了的对话里，
+                // 自动把同一句交给电脑 Agent，并在对话里说明原因。
+                if (outcome.messages.assistantRequestsExecution()) {
+                    handOverToAgent(
+                        api,
+                        content,
+                        "这件事需要实际执行，已交给电脑上的 Agent 继续。",
+                    )
+                }
             } catch (e: FluxApiException) {
-                _state.value = _state.value.withSendFailed(content, e.message)
+                val handled = runCatching {
+                    recoverWithAgent(api(), content, attachmentIds, e.message)
+                }.getOrDefault(false)
+                if (!handled) {
+                    _state.value = _state.value.withSendFailed(content, e.message)
+                }
             } catch (e: Exception) {
-                _state.value = _state.value.withSendFailed(content, e.message ?: "发送失败")
+                val message = e.message ?: "发送失败"
+                val handled = runCatching {
+                    recoverWithAgent(api(), content, attachmentIds, message)
+                }.getOrDefault(false)
+                if (!handled) {
+                    _state.value = _state.value.withSendFailed(content, message)
+                }
             }
         }
+    }
+
+    /**
+     * 助手路径失败后的自动回退：把用户这句话交给电脑上的 Agent。
+     *
+     * 不新建对话、不重复写用户消息：消息已经由 `/messages`（新对话）或
+     * `/continue?start=false`（重开的终态对话）落库；这里只补一轮 Run。
+     * 返回 true 表示已经写好最终状态（切到 Agent 执行轨迹，或明确提示无法切）；
+     * 只有「连 api 都取不到」这类情况才返回 false，交给调用方恢复草稿。
+     */
+    private suspend fun recoverWithAgent(
+        api: FluxApi,
+        content: String,
+        attachmentIds: List<String>,
+        reason: String?,
+    ): Boolean {
+        val snapshot = runCatching { api.getTask(taskId) }.getOrNull()
+        val persisted = runCatching {
+            api.listMessages(taskId, limit = 8).any { message ->
+                message.role == "user" && message.content.trim() == content
+            }
+        }.getOrDefault(false)
+        val notice = "没能直接回答，已交给电脑上的 Agent 继续。"
+        try {
+            // 助手请求连「重开对话」都没来得及做（仍是终态）：续跑会同时落消息 + 起 Run
+            if (snapshot != null && snapshot.isFinished) {
+                val outcome = api.continueTask(taskId, content, attachmentIds)
+                finishAgentHandover(outcome.task, notice)
+                return true
+            }
+            // 本轮电脑 Agent 已经在跑：不能为了回退再起一轮，也不打断它
+            if (snapshot != null && (
+                    snapshot.runId != null ||
+                        snapshot.status == "running" ||
+                        snapshot.status == "waiting_for_user_decision"
+                    )
+            ) {
+                _state.value = _state.value.copy(
+                    sending = false,
+                    draft = if (persisted) "" else content,
+                    notice = null,
+                    error = "没能直接回答，电脑上的 Agent 正在执行，结束后再试一次。",
+                )
+                refresh(quiet = true)
+                return true
+            }
+            // 对话已经重开（或本来就是进行中）且没有 Run：同一句作为本轮指令起 Run
+            val started = api.startTask(taskId, followup = content)
+            finishAgentHandover(started.task, notice)
+            return true
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                sending = false,
+                draft = if (persisted) "" else content,
+                notice = null,
+                error = "没能直接回答，自动交给电脑 Agent 也失败了：" +
+                    (reason ?: e.message ?: "未知错误"),
+            )
+            runCatching { refresh(quiet = true) }
+            return true
+        }
+    }
+
+    /** 助手回复明确要求执行时，直接在同一对话里起一轮电脑 Agent。 */
+    private suspend fun handOverToAgent(api: FluxApi, content: String, notice: String) {
+        val task = _state.value.task
+        // Agent 已经在跑 / 正在等用户决策：不重复起一轮，也不打断当前执行
+        if (task != null && (
+                task.runId != null ||
+                    task.status == "running" ||
+                    task.status == "waiting_for_user_decision"
+                )
+        ) {
+            return
+        }
+        runCatching { api.startTask(taskId, followup = content) }
+            .onSuccess { outcome -> finishAgentHandover(outcome.task, notice) }
+            .onFailure { failure ->
+                _state.value = _state.value.copy(
+                    notice = null,
+                    error = "需要实际执行，但交给电脑上的 Agent 失败了：" +
+                        (failure.message ?: "未知错误"),
+                )
+            }
+    }
+
+    /** 回退成功：切到 Agent 执行轨迹，并把「为什么切」留在输入区上方。 */
+    private fun finishAgentHandover(task: Task, notice: String) {
+        attachmentController.clear()
+        _state.value = _state.value.copy(
+            sending = false,
+            draft = "",
+            task = task,
+            error = null,
+            notice = notice,
+        )
+        applyStreamSnapshot(streamReducer.startRun())
+        if (!streamEnabled) startStream()
+        refresh(quiet = true)
     }
 
     fun start() = runAction("start") { api ->

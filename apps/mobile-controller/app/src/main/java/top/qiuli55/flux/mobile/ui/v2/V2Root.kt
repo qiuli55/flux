@@ -170,6 +170,9 @@ fun FluxV2Root() {
     val seedCounter = remember { AtomicLong(0L) }
     var chatSeed by remember { mutableStateOf<ComposerSeed?>(null) }
     var taskSeed by remember { mutableStateOf<Pair<String, ComposerSeed>?>(null) }
+    // 新对话首条是简单问题：任务建好后，对话页要替用户把这条消息发给服务端助手。
+    // 存 taskId → 待发送内容，消费后清空，旋转/重组都不会重复发送。
+    var autoSend by remember { mutableStateOf<Pair<String, ComposerSeed>?>(null) }
     var shareQueue by remember { mutableStateOf(ShareIntakeState()) }
     val context = LocalContext.current
     // 全局触感控制器：设置里的开关只改 enabled，不重建振动器
@@ -403,6 +406,9 @@ fun FluxV2Root() {
                 ),
             )
         }
+        // 简单问题不启动电脑 Agent：建任务时 start=false，等对话页打开后
+        // 由服务端助手（flux-server 的 TaskAssistant）直接回复。
+        val simple = SimpleQuestionRouter.isSimple(text, attachmentIds.size)
         vm.createTask(
             description,
             current.agentId,
@@ -415,6 +421,7 @@ fun FluxV2Root() {
             summaryFrom = current.summaryFrom,
             attachmentIds = attachmentIds,
             origin = if (current.isAssistant) "assistant" else "chat",
+            start = !simple,
             onFailed = { message ->
                 // 建任务失败：把乐观气泡回滚掉，避免用户重试后出现两条一样的消息。
                 // 输入框里的文字由 V2ChatScreen 在失败时保留，用户可以直接再点发送。
@@ -429,8 +436,13 @@ fun FluxV2Root() {
             // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
             draftAttachments.clear()
             draftAttachmentError = null
-            // 新对话第一次发送 = 建任务并立即交给 Agent；只建不跑会让用户以为消息没发出去。
-            vm.startTask(taskId)
+            if (simple) {
+                // 对话页挂载、实时流建立后再发：回复逐字出现在同一条对话里。
+                autoSend = taskId to ComposerSeed(seedCounter.incrementAndGet(), text)
+            } else {
+                // 需要执行：建任务并立即交给电脑上的 Agent；只建不跑会让用户以为消息没发出去。
+                vm.startTask(taskId)
+            }
             chat = current.copy(
                 conversationId = taskId,
                 title = text.take(40).ifBlank { "附件对话" },
@@ -1049,6 +1061,11 @@ fun FluxV2Root() {
                             // 助理对话右上角可回到进度看板；普通对话不给这个入口
                             onOpenAssistantBoard = { route = V2Route.Assistant },
                             onOpenChanges = { route = V2Route.Changes(current.taskId) },
+                            // 简单问题的首条消息：对话页接手后走服务端助手
+                            autoSend = autoSend?.takeIf { it.first == current.taskId }?.second,
+                            onAutoSendApplied = { token ->
+                                if (autoSend?.second?.token == token) autoSend = null
+                            },
                             // 系统分享落到当前正在看的这段对话
                             seed = taskSeed?.takeIf { it.first == current.taskId }?.second,
                             onSeedApplied = { token ->

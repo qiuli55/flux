@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
 from flux.core.task_engine.assistant import (
     CONFIRMATION_DIMENSIONS,
     CONFIRMATION_UNKNOWN,
+    AssistantTurn,
+    parse_needs_execution,
     parse_turn,
 )
 from flux.main import create_app
@@ -98,9 +101,40 @@ def test_post_message_creates_user_and_assistant_messages(client: TestClient) ->
     assert reply["payload"]["model"]["provider"] == "local"
     assert reply["payload"]["model"]["model"] == "local-echo"
 
-    # 首次真实处理把任务从 pending 推进到 running
-    assert body["data"]["task"]["status"] == "running"
-    assert client.get(f"{PREFIX}/tasks/{task['id']}").json()["data"]["status"] == "running"
+    # 助手回复只是对话，不是电脑 Agent 在跑：状态保持 pending，
+    # 客户端不会把这条回复误读成「Agent 正在执行」。
+    assert body["data"]["task"]["status"] == "pending"
+    assert client.get(f"{PREFIX}/tasks/{task['id']}").json()["data"]["status"] == "pending"
+    # 诚实标记：这一轮没有启动电脑上的 Agent
+    assert reply["payload"]["assistant_only"] is True
+    assert "needs_execution" not in reply["payload"]
+
+
+def test_message_persists_needs_execution_flag_from_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型明确说「只能实际执行」时，回复 payload 带上 needs_execution 供客户端回退。"""
+    container = client.app.state.container
+
+    async def fake_respond(**kwargs: object) -> AssistantTurn:
+        return AssistantTurn(
+            reply="这件事需要实际读写文件，我直接回答不了。",
+            needs_execution=True,
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(container.assistant, "respond", fake_respond)
+    task = client.post(f"{PREFIX}/tasks", json={"description": "帮我改配置"}).json()["data"]
+    body = client.post(
+        f"{PREFIX}/tasks/{task['id']}/messages", json={"content": "帮我改一下配置"}
+    ).json()
+    reply = body["data"]["messages"][1]
+    assert reply["payload"]["needs_execution"] is True
+    # 这条回复马上会被交给 Agent，不能再声称「未启动电脑 Agent」
+    assert "assistant_only" not in reply["payload"]
+    # 回复本身仍只是对话：任务不能提前显示成 running
+    assert body["data"]["task"]["status"] == "pending"
 
 
 def test_messages_survive_app_restart(settings: Settings, db_schema: None) -> None:
@@ -259,3 +293,14 @@ def test_parse_turn_falls_back_to_plain_text() -> None:
         {"label": "风险", "value": "低"},
         {"label": "需人工审核的环节", "value": CONFIRMATION_UNKNOWN},
     ]
+
+
+def test_parse_needs_execution_only_accepts_boolean_true() -> None:
+    """只有协议里的布尔 true 才算「必须执行」；纯文本 / 字符串 / 缺失一律 false。"""
+    assert parse_needs_execution('{"reply": "要跑一下", "needs_execution": true}') is True
+    assert parse_needs_execution('{"reply": "直接回答", "needs_execution": false}') is False
+    assert parse_needs_execution('{"reply": "直接回答"}') is False
+    assert parse_needs_execution('{"reply": "要跑", "needs_execution": "true"}') is False
+    assert parse_needs_execution('{"reply": "要跑", "needs_execution": 1}') is False
+    assert parse_needs_execution("需要实际执行才能回答") is False
+    assert parse_needs_execution("") is False

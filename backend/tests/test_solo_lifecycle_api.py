@@ -204,7 +204,11 @@ def test_task_defaults_to_auto_with_no_confirmation(settings: Settings, tmp_path
 
 
 def test_assistant_replies_without_touching_the_code(settings: Settings, tmp_path: Path) -> None:
-    """AI 先对话不动代码：消息落库、任务进入 running，但不会自己起 Run。"""
+    """AI 先对话不动代码：消息落库、任务保持 pending，且不会自己起 Run。
+
+    助手回复不是电脑 Agent 的执行：状态不能推进到 running，否则 UI 会把
+    「服务端助手回了句话」误读成「电脑上的 Agent 正在跑」。
+    """
     with _solo(settings, tmp_path) as (client, factory):
         task = _create(client, description="给待办服务加一个按完成状态过滤的接口")
         replied = client.post(
@@ -212,14 +216,33 @@ def test_assistant_replies_without_touching_the_code(settings: Settings, tmp_pat
         )
         assert replied.status_code == 200, replied.text
         body = replied.json()["data"]
-        assert body["task"]["status"] == "running"
+        assert body["task"]["status"] == "pending"
         assert body["messages"][0]["role"] == "user"
         assert body["messages"][1]["role"] == "assistant"
         assert body["messages"][1]["content"]
+        assert body["messages"][1]["payload"]["assistant_only"] is True
 
         # 追问阶段绝不执行：没有任何 Run 被起起来
         assert factory.created == []
         assert _task(client, task["id"])["run_id"] is None
+
+
+def test_message_while_agent_running_is_not_marked_assistant_only(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Agent 正在执行时，助手回复不能标记成「未启动电脑 Agent」——那是假的。"""
+    with _solo(settings, tmp_path) as (client, factory):
+        task = _create(client)
+        _start(client, task["id"])
+        _wait_harnesses(factory, 1)
+        replied = client.post(
+            f"{PREFIX}/tasks/{task['id']}/messages", json={"content": "顺便问一句这是什么"}
+        )
+        assert replied.status_code == 200, replied.text
+        reply = replied.json()["data"]["messages"][1]
+        assert "assistant_only" not in reply["payload"]
+        # 运行中的任务保持 running，不会被助手回复改回 pending
+        assert replied.json()["data"]["task"]["status"] == "running"
 
 
 def test_user_can_edit_confirmation_and_it_becomes_the_basis(
@@ -492,6 +515,12 @@ def test_continue_rejects_a_conversation_still_running(settings: Settings, tmp_p
         )
         assert response.status_code == 409
         assert "仍在进行中" in response.json()["message"]
+        # 助手短路径也一样：进行中的对话不能借 start=false 绕过 409
+        assistant_only = client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue",
+            json={"content": "这句只是想问个问题", "start": False},
+        )
+        assert assistant_only.status_code == 409
         _wait_harnesses(factory, 1)
 
 
@@ -512,6 +541,75 @@ def test_continue_works_after_the_conversation_was_cancelled(
         assert continued.status_code == 200, continued.text
         assert continued.json()["data"]["task"]["status"] == "running"
         _wait_harnesses(factory, 2)
+
+
+def test_continue_without_start_uses_assistant_and_keeps_task_open(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """终态对话的简单追问：重开对话、只让服务端助手回答，不启动电脑 Agent。"""
+    with _solo(settings, tmp_path, behavior=default_dsh_behavior) as (client, factory):
+        task = _create(client, description="给待办服务加过滤接口")
+        _start(client, task["id"])
+        _wait_status(client, task["id"], "completed")
+        _wait_last_message(client, task["id"], "run_finished")
+        history_before = len(_messages(client, task["id"]))
+
+        continued = client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue",
+            json={"content": "刚才加的那个过滤参数叫什么？", "start": False},
+        )
+        assert continued.status_code == 200, continued.text
+        data = continued.json()["data"]
+        # 没有起新一轮 Run：状态只是重开为 pending，run_id 已清空
+        assert data["task"]["status"] == "pending"
+        assert data["task"]["run_id"] is None
+        assert [m["role"] for m in data["messages"]] == ["user", "assistant"]
+        assert data["messages"][0]["content"] == "刚才加的那个过滤参数叫什么？"
+        assert "刚才加的那个过滤参数叫什么？" in data["messages"][1]["content"]
+        assert data["messages"][1]["payload"]["assistant_only"] is True
+        # 电脑上的 Agent 没有被拉起来
+        assert len(factory.created) == 1
+
+        messages = _messages(client, task["id"])
+        assert len(messages) == history_before + 2
+        assert messages[-1]["role"] == "assistant"
+
+
+def test_start_with_followup_hands_a_reopened_chat_to_the_agent(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """助手路径失败后的回退：同一句已落库的消息直接作为本轮 Agent 指令，不重复写一条。"""
+    with _solo(settings, tmp_path, behavior=default_dsh_behavior) as (client, factory):
+        task = _create(client, description="给待办服务加过滤接口")
+        _start(client, task["id"])
+        _wait_status(client, task["id"], "completed")
+        _wait_last_message(client, task["id"], "run_finished")
+        client.post(
+            f"{PREFIX}/tasks/{task['id']}/continue",
+            json={"content": "那就真的加上排序吧", "start": False},
+        )
+        user_messages_before = [
+            m for m in _messages(client, task["id"]) if m["role"] == "user"
+        ]
+
+        started = client.post(
+            f"{PREFIX}/tasks/{task['id']}/start",
+            json={"followup": "那就真的加上排序吧"},
+        )
+        assert started.status_code == 200, started.text
+        assert started.json()["data"]["task"]["status"] == "running"
+        _wait_harnesses(factory, 2)
+
+        deadline = time.monotonic() + 5
+        while not factory.created[1].prompts and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "那就真的加上排序吧" in factory.created[1].prompts[0]
+        assert "## 本轮任务" in factory.created[1].prompts[0]
+        # 用户消息只在对话里存在一份：/start 不会为回退再补一条
+        user_messages_after = [
+            m for m in _messages(client, task["id"]) if m["role"] == "user"
+        ]
+        assert [m["id"] for m in user_messages_after] == [m["id"] for m in user_messages_before]
 
 
 # --- §5 决策模式 ---

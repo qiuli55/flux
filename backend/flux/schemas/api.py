@@ -94,6 +94,19 @@ class TaskMessageCreateRequest(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
+class TaskContinueRequest(BaseModel):
+    """终态对话续跑（`POST /tasks/{id}/continue`）。
+
+    `start=True` 沿用原行为：重开对话并起一轮电脑 Agent；
+    `start=False` 只重开对话、取一轮服务端助手回复，不启动 Agent——
+    简单追问不必把电脑上的 Agent 拖起来，真正需要执行时客户端再调 `/start`。
+    """
+
+    content: str = Field(default="", max_length=8000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    start: bool = True
+
+
 class SecureInputRequest(BaseModel):
     """在安全输入卡片里提交一个密钥（明文只出现在这一次请求里，落库即加密）。
 
@@ -202,9 +215,14 @@ class DecisionChooseRequest(BaseModel):
 
 
 class TaskStartRequest(BaseModel):
-    """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。"""
+    """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。
+
+    `followup` 用于「助手没能直接回答，自动交给电脑 Agent」的回退：消息已经落在
+    对话里，这里只把同一句作为本轮执行指令，不再重复写一条用户消息。
+    """
 
     confirmation: list[ConfirmationItem] | None = None
+    followup: str | None = Field(default=None, max_length=8000)
 
 
 class ChangeIdsRequest(BaseModel):

@@ -1880,6 +1880,16 @@ private fun MessageRow(
                         V2Colors.ink(.45f),
                         maxLines = 1,
                     )
+                    // 诚实说明：这条回复来自服务端助手，这一轮没有启动电脑上的 Agent。
+                    if (message.assistantOnly) {
+                        Spacer(Modifier.width(6.dp))
+                        Label(
+                            "服务端助手 · 未启动电脑 Agent",
+                            9f,
+                            V2Colors.ink(.32f),
+                            maxLines = 1,
+                        )
+                    }
                 }
                 if (!hideAnswerBody) {
                     Spacer(Modifier.height(8.dp))

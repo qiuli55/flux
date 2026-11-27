@@ -40,7 +40,8 @@ CONFIRMATION_UNKNOWN = "待确认"
 
 #: 结构化输出的协议说明。字段名与前端渲染一一对应：
 #: questions → 需要用户补充的问题，confirmation → 需求确认六维度，steps → 执行计划步骤。
-SYSTEM_PROMPT = """你是 Flux，一个 AI 软件工程平台的执行助手，正在与用户确认一项开发任务。
+SYSTEM_PROMPT = """你是 Flux，一个 AI 软件工程平台的执行助手。用户可能在问一个可以直接
+回答的问题，也可能在描述一项开发任务。
 
 任务描述：{description}
 {context}
@@ -54,6 +55,12 @@ SYSTEM_PROMPT = """你是 Flux，一个 AI 软件工程平台的执行助手，�
   label 必须且只能取这六个之一：{dimensions}。没有把握的维度把 value 写成
   "待确认"，不要编一个看起来合理的答案；
 - "steps"：数组，执行计划，每项是简短的中文步骤标题（3~6 项）；信息不足以给出计划时给空数组。
+- "needs_execution"：布尔值。只有这件事实在必须由电脑上的 Agent 执行（读写工作区文件、
+  跑命令、安装依赖、部署等），你无法只靠对话直接回答时才给 true；能直接回答就给 false。
+
+如果用户只是问一个能直接回答的问题（概念、原理、用法、对前文内容的追问、短澄清），
+直接在 "reply" 里正面回答，questions 与 steps 都给空数组：不要要求用户补充开发需求，
+也不要输出执行计划。只有确实是开发任务时才按上面的需求确认格式输出。
 
 当任务需要用户提供密钥类凭证（API key、token、密码）时，额外给一个 "secure_input" 字段，
 前端会把它渲染成安全输入框，用户填的值直接进密钥库、不进对话上下文：
@@ -75,6 +82,9 @@ class AssistantTurn:
     confirmation: list[dict[str, str]] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)
     secure_input: dict[str, Any] | None = None
+    #: 模型判断这件事只能交给电脑上的 Agent 实际执行（读写文件 / 跑命令 / 部署）。
+    #: 客户端据此在「直接回答」之后自动升级到 Agent，而不是把执行任务留在对话里。
+    needs_execution: bool = False
     provider: str = ""
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
@@ -98,6 +108,8 @@ class AssistantTurn:
             data["steps"] = self.steps
         if self.secure_input:
             data["secure_input"] = self.secure_input
+        if self.needs_execution:
+            data["needs_execution"] = True
         return data
 
 
@@ -135,13 +147,16 @@ class TaskAssistant:
             result = await self._router.chat(messages)
             reply, questions, confirmation, steps = parse_turn(result.content)
             secure_input = parse_secure_input(result.content)
+            needs_execution = parse_needs_execution(result.content)
             logger.info(
-                "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d",
+                "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d "
+                "needs_execution=%s",
                 result.provider,
                 result.model,
                 len(questions),
                 len(confirmation),
                 len(steps),
+                needs_execution,
             )
             return AssistantTurn(
                 reply=reply,
@@ -149,6 +164,7 @@ class TaskAssistant:
                 confirmation=confirmation,
                 steps=steps,
                 secure_input=secure_input,
+                needs_execution=needs_execution,
                 provider=str(result.provider),
                 model=result.model,
                 usage={
@@ -197,13 +213,16 @@ class TaskAssistant:
         latency_ms = int((time.perf_counter() - started) * 1000)
         reply, questions, confirmation, steps = parse_turn(raw)
         secure_input = parse_secure_input(raw)
+        needs_execution = parse_needs_execution(raw)
         logger.info(
-            "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d streaming=%s",
+            "Solo 助手回复 provider=%s model=%s questions=%d confirmation=%d steps=%d "
+            "needs_execution=%s streaming=%s",
             provider_name,
             model_name,
             len(questions),
             len(confirmation),
             len(steps),
+            needs_execution,
             True,
         )
         return AssistantTurn(
@@ -212,6 +231,7 @@ class TaskAssistant:
             confirmation=confirmation,
             steps=steps,
             secure_input=secure_input,
+            needs_execution=needs_execution,
             provider=provider_name,
             model=model_name,
             usage={
@@ -319,6 +339,18 @@ def parse_turn(raw: str) -> tuple[str, list[str], list[dict[str, str]], list[str
 _SECURE_INPUT_TEXT_LIMIT = 200
 #: 卡片最多携带的模型名数量（与密钥库的模型上限对齐）。
 _SECURE_INPUT_MODEL_LIMIT = 64
+
+
+def parse_needs_execution(raw: str) -> bool:
+    """模型是否明确表示这件事只能由电脑上的 Agent 实际执行。
+
+    只认协议里的布尔 true：模型没按协议输出、字段缺失或给了字符串等非布尔值时
+    一律按 false 处理——不能因为解析不可靠就替用户启动一轮 Agent。
+    """
+    payload = _load_json_object((raw or "").strip())
+    if payload is None:
+        return False
+    return payload.get("needs_execution") is True
 
 
 def parse_secure_input(raw: str) -> dict[str, Any] | None:

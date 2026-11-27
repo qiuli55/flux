@@ -96,6 +96,13 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
+        /**
+         * 建任务时是否立即交给电脑 Agent。
+         *
+         * 简单问题走服务端助手：传 false，建好后由客户端调 `sendMessage` 取回复；
+         * 需要执行的任务保持今天的路径（建任务 + `startTask`）。
+         */
+        start: Boolean = true,
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -109,6 +116,7 @@ class FluxApi(
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
             }
             put("origin", origin)
+            put("start", start)
             putAttachmentIds(attachmentIds)
         }
         return post("api/v1/tasks", body)
@@ -147,16 +155,23 @@ class FluxApi(
         },
     )
 
-    /** 终态对话续跑：新消息作为新一轮 Agent 指令，历史消息保留。 */
+    /**
+     * 终态对话续跑：重开同一对话，历史消息保留。
+     *
+     * [start] 为 true 时新消息作为新一轮 Agent 指令；为 false 时只取服务端助手回复，
+     * 不启动电脑 Agent（简单追问的短路径），需要执行时再调 [startTask]。
+     */
     suspend fun continueTask(
         taskId: String,
         content: String,
         attachmentIds: List<String> = emptyList(),
+        start: Boolean = true,
     ): TaskReplyOutcome = post(
         "api/v1/tasks/$taskId/continue",
         buildJsonObject {
             put("content", content)
             putAttachmentIds(attachmentIds)
+            put("start", start)
         },
     )
 
@@ -213,11 +228,22 @@ class FluxApi(
         }
     }
 
-    suspend fun startTask(taskId: String, confirmation: List<ConfirmationItem>? = null): TaskStartOutcome {
+    /**
+     * 开始执行：把当前对话交给电脑上的 Agent。
+     *
+     * [followup] 用于「助手没能直接回答 → 自动回退」：用户那条消息已经落库，
+     * 这里只把同一句作为本轮执行指令，不再重复写一条消息。
+     */
+    suspend fun startTask(
+        taskId: String,
+        confirmation: List<ConfirmationItem>? = null,
+        followup: String? = null,
+    ): TaskStartOutcome {
         val body = buildJsonObject {
             if (!confirmation.isNullOrEmpty()) {
                 put("confirmation", json.encodeToJsonElement(ListSerializer(ConfirmationItem.serializer()), confirmation))
             }
+            if (!followup.isNullOrBlank()) put("followup", followup.trim())
         }
         return post("api/v1/tasks/$taskId/start", body)
     }

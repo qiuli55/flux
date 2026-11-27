@@ -539,6 +539,9 @@ fun V2TaskChatScreen(
     /** 系统分享注入到这段对话：文字进输入框，附件进草稿。 */
     seed: ComposerSeed? = null,
     onSeedApplied: (Long) -> Unit = {},
+    /** 新对话首条简单问题：对话页挂载后自动发送，由服务端助手直接回复。 */
+    autoSend: ComposerSeed? = null,
+    onAutoSendApplied: (Long) -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -555,6 +558,15 @@ fun V2TaskChatScreen(
     DisposableEffect(taskId) {
         vm.startStream()
         onDispose { vm.stopStream() }
+    }
+
+    // 新对话首条是简单问题：先建立实时流，再把这条消息交给服务端助手。
+    // 发送后立刻标记已消费，重组 / 旋转不会重复发同一条。
+    LaunchedEffect(autoSend?.token) {
+        val seed = autoSend ?: return@LaunchedEffect
+        vm.onDraftChange(seed.text)
+        vm.send()
+        onAutoSendApplied(seed.token)
     }
 
     val device = V2Registry.devices.firstOrNull()?.name ?: "本机"
@@ -842,7 +854,17 @@ private fun TaskMessage.toV2Message(): V2Message? {
     if (text.isEmpty()) return null
     // run_finished 携带 run_id：答案气泡上方据此显示「任务耗时」入口
     val runId = if (kind == "run_finished") payloadRunId(payload) else ""
-    return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, runId = runId)
+    // 助手标记了「服务端直接回复、没启动电脑 Agent」：气泡上给一句克制说明
+    val assistantOnly = mapped == V2MessageRole.AGENT && payloadFlag("assistant_only")
+    return V2Message(
+        mapped,
+        text,
+        clockLabel(createdAt),
+        createdAtEpoch = parseEpochSeconds(createdAt),
+        kind = kind,
+        runId = runId,
+        assistantOnly = assistantOnly,
+    )
 }
 
 /** 从消息 payload 里取 run_id（run_finished 才有）。 */

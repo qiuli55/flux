@@ -30,7 +30,7 @@ from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
-from flux.core.task_engine.assistant import validate_confirmation_items
+from flux.core.task_engine.assistant import AssistantTurn, validate_confirmation_items
 from flux.core.task_engine.context_usage import (
     CONTEXT_MESSAGE_KINDS,
     context_message_limit,
@@ -57,6 +57,7 @@ from flux.schemas.api import (
     PermissionModeRequest,
     SecureInputRequest,
     TaskAgentRequest,
+    TaskContinueRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
     TaskModelRequest,
@@ -139,6 +140,96 @@ def _attachments_brief(files: list[UploadedFile]) -> str:
     return "请看我随消息附上的文件：" + "、".join(
         f"{item.name}（{size_label(item.size)}，路径：{item.path}）" for item in files
     )
+
+
+def _assistant_only(task: Task) -> bool:
+    """这条回复是否只来自服务端助手（当前没有任何电脑 Agent 在跑）。
+
+    只用于给消息打一个可展示的诚实标记：有 run_id / 正在执行时不能声称
+    「未启动电脑 Agent」，否则同一段对话里 Agent 明明在跑、气泡却说不跑。
+    """
+    return task.run_id is None and task.status not in {
+        TaskStatus.RUNNING.value,
+        TaskStatus.WAITING_FOR_USER_DECISION.value,
+    }
+
+
+async def _respond_with_assistant(
+    container: Container,
+    task: Task,
+    task_uuid: uuid.UUID,
+    content: str,
+    files: list[UploadedFile],
+    user_message: Any,
+) -> tuple[Task, Any, AssistantTurn]:
+    """用户消息已落库后，取一轮服务端助手回复并落库 / 推流。
+
+    `/messages` 与 `/continue?start=False` 共用这一条路径：两者的区别只在
+    「任务是否刚从终态重开」，助手回复本身的口径必须完全一致。
+    """
+    history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
+    context = (
+        await container.brain.context(task.project_id) if task.project_id is not None else None
+    )
+    await container.task_stream.publish(task_uuid, "assistant_start", {})
+
+    async def _on_delta(text: str) -> None:
+        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
+    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
+    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
+    prompt_text = content or _attachments_brief(files)
+    if files and content:
+        prompt_text = content + "\n\n" + _attachments_brief(files)
+    try:
+        turn = await container.assistant.respond(
+            description=task.description,
+            message=prompt_text,
+            history=[
+                ChatMessage(role=m.role, content=m.content)
+                for m in history
+                if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
+            ],
+            context=context,
+            on_delta=_on_delta,
+        )
+    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
+        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
+        raise
+
+    payload = turn.payload()
+    # 诚实标记：这一轮确实没有启动电脑上的 Agent。客户端据此展示轻量说明，
+    # 也保证任务状态不会被误读成「Agent 正在执行」。
+    # 模型同时要求实际执行（needs_execution / 给了执行计划）时不打这个标记：
+    # 这条回复马上就会被客户端交给 Agent，再说「未启动」会与事实相反。
+    if _assistant_only(task) and not turn.needs_execution and not turn.steps:
+        payload["assistant_only"] = True
+    reply = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
+                    kind="secure_input" if turn.secure_input else "text",
+                    content=turn.reply,
+                    payload=payload,
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "assistant_message", {"message": reply.to_dict()}
+    )
+
+    if turn.confirmation:
+        # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
+        # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
+        task = await container.task_repo.set_confirmation(
+            task_uuid,
+            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
+        )
+    return task, reply, turn
 
 
 def _parse_uuid(value: str, *, field: str) -> uuid.UUID:
@@ -461,64 +552,11 @@ async def create_task_message(
     )
     await _record_attachments(container, task_uuid, files)
 
-    history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
-    context = (
-        await container.brain.context(task.project_id) if task.project_id is not None else None
+    # 助手回复是纯对话，不是一轮电脑 Agent 执行：状态保持 pending，
+    # 不能让 UI 看起来像「电脑上的 Agent 正在跑」。「开始执行」仍会把它推进到 running。
+    task, reply, turn = await _respond_with_assistant(
+        container, task, task_uuid, content, files, user_message
     )
-    await container.task_stream.publish(task_uuid, "assistant_start", {})
-
-    async def _on_delta(text: str) -> None:
-        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
-
-    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
-    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
-    prompt_text = content or _attachments_brief(files)
-    if files and content:
-        prompt_text = content + "\n\n" + _attachments_brief(files)
-    try:
-        turn = await container.assistant.respond(
-            description=task.description,
-            message=prompt_text,
-            history=[
-                ChatMessage(role=m.role, content=m.content)
-                for m in history
-                if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
-            ],
-            context=context,
-            on_delta=_on_delta,
-        )
-    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
-        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
-        raise
-    reply = (
-        await container.task_repo.add_messages(
-            task_uuid,
-            [
-                MessageDraft(
-                    role=TaskMessageRole.ASSISTANT.value,
-                    # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
-                    kind="secure_input" if turn.secure_input else "text",
-                    content=turn.reply,
-                    payload=turn.payload(),
-                )
-            ],
-        )
-    )[0]
-    await container.task_stream.publish(
-        task_uuid, "assistant_message", {"message": reply.to_dict()}
-    )
-
-    if turn.confirmation:
-        # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
-        # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
-        task = await container.task_repo.set_confirmation(
-            task_uuid,
-            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
-        )
-
-    if task.status == TaskStatus.PENDING.value:
-        # 平台已真实开始处理这条任务：状态从 pending 进入 running（有实际动作才改状态）
-        task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
     return ok(
         {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
         metadata={"provider": turn.provider, "model": turn.model},
@@ -679,13 +717,15 @@ async def poll_task_events(
 @router.post("/{task_id}/continue")
 async def continue_task(
     task_id: str,
-    payload: TaskMessageCreateRequest,
+    payload: TaskContinueRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """同一对话续跑：终态对话收到新消息时，重开任务并起一轮新 Run。
+    """同一对话续跑：终态对话收到新消息时重开任务。
 
-    与 `/messages` 的区别：那个只让助手回话；续跑把新消息当作本轮 Agent 指令，
-    让同一个对话接着执行（历史消息、项目关联与标题都保留）。
+    两种模式共用「重开 + 落用户消息」，区别只在收尾：
+    - `start=True`（默认）：新消息作为本轮 Agent 指令，起一轮电脑 Agent；
+    - `start=False`：只取一轮服务端助手回复，不启动 Agent。简单追问不必把
+      电脑上的 Agent 拖起来；真正需要执行时客户端再调 `/start`。
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
@@ -712,6 +752,21 @@ async def continue_task(
         task_uuid, "user_message", {"message": user_message.to_dict()}
     )
     await _record_attachments(container, task_uuid, files)
+
+    if not payload.start:
+        # 助手回复失败时任务保持重开后的 pending：用户消息已经落库，客户端可以
+        # 直接调 `/start`（带 followup）回退到电脑 Agent，不需要再写一条重复消息。
+        task, reply, turn = await _respond_with_assistant(
+            container, task, task_uuid, content, files, user_message
+        )
+        return ok(
+            {
+                "task": _task_dict(task),
+                "messages": [user_message.to_dict(), reply.to_dict()],
+            },
+            metadata={"provider": turn.provider, "model": turn.model},
+        )
+
     followup = content or _attachments_brief(files)
     try:
         result = await container.task_run_service.start(task, followup=followup)
@@ -917,7 +972,11 @@ async def start_task(
             details={"task_id": task_id},
         )
 
-    result = await container.task_run_service.start(task, payload.confirmation)
+    result = await container.task_run_service.start(
+        task,
+        payload.confirmation,
+        followup=(payload.followup or "").strip() or None,
+    )
     return ok(
         {
             "task": _task_dict(result.task),

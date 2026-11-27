@@ -153,6 +153,11 @@ data class V2Message(
     /** kind = handoff 时的交接双方（平台自动生成的 Agent 交接卡）。 */
     val handoffFrom: String = "",
     val handoffTo: String = "",
+    /**
+     * 这条助手消息由服务端助手直接回答、这一轮没有启动电脑上的 Agent。
+     * 气泡上只展示一句克制说明；不代表手机端运行了任何模型。
+     */
+    val assistantOnly: Boolean = false,
 )
 
 /**
