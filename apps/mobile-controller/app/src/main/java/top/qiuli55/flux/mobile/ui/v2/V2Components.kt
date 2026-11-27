@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -669,6 +671,10 @@ val LocalSheetMaxWidth = staticCompositionLocalOf<Dp?> { null }
 fun SheetFrame(
     onDismiss: () -> Unit,
     maxHeightFraction: Float = .82f,
+    /** 只按内容高度铺开（紧凑确认层用），[maxHeightFraction] 退化为高度上限。 */
+    wrapContent: Boolean = false,
+    /** 是否允许上拉展开到全高；紧凑确认层不需要。 */
+    expandable: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val sheetMaxWidth = LocalSheetMaxWidth.current
@@ -730,7 +736,7 @@ fun SheetFrame(
                 expanded = expanded,
                 dismissThresholdPx = dismissThreshold,
                 expandThresholdPx = expandThreshold,
-            )
+            ).let { if (!expandable && it == V2SheetRelease.Expand) V2SheetRelease.Settle else it }
         }
         when (release) {
             V2SheetRelease.Collapse -> {
@@ -793,6 +799,8 @@ fun SheetFrame(
                 if (source != NestedScrollSource.Drag) return Offset.Zero
                 if (available.y <= 0f) return Offset.Zero
                 // 内容已经到顶，剩下的下拉由弹层接手；全部消费，绝不冒泡给祖先。
+                // 即使弹层已经拖到高度上限，位移不再增加，也要把本次 available 全部吃掉，
+                // 否则差额会沿 nested scroll 冒泡给背后页面。
                 nestedDragging = true
                 val result = v2SheetNestedDrag(
                     availableDownPx = available.y,
@@ -802,7 +810,7 @@ fun SheetFrame(
                 )
                 dragPx = result.newOffsetPx
                 scope.launch { offsetY.snapTo(result.newOffsetPx) }
-                return Offset(0f, result.consumedPx)
+                return Offset(0f, available.y)
             }
 
             override suspend fun onPreFling(available: Velocity): Velocity {
@@ -824,7 +832,7 @@ fun SheetFrame(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .nestedScroll(nestedConnection)
@@ -870,7 +878,14 @@ fun SheetFrame(
                 )
                 .fillMaxWidth()
                 .onSizeChanged { heightPx = it.height.toFloat() }
-                .fillMaxHeight(fraction)
+                .then(
+                    if (wrapContent) {
+                        // 只占内容高度；maxHeightFraction 充当天花板，小屏也不会铺满。
+                        Modifier.heightIn(max = maxHeight * fraction)
+                    } else {
+                        Modifier.fillMaxHeight(fraction)
+                    },
+                )
                 .graphicsLayer { translationY = offsetY.value }
                 .shadow(24.dp, V2SheetShape)
                 .clip(V2SheetShape)

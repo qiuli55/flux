@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -54,8 +53,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -246,9 +243,14 @@ private fun EntryRow(
     }
 }
 
-/** 紧凑确认弹层：只占内容高度，不铺满整屏。 */
+/**
+ * 紧凑确认弹层：只占内容高度，不铺满整屏。
+ *
+ * 走共享 [SheetFrame]：下拉/投掷关闭、nested scroll 接手与指针拦截和其余弹层一致，
+ * 关闭全过程都不会把位移或速度漏给背后的页面。
+ */
 @Composable
-private fun V2ActionConfirm(
+internal fun V2ActionConfirm(
     title: String,
     message: String,
     confirmText: String,
@@ -257,42 +259,24 @@ private fun V2ActionConfirm(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetMaxWidth = LocalSheetMaxWidth.current
-    Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(V2Colors.scrim)
-                .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
-                ),
-        )
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .then(if (sheetMaxWidth != null) Modifier.widthIn(max = sheetMaxWidth) else Modifier)
-                .fillMaxWidth()
-                .shadow(24.dp, V2SheetShape)
-                .clip(V2SheetShape)
-                .background(Brush.verticalGradient(listOf(V2Colors.shellTop, V2Colors.shellBottom)))
-                .border(1.dp, V2Colors.line, V2SheetShape)
-                .padding(top = 16.dp),
-        ) {
-            SheetHeader(title = title, onClose = onDismiss, centered = true)
-            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                Label(message, 11.5f, V2Colors.ink(.55f))
-                Spacer(Modifier.height(16.dp))
-                if (danger) {
-                    DangerButton(confirmText, onConfirm, Modifier.fillMaxWidth(), enabled = !busy)
-                } else {
-                    PrimaryButton(confirmText, onConfirm, Modifier.fillMaxWidth(), enabled = !busy)
-                }
-                Spacer(Modifier.height(8.dp))
-                GhostButton("取消", onDismiss, Modifier.fillMaxWidth(), enabled = !busy)
-                Spacer(Modifier.height(20.dp))
+    SheetFrame(
+        onDismiss = onDismiss,
+        maxHeightFraction = .72f,
+        wrapContent = true,
+        expandable = false,
+    ) {
+        SheetHeader(title = title, onClose = onDismiss, centered = true)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Label(message, 11.5f, V2Colors.ink(.55f))
+            Spacer(Modifier.height(16.dp))
+            if (danger) {
+                DangerButton(confirmText, onConfirm, Modifier.fillMaxWidth(), enabled = !busy)
+            } else {
+                PrimaryButton(confirmText, onConfirm, Modifier.fillMaxWidth(), enabled = !busy)
             }
+            Spacer(Modifier.height(8.dp))
+            GhostButton("取消", onDismiss, Modifier.fillMaxWidth(), enabled = !busy)
+            Spacer(Modifier.height(20.dp))
         }
     }
 }
