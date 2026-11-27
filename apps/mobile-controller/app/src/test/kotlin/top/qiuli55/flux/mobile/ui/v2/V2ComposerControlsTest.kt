@@ -117,6 +117,57 @@ class V2ComposerControlsTest {
     }
 
     @Test
+    fun `agent trigger shows only the runtime icon and keeps the name in the menu`() {
+        rule.setContent {
+            AgentPill(
+                agent = agentB,
+                pendingAgentLabel = null,
+                enabled = true,
+                onClick = {},
+            )
+        }
+
+        rule.onNodeWithTag(V2ComposerTags.AGENT_BUTTON).assertIsDisplayed()
+        // 名称藏在 contentDescription 里，触发器表面不再有文本。
+        rule.onNodeWithContentDescription("切换 Agent：codex-agent").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.AGENT_ICON, useUnmergedTree = true).assertIsDisplayed()
+        rule.onNodeWithText("codex-agent").assertDoesNotExist()
+    }
+
+    @Test
+    fun `high privilege modes no longer show the notice above the composer`() {
+        var mode by mutableStateOf("full")
+        rule.setContent {
+            V2ChatScreen(
+                chat = V2ChatState(
+                    conversationId = "task-1",
+                    title = "构建失败排查",
+                    device = "本机",
+                    agentId = agentA.id,
+                    model = "claude-native",
+                    permissionMode = mode,
+                ),
+                messages = emptyList(),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                suggestions = emptyList(),
+                showHandoff = false,
+            )
+        }
+
+        // 完全访问 / 免审核的红色提示条已从输入区上方去掉。
+        rule.onNodeWithText("完全访问 · 高风险命令", substring = true).assertDoesNotExist()
+        rule.runOnIdle { mode = "unattended" }
+        rule.onNodeWithText("免审核 · 高风险命令", substring = true).assertDoesNotExist()
+        // 盾牌仍然随模式变化。
+        rule.onNodeWithContentDescription("对话权限模式：免审核").assertIsDisplayed()
+    }
+
+    @Test
     fun `context hint and ring color reflect usage level`() {
         assertNotEquals(contextRingColor(usage(20, "normal")), contextRingColor(usage(85, "warning")))
         assertNotEquals(contextRingColor(usage(85, "warning")), contextRingColor(usage(100, "full")))

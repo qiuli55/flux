@@ -718,6 +718,9 @@ fun V2TaskChatScreen(
             pendingAgentId = pendingAgentId,
             pendingAgentLabel = pendingAgentLabel,
             notice = state.error?.let { it } ?: state.notice,
+            // X 关掉会话提示（已切换模型 / 已排队切换 Agent 等）：清掉 error/notice，
+            // 后续轮询只更新任务数据，不会把同一条提示写回来。
+            onDismissNotice = { vm.dismissNotice() },
             suggestions = emptyList(),
             showHandoff = false,
             // 当前设备上已配置的 Agent 就地下拉切换，历史消息保留。
@@ -741,9 +744,8 @@ fun V2TaskChatScreen(
             onPermissionModeChange = { vm.setPermissionMode(it) },
             onAllowApproval = { decisionId -> vm.chooseDecision(decisionId, "允许", reject = false) },
             onDenyApproval = { decisionId -> vm.chooseDecision(decisionId, null, reject = true) },
-            // 执行中常驻运行状态条；停止动作已并入输入区主按钮
+            // 执行中不再显示输入区上方的状态条；停止动作已并入输入区主按钮
             taskRunning = task?.status?.toV2TaskStatus() == V2TaskStatus.RUNNING || state.stream.liveActive,
-            runningTaskTitle = task?.firstLine()?.takeIf { it.isNotBlank() },
             stopping = state.busyAction == "cancel",
             onStopTask = { vm.cancel() },
             // 审批卡固定在输入框上方，提交期间禁用按钮

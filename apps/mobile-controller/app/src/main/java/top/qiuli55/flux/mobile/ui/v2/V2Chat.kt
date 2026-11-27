@@ -239,10 +239,8 @@ fun V2ChatScreen(
     onDenyApproval: (String) -> Unit = {},
     /** 下拉刷新：真实任务对话 = 重新拉取任务与消息；null 时不启用该手势。 */
     onRefresh: (suspend () -> Unit)? = null,
-    /** 任务正在执行：输入区上方常驻运行状态条。 */
+    /** 任务正在执行：输入区主按钮就地变成停止。 */
     taskRunning: Boolean = false,
-    /** 正在执行的任务标题：运行状态条上显示，便于确认停的是哪个任务。 */
-    runningTaskTitle: String? = null,
     /** 停止请求已发出、等服务端确认。 */
     stopping: Boolean = false,
     onStopTask: () -> Unit = {},
@@ -264,10 +262,6 @@ fun V2ChatScreen(
     onOpenChanges: (() -> Unit)? = null,
 ) {
     val agent = demoAgent(chat.agentId)
-    val currentModelOption = modelOptions.firstOrNull {
-        it.model == chat.model && it.keyId == chat.modelKeyId
-    }
-    val currentModelLabel = currentModelOption?.label ?: chat.model.ifBlank { "默认模型" }
     val listState = rememberLazyListState()
     // 草稿跨配置变更/低内存重建保留：用户打了一半的字不能因为返回或旋转就消失。
     var input by rememberSaveable(chat.conversationId) { mutableStateOf("") }
@@ -772,11 +766,7 @@ fun V2ChatScreen(
             Spacer(Modifier.height(4.dp))
         }
 
-        // 执行中：运行状态条固定在输入区上方；停止动作只保留在输入区主按钮上
-        if (taskRunning) {
-            RunningStatusBar(title = runningTaskTitle, stopping = stopping)
-            Spacer(Modifier.height(2.dp))
-        }
+        // 执行中不再在输入区上方额外放状态条：停止动作只保留在输入区主按钮上。
 
         // 权限模式收进输入卡里的盾牌按钮，不再单独占一行
         if (chat.conversationId == null) {
@@ -809,11 +799,7 @@ fun V2ChatScreen(
             Spacer(Modifier.height(6.dp))
         }
 
-        // 完全访问 / 免审核：输入框上方常驻红色提示，提醒逐步审批已跳过
-        if (chat.permissionMode == "full" || chat.permissionMode == "unattended") {
-            FullAccessNotice(chat.permissionMode)
-            Spacer(Modifier.height(4.dp))
-        }
+        // 完全访问 / 免审核不再在输入框上方常驻提示条：盾牌图标仍随当前模式变化。
 
         // 输入框上方：待发送附件 / 上传中状态；发送成功后由状态层清空
         if (attachments.isNotEmpty() || uploading) {
@@ -935,43 +921,39 @@ fun V2ChatScreen(
                     },
                 )
                 Spacer(Modifier.width(2.dp))
-                // Agent 胶囊：只切 Agent，显示当前 Agent 名称与官方运行时图标。
-                // 上下文环 / 模型立方体在输入行右侧，Agent 胶囊独占这里剩余宽度，
-                // 窄屏也不会因为固定宽度控件变多而把名称挤成 0。
-                Row(
-                    Modifier.weight(1f).testTag(V2ComposerTags.MODEL_CHIP),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.weight(1f)) {
-                        AgentPill(
-                            agent = agent,
-                            modelLabel = currentModelLabel,
-                            pendingAgentLabel = pendingAgentLabel,
-                            enabled = !locked,
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                if (agentOptions.isNotEmpty()) {
-                                    agentMenuOpen = true
-                                } else {
-                                    onOpenAgentPicker()
-                                }
-                            },
-                        )
-                        FluxAgentMenu(
-                            expanded = agentMenuOpen && agentOptions.isNotEmpty(),
-                            onDismissRequest = { agentMenuOpen = false },
-                            options = agentOptions,
-                            currentAgentId = chat.agentId,
-                            currentModel = chat.model,
-                            currentModelKeyId = chat.modelKeyId,
-                            pendingAgentId = pendingAgentId,
-                            onPick = { agentId ->
-                                // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
-                                if (agentId != chat.agentId || pendingAgentId != null) onSwitchAgent(agentId)
-                            },
-                        )
-                    }
+                // Agent 触发器只画官方运行时图标：当前 Agent 名称放进 contentDescription
+                // 与下拉菜单，不再用 weight / fillMaxWidth 拉满，避免名字后拖出一长截空尾。
+                Box(Modifier.testTag(V2ComposerTags.MODEL_CHIP)) {
+                    AgentPill(
+                        agent = agent,
+                        pendingAgentLabel = pendingAgentLabel,
+                        enabled = !locked,
+                        onClick = {
+                            if (agentOptions.isNotEmpty()) {
+                                agentMenuOpen = true
+                            } else {
+                                onOpenAgentPicker()
+                            }
+                        },
+                    )
+                    // 菜单仍保留图标 + Agent 名称（以及排队/选中信息），方便同 runtime 的多个 Agent 区分。
+                    FluxAgentMenu(
+                        expanded = agentMenuOpen && agentOptions.isNotEmpty(),
+                        onDismissRequest = { agentMenuOpen = false },
+                        options = agentOptions,
+                        currentAgentId = chat.agentId,
+                        currentModel = chat.model,
+                        currentModelKeyId = chat.modelKeyId,
+                        pendingAgentId = pendingAgentId,
+                        onPick = { agentId ->
+                            // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
+                            if (agentId != chat.agentId || pendingAgentId != null) onSwitchAgent(agentId)
+                        },
+                    )
                 }
+                // 固定宽度的触发器 + Spacer(weight) 顶开剩余空间：
+                // 右侧盾牌与发送钮在窄屏 / 大字号下仍按固定尺寸量出来，不会消失。
+                Spacer(Modifier.weight(1f))
                 Spacer(Modifier.width(2.dp))
                 // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息。
                 // 外层 48dp 只负责触摸目标，内层 32dp 保持原有视觉尺寸。
@@ -1502,35 +1484,6 @@ private fun PromptAction(
             if (primary) V2Colors.actionInk else V2Colors.ink(.55f),
             weight = FontWeight.Medium,
         )
-    }
-}
-
-/** 执行中的运行状态条：只报状态，停止统一由输入区主按钮承担。 */
-@Composable
-private fun RunningStatusBar(title: String?, stopping: Boolean) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(V2Colors.emerald.copy(alpha = .06f))
-            .border(1.dp, V2Colors.emerald.copy(alpha = .20f), RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        LiveDot(V2Colors.emerald)
-        Spacer(Modifier.width(6.dp))
-        Label("Agent 正在执行", 9.5f, V2Colors.emerald700, weight = FontWeight.Medium)
-        if (!title.isNullOrBlank()) {
-            Spacer(Modifier.width(6.dp))
-            Label("·", 9.5f, V2Colors.emerald700.copy(alpha = .5f))
-            Spacer(Modifier.width(6.dp))
-            Label(title, 9.5f, V2Colors.emerald700.copy(alpha = .8f), maxLines = 1)
-        }
-        Spacer(Modifier.weight(1f))
-        if (stopping) {
-            Label("停止中…", 9f, V2Colors.rose, weight = FontWeight.Medium)
-        }
     }
 }
 

@@ -546,10 +546,6 @@ fun NewChatSheet(
                         Spacer(Modifier.height(2.dp))
                         Label("${agent.role} · 运行 ${agent.running} 个任务", 10f, V2Colors.ink(.36f))
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Label("${agent.load} %", 11f, V2Colors.ink(.55f))
-                        Label("负载", 9f, V2Colors.ink(.28f))
-                    }
                 }
             }
         }
