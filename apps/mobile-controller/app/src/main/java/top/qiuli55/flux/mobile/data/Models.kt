@@ -453,6 +453,14 @@ data class Artifact(
     val type: String = "page",
     val title: String = "",
     val summary: String = "",
+    /** 画廊 / 列表副标题；旧后端没有这个字段时为空串。 */
+    val description: String = "",
+    /** 浏览器标签图标词（chart / code / map 等），不是新的产物类型。 */
+    val icon: String = "",
+    /** 本次发布的短名。 */
+    val label: String = "",
+    /** 用户私有钉选；不影响可见性。 */
+    val pinned: Boolean = false,
     val version: Int = 0,
     @SerialName("screen_count") val screenCount: Int = 0,
     @SerialName("updated_at") val updatedAt: String = "",

@@ -68,6 +68,10 @@ data class V2ArtifactCard(
     val type: String,
     val title: String,
     val summary: String = "",
+    /** 画廊副标题；summary 为空时卡片用它兜底。 */
+    val description: String = "",
+    val icon: String = "",
+    val pinned: Boolean = false,
     val version: Int = 0,
 )
 

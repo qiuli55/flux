@@ -75,6 +75,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import top.qiuli55.flux.mobile.data.Change
 import top.qiuli55.flux.mobile.data.DesignPreview
@@ -901,6 +902,9 @@ internal fun parseArtifactCard(payload: JsonElement?): V2ArtifactCard? {
         type = root.stringField("type") ?: "page",
         title = title,
         summary = root.stringField("summary").orEmpty(),
+        description = root.stringField("description").orEmpty(),
+        icon = root.stringField("icon").orEmpty(),
+        pinned = (root["pinned"] as? JsonPrimitive)?.booleanOrNull ?: false,
         version = root.intField("version"),
     )
 }

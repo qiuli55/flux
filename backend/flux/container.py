@@ -319,7 +319,9 @@ class Container:
         # 写入必须走受控路径（用户 REST / 平台代码），Agent 面只有只读的 memory.recall
         self.memory_repo = MemoryRepository(self.session_factory)  # type: ignore[attr-defined]
         self.memory = MemoryService(self.memory_repo, brain=self.brain)
-        self.artifacts = ArtifactRepository(self.session_factory)  # type: ignore[attr-defined]
+        self.artifacts = ArtifactRepository(  # type: ignore[attr-defined]
+            self.session_factory, self.settings
+        )
         # 账号级用户记忆：本地只做缓存，云端是权威存储；同步失败不影响本地读写
         self.memory_prefs = MemoryPrefsStore(
             self.settings.memory_prefs_path,

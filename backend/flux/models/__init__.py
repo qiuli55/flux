@@ -9,7 +9,7 @@ from flux.models.agent_run import AgentRun
 from flux.models.agent_token import AgentToken
 from flux.models.api_key import ApiKey
 from flux.models.apply_batch import ApplyBatch
-from flux.models.artifact import Artifact
+from flux.models.artifact import Artifact, ArtifactAsset, ArtifactVersion
 from flux.models.base import Base
 from flux.models.connector import ConnectorConfig, ConnectorLog
 from flux.models.context import ContextBlob, ContextStep, ContextStepToken
@@ -60,6 +60,8 @@ __all__ = [
     "ApiKey",
     "ApplyBatch",
     "Artifact",
+    "ArtifactAsset",
+    "ArtifactVersion",
     "Base",
     "ChatGroup",
     "ChatGroupEpoch",

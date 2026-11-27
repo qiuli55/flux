@@ -2145,9 +2145,10 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
                 Label("已发布", 9f, V2Colors.accent, FontWeight.SemiBold)
             }
         }
-        if (card.summary.isNotBlank()) {
+        val subtitle = card.summary.ifBlank { card.description }
+        if (subtitle.isNotBlank()) {
             Spacer(Modifier.height(9.dp))
-            Label(card.summary, 10f, V2Colors.ink(.56f), maxLines = 3)
+            Label(subtitle, 10f, V2Colors.ink(.56f), maxLines = 3)
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
