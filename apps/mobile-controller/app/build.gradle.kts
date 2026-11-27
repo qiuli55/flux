@@ -19,10 +19,9 @@ android {
         minSdk = 26
         targetSdk = 34
         // 手机端已装过实验版 vc9（0.3.0 轻量重写），versionCode 必须跨过 9 才能覆盖安装。
-        // 还要越过未合入实验线的 0.9.15（vc72）以及 A 机曾分发的 0.9.7（vc1000），
-        // 因此本次提到 0.9.16 / vc1001，保证同签名可直接覆盖升级。
-        versionCode = 1001
-        versionName = "0.9.16"
+        // 已发布 0.9.16（vc1001），本次提到 0.9.17 / vc1002，保证同签名可直接覆盖升级。
+        versionCode = 1002
+        versionName = "0.9.17"
     }
 
     buildFeatures {
