@@ -86,6 +86,78 @@ class V2SheetMotionTest {
         assertEquals(height, v2SheetDragOffset(height * 2f, height, expanded = false), .001f)
     }
 
+    // ------------------------------------------------------------ nested scroll 接手
+
+    @Test
+    fun `content at top drag moves the sheet one to one and consumes it`() {
+        val result = v2SheetNestedDrag(
+            availableDownPx = 120f,
+            currentOffsetPx = 0f,
+            heightPx = height,
+            expanded = false,
+        )
+        assertEquals(120f, result.newOffsetPx, .001f)
+        assertEquals("向下剩余位移必须全部由弹层消费", 120f, result.consumedPx, .001f)
+    }
+
+    @Test
+    fun `nested drag accumulates and never leaks downward leftover`() {
+        var offset = 0f
+        for (delta in listOf(40f, 80f, 160f)) {
+            val result = v2SheetNestedDrag(delta, offset, height, expanded = false)
+            assertEquals("弹层要吃掉全部增量", delta, result.consumedPx, .001f)
+            offset = result.newOffsetPx
+        }
+        assertEquals(280f, offset, .001f)
+    }
+
+    @Test
+    fun `upward scroll first returns the displaced sheet then leaves the rest`() {
+        val result = v2SheetNestedDrag(
+            availableDownPx = -80f,
+            currentOffsetPx = 50f,
+            heightPx = height,
+            expanded = false,
+        )
+        assertEquals(0f, result.newOffsetPx, .001f)
+        assertEquals("只消费回位所需的 50px", -50f, result.consumedPx, .001f)
+    }
+
+    @Test
+    fun `upward scroll at rest is left to the content`() {
+        val result = v2SheetNestedDrag(
+            availableDownPx = -80f,
+            currentOffsetPx = 0f,
+            heightPx = height,
+            expanded = false,
+        )
+        assertEquals(0f, result.newOffsetPx, .001f)
+        assertEquals(0f, result.consumedPx, .001f)
+    }
+
+    @Test
+    fun `upward nested drag at rest does not move the sheet`() {
+        val result = v2SheetNestedDrag(
+            availableDownPx = -400f,
+            currentOffsetPx = 0f,
+            heightPx = height,
+            expanded = false,
+        )
+        // 在顶部继续上推不属于 nested 的下拉路径，不应产生位移。
+        assertEquals(0f, result.newOffsetPx, .001f)
+        assertEquals(0f, result.consumedPx, .001f)
+    }
+
+    @Test
+    fun `release velocity is consumed by the sheet only while it is displaced`() {
+        // 弹层被拖出：向下关闭、向上回位的速度都不能外漏。
+        assertEquals(900f, v2SheetConsumedVelocityY(900f, 120f), .001f)
+        assertEquals(-700f, v2SheetConsumedVelocityY(-700f, 120f), .001f)
+        // 弹层在原位：那是内容自己的 fling，弹层不抢。
+        assertEquals(0f, v2SheetConsumedVelocityY(900f, 0f), .001f)
+        assertEquals(0f, v2SheetConsumedVelocityY(-700f, 0f), .001f)
+    }
+
     // ------------------------------------------------------------------ 松手判定
 
     @Test

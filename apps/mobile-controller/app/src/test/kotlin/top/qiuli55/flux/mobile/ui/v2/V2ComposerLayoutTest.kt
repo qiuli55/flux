@@ -201,6 +201,41 @@ class V2ComposerLayoutTest {
     }
 
     @Test
+    fun `toolbar orders attach permission agent model context and send from left to right`() {
+        render(widthDp = 360, fontScale = 1f, modelLabel = shortModel)
+
+        val attach = rule.onNodeWithTag(V2ComposerTags.ATTACH).getUnclippedBoundsInRoot()
+        val permission = rule.onNodeWithTag(V2ComposerTags.PERMISSION).getUnclippedBoundsInRoot()
+        val agent = rule.onNodeWithTag(V2ComposerTags.AGENT_BUTTON).getUnclippedBoundsInRoot()
+        val model = rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON).getUnclippedBoundsInRoot()
+        val context = rule.onNodeWithTag(V2ComposerTags.CONTEXT_RING).getUnclippedBoundsInRoot()
+        val send = rule.onNodeWithTag(V2ComposerTags.SEND).getUnclippedBoundsInRoot()
+
+        assertTrue("加号应在盾牌左边", attach.left < permission.left)
+        assertTrue("盾牌应在 Agent 左边", permission.left < agent.left)
+        // 权限与 Agent 之间留出空档，Agent/模型/上下文/发送靠右排列。
+        assertTrue("盾牌与 Agent 之间应有空档", permission.right < agent.left)
+        assertTrue("Agent 应在模型立方体左边", agent.left < model.left)
+        assertTrue("模型立方体应在上下文环左边", model.left < context.left)
+        assertTrue("上下文环应在发送左边", context.left < send.left)
+    }
+
+    @Test
+    fun `context ring and model cube sit below the input row`() {
+        render(widthDp = 360, fontScale = 1f, modelLabel = shortModel)
+
+        val inputBottom = rule.onNodeWithTag(V2ComposerTags.INPUT)
+            .getUnclippedBoundsInRoot().bottom
+        val modelTop = rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON)
+            .getUnclippedBoundsInRoot().top
+        val ringTop = rule.onNodeWithTag(V2ComposerTags.CONTEXT_RING)
+            .getUnclippedBoundsInRoot().top
+
+        assertTrue("模型立方体应在输入框下方，而不是和输入同一行", modelTop >= inputBottom)
+        assertTrue("上下文环应在输入框下方，而不是和输入同一行", ringTop >= inputBottom)
+    }
+
+    @Test
     fun `empty input disables send and produces no message`() {
         render(widthDp = 360, fontScale = 1f, modelLabel = shortModel, input = null)
         rule.onNodeWithTag(V2ComposerTags.SEND).assertIsNotEnabled()

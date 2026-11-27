@@ -59,10 +59,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,6 +85,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
@@ -93,9 +100,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 // ------------------------------------------------------------------ 背景
 
@@ -671,6 +681,20 @@ fun SheetFrame(
     var heightPx by remember { mutableFloatStateOf(0f) }
     val offsetY = remember { Animatable(0f) }
     val handleZone = with(density) { 96.dp.toPx() }
+    val dismissThreshold = with(density) { 90.dp.toPx() }
+    val expandThreshold = with(density) { 56.dp.toPx() }
+    val latestDismiss = rememberUpdatedState(onDismiss)
+    val latestReduceMotion = rememberUpdatedState(reduce)
+    /** 手指累计位移（含 nested scroll 接手的部分），向下为正。 */
+    var dragPx by remember { mutableFloatStateOf(0f) }
+    /** 本次手势的位移是否来自「内容已到顶」的 nested scroll：此时把手不再重复驱动。 */
+    var nestedDragging by remember { mutableStateOf(false) }
+    /** 同一次手势只允许产生一次松手决定（手势观察者与 nested fling 可能都会触发）。 */
+    var releaseHandled by remember { mutableStateOf(false) }
+    /** 关闭已经决定：关闭动画期间继续挡住指针，且不重复回调。 */
+    var dismissing by remember { mutableStateOf(false) }
+    /** 当前还按在弹层上的手指数：移除弹层前必须归零。 */
+    var pointersDown by remember { mutableIntStateOf(0) }
     val fraction by animateFloatAsState(
         targetValue = if (expanded) 1f else maxHeightFraction,
         animationSpec = if (reduce) {
@@ -684,7 +708,138 @@ fun SheetFrame(
         label = "sheet-fraction",
     )
 
-    Box(Modifier.fillMaxSize()) {
+    /** 等所有手指抬起后才真正移除弹层，避免拦截层先拆、指针落到背后的页面。 */
+    suspend fun dismissWhenPointersUp() {
+        if (pointersDown > 0) {
+            snapshotFlow { pointersDown }.first { it == 0 }
+        }
+        latestDismiss.value()
+    }
+
+    /** 松手后的统一出口：手势拖动与 nested scroll 共用同一套判定与动画。 */
+    fun releaseSheet(velocityY: Float) {
+        if (releaseHandled || dismissing) return
+        releaseHandled = true
+        val release = if (abs(dragPx) < 4f && abs(velocityY) < 4f) {
+            V2SheetRelease.Settle
+        } else {
+            v2SheetReleaseAction(
+                dragPx = dragPx,
+                velocityY = velocityY,
+                heightPx = heightPx,
+                expanded = expanded,
+                dismissThresholdPx = dismissThreshold,
+                expandThresholdPx = expandThreshold,
+            )
+        }
+        when (release) {
+            V2SheetRelease.Collapse -> {
+                expanded = false
+                haptics?.play(V2HapticLevel.TICK)
+            }
+            V2SheetRelease.Expand -> {
+                expanded = true
+                haptics?.play(V2HapticLevel.TICK)
+            }
+            V2SheetRelease.Dismiss, V2SheetRelease.Settle -> Unit
+        }
+        val plan = v2SheetMotionPlan(
+            release = release,
+            heightPx = heightPx,
+            velocityY = velocityY,
+            reduceMotion = latestReduceMotion.value,
+        )
+        if (release == V2SheetRelease.Dismiss) dismissing = true
+        scope.launch {
+            offsetY.animateTo(
+                targetValue = plan.targetOffsetPx,
+                animationSpec = plan.spec,
+                initialVelocity = plan.initialVelocity,
+            )
+            if (release == V2SheetRelease.Dismiss) {
+                // 关闭动画走完、剩余速度清零、且手指全部抬起之后才移除弹层，
+                // 不会出现拦截层先拆、指针落到背后的情况。
+                offsetY.stop()
+                dismissWhenPointersUp()
+            } else {
+                dragPx = 0f
+                releaseHandled = false
+            }
+        }
+    }
+
+    val nestedConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // 只处理向上的位移：向下的先交给内容自己滚，到顶后的剩余在 onPostScroll 接手。
+                if (available.y >= 0f) return Offset.Zero
+                val result = v2SheetNestedDrag(
+                    availableDownPx = available.y,
+                    currentOffsetPx = dragPx,
+                    heightPx = heightPx,
+                    expanded = expanded,
+                )
+                if (result.consumedPx == 0f) return Offset.Zero
+                dragPx = result.newOffsetPx
+                scope.launch { offsetY.snapTo(result.newOffsetPx) }
+                return Offset(0f, result.consumedPx)
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (source != NestedScrollSource.Drag) return Offset.Zero
+                if (available.y <= 0f) return Offset.Zero
+                // 内容已经到顶，剩下的下拉由弹层接手；全部消费，绝不冒泡给祖先。
+                nestedDragging = true
+                val result = v2SheetNestedDrag(
+                    availableDownPx = available.y,
+                    currentOffsetPx = dragPx,
+                    heightPx = heightPx,
+                    expanded = expanded,
+                )
+                dragPx = result.newOffsetPx
+                scope.launch { offsetY.snapTo(result.newOffsetPx) }
+                return Offset(0f, result.consumedPx)
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                // 弹层被拖出后，松手速度全部由弹层消化，交给同一套回位/关闭判定。
+                val consumed = v2SheetConsumedVelocityY(available.y, dragPx)
+                if (consumed == 0f) return Velocity.Zero
+                releaseSheet(consumed)
+                return Velocity(0f, consumed)
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                // 兜底：弹层参与的这次手势，任何没被 pre 吃掉的向下速度都在这里清零。
+                return if ((dragPx > 0f || nestedDragging) && available.y > 0f) {
+                    Velocity(0f, available.y)
+                } else {
+                    Velocity.Zero
+                }
+            }
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .nestedScroll(nestedConnection)
+            // 根层兜底：主 pass 之后剩余的指针事件一律吃掉，不让任何残留位移落到背后页面；
+            // 同时记录还按着的手指，供移除前等待。
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val changes = awaitPointerEvent(PointerEventPass.Final).changes
+                        pointersDown = changes.count { it.pressed }
+                        changes.forEach { it.consume() }
+                    }
+                }
+            },
+    ) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -692,7 +847,19 @@ fun SheetFrame(
                 .graphicsLayer {
                     alpha = 1f - (offsetY.value / heightPx.coerceAtLeast(1f)).coerceIn(0f, .55f)
                 }
-                .clickable(interactionSource = interaction, indication = null, onClick = onDismiss),
+                .clickable(interactionSource = interaction, indication = null) {
+                    if (!dismissing) {
+                        dismissing = true
+                        scope.launch { dismissWhenPointersUp() }
+                    }
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Final).changes.forEach { it.consume() }
+                        }
+                    }
+                },
         )
         Column(
             modifier = Modifier
@@ -710,67 +877,44 @@ fun SheetFrame(
                 .background(Brush.verticalGradient(listOf(V2Colors.shellTop, V2Colors.shellBottom)))
                 .border(1.dp, V2Colors.line, V2SheetShape)
                 .pointerInput(handleZone) {
-                    // 只在顶部把手区域接管纵向拖动：内容滚动与按钮点击保持原样
+                    // 观察整个弹层上的手势：把手区直接驱动位移；
+                    // 内容区在顶部时的下拉由 nestedScroll 驱动，这里只负责松手判定。
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        if (down.position.y > handleZone) return@awaitEachGesture
+                        val inHandle = down.position.y <= handleZone
                         var total = 0f
                         var moved = false
                         val tracker = VelocityTracker()
                         tracker.addPosition(down.uptimeMillis, down.position)
+                        nestedDragging = false
+                        releaseHandled = false
+                        if (!offsetY.isRunning) dragPx = offsetY.value.coerceAtLeast(0f)
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull() ?: break
                             if (!change.pressed) break
                             val dy = change.position.y - change.previousPosition.y
                             tracker.addPosition(change.uptimeMillis, change.position)
-                            total += dy
-                            if (kotlin.math.abs(total) > 4f) moved = true
-                            // 上限内 1:1 跟手，向上越界走橡胶带，不再硬 clamp。
-                            val next = v2SheetDragOffset(total, heightPx, expanded)
-                            scope.launch { offsetY.snapTo(next) }
-                            change.consume()
+                            // 内容滚动已消费的位移不再重复驱动弹层；
+                            // nested scroll 接手时把手也让出去，避免同一段位移被算两次。
+                            if (inHandle && !change.isConsumed && !nestedDragging) {
+                                total += dy
+                                if (abs(total) > 4f) moved = true
+                                dragPx = total
+                                // 上限内 1:1 跟手，向上越界走橡胶带，不再硬 clamp。
+                                scope.launch {
+                                    offsetY.snapTo(v2SheetDragOffset(total, heightPx, expanded))
+                                }
+                                change.consume()
+                            }
                         }
                         val velocity = tracker.calculateVelocity().y
-                        val dismissThreshold = with(density) { 90.dp.toPx() }
-                        val expandThreshold = with(density) { 56.dp.toPx() }
-                        val release = if (!moved) {
-                            V2SheetRelease.Settle
-                        } else {
-                            v2SheetReleaseAction(
-                                dragPx = total,
-                                velocityY = velocity,
-                                heightPx = heightPx,
-                                expanded = expanded,
-                                dismissThresholdPx = dismissThreshold,
-                                expandThresholdPx = expandThreshold,
-                            )
+                        when {
+                            nestedDragging -> releaseSheet(velocity)
+                            inHandle && moved -> releaseSheet(velocity)
+                            else -> Unit
                         }
-                        when (release) {
-                            V2SheetRelease.Collapse -> {
-                                expanded = false
-                                haptics?.play(V2HapticLevel.TICK)
-                            }
-                            V2SheetRelease.Expand -> {
-                                expanded = true
-                                haptics?.play(V2HapticLevel.TICK)
-                            }
-                            V2SheetRelease.Dismiss, V2SheetRelease.Settle -> Unit
-                        }
-                        val plan = v2SheetMotionPlan(
-                            release = release,
-                            heightPx = heightPx,
-                            velocityY = velocity,
-                            reduceMotion = reduce,
-                        )
-                        scope.launch {
-                            offsetY.animateTo(
-                                targetValue = plan.targetOffsetPx,
-                                animationSpec = plan.spec,
-                                initialVelocity = plan.initialVelocity,
-                            )
-                            if (release == V2SheetRelease.Dismiss) onDismiss()
-                        }
+                        nestedDragging = false
                     }
                 },
         ) {

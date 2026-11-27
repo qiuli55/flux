@@ -89,6 +89,56 @@ internal fun v2SheetDragOffset(
     }
 }
 
+/** nested scroll 接手一次内容位移后的结果。 */
+internal data class V2SheetNestedResult(
+    /** 弹层新的 translationY。 */
+    val newOffsetPx: Float,
+    /** 本次由弹层消费的位移（与 available 同号，向下为正）。 */
+    val consumedPx: Float,
+)
+
+/**
+ * 内容滚到顶部后继续下拉时，弹层如何接手。
+ *
+ * - availableDownPx > 0：内容已经到顶，剩下的向下位移全部由弹层消费，
+ *   映射规则与手指拖动一致（1:1，越界橡胶带）；
+ * - availableDownPx < 0 且弹层已被向下拖出：先把弹层 1:1 推回原位，
+ *   只消费掉这部分，剩余位移再还给内容；
+ * - 其它情况不消费，交给内容自己滚动。
+ */
+internal fun v2SheetNestedDrag(
+    availableDownPx: Float,
+    currentOffsetPx: Float,
+    heightPx: Float,
+    expanded: Boolean,
+): V2SheetNestedResult {
+    if (availableDownPx > 0f) {
+        val next = v2SheetDragOffset(currentOffsetPx + availableDownPx, heightPx, expanded)
+        return V2SheetNestedResult(next, next - currentOffsetPx)
+    }
+    if (availableDownPx < 0f && currentOffsetPx > 0f) {
+        val next = v2SheetDragOffset(
+            (currentOffsetPx + availableDownPx).coerceAtLeast(0f),
+            heightPx,
+            expanded,
+        )
+        return V2SheetNestedResult(next, next - currentOffsetPx)
+    }
+    return V2SheetNestedResult(currentOffsetPx, 0f)
+}
+
+/**
+ * 松手后必须由弹层吃掉的速度（px/s，向下为正）。
+ *
+ * 只要弹层这次手势被拖出过（offset > 0），松手速度就全部由弹层消化：
+ * 向下用于关闭、向上用于回位，都不能再交给内容或父页面。
+ * 弹层没被拖出时（内容自己在滚）不抢内容的 fling。
+ */
+internal fun v2SheetConsumedVelocityY(
+    availableVelocityY: Float,
+    currentOffsetPx: Float,
+): Float = if (currentOffsetPx > 0f) availableVelocityY else 0f
+
 /**
  * 松手判定：沿用原来的方向 + 距离 + 速度阈值，不改变交互语义。
  *
