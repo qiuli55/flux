@@ -7,8 +7,11 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using Avalonia.Media;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Flux.Desktop.Models;
@@ -30,6 +33,16 @@ public partial class DesignsViewModel : ViewModelBase
     private int _version;
     private string _designId = "";
     private int _activeScreenIndex;
+
+    /// <summary>AI 请求前的画板快照；应用预览后仍保留，供一键撤销。</summary>
+    private JsonObject? _aiBackup;
+
+    private DesignAiPlan? _aiPlan;
+    private CancellationTokenSource? _aiCts;
+    private CancellationTokenSource? _aiApplyCts;
+    private DateTime _aiStartedAt;
+
+    private readonly DispatcherTimer _aiTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
     [ObservableProperty]
     private bool _isBusy;
@@ -71,6 +84,26 @@ public partial class DesignsViewModel : ViewModelBase
     private string _aiReply = "";
 
     [ObservableProperty]
+    private string _aiElapsedText = "";
+
+    /// <summary>待确认的预览稿；非空时画布显示它，真源 `_raw` 尚未改变。</summary>
+    [ObservableProperty]
+    private DesignDocument? _previewDocument;
+
+    [ObservableProperty]
+    private IReadOnlyList<DesignHighlight>? _highlights;
+
+    [ObservableProperty]
+    private bool _hasAiPreview;
+
+    [ObservableProperty]
+    private bool _isAiApplying;
+
+    /// <summary>应用后还没保存：允许一键撤销或点保存写入服务端。</summary>
+    [ObservableProperty]
+    private bool _hasUnsavedAi;
+
+    [ObservableProperty]
     private DesignDocument? _document;
 
     public DesignsViewModel()
@@ -81,7 +114,19 @@ public partial class DesignsViewModel : ViewModelBase
     public DesignsViewModel(Func<FluxApiClient?> api)
     {
         _api = api;
+        _aiTimer.Tick += (_, _) =>
+        {
+            if (!IsAiBusy)
+            {
+                return;
+            }
+
+            var seconds = Math.Max(0, (int)(DateTime.UtcNow - _aiStartedAt).TotalSeconds);
+            AiElapsedText = $"已用时 {seconds}s · 可随时取消";
+        };
     }
+
+    public ObservableCollection<DesignAiChangeView> AiChanges { get; } = new();
 
     /// <summary>当前画板索引（-1 表示没有画板）。</summary>
     public int ActiveScreenIndex
@@ -335,9 +380,13 @@ public partial class DesignsViewModel : ViewModelBase
                 item.IsSelected = item.Id == _designId;
             }
 
-            ApplyDocument(raw);
+            ClearAiPlan();
+            _aiBackup = null;
+            HasUnsavedAi = false;
             AiState = "";
             AiReply = "";
+            AiElapsedText = "";
+            ApplyDocument(raw);
             await LoadRevisionsAsync(api);
             AppLog.Info($"设计页打开 · {card.Id} v{_version}");
         }
@@ -396,6 +445,10 @@ public partial class DesignsViewModel : ViewModelBase
         MetaDetail = "";
         AiState = "";
         AiReply = "";
+        AiElapsedText = "";
+        ClearAiPlan();
+        _aiBackup = null;
+        HasUnsavedAi = false;
     }
 
     private async Task LoadRevisionsAsync(FluxApiClient api)
@@ -425,6 +478,10 @@ public partial class DesignsViewModel : ViewModelBase
     [RelayCommand]
     private async Task Ask() => await AskAsync();
 
+    /// <summary>
+    /// 让 AI 生成修改计划：请求期间显示「理解 → 生成」阶段与已用时，可取消；
+    /// 结果只生成预览稿与变更清单，用户点「应用全部」后才写入画布。
+    /// </summary>
     private async Task AskAsync()
     {
         var api = _api();
@@ -464,12 +521,44 @@ public partial class DesignsViewModel : ViewModelBase
             ["prompt"] = prompt,
         };
 
+        ClearAiPlan();
+        _aiBackup = backup;
+        _aiCts?.Cancel();
+        _aiCts = new CancellationTokenSource();
+        var token = _aiCts.Token;
         IsAiBusy = true;
+        IsAiApplying = false;
         AiReply = "";
-        AiState = "AI 正在看整屏…";
+        AiState = "正在理解整屏…";
+        _aiStartedAt = DateTime.UtcNow;
+        AiElapsedText = "已用时 0s · 可随时取消";
+        _aiTimer.Start();
         try
         {
-            var response = await api.AskDesignAiAsync(_designId, payload);
+            // 上游是一次性返回：1200ms 后把阶段换成「正在生成修改」，
+            // 不假装模型逐 token 输出；真正的逐步变化发生在拿到 ops 之后。
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(1200, token);
+                    if (!token.IsCancellationRequested && IsAiBusy)
+                    {
+                        await Dispatcher.UIThread.InvokeAsync(() => AiState = "正在生成修改…");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // 用户取消：阶段文案由 CancelAi 负责。
+                }
+            }, token);
+
+            var response = await api.AskDesignAiAsync(_designId, payload, token);
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
             if (response is null || response.Success == false || response.Data is null)
             {
                 AiState = response?.Message ?? "调用 AI 失败";
@@ -479,51 +568,220 @@ public partial class DesignsViewModel : ViewModelBase
             var ops = response.Data.Ops;
             if (ops is null || ops.Count == 0)
             {
-                AiState = "AI 没有给出可应用的修改";
+                AiState = "AI 没有给出可应用的修改，请换个说法再试";
                 return;
             }
 
-            var applied = DesignOps.ApplyOps(_raw, ActiveScreenIndex, ops, out var error);
-            if (applied == 0)
+            var plan = DesignAiPlanner.Plan(_raw, ActiveScreenIndex, ops, response.Data.Reply ?? "");
+            if (!plan.HasChanges)
             {
-                AiState = error ?? "AI 给的修改无法应用";
+                AiState = "AI 给的修改无法应用到当前画板";
                 return;
             }
 
-            var saved = await api.SaveDesignAsync(_designId, _raw, _version);
-            if (saved is null || saved.Success == false)
+            _aiPlan = plan;
+            PreviewDocument = plan.Preview.Deserialize<DesignDocument>(DesignJson.Options);
+            Highlights = plan.Changes
+                .Where(change => change.HasFrame)
+                .Select(change => new DesignHighlight
+                {
+                    Id = change.NodeId,
+                    Kind = change.Kind switch
+                    {
+                        DesignChangeKind.Added => "added",
+                        DesignChangeKind.Removed => "removed",
+                        DesignChangeKind.Reordered => "reordered",
+                        _ => "changed",
+                    },
+                    X = change.X,
+                    Y = change.Y,
+                    W = change.W,
+                    H = change.H,
+                })
+                .ToList();
+            AiChanges.Clear();
+            foreach (var change in plan.Changes)
             {
-                _raw = backup;
-                AiState = saved?.Message ?? "保存失败，已撤回这次修改";
-                return;
+                AiChanges.Add(new DesignAiChangeView(change));
             }
 
-            if (saved.Data is JsonObject savedRaw)
-            {
-                ApplyDocument(savedRaw);
-            }
-            else
-            {
-                _version += 1;
-                ApplyDocument(_raw);
-            }
-
-            await LoadRevisionsAsync(api);
-            AiState = $"已应用 {applied} 项修改";
-            AiReply = response.Data.Reply ?? "";
-            AiPrompt = "";
-            AppLog.Info($"设计页 AI 修改 · {_designId} 应用 {applied} 项");
+            HasAiPreview = true;
+            AiState = plan.StatLine + "，确认后应用";
+            AiReply = plan.Reply;
+            AppLog.Info($"设计页 AI 计划 · {_designId} applied={plan.Applied} changes={plan.Changes.Count}");
+        }
+        catch (OperationCanceledException)
+        {
+            AiState = "已取消这次修改";
         }
         catch (Exception ex)
         {
-            _raw = backup;
             AiState = $"AI 修改失败：{ex.Message}";
             AppLog.Error("设计页 AI 修改失败", ex);
         }
         finally
         {
+            _aiTimer.Stop();
+            AiElapsedText = "";
             IsAiBusy = false;
+            if (token.IsCancellationRequested && !HasAiPreview)
+            {
+                AiState = "已取消这次修改";
+            }
         }
+    }
+
+    [RelayCommand]
+    private async Task ApplyAi()
+    {
+        var plan = _aiPlan;
+        if (plan is null || IsAiApplying)
+        {
+            return;
+        }
+
+        _aiApplyCts?.Cancel();
+        _aiApplyCts = new CancellationTokenSource();
+        var token = _aiApplyCts.Token;
+        IsAiApplying = true;
+        try
+        {
+            for (var i = 0; i < plan.Changes.Count; i++)
+            {
+                if (token.IsCancellationRequested) break;
+                AiState = $"正在应用第 {i + 1}/{plan.Changes.Count} 项：{plan.Changes[i].Title}";
+                Highlights = plan.Changes
+                    .Take(i + 1)
+                    .Where(change => change.HasFrame)
+                    .Select(change => new DesignHighlight
+                    {
+                        Id = change.NodeId,
+                        Kind = change.Kind switch
+                        {
+                            DesignChangeKind.Added => "added",
+                            DesignChangeKind.Removed => "removed",
+                            DesignChangeKind.Reordered => "reordered",
+                            _ => "changed",
+                        },
+                        X = change.X,
+                        Y = change.Y,
+                        W = change.W,
+                        H = change.H,
+                    })
+                    .ToList();
+                await Task.Delay(140, token);
+            }
+
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _raw = plan.Preview;
+            ApplyDocument(_raw);
+            _aiPlan = null;
+            HasAiPreview = false;
+            HasUnsavedAi = true;
+            PreviewDocument = null;
+            Highlights = null;
+            AiChanges.Clear();
+            AiReply = plan.Reply;
+            AiState = $"已应用 {plan.Applied} 项修改，点「保存」写入设计稿";
+            Hint = "AI 修改已在画布上，尚未保存";
+            AppLog.Info($"设计页 AI 应用 · {_designId} applied={plan.Applied}");
+        }
+        finally
+        {
+            IsAiApplying = false;
+        }
+    }
+
+    [RelayCommand]
+    private void CancelAi()
+    {
+        _aiCts?.Cancel();
+        _aiApplyCts?.Cancel();
+        IsAiBusy = false;
+        IsAiApplying = false;
+        _aiTimer.Stop();
+        AiElapsedText = "";
+        var hadSomething = HasAiPreview || _aiPlan is not null;
+        _aiPlan = null;
+        HasAiPreview = false;
+        PreviewDocument = null;
+        Highlights = null;
+        AiChanges.Clear();
+        if (hadSomething)
+        {
+            AiState = "已取消这次修改，画布保持原样";
+            AiReply = "";
+        }
+    }
+
+    [RelayCommand]
+    private void UndoAi()
+    {
+        if (_aiBackup is null)
+        {
+            return;
+        }
+
+        _raw = (JsonObject)_aiBackup.DeepClone();
+        ApplyDocument(_raw);
+        HasUnsavedAi = false;
+        AiState = "已撤销 AI 修改";
+        AiReply = "";
+        Hint = "已撤销 AI 修改";
+    }
+
+    [RelayCommand]
+    private async Task Save() => await SaveAsync();
+
+    private async Task SaveAsync()
+    {
+        var api = _api();
+        if (api is null || _raw is null || _designId.Length == 0)
+        {
+            AiState = "设计稿还没加载";
+            return;
+        }
+
+        IsBusy = true;
+        AiState = "正在保存…";
+        try
+        {
+            var saved = await api.SaveDesignAsync(_designId, _raw, _version);
+            if (saved is null || saved.Success == false || saved.Data is not JsonObject savedRaw)
+            {
+                AiState = saved?.Message ?? "保存失败";
+                return;
+            }
+
+            ApplyDocument(savedRaw);
+            HasUnsavedAi = false;
+            _aiBackup = null;
+            AiState = $"已保存 v{_version}";
+            await LoadRevisionsAsync(api);
+            AppLog.Info($"设计页保存 · {_designId} v{_version}");
+        }
+        catch (Exception ex)
+        {
+            AiState = $"保存失败：{ex.Message}";
+            AppLog.Error("设计稿保存失败", ex);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void ClearAiPlan()
+    {
+        _aiPlan = null;
+        HasAiPreview = false;
+        PreviewDocument = null;
+        Highlights = null;
+        AiChanges.Clear();
     }
 
     [RelayCommand]
@@ -546,6 +804,9 @@ public partial class DesignsViewModel : ViewModelBase
                 return;
             }
 
+            ClearAiPlan();
+            _aiBackup = null;
+            HasUnsavedAi = false;
             ApplyDocument(raw);
             await LoadRevisionsAsync(api);
             AiState = $"已恢复到 v{revision.Version}（当前 v{_version}）";
@@ -643,6 +904,38 @@ public sealed partial class DesignScreenTab : ObservableObject
 
     private static string Number(double? value)
         => value is null ? "—" : Math.Round(value.Value, 0).ToString(CultureInfo.InvariantCulture);
+}
+
+/// <summary>AI 变更清单的一行：标题 + 人话说明 + 类型色点。</summary>
+public sealed class DesignAiChangeView
+{
+    public DesignAiChangeView(DesignChange change)
+    {
+        Kind = change.Kind switch
+        {
+            DesignChangeKind.Added => "新增",
+            DesignChangeKind.Removed => "删除",
+            DesignChangeKind.Reordered => "层序",
+            _ => "修改",
+        };
+        Title = change.Title;
+        Detail = change.Detail;
+        Tone = new SolidColorBrush(Color.Parse(change.Kind switch
+        {
+            DesignChangeKind.Added => "#10B981",
+            DesignChangeKind.Removed => "#E11D48",
+            DesignChangeKind.Reordered => "#64748B",
+            _ => "#0891B2",
+        }));
+    }
+
+    public string Kind { get; }
+
+    public string Title { get; }
+
+    public string Detail { get; }
+
+    public IBrush Tone { get; }
 }
 
 /// <summary>历史版本行。</summary>

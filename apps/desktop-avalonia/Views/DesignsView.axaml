@@ -42,6 +42,22 @@
                     CommandParameter="{Binding}" />
         </DataTemplate>
 
+        <!-- AI 变更行 -->
+        <DataTemplate x:Key="AiChangeTemplate" x:DataType="vm:DesignAiChangeView">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8" Margin="0,3,0,0">
+                <Ellipse Grid.Column="0" Width="7" Height="7" Fill="{Binding Tone}"
+                         VerticalAlignment="Top" Margin="0,4,0,0" />
+                <StackPanel Grid.Column="1" Spacing="1">
+                    <TextBlock Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding Detail}" FontSize="10.5" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TnText4}" />
+                </StackPanel>
+                <TextBlock Grid.Column="2" Text="{Binding Kind}" FontSize="9.5"
+                           Foreground="{DynamicResource TnText4}" VerticalAlignment="Top" />
+            </Grid>
+        </DataTemplate>
+
         <!-- 历史版本行 -->
         <DataTemplate x:Key="RevisionTemplate" x:DataType="vm:DesignRevisionView">
             <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8" Margin="0,5,0,0">
@@ -138,6 +154,9 @@
                             ClipToBounds="True">
                         <Grid>
                             <views:DesignCanvas Document="{Binding Document}"
+                                                PreviewDocument="{Binding PreviewDocument}"
+                                                Highlights="{Binding Highlights}"
+                                                IsAiBusy="{Binding IsAiBusy}"
                                                 ScreenIndex="{Binding ActiveScreenIndex}"
                                                 ScreenRequested="OnCanvasScreenRequested"
                                                 IsVisible="{Binding HasDesign}" />
@@ -163,7 +182,7 @@
                             <TextBlock Classes="section-title" Text="AI 修改" />
                             <TextBlock FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource TnText4}"
-                                       Text="针对当前画板整屏改结构：文案、字号、位置、增删节点都可以。" />
+                                       Text="先生成变更预览与高亮，确认后再写入画布；应用后仍可撤销或保存。" />
                             <TextBox Classes="compose" MinHeight="68" MaxHeight="140"
                                      Text="{Binding AiPrompt}"
                                      Watermark="例如：把标题放大，副标题颜色变浅"
@@ -172,12 +191,49 @@
                                     HorizontalAlignment="Stretch"
                                     Command="{Binding AskCommand}"
                                     IsEnabled="{Binding !IsAiBusy}" />
+
+                            <!-- 过程面板：阶段 + 已用时 + 取消 -->
                             <TextBlock Text="{Binding AiState}" FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource TnAccent}"
                                        IsVisible="{Binding AiState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                            <TextBlock Text="{Binding AiElapsedText}" FontSize="10.5"
+                                       Foreground="{DynamicResource TnText4}"
+                                       IsVisible="{Binding AiElapsedText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                            <Button Classes="btn subtle" Content="取消这次修改"
+                                    HorizontalAlignment="Stretch"
+                                    Command="{Binding CancelAiCommand}"
+                                    IsVisible="{Binding IsAiBusy}" />
+
+                            <!-- 变更清单：确认后才应用到真源 -->
+                            <Border Background="{DynamicResource TnAccentSoft}" CornerRadius="8"
+                                    Padding="8" IsVisible="{Binding HasAiPreview}">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="变更预览" FontSize="11" FontWeight="SemiBold" />
+                                    <ItemsControl ItemsSource="{Binding AiChanges}"
+                                                  ItemTemplate="{StaticResource AiChangeTemplate}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                                        <Button Classes="btn primary" Content="应用全部"
+                                                Command="{Binding ApplyAiCommand}"
+                                                IsEnabled="{Binding !IsAiApplying}" />
+                                        <Button Classes="btn subtle" Content="取消"
+                                                Command="{Binding CancelAiCommand}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             <TextBlock Text="{Binding AiReply}" FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource TnText3}"
                                        IsVisible="{Binding AiReply, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        IsVisible="{Binding HasUnsavedAi}">
+                                <Button Classes="btn primary" Content="保存"
+                                        Command="{Binding SaveCommand}"
+                                        IsEnabled="{Binding !IsBusy}" />
+                                <Button Classes="btn subtle" Content="撤销 AI 修改"
+                                        Command="{Binding UndoAiCommand}"
+                                        IsEnabled="{Binding !IsBusy}" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
 

@@ -569,6 +569,20 @@ public sealed class DesignWebPreview
     public string? Html { get; set; }
 }
 
+/// <summary>
+/// 画布高亮：已换算成画板绝对坐标，画布只负责按 Kind 上色，不再遍历节点树。
+/// Kind: changed / added / removed / reordered。
+/// </summary>
+public sealed class DesignHighlight
+{
+    public string Id { get; set; } = "";
+    public string Kind { get; set; } = "changed";
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double W { get; set; }
+    public double H { get; set; }
+}
+
 /// <summary>POST /api/v1/designs/{id}/ai 的 data。</summary>
 public sealed class DesignAiResult
 {

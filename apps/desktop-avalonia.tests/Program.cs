@@ -26,6 +26,7 @@ internal static class Program
         CheckTitle();
         CheckTotals();
         CheckDesignOps();
+        CheckDesignAiPlanner();
         CheckBrowserProxy();
 
         if (_failed == 0)
@@ -209,6 +210,85 @@ internal static class Program
         Equal("空补丁报错", "AI 给的修改无法应用", emptyError);
         Equal("越界画板不应用", 0, DesignOps.ApplyOps(design, 9, new JsonArray(), out var screenError));
         Equal("越界画板报错", "当前画板不存在", screenError);
+    }
+
+    private static void CheckDesignAiPlanner()
+    {
+        var design = (JsonObject)JsonNode.Parse("""
+        {
+          "id": "d1", "name": "首页", "version": 3,
+          "screens": [
+            {
+              "id": "s1", "name": "首页", "w": 390, "h": 844,
+              "nodes": [
+                { "id": "title", "type": "text", "name": "标题", "x": 20, "y": 40, "w": 300, "h": 30,
+                  "text": "旧标题", "fontSize": 16 },
+                { "id": "card", "type": "card", "name": "内容卡", "x": 20, "y": 100, "w": 350, "h": 200,
+                  "children": [ { "id": "child", "type": "text", "name": "卡内标题", "x": 10, "y": 12, "w": 100, "h": 20 } ] }
+              ]
+            }
+          ]
+        }
+        """)!;
+
+        var ops = (JsonArray)JsonNode.Parse("""
+        [
+          { "op": "set", "target": "title", "set": { "fontSize": 20, "text": "新标题" } },
+          { "op": "add", "node": { "id": "new", "type": "button", "name": "新按钮", "x": 20, "y": 600, "w": 200, "h": 48 } },
+          { "op": "remove", "target": "card" },
+          { "op": "reorder", "target": "title", "index": 1 }
+        ]
+        """)!;
+
+        var plan = DesignAiPlanner.Plan(design, 0, ops, "已准备好");
+        Equal("AI 计划应用计数", 5, plan.Applied);
+        Equal("AI 计划 op 总数", 4, plan.TotalOps);
+        True("AI 计划有变更", plan.HasChanges);
+        Equal("AI 变更条数", 4, plan.Changes.Count);
+        True("AI 源文档未被修改",
+            design["screens"]![0]!["nodes"]!.AsArray().Count == 2 &&
+            DesignAiPlanner.FindNode(design, "new") is null &&
+            DesignAiPlanner.FindNode(design, "card") is not null);
+        Equal("AI 预览字体已改", "20", DesignAiPlanner.FindNode(plan.Preview, "title")!["fontSize"]!.ToJsonString());
+        True("AI 预览替换了节点",
+            DesignAiPlanner.FindNode(plan.Preview, "new") is not null &&
+            DesignAiPlanner.FindNode(plan.Preview, "card") is null);
+
+        True("AI 变更含修改",
+            plan.Changes.Any(change => change.Kind == DesignChangeKind.Changed));
+        True("AI 变更含新增",
+            plan.Changes.Any(change => change.Kind == DesignChangeKind.Added));
+        True("AI 变更含删除",
+            plan.Changes.Any(change => change.Kind == DesignChangeKind.Removed));
+        True("AI 变更含层序",
+            plan.Changes.Any(change => change.Kind == DesignChangeKind.Reordered));
+
+        var changed = plan.Changes.First(change => change.Kind == DesignChangeKind.Changed);
+        Equal("AI 变更标题", "标题", changed.Title);
+        True("AI 变更人话字号", changed.Detail.Contains("字号 16 → 20", StringComparison.Ordinal));
+        True("AI 变更人话文案", changed.Detail.Contains("新标题", StringComparison.Ordinal));
+
+        var removed = plan.Changes.First(change => change.Kind == DesignChangeKind.Removed);
+        True("AI 删除项有高亮框", removed.HasFrame);
+        Equal("AI 删除项 x", "20", removed.X.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+
+        // 绝对坐标：子节点累加父偏移。
+        var child = DesignAiPlanner.FindFrame(design, "child");
+        True("AI 子节点有框", child.Ok);
+        Equal("AI 子节点 x", "30", child.X.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+        Equal("AI 子节点 y", "112", child.Y.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+
+        // 空 ops / 不可应用：不产生计划，源文档不动。
+        var empty = DesignAiPlanner.Plan(design, 0, new JsonArray());
+        Equal("AI 空计划应用数", 0, empty.Applied);
+        True("AI 空计划无变更", !empty.HasChanges && empty.Changes.Count == 0);
+
+        var missing = DesignAiPlanner.Plan(design, 0, (JsonArray)JsonNode.Parse("""
+        [ { "op": "set", "target": "missing", "set": { "text": "x" } } ]
+        """)!);
+        Equal("AI 无效目标应用数", 0, missing.Applied);
+        True("AI 无效目标无变更", !missing.HasChanges);
+        True("AI 无效目标回滚为源", missing.Preview["screens"]![0]!["nodes"]!.AsArray().Count == 2);
     }
 
     private static void CheckBrowserProxy()
