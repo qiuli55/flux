@@ -442,7 +442,7 @@ data class TaskStreamEvent(
 // ------------------------------------------------------------------ Artifacts
 
 /**
- * 会话产出的成品：page（单文件 HTML）/ doc（Markdown）/ design（设计稿投影）。
+ * 会话产出的成品：page（可交互单文件 HTML）/ doc（Markdown）/ design（设计稿投影）。
  *
  * design 的 [id] 形如 `design:<luma-id>`，由后端实时聚合 Luma Studio，不在 Flux 库留副本；
  * 列表只带摘要，详情才带 [content]。

@@ -165,12 +165,27 @@ def test_design_tools_are_registered_and_instructed() -> None:
         assert TOOLS[name].description
     assert "design.share" in RUNTIME_BOOTSTRAP
     assert "design studio" in RUNTIME_BOOTSTRAP
-    assert "design.ai" in RUNTIME_BOOTSTRAP
-    assert "design.icon_create" in RUNTIME_BOOTSTRAP
-    assert "design.preview" in RUNTIME_BOOTSTRAP
     assert "design.share" in SERVER_INSTRUCTIONS
-    assert "design.ai" in SERVER_INSTRUCTIONS
-    assert "design.icon_create" in SERVER_INSTRUCTIONS
+    # 常驻说明只留分流句：设计工作室的完整用法留在工具描述里，不再每轮注入。
+    assert "design.ai" not in RUNTIME_BOOTSTRAP
+    assert "design.icon_create" not in RUNTIME_BOOTSTRAP
+    assert "design.preview" not in RUNTIME_BOOTSTRAP
+    assert "design.patch" not in RUNTIME_BOOTSTRAP
+    assert "design.ai" not in SERVER_INSTRUCTIONS
+    assert "design.icon_create" not in SERVER_INSTRUCTIONS
+    assert "design.patch" not in SERVER_INSTRUCTIONS
+    # 完整用法在 MCP 工具描述里（上面的循环已逐个断言 description 非空）。
+    assert "design" in TOOLS["design.ai"].description
+    assert "icon" in TOOLS["design.icon_create"].description.lower()
+    # 常驻说明不再把所有页面 / UI 任务一刀切塞进设计工作室：
+    # 可交互页面走 artifact.publish type=page，设计稿才走 design.*。
+    assert "For any page, UI or visual design task" not in RUNTIME_BOOTSTRAP
+    assert "artifact.publish (type=page)" in RUNTIME_BOOTSTRAP
+    assert "ask once" in RUNTIME_BOOTSTRAP
+    assert "必须用 design.* 工具在设计工作室产出" not in SERVER_INSTRUCTIONS
+    assert "禁止用手写 HTML" not in SERVER_INSTRUCTIONS
+    assert "artifact.publish（type=page）" in SERVER_INSTRUCTIONS
+    assert "Markdown 说明文档" in SERVER_INSTRUCTIONS
 
 
 async def test_design_preview_returns_http_url_and_curl(upstream) -> None:

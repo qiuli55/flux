@@ -101,13 +101,7 @@ private const val FILTER_DESIGN = "design"
 private const val FILTER_PAGE = "page"
 private const val FILTER_DOC = "doc"
 
-private fun artifactTypeLabel(type: String): String = when (type) {
-    "design" -> "设计"
-    "doc" -> "文档"
-    "page" -> "页面"
-    // 后端将来新增类型时不要崩，也不要误标成「页面」：用通用标签兜底。
-    else -> "创作"
-}
+private fun artifactTypeLabel(type: String): String = artifactKindUi(type).label
 
 private fun artifactTypeIcon(type: String): ImageVector = when (type) {
     "design" -> Icons.Outlined.Layers
@@ -152,8 +146,8 @@ fun ArtifactsScreen(
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = when {
                     state.loading && state.artifacts.isEmpty() -> "正在读取创作…"
-                    state.artifacts.isEmpty() -> "对话里产出的创作会出现在这里"
-                    else -> "${state.artifacts.size} 个创作 · 设计、页面与文档"
+                    state.artifacts.isEmpty() -> "对话里产出的页面、设计稿与文档会出现在这里"
+                    else -> "${state.artifacts.size} 个创作 · 可交互页面 / 设计稿 / 文档"
                 },
                 trailing = {
                     if (showBack) {
@@ -192,7 +186,7 @@ fun ArtifactsScreen(
                 }
                 item {
                     ArtifactFilterChip(
-                        "设计",
+                        "设计稿",
                         state.countOf(FILTER_DESIGN),
                         state.filter == FILTER_DESIGN,
                     ) { onFilter(FILTER_DESIGN) }
@@ -222,10 +216,10 @@ fun ArtifactsScreen(
                 )
                 visible.isEmpty() -> ArtifactEmpty(
                     when (state.filter) {
-                        FILTER_DESIGN -> "还没有设计稿\n进设计工作室新建或导入一份"
-                        FILTER_PAGE -> "还没有页面\n点右下角 + 新建一个"
-                        FILTER_DOC -> "还没有文档\n点右下角 + 新建一篇"
-                        else -> "还没有创作\n点右下角 + 新建页面或文档"
+                        FILTER_DESIGN -> "还没有设计稿\n视觉稿会出现在这里，点开进画布"
+                        FILTER_PAGE -> "还没有可交互页面\n点右下角 + 新建，或让 Agent 发布"
+                        FILTER_DOC -> "还没有文档\n点右下角 + 新建 Markdown 文档"
+                        else -> "还没有创作\n可交互页面、设计稿与文档都会出现在这里"
                     },
                     onReload,
                 )
@@ -347,6 +341,15 @@ private fun ArtifactGridCard(
                 if (artifact.summary.isBlank() && artifact.description.isNotBlank()) {
                     Spacer(Modifier.height(3.dp))
                     Label(artifact.description, 8.5f, V2Colors.ink(.34f), maxLines = 1)
+                } else if (artifact.summary.isBlank() && artifact.description.isBlank()) {
+                    // 没有摘要时补一句类型说明，避免用户分不清「能不能点」。
+                    Spacer(Modifier.height(3.dp))
+                    Label(
+                        artifactKindUi(artifact.type).description,
+                        8.5f,
+                        V2Colors.ink(.34f),
+                        maxLines = 1,
+                    )
                 }
             }
         }
@@ -540,7 +543,7 @@ private fun ArtifactCover(
             Modifier.align(Alignment.BottomStart).padding(8.dp),
         )
         Label(
-            if (type == "design") "${artifact.screenCount} 屏" else artifactTypeLabel(type),
+            artifactKindUi(type).label,
             9f,
             V2Colors.ink(.62f),
             modifier = Modifier
@@ -797,7 +800,7 @@ private fun DesignStudioEntry(onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Label("设计工作室", 12.5f, V2Colors.ink(.88f), FontWeight.Medium)
             Spacer(Modifier.height(2.dp))
-            Label("新建、导入、导出与 AI 改稿", 9.5f, V2Colors.ink(.38f), maxLines = 1)
+            Label("视觉稿与画布：新建、导入、导出与 AI 改稿", 9.5f, V2Colors.ink(.38f), maxLines = 1)
         }
         Icon(Icons.Outlined.Add, null, tint = V2Colors.ink(.32f), modifier = Modifier.size(16.dp))
     }
@@ -814,7 +817,7 @@ private fun ArtifactCreateSheet(
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .58f) {
         SheetHeader(
             "新建创作",
-            "页面是单文件 HTML；文档是 Markdown。设计稿请进设计工作室。",
+            "页面是可交互的单文件 HTML；文档是 Markdown。视觉稿请进设计工作室。",
             onClose = onDismiss,
         )
         Column(Modifier.padding(horizontal = 20.dp).imePadding()) {

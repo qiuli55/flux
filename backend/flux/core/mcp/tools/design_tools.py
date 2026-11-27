@@ -2237,8 +2237,10 @@ def design_tools() -> tuple[ToolSpec, ...]:
             name="design.create",
             title="新建设计稿",
             description=(
-                "在设计工作室新建设计稿并写入画板。做页面/UI/视觉设计必须走这个工具，不要用"
-                "自写 HTML、截图或静态图片代替。screens 里每个画板需要 id、name、w、h，"
+                "在设计工作室新建设计稿并写入画板，用于用户要的视觉稿 / 画板 / 在画布上改"
+                "布局、样式、组件。若用户要可交互 HTML、能点的网页 / demo 或完整页面原型，"
+                "请用 artifact.publish（type=page），不要在设计工作室做一块不能点的画板来"
+                "冒充页面。screens 里每个画板需要 id、name、w、h，"
                 "nodes 是图层数组（text/card/pill/circle/decor 等，坐标与尺寸用数字）。"
                 "图标用 type=icon + icon 名称；内置图标不够时先调 design.icon_create 画一个。"
             ),
@@ -2275,6 +2277,8 @@ def design_tools() -> tuple[ToolSpec, ...]:
                 "design.patch（按节点 id）或 design.ai。带 base_version 做乐观锁；不带时按当前"
                 "最新版本保存。冲突返回 design_conflict 与当前 version：重新 design.get 后再改，"
                 "不要覆盖别人的改动。返回里带 mode（merge/replace）与 preview 快照。"
+                "本工具只用于视觉稿 / 画布；若用户要可交互 HTML、能点的网页 / demo，"
+                "请用 artifact.publish（type=page），不要用设计画板冒充页面。"
             ),
             input_schema={
                 "type": "object",
@@ -2616,6 +2620,8 @@ def design_tools() -> tuple[ToolSpec, ...]:
                 "意图）；对齐/间距用 design.layout。不要 design.get 后整份 design.update 覆盖："
                 "既费 token，也容易冲掉别人的改动。mode=auto 时按 selected_ids 推断；"
                 "要改整屏可不传选中项。改完要让用户看到效果，调 design.share 把最新设计发进对话。"
+                "本工具只改设计稿；若用户要可交互 HTML / 能点的网页，请用 artifact.publish"
+                "（type=page）。"
             ),
             input_schema={
                 "type": "object",
@@ -2698,8 +2704,9 @@ def design_tools() -> tuple[ToolSpec, ...]:
             name="design.share",
             title="分享设计稿到对话",
             description=(
-                "把设计稿作为卡片消息写进当前任务对话。设计任务收尾时必须调用一次，"
-                "用户会在对话里看到可点开的卡片并进入原生画布预览。"
+                "把设计稿作为卡片消息写进当前任务对话。视觉稿 / 画布类任务收尾时调用一次，"
+                "用户会在对话里看到可点开的卡片并进入原生画布预览。可交互页面不要用本工具，"
+                "改走 artifact.publish（type=page），让用户真的能点。"
             ),
             input_schema={
                 "type": "object",

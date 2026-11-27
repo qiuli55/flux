@@ -61,7 +61,7 @@ data class V2DesignCard(
     val preview: DesignPreview? = null,
 )
 
-/** 对话里的 Artifact 卡片：Agent 通过 artifact.publish 写入，点开进入产物详情。 */
+/** 对话里的 Artifact 卡片：Agent 通过 artifact.publish 写入（可交互页面 / Markdown 文档），点开进入产物详情。 */
 data class V2ArtifactCard(
     val id: String,
     /** page / doc */
@@ -133,7 +133,7 @@ data class V2Message(
     /** 服务端消息 id：LazyColumn 的稳定 key，流式刷新时不重建整列。空串时 UI 用下标兜底。 */
     val id: String = "",
     /** text = 普通消息；summary = 前情摘要；attachments = 附件消息；design_card = 设计稿卡片；
-     *  plan_card = 实施计划；artifact_card = 已发布的页面 / 文档；decision = 待审批；
+     *  plan_card = 实施计划；artifact_card = 已发布的可交互页面 / Markdown 文档；decision = 待审批；
      *  decision_result = 审批结果；secure_input = 安全输入卡片；secure_input_result = 密钥已保存回执。 */
     val kind: String = "text",
     /** kind = attachments 时的文件清单。 */
