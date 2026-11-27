@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
@@ -33,6 +34,7 @@ import top.qiuli55.flux.mobile.data.TaskContextUsage
  *
  * 断言：
  *  - 发送 / 加号 / 盾牌三个按钮都完整落在输入卡根容器内，宽度 >= 48dp，可点击；
+ *  - Agent 触发器只显示官方图标（名称不进触发器，放在 contentDescription / 下拉菜单里）；
  *  - 模型名很短（正常路径）时同样成立；
  *  - 空输入时发送按钮禁用（与 V2ChatScreen 现有行为一致）。
  *
@@ -146,7 +148,9 @@ class V2ComposerLayoutTest {
         assertActionFits(V2ComposerTags.ATTACH)
         assertActionFits(V2ComposerTags.PERMISSION)
         rule.onNodeWithTag(V2ComposerTags.SEND).assertHasClickAction()
-        rule.onNodeWithTag(V2ComposerTags.MODEL_LABEL, useUnmergedTree = true).assertIsDisplayed()
+        // 触发器不再渲染 Agent 名，只保留图标与 contentDescription。
+        rule.onNodeWithContentDescription("切换 Agent：codex-agent").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.AGENT_ICON, useUnmergedTree = true).assertIsDisplayed()
     }
 
     @Test
@@ -186,7 +190,8 @@ class V2ComposerLayoutTest {
         assertActionFits(V2ComposerTags.ATTACH)
         assertActionFits(V2ComposerTags.PERMISSION)
         rule.onNodeWithTag(V2ComposerTags.SEND).assertHasClickAction()
-        rule.onNodeWithTag(V2ComposerTags.MODEL_LABEL, useUnmergedTree = true).assertIsDisplayed()
+        rule.onNodeWithContentDescription("切换 Agent：codex-agent").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.AGENT_ICON, useUnmergedTree = true).assertIsDisplayed()
         // 短模型名时 chip 不撑满，发送钮仍应贴在工具条右端，
         // 防止 weight(fill = false) 留下整段右侧空白。
         val toolbar = rule.onNodeWithTag(V2ComposerTags.TOOLBAR).getUnclippedBoundsInRoot()

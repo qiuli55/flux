@@ -13,10 +13,13 @@ internal object V2ComposerTags {
     const val INPUT = "v2_composer_input"
     const val TOOLBAR = "v2_composer_toolbar"
     const val ATTACH = "v2_composer_attach"
-    /** Agent 胶囊（官方运行时图标 + 名称 + 当前模型）。 */
+    /** Agent 触发器（只有官方运行时图标；名称在 contentDescription 与下拉菜单里）。 */
     const val AGENT_BUTTON = "v2_composer_agent"
+    /** 触发器里的官方运行时图标。 */
+    const val AGENT_ICON = "v2_composer_agent_icon"
     /** 旧的 Agent·模型 chip 容器名保留，测试与日志仍可用。 */
     const val MODEL_CHIP = "v2_composer_model_chip"
+    /** 历史名称标签 tag；触发器不再渲染 Agent 名，保留常量以兼容旧测试。 */
     const val MODEL_LABEL = "v2_composer_model_label"
     /** 输入栏旁的模型选择入口（线框立方体）。 */
     const val MODEL_BUTTON = "v2_composer_model_button"

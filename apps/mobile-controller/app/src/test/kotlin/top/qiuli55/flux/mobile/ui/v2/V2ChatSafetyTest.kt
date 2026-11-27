@@ -71,6 +71,7 @@ class V2ChatSafetyTest {
                 suggestions = listOf(SUGGESTION),
                 sending = sending,
                 notice = notice,
+                onDismissNotice = { notice = null },
                 taskRunning = taskRunning,
                 onStopTask = { stopCount++ },
             )
@@ -160,6 +161,31 @@ class V2ChatSafetyTest {
         rule.waitForIdle()
 
         rule.onNodeWithTag(V2ComposerTags.INPUT).assertTextEquals("")
+    }
+
+    @Test
+    fun `dismissing the model switch notice closes it`() {
+        render()
+        notice = "已切换模型：proxy-deepseek-v4.1-flash"
+        rule.waitForIdle()
+        rule.onNodeWithText("已切换模型：proxy-deepseek-v4.1-flash").assertIsDisplayed()
+
+        rule.onNodeWithContentDescription("关闭提示").performClick()
+        rule.waitForIdle()
+
+        rule.onNodeWithText("已切换模型：proxy-deepseek-v4.1-flash").assertDoesNotExist()
+        assertEquals(null, notice)
+    }
+
+    @Test
+    fun `running task no longer shows a status bar above the composer`() {
+        render(taskRunning = true)
+
+        rule.onNodeWithText("Agent 正在执行", substring = true).assertDoesNotExist()
+        // 停止能力仍在输入区主按钮上：点一次先弹确认。
+        rule.onNodeWithTag(V2ComposerTags.SEND).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("停止本次运行？").assertIsDisplayed()
     }
 
     @Test

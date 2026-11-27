@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -89,51 +88,46 @@ internal fun AgentRuntimeIcon(
 }
 
 /**
- * Agent 胶囊：官方图标 + 当前 Agent 名称（+ 当前模型，窄屏自动截断）。
- * 点开只切 Agent；模型由旁边的立方体单独入口，不再挤同一个下拉。
+ * Agent 触发器：只画官方运行时图标，不再显示 Agent 名称。
+ *
+ * 视觉尺寸向旁边的权限盾牌靠拢（外 48dp 触摸目标 / 内 32dp 圆钮）；
+ * 名称放在 contentDescription 和点开后的下拉菜单里，避免名字后拖出一长截空尾。
  */
 @Composable
 internal fun AgentPill(
     agent: V2Agent,
-    modelLabel: String,
     pendingAgentLabel: String?,
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    Box(
         modifier
+            .size(48.dp)
             .testTag(V2ComposerTags.AGENT_BUTTON)
-            .clip(RoundedCornerShape(999.dp))
-            .background(V2Colors.ink(.05f))
+            .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics {
                 contentDescription = buildString {
                     append("切换 Agent：${agent.name}")
-                    if (modelLabel.isNotBlank()) append("，当前模型 $modelLabel")
+                    if (pendingAgentLabel != null) append("，本轮结束后切换到 $pendingAgentLabel")
                 }
-            }
-            .padding(start = 5.dp, end = 7.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AgentRuntimeIcon(agent.runtime, size = 18.dp)
-        Spacer(Modifier.width(5.dp))
-        // 窄屏给环形 / 立方体 / 权限 / 发送让位：这里只显示 Agent 名，
-        // 当前模型在模型菜单里打勾，不把长模型名重新塞回胶囊。
-        Label(
-            buildString {
-                append(agent.name)
-                if (pendingAgentLabel != null) append(" → $pendingAgentLabel")
             },
-            11f,
-            V2Colors.ink(.66f),
-            weight = FontWeight.Medium,
-            mono = false,
-            maxLines = 1,
-            modifier = Modifier
-                .weight(1f)
-                .testTag(V2ComposerTags.MODEL_LABEL),
-        )
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(V2Colors.ink(.05f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            AgentRuntimeIcon(
+                runtime = agent.runtime,
+                modifier = Modifier.testTag(V2ComposerTags.AGENT_ICON),
+                size = 18.dp,
+            )
+        }
     }
 }
 

@@ -151,6 +151,37 @@ data class TaskDetailUiState(
     val uploading: Boolean = false,
 )
 
+/** 用户点 X 关掉会话提示：error / notice 一起清空。 */
+internal fun TaskDetailUiState.withDismissedNotice(): TaskDetailUiState =
+    copy(notice = null, error = null)
+
+/**
+ * 把一次成功的刷新并入当前 UI 状态。
+ *
+ * 只覆盖服务端数据与错误位；[TaskDetailUiState.notice] 原样保留：用户刚用 X 关掉的
+ * 会话提示（已切换模型 / 已排队切换 Agent 等），不能因为一次轮询或下拉刷新又出现在
+ * 输入区上方。新的提示只由明确的用户操作写入，刷新不负责「补回」。
+ */
+internal fun TaskDetailUiState.withRefreshResult(
+    task: Task,
+    messages: List<TaskMessage>,
+    changes: List<Change>,
+    contextUsage: TaskContextUsage?,
+    run: Run?,
+    runs: List<TaskRunSummary>,
+    stream: StreamUiSnapshot,
+): TaskDetailUiState = copy(
+    loading = false,
+    error = null,
+    task = task,
+    messages = messages,
+    changes = changes,
+    contextUsage = contextUsage ?: this.contextUsage,
+    run = run,
+    runs = runs,
+    stream = stream,
+)
+
 /** 上下文提醒是否该出现：normal 不提醒；同一等级点过「继续聊」就不再打扰。 */
 internal fun shouldPromptContext(usage: TaskContextUsage?, dismissedLevel: String?): Boolean =
     usage != null && usage.level != "normal" && usage.level != dismissedLevel
@@ -322,7 +353,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     fun dismissNotice() {
-        _state.value = _state.value.copy(notice = null, error = null)
+        _state.value = _state.value.withDismissedNotice()
     }
 
     /**
@@ -481,13 +512,11 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 } else {
                     snapshot
                 }
-                _state.value = _state.value.copy(
-                    loading = false,
-                    error = null,
+                _state.value = _state.value.withRefreshResult(
                     task = task,
                     messages = messages,
                     changes = changesDeferred.await(),
-                    contextUsage = contextDeferred.await() ?: _state.value.contextUsage,
+                    contextUsage = contextDeferred.await(),
                     run = runDeferred.await(),
                     runs = runsDeferred.await(),
                     // 思考 / 工具过程保留在活动卡里（结束时默认收起），最终答复仍以落库消息为准

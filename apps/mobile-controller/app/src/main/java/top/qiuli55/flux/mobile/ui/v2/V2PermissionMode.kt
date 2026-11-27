@@ -129,36 +129,6 @@ internal fun PermissionModePill(mode: String, enabled: Boolean = true, onClick: 
     }
 }
 
-/** 完全访问 / 免审核模式的红色提示条：提醒当前没有逐步审批。 */
-@Composable
-internal fun FullAccessNotice(mode: String = "full") {
-    val unattended = mode == "unattended"
-    // 和权限面板保持一致：免审核用警示红，完全访问用放行蓝，两个高权限模式不撞色。
-    val meta = permissionModeMeta(mode)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(meta.color.copy(alpha = .08f))
-            .border(1.dp, meta.color.copy(alpha = .22f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(meta.icon, null, tint = meta.color, modifier = Modifier.size(11.dp))
-        Spacer(Modifier.width(6.dp))
-        Label(
-            if (unattended) {
-                "免审核 · 高风险命令与密钥/系统服务操作都会自动放行，无人把关，请确认任务范围"
-            } else {
-                "完全访问 · 高风险命令不再逐条询问；密钥文件与系统服务仍会问你"
-            },
-            8.5f,
-            if (unattended) V2Colors.rose700 else meta.color,
-        )
-    }
-}
-
 /** 四选一面板：大标题 + 单选列表 + 底部说明受保护对象的边界。 */
 @Composable
 internal fun PermissionModeSheet(
