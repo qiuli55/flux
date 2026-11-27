@@ -5,6 +5,7 @@ import android.content.Intent
 import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -61,13 +63,18 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -302,9 +309,89 @@ private fun ArtifactGridCard(artifact: Artifact, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 卡片封面走哪条渲染分支：设计稿画布 / 文本预览 / 占位图标。
+ *
+ * 判定独立成纯函数，列表只管画，单测也能直接覆盖「有预览 / 无预览 / 空节点」。
+ */
+internal enum class ArtifactCoverMode { DESIGN_CANVAS, TEXT_PREVIEW, PLACEHOLDER }
+
+internal fun artifactCoverMode(artifact: Artifact): ArtifactCoverMode = when {
+    artifact.type == "design" ->
+        if (artifact.preview?.nodes?.isNotEmpty() == true) {
+            ArtifactCoverMode.DESIGN_CANVAS
+        } else {
+            ArtifactCoverMode.PLACEHOLDER
+        }
+    // page / doc 列表只有 summary：能抽出可读文字就做轻量文本预览，否则退回占位图标。
+    artifactCoverText(artifact).isNotEmpty() -> ArtifactCoverMode.TEXT_PREVIEW
+    else -> ArtifactCoverMode.PLACEHOLDER
+}
+
+/** 封面文本预览的行：page 先去 HTML 标签，doc 去掉 Markdown 标记，最多四行。 */
+internal fun artifactCoverText(artifact: Artifact): List<String> =
+    artifactCoverText(artifact.type, artifact.summary)
+
+internal fun artifactCoverText(type: String, summary: String): List<String> {
+    val plain = if (type == "page") htmlToPlainText(summary) else summary
+    return plain
+        .split('\n')
+        .map { plainMarkdownLine(it) }
+        .filter { it.isNotBlank() }
+        .take(4)
+}
+
+private val htmlBlockBreak = Regex(
+    "(?i)<\\s*(br|/p|/div|/h[1-6]|/li|/tr|/section|/article)\\s*/?>",
+)
+private val htmlTag = Regex("(?s)<[^>]+>")
+
+/** 页面摘要是 HTML 片段：去标签、还原常用实体，保留段落换行。 */
+internal fun htmlToPlainText(html: String): String {
+    if (html.isBlank()) return ""
+    return html
+        .replace(htmlBlockBreak, "\n")
+        .replace(htmlTag, " ")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .split('\n')
+        .map { it.replace(Regex("\\s+"), " ").trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString("\n")
+}
+
+private val headingMarker = Regex("^#{1,6}\\s+")
+private val listMarker = Regex("^([-*+]|\\d+[.)])\\s+")
+private val quoteMarker = Regex("^>\\s?")
+private val inlineImage = Regex("!\\[([^\\]]*)\\]\\([^)]*\\)")
+private val inlineLink = Regex("\\[([^\\]]+)\\]\\([^)]*\\)")
+private val inlineCode = Regex("`([^`]*)`")
+private val inlineBold = Regex("\\*\\*(.+?)\\*\\*")
+private val inlineItalicStar = Regex("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)")
+private val inlineItalicUnder = Regex("(?<![\\w])_([^_]+)_(?![\\w])")
+
+/** 单行 Markdown → 纯文本：去掉标题 / 列表 / 引用记号与行内标记，只留可读文字。 */
+internal fun plainMarkdownLine(raw: String): String {
+    var line = raw.trim()
+    line = line.replace(headingMarker, "")
+    line = line.replace(listMarker, "")
+    line = line.replace(quoteMarker, "")
+    line = line
+        .replace(inlineImage, "$1")
+        .replace(inlineLink, "$1")
+        .replace(inlineCode, "$1")
+        .replace(inlineBold, "$1")
+        .replace(inlineItalicStar, "$1")
+        .replace(inlineItalicUnder, "$1")
+    return line.trim()
+}
+
 @Composable
 private fun ArtifactCover(artifact: Artifact) {
-    val tint = V2Colors.ink(.86f)
     val type = artifact.type
     Box(
         Modifier
@@ -317,34 +404,221 @@ private fun ArtifactCover(artifact: Artifact) {
                         V2Colors.ink(.015f),
                     ),
                 ),
+            ),
+    ) {
+        when (artifactCoverMode(artifact)) {
+            ArtifactCoverMode.DESIGN_CANVAS -> {
+                val preview = artifact.preview
+                if (preview != null) {
+                    DesignCoverPreview(
+                        modifier = Modifier.fillMaxSize(),
+                        preview = preview,
+                        bg = null,
+                    )
+                } else {
+                    ArtifactCoverPlaceholder(type, Modifier.fillMaxSize())
+                }
+            }
+            ArtifactCoverMode.TEXT_PREVIEW -> ArtifactTextCoverPreview(
+                type = type,
+                lines = artifactCoverText(artifact),
+                modifier = Modifier.fillMaxSize(),
             )
-            .padding(12.dp),
+            ArtifactCoverMode.PLACEHOLDER ->
+                ArtifactCoverPlaceholder(type, Modifier.fillMaxSize())
+        }
+        ArtifactCoverTypeBadge(
+            type,
+            Modifier.align(Alignment.BottomStart).padding(8.dp),
+        )
+        Label(
+            if (type == "design") "${artifact.screenCount} 屏" else artifactTypeLabel(type),
+            9f,
+            V2Colors.ink(.62f),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(8.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(V2Colors.surface.copy(alpha = .82f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
+/** 占位图标：两张略微错开的圆角页面轮廓，对齐参考图的「空白文档」视觉。 */
+@Composable
+internal fun ArtifactCoverPlaceholder(type: String, modifier: Modifier = Modifier) {
+    val outline = V2Colors.ink(.22f)
+    val pageFill = V2Colors.surface
+    Canvas(modifier) {
+        val pageHeight = size.height * .46f
+        val pageWidth = pageHeight * .74f
+        val overlap = pageWidth * .20f
+        val radius = CornerRadius(pageWidth * .10f)
+        val stroke = Stroke(width = 1.1.dp.toPx())
+        val centerX = size.width / 2f
+        val centerY = size.height / 2f
+
+        // 后面那张偏右上。
+        val back = Offset(
+            centerX - pageWidth / 2f + overlap,
+            centerY - pageHeight / 2f - overlap * .55f,
+        )
+        drawRoundRect(
+            color = pageFill,
+            topLeft = back,
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = radius,
+        )
+        drawRoundRect(
+            color = outline,
+            topLeft = back,
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = radius,
+            style = stroke,
+        )
+
+        // 前面那张偏左下，用实底盖住后面的轮廓交叠处。
+        val front = Offset(
+            centerX - pageWidth / 2f - overlap,
+            centerY - pageHeight / 2f + overlap * .55f,
+        )
+        drawRoundRect(
+            color = pageFill,
+            topLeft = front,
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = radius,
+        )
+        drawRoundRect(
+            color = outline,
+            topLeft = front,
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = radius,
+            style = stroke,
+        )
+
+        // 类型细节：文档偏文字行，页面偏浏览器地址条，设计偏版式块。
+        val detail = outline.copy(alpha = outline.alpha * .62f)
+        val left = front.x + pageWidth * .16f
+        val contentWidth = pageWidth * .68f
+        val lineHeight = (pageHeight * .045f).coerceAtLeast(1.2.dp.toPx())
+        when (type) {
+            "page" -> {
+                drawRoundRect(
+                    color = detail,
+                    topLeft = Offset(left, front.y + pageHeight * .14f),
+                    size = Size(contentWidth, lineHeight * 1.4f),
+                    cornerRadius = CornerRadius(lineHeight),
+                )
+                repeat(2) { index ->
+                    drawRoundRect(
+                        color = detail.copy(alpha = detail.alpha * .72f),
+                        topLeft = Offset(left, front.y + pageHeight * (.34f + index * .16f)),
+                        size = Size(contentWidth * if (index == 0) .9f else .64f, lineHeight),
+                        cornerRadius = CornerRadius(lineHeight / 2f),
+                    )
+                }
+            }
+            "doc" -> {
+                repeat(3) { index ->
+                    drawRoundRect(
+                        color = detail.copy(alpha = detail.alpha * if (index == 0) 1f else .7f),
+                        topLeft = Offset(left, front.y + pageHeight * (.26f + index * .15f)),
+                        size = Size(contentWidth * (1f - index * .14f), lineHeight),
+                        cornerRadius = CornerRadius(lineHeight / 2f),
+                    )
+                }
+            }
+            else -> {
+                drawRoundRect(
+                    color = detail,
+                    topLeft = Offset(left, front.y + pageHeight * .24f),
+                    size = Size(pageWidth * .30f, pageHeight * .26f),
+                    cornerRadius = CornerRadius(pageWidth * .05f),
+                )
+                repeat(2) { index ->
+                    drawRoundRect(
+                        color = detail.copy(alpha = detail.alpha * .68f),
+                        topLeft = Offset(left, front.y + pageHeight * (.58f + index * .13f)),
+                        size = Size(contentWidth * if (index == 0) .82f else .55f, lineHeight),
+                        cornerRadius = CornerRadius(lineHeight / 2f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** doc / page 的轻量文本封面：一页纸 + 真实摘要文字，不挂 WebView。 */
+@Composable
+private fun ArtifactTextCoverPreview(
+    type: String,
+    lines: List<String>,
+    modifier: Modifier = Modifier,
+) {
+    if (lines.isEmpty()) {
+        ArtifactCoverPlaceholder(type, modifier)
+        return
+    }
+    Box(modifier.padding(10.dp)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(8.dp))
+                .background(V2Colors.surface.copy(alpha = .92f))
+                .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(8.dp))
+                .padding(horizontal = 9.dp, vertical = 7.dp),
+        ) {
+            if (type == "page") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    repeat(3) {
+                        Box(
+                            Modifier
+                                .size(3.dp)
+                                .clip(CircleShape)
+                                .background(V2Colors.ink(.20f)),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Box(
+                        Modifier
+                            .fillMaxWidth(.42f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(V2Colors.ink(.06f)),
+                    )
+                }
+                Spacer(Modifier.height(5.dp))
+            }
+            Text(
+                text = lines.joinToString("\n"),
+                color = V2Colors.ink(.72f),
+                fontSize = 9.sp,
+                lineHeight = 12.sp,
+                maxLines = if (type == "page") 5 else 6,
+                overflow = TextOverflow.Clip,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArtifactCoverTypeBadge(type: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(V2Colors.surface.copy(alpha = .82f)),
+        contentAlignment = Alignment.Center,
     ) {
         Icon(
             artifactTypeIcon(type),
             contentDescription = null,
-            tint = tint.copy(alpha = .34f),
-            modifier = Modifier.size(18.dp).align(Alignment.TopStart),
-        )
-        when (type) {
-            "design" -> Label(
-                "Aa", 26f, tint.copy(alpha = .82f), FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center),
-            )
-            "doc" -> Label(
-                "#", 30f, tint.copy(alpha = .82f), FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center),
-            )
-            else -> Label(
-                "</>", 20f, tint.copy(alpha = .82f), FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center),
-            )
-        }
-        Label(
-            if (type == "design") "${artifact.screenCount} 屏" else artifactTypeLabel(type),
-            9f,
-            V2Colors.ink(.38f),
-            modifier = Modifier.align(Alignment.BottomEnd),
+            tint = V2Colors.ink(.62f),
+            modifier = Modifier.size(13.dp),
         )
     }
 }
