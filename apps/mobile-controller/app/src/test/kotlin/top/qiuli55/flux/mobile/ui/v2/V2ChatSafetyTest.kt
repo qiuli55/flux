@@ -43,6 +43,7 @@ class V2ChatSafetyTest {
     private val sent = mutableListOf<String>()
     private var sending by mutableStateOf(false)
     private var notice by mutableStateOf<String?>(null)
+    private var sendError by mutableStateOf<String?>(null)
 
     private fun render(
         conversationId: String? = "conversation-1",
@@ -53,6 +54,7 @@ class V2ChatSafetyTest {
         sent.clear()
         sending = false
         notice = null
+        sendError = null
         rule.setContent {
             V2ChatScreen(
                 chat = V2ChatState(
@@ -71,6 +73,7 @@ class V2ChatSafetyTest {
                 suggestions = listOf(SUGGESTION),
                 sending = sending,
                 notice = notice,
+                sendError = sendError,
                 onDismissNotice = { notice = null },
                 taskRunning = taskRunning,
                 onStopTask = { stopCount++ },
@@ -140,11 +143,31 @@ class V2ChatSafetyTest {
 
         sending = true
         rule.waitForIdle()
-        notice = "网络错误，请稍后重试"
+        // 真正的发送失败由 sendError 表达（notice 只用于状态提示）。
+        sendError = "网络错误，请稍后重试"
         sending = false
         rule.waitForIdle()
 
         rule.onNodeWithTag(V2ComposerTags.INPUT).assertTextContains("网络不好时的内容")
+    }
+
+    @Test
+    fun `cancel then successful send clears the draft despite a stale notice`() {
+        render()
+        typeDraft("取消后再发一次")
+        rule.onNodeWithTag(V2ComposerTags.SEND).performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("取消后再发一次"), sent)
+
+        // 上一轮被取消后 notice 留着「任务已取消」：这不是发送失败，
+        // 这一轮成功结束后仍然要清空输入框。
+        sending = true
+        notice = "任务已取消"
+        rule.waitForIdle()
+        sending = false
+        rule.waitForIdle()
+
+        rule.onNodeWithTag(V2ComposerTags.INPUT).assertTextEquals("")
     }
 
     @Test

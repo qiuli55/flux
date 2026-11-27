@@ -818,6 +818,8 @@ fun FluxV2Root() {
                                     },
                                     sending = app.busyAction == "create" || draftUploading,
                                     notice = draftAttachmentError ?: app.error,
+                                    // 只有建任务/发送失败才保留草稿；附件上传提示不算。
+                                    sendError = app.error,
                                     onDismissNotice = {
                                         draftAttachmentError = null
                                         vm.clearMessages()

@@ -206,6 +206,12 @@ fun V2ChatScreen(
     pendingAgentId: String? = null,
     pendingAgentLabel: String? = null,
     notice: String? = null,
+    /**
+     * 本轮真正的发送失败（例如网络错误）。
+     * 与 [notice] 分开：任务已取消 / 已切换模型这类状态提示不代表消息没发出去，
+     * 不能用来决定草稿是否保留。
+     */
+    sendError: String? = null,
     /** 关掉会话内提示条（上下文/审批类提示可手动收起）。 */
     onDismissNotice: () -> Unit = {},
     suggestions: List<String> = demoChatSuggestions,
@@ -339,7 +345,9 @@ fun V2ChatScreen(
     var wasSending by remember { mutableStateOf(sending) }
     LaunchedEffect(sending) {
         if (wasSending && !sending) {
-            if (notice.isNullOrBlank()) {
+            // 只认真正的发送失败。状态提示（任务已取消 / 已切换模型 / 已排队切换 Agent 等）
+            // 不代表这一轮没发出去，看到它们就保留草稿会把已经发出的消息留在输入框里。
+            if (sendError.isNullOrBlank()) {
                 if (input.isNotEmpty()) {
                     Log.i(FLUX_UX_LOG_TAG, "draft cleared after successful send len=${input.length}")
                     input = ""
@@ -347,7 +355,7 @@ fun V2ChatScreen(
             } else {
                 Log.i(
                     FLUX_UX_LOG_TAG,
-                    "send failed: draft kept len=${input.length} notice=${notice?.take(80)}",
+                    "send failed: draft kept len=${input.length} error=${sendError.take(80)}",
                 )
             }
         }

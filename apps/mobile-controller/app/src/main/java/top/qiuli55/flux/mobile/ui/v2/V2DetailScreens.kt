@@ -719,6 +719,8 @@ fun V2TaskChatScreen(
             pendingAgentId = pendingAgentId,
             pendingAgentLabel = pendingAgentLabel,
             notice = state.error?.let { it } ?: state.notice,
+            // 清空草稿只看真正的发送失败；「任务已取消」等状态提示不能算失败。
+            sendError = state.error,
             // X 关掉会话提示（已切换模型 / 已排队切换 Agent 等）：清掉 error/notice，
             // 后续轮询只更新任务数据，不会把同一条提示写回来。
             onDismissNotice = { vm.dismissNotice() },

@@ -156,6 +156,15 @@ internal fun TaskDetailUiState.withDismissedNotice(): TaskDetailUiState =
     copy(notice = null, error = null)
 
 /**
+ * 开始新一轮发送：清掉上一轮遗留的状态提示（任务已取消 / 已切换模型 / 已排队切换 Agent 等）。
+ *
+ * 这些提示不是发送失败；若继续留着，发送成功后 UI 可能把它们误判成本轮失败而不清空草稿。
+ * 真正的发送失败由随后写入的 [TaskDetailUiState.error] 表达。
+ */
+internal fun TaskDetailUiState.withSendStarted(): TaskDetailUiState =
+    copy(sending = true, error = null, notice = null, draft = "")
+
+/**
  * 把一次成功的刷新并入当前 UI 状态。
  *
  * 只覆盖服务端数据与错误位；[TaskDetailUiState.notice] 原样保留：用户刚用 X 关掉的
@@ -845,11 +854,7 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             // 新的一轮：上一轮的思考/命令过程清掉（连接与 seq 水位保留）。
             cancelledByUser = false
             applyStreamSnapshot(streamReducer.resetActivity())
-            _state.value = _state.value.copy(
-                sending = true,
-                error = null,
-                draft = "",
-            )
+            _state.value = _state.value.withSendStarted()
             try {
                 val api = api()
                 // 已结束的对话：新消息走续跑，重开任务并起新一轮 Agent Run；
