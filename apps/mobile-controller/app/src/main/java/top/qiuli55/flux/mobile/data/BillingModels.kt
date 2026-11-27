@@ -2,6 +2,11 @@ package top.qiuli55.flux.mobile.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.util.Locale
 
 /**
@@ -93,6 +98,8 @@ data class BillingPlan(
     // 模型不带前缀时按 runtime 归因（如 codex → Codex 订阅）。
     @SerialName("runtime_ids") val runtimeIds: List<String> = emptyList(),
     @SerialName("official_source") val officialSource: String = "",
+    // 官方返回的套餐档位（当前只有 Codex：plus / pro / …）；空 = 官方没给。
+    @SerialName("plan_type") val planType: String = "",
     @SerialName("fallback_model") val fallbackModel: String = "",
     // 本机当前账号指纹（顶层 gate / windows 都是它的口径）。
     @SerialName("account_key") val accountKey: String = "",
@@ -138,13 +145,51 @@ data class BillingOverview(
     val headline: String
         get() {
             val tight = plans
-                .flatMap { plan -> plan.windows.mapNotNull { window -> window.official?.percent?.let { plan.label to it } } }
+                .flatMap { plan ->
+                    plan.windows.mapNotNull { window ->
+                        val official = window.official ?: return@mapNotNull null
+                        if (!official.error.isNullOrBlank()) return@mapNotNull null
+                        official.percent?.let { plan.label to it }
+                    }
+                }
                 .maxByOrNull { it.second }
             if (tight != null) return "${tight.first} ${tight.second.toInt()}%"
             val month = plans.sumOf { plan -> plan.windows.firstOrNull { it.key == "monthly" }?.local?.totalTokens ?: 0L }
-            return if (month > 0) "本月 ${compactTokens(month)} tok" else "暂无额度数据"
+            return if (month > 0) "本月 ${compactTokens(month)} token" else "暂无额度数据"
         }
 }
+
+/** 套餐 key → 普通用户看得懂的名字（refresh 结果里只有 key）。 */
+fun planDisplayName(key: String): String = when (key) {
+    "opencode-go" -> "OpenCode Go"
+    "agent-plan" -> "火山 Agent Plan"
+    "opencode" -> "OpenCode Zen"
+    "codex" -> "Codex 订阅"
+    "claude" -> "Claude 订阅"
+    else -> key.ifBlank { "套餐" }
+}
+
+/**
+ * 解析 `POST /billing/refresh` 的 `results`，只汇总「有官方源且刷新失败」的套餐。
+ *
+ * 没有官方源的套餐（Claude 订阅 / OpenCode Zen）返回空 source 是预期状态，
+ * 不能当成错误报给用户。返回 null 表示没有需要展示的失败。
+ */
+fun billingSyncFailure(result: JsonElement): String? {
+    val results = ((result as? JsonObject)?.get("results") as? JsonArray) ?: return null
+    val failures = results.mapNotNull { item ->
+        val obj = item as? JsonObject ?: return@mapNotNull null
+        val source = obj.stringValue("source")
+        val refreshed = obj.stringValue("refreshed").toBooleanStrictOrNull() ?: false
+        val error = obj.stringValue("error")
+        if (source.isBlank() || refreshed || error.isBlank()) return@mapNotNull null
+        "${planDisplayName(obj.stringValue("plan_key"))}：$error"
+    }.distinct()
+    return if (failures.isEmpty()) null else "官方额度更新失败 · " + failures.joinToString("；")
+}
+
+private fun JsonObject.stringValue(key: String): String =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
 
 /** 1234567 → 1.2M，首页只用一行，不展开精确到个位。 */
 fun compactTokens(value: Long): String = when {

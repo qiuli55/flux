@@ -38,11 +38,24 @@ class _FakeSource:
 
     name = "fake"
 
-    def __init__(self, rows: list[SnapshotRow]) -> None:
+    def __init__(
+        self,
+        rows: list[SnapshotRow],
+        *,
+        error: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         self._rows = rows
+        self._error = error
+        self._meta = meta or {}
 
     async def fetch(self) -> SourceResult:
-        return SourceResult(source=self.name, rows=list(self._rows))
+        return SourceResult(
+            source=self.name,
+            rows=list(self._rows),
+            error=self._error,
+            meta=dict(self._meta),
+        )
 
 
 def _rows(plan_key: str, percent: float, windows: tuple[str, ...]) -> list[SnapshotRow]:
@@ -541,6 +554,8 @@ def test_chatgpt_usage_source_maps_official_windows(tmp_path) -> None:
     assert rows["rolling_5h"].resets_at == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
     assert rows["weekly"].percent == 30.0
     assert rows["weekly"].resets_at is not None  # reset_after_seconds 兜底
+    # 套餐档位随采集结果返回，供界面展示 Plus / Pro（不落快照表）
+    assert result.meta["plan_type"] == "plus"
 
 
 def test_chatgpt_usage_source_reports_missing_login(tmp_path) -> None:
@@ -552,6 +567,32 @@ def test_chatgpt_usage_source_reports_missing_login(tmp_path) -> None:
     result = asyncio.run(ChatGptCodexUsageSource(settings).fetch())
     assert result.rows == []
     assert result.error and "还没有登录 ChatGPT" in result.error
+    # 入口路径与 #19 之后的「我的 → 订阅与账号」一致
+    assert "我的 → 订阅与账号" in result.error
+
+
+def test_chatgpt_usage_source_reports_expired_login(tmp_path) -> None:
+    """401 要说清「登录态失效 + 去哪里重新登录」，不能只写采集失败。"""
+    from flux.config import Settings
+    from flux.core.billing.sources import ChatGptCodexUsageSource
+
+    home = tmp_path / "codex-account"
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "at-old", "account_id": "acc-1"}}),
+        encoding="utf-8",
+    )
+
+    async def fetcher(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+        return 401, b'{"error":"expired"}'
+
+    settings = Settings(env="test", codex_account_home=str(home))
+    result = asyncio.run(ChatGptCodexUsageSource(settings, fetcher=fetcher).fetch())
+    assert result.rows == []
+    assert result.error
+    assert "登录态已失效" in result.error
+    assert "我的 → 订阅与账号" in result.error
+    assert "设置 → ChatGPT 账号" not in result.error
 
 
 def test_codex_login_success_schedules_quota_snapshot(tmp_path) -> None:
@@ -581,3 +622,113 @@ def test_codex_login_success_schedules_quota_snapshot(tmp_path) -> None:
         return billing.plans
 
     assert asyncio.run(scenario()) == [PLAN_CODEX]
+
+
+async def test_record_step_attributes_codex_and_claude_runtime(container: Container) -> None:
+    """订阅通道不靠模型前缀也能归因：无前缀 Codex 模型 + runtime=codex。"""
+    service = _service(container)
+    await service.record_step(
+        run_id="run-codex",
+        model="gpt-5.5",
+        runtime_id="codex",
+        input_tokens=100,
+        output_tokens=50,
+    )
+    # Claude Code 两种写法都要落到 Claude 订阅：带前缀 / 不带前缀 + runtime
+    await service.record_step(
+        run_id="run-claude",
+        model="claude/sonnet-5.5",
+        runtime_id="claude-code",
+        input_tokens=200,
+        output_tokens=100,
+    )
+    await service.record_step(
+        run_id="run-claude",
+        model="sonnet-5.5",
+        runtime_id="claude-code",
+        input_tokens=300,
+        output_tokens=150,
+    )
+
+    codex = await service.plan_view(PLAN_CODEX)
+    codex_month = next(w for w in codex["windows"] if w["key"] == "monthly")
+    assert codex_month["local"]["records"] == 1
+    assert codex_month["local"]["total_tokens"] == 150
+
+    claude = await service.plan_view(PLAN_CLAUDE)
+    claude_month = next(w for w in claude["windows"] if w["key"] == "monthly")
+    assert claude_month["local"]["records"] == 2
+    assert claude_month["local"]["total_tokens"] == 750
+
+
+async def test_refresh_picks_up_account_after_codex_login(container: Container, tmp_path) -> None:
+    """登录 ChatGPT 后刷新要按新账号采集，官方百分比挂在当前账号下。"""
+    home = tmp_path / "codex-account"
+    settings = container.settings.model_copy(
+        update={"codex_account_home": str(home), "billing_refresh_seconds": 300}
+    )
+    service = BillingService(settings, container.session_factory)
+    assert service._accounts[PLAN_CODEX] == ""  # noqa: SLF001 - 启动时还没登录
+
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "at-new", "account_id": "acc-new"}}),
+        encoding="utf-8",
+    )
+    service._sources = {  # noqa: SLF001 - 替身采集器，避免真实网络
+        PLAN_CODEX: _FakeSource(
+            [
+                SnapshotRow(
+                    plan_key=PLAN_CODEX, window_key="rolling_5h", percent=12.5
+                )
+            ],
+            meta={"plan_type": "plus"},
+        )
+    }
+
+    view = await service.plan_view(PLAN_CODEX, refresh=True)
+    expected_account = account_fingerprint("acc-new")
+    assert expected_account
+    assert view["account_key"] == expected_account
+    assert view["plan_type"] == "plus"
+    rolling = next(w for w in view["windows"] if w["key"] == "rolling_5h")
+    assert rolling["official"]["percent"] == 12.5
+    assert view["accounts"][0]["is_current"] is True
+
+
+async def test_failed_first_fetch_is_explained_in_overview(container: Container) -> None:
+    """第一次采集就失败时，概览也要带出原因（而不是空白 / 无官方快照）。"""
+    service = _service(container)
+    service._sources = {  # noqa: SLF001 - 替身采集器
+        PLAN_CODEX: _FakeSource(
+            [],
+            error="还没有登录 ChatGPT 账号：在「我的 → 订阅与账号」登录后会自动采集额度",
+        )
+    }
+    view = await service.plan_view(PLAN_CODEX)
+    rolling = next(w for w in view["windows"] if w["key"] == "rolling_5h")
+    assert rolling["official"] is not None
+    assert "还没有登录 ChatGPT" in rolling["official"]["error"]
+
+
+async def test_refresh_without_official_source_is_explained(container: Container) -> None:
+    """Claude 没有官方源：refresh 明确返回「只本地记账」，不是含糊的失败。"""
+    service = _service(container)
+    result = await service.refresh(PLAN_CLAUDE)
+    item = next(row for row in result["results"] if row["plan_key"] == PLAN_CLAUDE)
+    assert item["refreshed"] is False
+    assert item["source"] == ""
+    assert "没有官方额度来源" in item["error"]
+    assert "本地记账" in item["error"]
+
+
+def test_claude_has_no_official_snapshot(client: TestClient) -> None:
+    """Claude 订阅保持本地记账：没有 official_source，窗口 official 为 None。"""
+    container: Container = client.app.state.container
+    container.billing._sources = _service(container)._sources  # noqa: SLF001 - 免联网
+
+    data = client.get("/api/v1/billing/plans").json()["data"]
+    claude = next(item for item in data["plans"] if item["key"] == PLAN_CLAUDE)
+    assert claude["official_source"] == ""
+    assert claude["plan_type"] == ""
+    assert all(window["official"] is None for window in claude["windows"])

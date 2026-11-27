@@ -1215,7 +1215,7 @@ class CliRuntime:
             raise ConfigurationError(
                 "还没有登录 ChatGPT 账号，无法使用 Codex 订阅额度",
                 details={
-                    "hint": "先在「设置 → ChatGPT 账号」完成设备码登录",
+                    "hint": "先在「我的 → 订阅与账号」完成设备码登录",
                     "account_home": str(account_home),
                 },
             )

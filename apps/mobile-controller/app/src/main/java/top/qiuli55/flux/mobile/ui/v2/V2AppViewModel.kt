@@ -20,6 +20,7 @@ import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
+import top.qiuli55.flux.mobile.data.billingSyncFailure
 import top.qiuli55.flux.mobile.data.ClaudeAccountStatus
 import top.qiuli55.flux.mobile.data.ClaudeLoginSession
 import top.qiuli55.flux.mobile.data.CloudApi
@@ -369,8 +370,9 @@ class V2AppViewModel : FluxViewModel() {
     // ------------------------------------------------------------ 套餐额度
 
     /**
-     * 读成本中心视图；[sync] 为真时先让后端抓一次官方额度（OpenCode Go 接口 / arkcli）。
-     * 对账是可选动作：抓不到只影响官方百分比，本地账本照常展示。
+     * 读成本中心视图；[sync] 为真时先让后端抓一次官方额度（OpenCode Go / arkcli / ChatGPT）。
+     * 官方额度是可选动作：抓不到只影响官方百分比，本地账本照常展示；
+     * 但失败原因要说清楚，不能悄悄吞掉后只留一句「对账失败」。
      */
     fun loadBilling(sync: Boolean = false) {
         if (billingJob?.isActive == true && !sync) return
@@ -378,14 +380,22 @@ class V2AppViewModel : FluxViewModel() {
             _state.value = _state.value.copy(billingLoading = true, billingError = null)
             try {
                 val api = api()
-                if (sync) runCatching { api.refreshBilling() }
+                val syncError = if (sync) {
+                    runCatching { billingSyncFailure(api.refreshBilling()) }
+                        .getOrElse { cause ->
+                            "更新官方额度失败：" +
+                                ((cause as? Exception)?.let(::readable) ?: cause.message ?: "未知错误")
+                        }
+                } else {
+                    null
+                }
                 val overview = api.billingOverview()
                 val prices = runCatching { api.billingPrices() }.getOrNull()
                 _state.value = _state.value.copy(
                     billing = overview,
                     billingPrices = prices,
                     billingLoading = false,
-                    billingError = null,
+                    billingError = syncError,
                 )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(billingLoading = false, billingError = readable(e))

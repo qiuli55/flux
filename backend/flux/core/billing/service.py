@@ -136,6 +136,8 @@ class BillingService:
         )
         #: plan_key → 官方快照行（最近一次采集结果）
         self._cache: dict[str, list[dict[str, Any]]] = {}
+        #: plan_key → 套餐级附加信息（如 Codex 的 plan_type）；仅在本次进程内保留
+        self._plan_meta: dict[str, dict[str, Any]] = {}
         #: plan_key → 最近一次采集尝试的时刻（失败也算，避免反复打官方接口）
         self._cache_at: dict[str, datetime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -224,6 +226,8 @@ class BillingService:
 
     async def overview(self, *, refresh: bool = False) -> dict[str, Any]:
         """所有套餐的额度概览（前端成本中心的主数据）。"""
+        # 登录 / 退出 ChatGPT 后凭据会变，账号指纹不能一直沿用进程启动时的结果。
+        self.refresh_accounts()
         plans: list[dict[str, Any]] = []
         for plan in self._plans.values():
             rows = await self._snapshot_rows(plan, refresh=refresh)
@@ -249,8 +253,16 @@ class BillingService:
         plan = self._plans.get(plan_key)
         if plan is None:
             raise ConflictError(f"未登记的套餐：{plan_key}", code="unknown_plan")
+        self.refresh_accounts()
         rows = await self._snapshot_rows(plan, refresh=refresh)
         return await self._plan_view(plan, rows)
+
+    def refresh_accounts(self) -> None:
+        """重新解析本机凭据对应的账号指纹；登录 / 退出后无需重启进程。"""
+        try:
+            self._accounts = resolve_plan_accounts(self._settings, self._plans)
+        except Exception:  # noqa: BLE001 - 账号识别失败只影响展示分组，不影响账本
+            logger.warning("套餐账号解析失败", exc_info=True)
 
     def prices(self) -> dict[str, Any]:
         """官方价目表（前端只读展示，USD / 1M tokens）。"""
@@ -272,6 +284,7 @@ class BillingService:
 
     async def refresh(self, plan_key: str | None = None) -> dict[str, Any]:
         """立即拉取官方额度（页面上的「刷新」按钮）。"""
+        self.refresh_accounts()
         results: list[dict[str, Any]] = []
         targets = [self._plans[plan_key]] if plan_key in self._plans else list(self._plans.values())
         for plan in targets:
@@ -283,7 +296,10 @@ class BillingService:
                         "source": "",
                         "refreshed": False,
                         "rows": 0,
-                        "error": "该套餐没有官方额度来源",
+                        "error": (
+                            f"{plan.label} 没有官方额度来源：只按 Flux 本地记账，"
+                            "不显示官方百分比"
+                        ),
                     }
                 )
                 continue
@@ -426,6 +442,8 @@ class BillingService:
             "model_prefixes": list(plan.model_prefixes),
             "runtime_ids": list(plan.runtime_ids),
             "official_source": plan.official_source,
+            #: 官方返回的套餐档位（当前只有 Codex 的 plan_type：plus / pro / …）
+            "plan_type": str(self._plan_meta.get(plan.key, {}).get("plan_type") or ""),
             "fallback_model": plan.fallback_model,
             "account_key": primary["key"],
             "gate": primary["gate"],
@@ -736,6 +754,7 @@ class BillingService:
             error = result.error
         if result is None or error or not result.rows:
             detail = error or "官方未返回任何窗口数据"
+            error_rows: list[dict[str, Any]] = []
             for window in plan.windows:
                 await self._store_snapshot(
                     plan,
@@ -745,9 +764,32 @@ class BillingService:
                     error=detail,
                     fetched_at=now,
                 )
-            # 失败不覆盖旧的成功缓存，闸门继续用上一次的官方数据
+                error_rows.append(
+                    {
+                        "plan_key": plan.key,
+                        "account_key": account_key,
+                        "window_key": window.key,
+                        "used": None,
+                        "quota": None,
+                        "percent": None,
+                        "unit": "percent",
+                        "status": "error",
+                        "resets_at": None,
+                        "fetched_at": now.isoformat(),
+                        "source": plan.official_source,
+                        "error": detail,
+                    }
+                )
+            # 失败不覆盖旧的成功缓存，闸门继续用上一次的官方数据；
+            # 但从没成功过时要把失败原因放进缓存，否则前端第一次打开只看到「暂无官方数据」。
+            if plan.key not in self._cache or all(
+                row.get("error") for row in self._cache.get(plan.key, [])
+            ):
+                self._cache[plan.key] = error_rows
             self._cache_at[plan.key] = now
             return self._cache.get(plan.key, []), detail
+        if result.meta:
+            self._plan_meta[plan.key] = dict(result.meta)
         rows = []
         for row in result.rows:
             await self._store_snapshot(

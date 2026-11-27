@@ -89,6 +89,8 @@ class SourceResult:
     source: str
     rows: list[SnapshotRow] = field(default_factory=list)
     error: str | None = None
+    #: 套餐级附加信息（如 Codex 的 plan_type）；只随本次采集返回，不落快照表
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class UsageSource(Protocol):
@@ -314,7 +316,7 @@ class ChatGptCodexUsageSource:
         if status == 401:
             return SourceResult(
                 source=self.name,
-                error="ChatGPT 登录态已失效：请在「设置 → ChatGPT 账号」重新登录",
+                error="ChatGPT 登录态已失效：请在「我的 → 订阅与账号」重新登录",
             )
         if status != 200:
             detail = body.decode("utf-8", "replace").strip().replace("\n", " ")[:160]
@@ -329,7 +331,12 @@ class ChatGptCodexUsageSource:
         rows = _rows_from_chatgpt_usage(payload, PLAN_CODEX)
         if not rows:
             return SourceResult(source=self.name, error="ChatGPT 额度接口没有可识别的窗口")
-        return SourceResult(source=self.name, rows=rows)
+        plan_type = str(payload.get("plan_type") or "").strip().lower()
+        return SourceResult(
+            source=self.name,
+            rows=rows,
+            meta={"plan_type": plan_type} if plan_type else {},
+        )
 
 
 def _codex_tokens(settings: Settings) -> tuple[dict[str, str] | None, str | None]:
@@ -341,7 +348,7 @@ def _codex_tokens(settings: Settings) -> tuple[dict[str, str] | None, str | None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None, "还没有登录 ChatGPT 账号：登录后会自动采集额度"
+        return None, "还没有登录 ChatGPT 账号：在「我的 → 订阅与账号」登录后会自动采集额度"
     except (OSError, ValueError):
         return None, f"ChatGPT 登录态不可读：{path}"
     tokens = raw.get("tokens") if isinstance(raw, dict) else None
