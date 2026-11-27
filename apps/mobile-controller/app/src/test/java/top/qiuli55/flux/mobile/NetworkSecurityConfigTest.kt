@@ -78,6 +78,28 @@ class NetworkSecurityConfigTest {
     }
 
     @Test
+    fun `network configs do not install custom trust anchors`() {
+        val root = moduleDir()
+        val files = listOf(
+            File(root, "src/main/res/xml/network_security_config.xml"),
+            File(root, "src/debug/res/xml/network_security_config.xml"),
+        )
+        for (file in files) {
+            val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(file)
+            assertEquals(
+                "${file.name} must not install custom trust-anchors",
+                0,
+                doc.getElementsByTagName("trust-anchors").length,
+            )
+            assertEquals(
+                "${file.name} must not trust user / custom certificates",
+                0,
+                doc.getElementsByTagName("certificates").length,
+            )
+        }
+    }
+
+    @Test
     fun `main config does not permit cleartext globally`() {
         val main = File(moduleDir(), "src/main/res/xml/network_security_config.xml")
         val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(main)

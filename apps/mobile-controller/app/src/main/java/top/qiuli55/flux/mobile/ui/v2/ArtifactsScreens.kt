@@ -3,6 +3,7 @@ package top.qiuli55.flux.mobile.ui.v2
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.compose.foundation.Canvas
@@ -1003,6 +1004,13 @@ private fun ArtifactHtmlPreview(html: String, versionKey: String, modifier: Modi
                         builtInZoomControls = true
                         displayZoomControls = false
                         mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        allowFileAccess = false
+                        allowContentAccess = false
+                    }
+                    // 成品预览是同机离线渲染：使用独立的 flux-artifact.local origin，
+                    // 且不带第三方 cookie，避免读到内置浏览器里的站点登录态。
+                    runCatching {
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
                     }
                 }
             },
