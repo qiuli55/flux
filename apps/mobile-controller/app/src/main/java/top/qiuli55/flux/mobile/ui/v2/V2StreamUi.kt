@@ -97,11 +97,30 @@ internal class StopTapGuard(private val windowMs: Long = 700L) {
 }
 
 /**
+ * 终态时间线的最后一段正文是不是就是落库消息里的那段最终答复。
+ *
+ * 落库正文是完整内容，流式单段正文有 [STREAM_TEXT_LIMIT] 上限，长回答只剩尾部；
+ * 两种情况都视为「已经由时间线画过」，调用方应该只保留落库那一份，避免同一段话出现两遍。
+ */
+internal fun streamAnswerMatchesPersisted(streamText: String, persistedText: String): Boolean {
+    val live = streamText.trim()
+    val persisted = persistedText.trim()
+    if (live.isEmpty() || persisted.isEmpty()) return false
+    if (live == persisted) return true
+    return live.length >= STREAM_TEXT_LIMIT && persisted.endsWith(live)
+}
+
+/**
  * 一条助手消息里的多阶段时间线：思考 / 正文小结 / 命令组 / 工具组按发生顺序穿插。
  *
  * 这是**统一前端合同**的消费端：阶段完全由 `run_event` 的 kind（thinking / text / tool）
  * 与 `category` 推导，不按 Agent 名或 runtime 名分支。新 Agent 只要产出同一套事件，
  * 就自动得到同样的展示。
+ *
+ * @param omitTrailingAnswer 终态时把最后一段正文交给落库消息渲染：时间线只画过程
+ *   （思考 / 中途正文 / 命令组 / 工具组），最终答复紧接在它们之后，避免重复。
+ * @param showFooter 是否在时间线底部画状态 / 用时；调用方需要把「共用时」放到
+ *   文件审核卡之后时，可以自己单独渲染 [StreamRunFooter]。
  */
 @Composable
 internal fun StreamStagesColumn(
@@ -109,17 +128,25 @@ internal fun StreamStagesColumn(
     modifier: Modifier = Modifier,
     onOpenUrl: (String) -> Unit = {},
     onSend: (String) -> Unit = {},
+    omitTrailingAnswer: Boolean = false,
+    showFooter: Boolean = true,
 ) {
     if (!stream.hasActivity) return
+    // 只省略「最后一段正文」；它是本轮最终答复，由落库消息在原位之后补上。
+    val stages = if (omitTrailingAnswer && stream.stages.lastOrNull() is StreamTextStage) {
+        stream.stages.dropLast(1)
+    } else {
+        stream.stages
+    }
     // 光标只挂在「时间线最后一段且仍是正文」上；切到命令/工具后旧小结不再闪。
-    val streamingTextId = (stream.stages.lastOrNull() as? StreamTextStage)?.id
+    val streamingTextId = (stages.lastOrNull() as? StreamTextStage)?.id
     Column(
         modifier
             .fillMaxWidth()
             .testTag(V2StreamTags.STAGES),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        stream.stages.forEach { stage ->
+        stages.forEach { stage ->
             when (stage) {
                 is StreamThoughtStage -> ThoughtBlock(stage)
                 is StreamTextStage -> TextStageBubble(
@@ -133,7 +160,7 @@ internal fun StreamStagesColumn(
             }
         }
         stream.errorLines.forEach { line -> StreamErrorRow(line) }
-        StreamRunFooter(stream)
+        if (showFooter) StreamRunFooter(stream)
     }
 }
 
@@ -437,15 +464,24 @@ private fun ToolStepRow(step: StreamToolStep, onOpenUrl: (String) -> Unit) {
     }
 }
 
-/** 底部状态：进行中显示当前动作，结束后留一个总用时。 */
+/**
+ * 底部状态：进行中显示当前动作，结束后只留一行短 meta（总用时）。
+ *
+ * [onOpenTrace] 非空时这一行同时是「执行详情」入口：顶部耗时胶囊在插入式时间线里
+ * 会让同一轮出现两个对不上的用时，因此由这里统一提供入口。
+ */
 @Composable
-private fun StreamRunFooter(stream: StreamUiSnapshot) {
+internal fun StreamRunFooter(
+    stream: StreamUiSnapshot,
+    modifier: Modifier = Modifier,
+    onOpenTrace: (() -> Unit)? = null,
+) {
     val label = streamActivityLabel(stream)
     val nowMs = rememberTicker(stream.liveActive)
     val elapsed = stream.elapsedMs(nowMs)
     if (label != null) {
         Row(
-            Modifier
+            modifier
                 .fillMaxWidth()
                 .testTag(V2StreamTags.STATUS_FOOTER)
                 .padding(start = 4.dp, top = 2.dp),
@@ -460,13 +496,23 @@ private fun StreamRunFooter(stream: StreamUiSnapshot) {
             }
         }
     } else if (stream.runEndedAtMs != null && stream.runStartedAtMs > 0L) {
+        val done = "共用时 ${formatRunDuration(elapsed)}"
+        val text = if (onOpenTrace != null) "$done · 执行详情" else done
+        val clickable = if (onOpenTrace != null) {
+            Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onOpenTrace)
+        } else {
+            Modifier
+        }
         Label(
-            "共用时 ${formatRunDuration(elapsed)}",
+            text,
             9f,
             V2Colors.ink(.30f),
             mono = true,
-            modifier = Modifier
+            modifier = modifier
                 .testTag(V2StreamTags.STATUS_FOOTER)
+                .then(clickable)
                 .padding(start = 4.dp, top = 2.dp),
         )
     }
