@@ -201,6 +201,123 @@ class V2ComposerControlsTest {
     }
 
     @Test
+    fun `agent popup shows readable model subtitle instead of role`() {
+        val vault = V2ModelOption("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", keyId = "k1")
+        val options = listOf(
+            V2AgentOption(
+                agentA,
+                listOf(V2ModelOption("claude-native", "Claude Sonnet 4.6"), vault),
+            ),
+            V2AgentOption(agentB, listOf(V2ModelOption("gpt-native", "GPT-5.6 Luna"))),
+        )
+        rule.setContent {
+            V2ChatScreen(
+                chat = V2ChatState(
+                    conversationId = "task-1",
+                    title = "构建失败排查",
+                    device = "本机",
+                    agentId = agentA.id,
+                    model = vault.model,
+                    modelKeyId = vault.keyId,
+                ),
+                messages = emptyList(),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                agentOptions = options,
+                modelOptions = modelsForAgent(options, agentA.id),
+                suggestions = emptyList(),
+                showHandoff = false,
+            )
+        }
+
+        rule.onNodeWithTag(V2ComposerTags.AGENT_BUTTON).performClick()
+        rule.onNodeWithTag(V2ComposerTags.AGENT_MENU).assertIsDisplayed()
+        // 当前 Agent：跟正在用的模型走；未选中 Agent：显示切过去会用的模型。
+        rule.onNodeWithText("DeepSeek V4.1 Flash").assertIsDisplayed()
+        rule.onNodeWithText("GPT-5.6 Luna").assertIsDisplayed()
+        // 不再出现旧的「role · 模型」内部写法。
+        rule.onNodeWithText("developer", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `queued agent switch keeps pending hint and target model`() {
+        val options = listOf(
+            V2AgentOption(agentA, listOf(V2ModelOption("claude-native", "Claude Sonnet 4.6"))),
+            V2AgentOption(agentB, listOf(V2ModelOption("gpt-native", "GPT-5.6 Luna"))),
+        )
+        rule.setContent {
+            V2ChatScreen(
+                chat = V2ChatState(
+                    conversationId = "task-1",
+                    title = "构建失败排查",
+                    device = "本机",
+                    agentId = agentA.id,
+                    model = "claude-native",
+                ),
+                messages = emptyList(),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                agentOptions = options,
+                modelOptions = modelsForAgent(options, agentA.id),
+                pendingAgentId = agentB.id,
+                pendingAgentLabel = agentB.name,
+                suggestions = emptyList(),
+                showHandoff = false,
+            )
+        }
+
+        rule.onNodeWithTag(V2ComposerTags.AGENT_BUTTON).performClick()
+        rule.onNodeWithText("本轮结束后切换").assertIsDisplayed()
+        // 副行显示排队生效后会用到的模型，而不是当前 Agent 的模型。
+        rule.onNodeWithTag(V2ComposerTags.AGENT_MENU_ROW_PREFIX + agentB.id)
+            .assertIsDisplayed()
+        rule.onNodeWithText("GPT-5.6 Luna").assertIsDisplayed()
+    }
+
+    @Test
+    fun `model popup highlights current model and vault source`() {
+        val vault = V2ModelOption("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", keyId = "k1")
+        val options = listOf(V2ModelOption("claude-native", "Claude Sonnet 4.6"), vault)
+        rule.setContent {
+            V2ChatScreen(
+                chat = V2ChatState(
+                    conversationId = "task-1",
+                    title = "构建失败排查",
+                    device = "本机",
+                    agentId = agentA.id,
+                    model = "claude-native",
+                ),
+                messages = emptyList(),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                agentOptions = listOf(V2AgentOption(agentA, options)),
+                modelOptions = options,
+                suggestions = emptyList(),
+                showHandoff = false,
+            )
+        }
+
+        rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON).performClick()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_MENU).assertIsDisplayed()
+        rule.onNodeWithText("Claude Sonnet 4.6").assertIsDisplayed()
+        rule.onNodeWithText("DeepSeek V4.1 Flash").assertIsDisplayed()
+        rule.onNodeWithText("当前在用").assertIsDisplayed()
+        rule.onNodeWithText("密钥库").assertIsDisplayed()
+    }
+
+    @Test
     fun `switching agent swaps the model list in the composer`() {
         var state by mutableStateOf(
             V2ChatState(

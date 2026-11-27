@@ -25,6 +25,13 @@ internal object V2ComposerTags {
     const val CONTEXT_INFO = "v2_composer_context_info"
     const val PERMISSION = "v2_composer_permission"
     const val SEND = "v2_composer_send"
+    /** Agent 小窗（锚定在 Agent 胶囊上的自定义卡片）。 */
+    const val AGENT_MENU = "v2_composer_agent_menu"
+    /** 模型小窗（锚定在模型立方体上的自定义卡片）。 */
+    const val MODEL_MENU = "v2_composer_model_menu"
+    /** 小窗里的单行：前缀 + agentId / model（含 keyId 时可再拼 keyId）。 */
+    const val AGENT_MENU_ROW_PREFIX = "v2_composer_agent_menu_row_"
+    const val MODEL_MENU_ROW_PREFIX = "v2_composer_model_menu_row_"
 }
 
 /** 交互类修复统一使用的日志 tag。 */
