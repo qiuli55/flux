@@ -479,6 +479,50 @@ data class Artifact(
             ?.takeIf { it.isNotBlank() }
 }
 
+/** 产物某一版本的历史快照；列表接口不带正文，取单版时才带 [content]。 */
+@Serializable
+data class ArtifactVersion(
+    @SerialName("artifact_id") val artifactId: String = "",
+    val version: Int = 0,
+    val title: String = "",
+    val description: String = "",
+    val icon: String = "",
+    val label: String = "",
+    val contract: String? = null,
+    @SerialName("created_at") val createdAt: String = "",
+    val content: String? = null,
+)
+
+/** 产物资产库中的一项；[id] 是 32 位 hex，相对路径预览靠它回源。 */
+@Serializable
+data class ArtifactAsset(
+    val id: String = "",
+    @SerialName("artifact_id") val artifactId: String = "",
+    @SerialName("file_name") val fileName: String = "",
+    @SerialName("content_type") val contentType: String = "",
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    val sha256: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+) {
+    /** 页面里可能写成 `assets/名字` / `./名字`：用最后一段文件名匹配。 */
+    val pathKey: String
+        get() = fileName.substringAfterLast('/').substringAfterLast('\\').lowercase()
+}
+
+@Serializable
+data class ArtifactAssetUsage(
+    val files: Int = 0,
+    val bytes: Long = 0,
+    @SerialName("max_files") val maxFiles: Int = 0,
+    @SerialName("max_bytes") val maxBytes: Long = 0,
+)
+
+@Serializable
+data class ArtifactAssetList(
+    val assets: List<ArtifactAsset> = emptyList(),
+    val usage: ArtifactAssetUsage = ArtifactAssetUsage(),
+)
+
 // ------------------------------------------------------------------ 设计工作室
 
 /** 设计稿列表项（Luma Studio 的 summary，不含画板正文）。 */

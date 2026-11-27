@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -96,6 +97,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
@@ -122,6 +124,9 @@ import top.qiuli55.flux.mobile.data.DesignNode
 import top.qiuli55.flux.mobile.data.DesignPreview
 import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
+import top.qiuli55.flux.mobile.ui.v2.design.DesignAiChange
+import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlan
+import top.qiuli55.flux.mobile.ui.v2.design.DesignChangeKind
 import top.qiuli55.flux.mobile.ui.v2.design.DesignHandle
 import top.qiuli55.flux.mobile.ui.v2.design.DesignInteract
 import top.qiuli55.flux.mobile.ui.v2.design.DesignPainter
@@ -842,7 +847,14 @@ fun DesignCanvasScreen(
     onSetTextColor: (String) -> Unit,
     onSetRadius: (Float) -> Unit,
     onSetOpacity: (Float) -> Unit,
+    onSetFontSize: (Float) -> Unit,
+    onSetFontWeight: (Int) -> Unit,
+    onSetAlign: (String?) -> Unit,
+    onSetStroke: (String?) -> Unit,
+    onSetShadow: (Boolean) -> Unit,
     onAskAi: (String) -> Unit,
+    onApplyAi: () -> Unit,
+    onCancelAi: () -> Unit,
     onDismissMessages: () -> Unit,
 ) {
     val document = state.document
@@ -983,9 +995,15 @@ fun DesignCanvasScreen(
 
                 DesignFlash(state.error ?: state.notice, state.error != null, onDismissMessages)
 
+                // AI 预览时画布画的是「应用后」的预览稿；确认前原文档不变。
+                val aiPlan = state.aiPlan
+                val previewScreen = aiPlan?.preview?.screens?.getOrNull(state.screenIndex)
+                val canvasScreen = previewScreen ?: screen
                 // 解析一次、绘制与命中测试共用；节点不变时不会重新量字（Resolver 内部还有 LRU）
                 val resolver = rememberDesignResolver(textMeasurer)
-                val resolved = remember(screen.id, screen.nodes) { resolver.resolve(screen.nodes) }
+                val resolved = remember(canvasScreen.id, canvasScreen.nodes) {
+                    resolver.resolve(canvasScreen.nodes)
+                }
                 val boardBg = designColor(document.bg, DesignSpec.SHELL_TOP)
 
                 Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -993,6 +1011,7 @@ fun DesignCanvasScreen(
                     // 拖动过程中 document 每帧都在变，闭包里必须读到新节点。
                     val latestScreen = rememberUpdatedState(screen)
                     val latestResolved = rememberUpdatedState(resolved)
+                    val latestPlan = rememberUpdatedState(aiPlan)
                     val latestSelection = rememberUpdatedState(state.selectedNodeIds)
                     val latestMulti = rememberUpdatedState(state.multiSelect)
                     val latestSelect = rememberUpdatedState(onSelectNode)
@@ -1023,6 +1042,8 @@ fun DesignCanvasScreen(
                                 var lastTapY = 0f
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
+                                    // 预览 / 取消请求期间画布只读，避免把预览稿当成已确认的修改。
+                                    if (latestPlan.value != null) return@awaitEachGesture
                                     val drawScreen = latestScreen.value
                                     val view = viewSize
                                     if (view.width <= 0f || view.height <= 0f) return@awaitEachGesture
@@ -1243,49 +1264,92 @@ fun DesignCanvasScreen(
                         with(DesignPainter) {
                             drawDotGrid(V2Colors.ink(.045f), step = 22.dp.toPx())
                         }
-                        val scale = min(size.width / screen.w, size.height / screen.h) * .92f * zoom
+                        val scale = min(size.width / canvasScreen.w, size.height / canvasScreen.h) *
+                            .92f * zoom
                         val origin = Offset(
-                            (size.width - screen.w * scale) / 2f + pan.x,
-                            (size.height - screen.h * scale) / 2f + pan.y,
+                            (size.width - canvasScreen.w * scale) / 2f + pan.x,
+                            (size.height - canvasScreen.h * scale) / 2f + pan.y,
                         )
                         translate(origin.x, origin.y) {
                             scale(scale, scale, pivot = Offset.Zero) {
                                 with(DesignPainter) {
                                     drawScreen(
                                         nodes = resolved,
-                                        width = screen.w,
-                                        height = screen.h,
+                                        width = canvasScreen.w,
+                                        height = canvasScreen.h,
                                         bg = boardBg,
                                         device = true,
                                     )
                                 }
                                 with(DesignInteract) {
                                     val strokeWidth = 1.5.dp.toPx() / scale
-                                    state.selectedNodes.forEach { selected ->
-                                        val node = findResolved(resolved, selected.id)
-                                            ?: return@forEach
-                                        drawSelection(
-                                            node = node,
-                                            strokeWidth = strokeWidth,
-                                            handleRadius = 4.5.dp.toPx() / scale,
-                                            rotateOffset = 26.dp.toPx() / scale,
-                                            handles = state.selectedNodes.size == 1,
-                                        )
+                                    if (aiPlan == null) {
+                                        state.selectedNodes.forEach { selected ->
+                                            val node = findResolved(resolved, selected.id)
+                                                ?: return@forEach
+                                            drawSelection(
+                                                node = node,
+                                                strokeWidth = strokeWidth,
+                                                handleRadius = 4.5.dp.toPx() / scale,
+                                                rotateOffset = 26.dp.toPx() / scale,
+                                                handles = state.selectedNodes.size == 1,
+                                            )
+                                        }
+                                        val snap = guides
+                                        if (snap.vertical.isNotEmpty() || snap.horizontal.isNotEmpty()) {
+                                            drawSnapGuides(
+                                                snap.vertical, snap.horizontal,
+                                                canvasScreen.w, canvasScreen.h,
+                                            )
+                                        }
+                                        marquee?.let { drawMarquee(it, strokeWidth) }
                                     }
-                                    val snap = guides
-                                    if (snap.vertical.isNotEmpty() || snap.horizontal.isNotEmpty()) {
-                                        drawSnapGuides(
-                                            snap.vertical, snap.horizontal, screen.w, screen.h,
-                                        )
-                                    }
-                                    marquee?.let { drawMarquee(it, strokeWidth) }
+                                }
+                                // AI 作用范围提示：请求进行中把选区 / 整屏圈出来，
+                                // 不依赖底部按钮，用户抬头就能看到 AI 正在改哪一块。
+                                if (state.asking) {
+                                    drawAiScopeHint(
+                                        resolved = resolved,
+                                        selectedIds = state.selectedNodeIds,
+                                        screenW = canvasScreen.w,
+                                        screenH = canvasScreen.h,
+                                        scope = state.aiScope,
+                                        strokeWidth = 1.6.dp.toPx() / scale,
+                                    )
+                                }
+                                aiPlan?.let { plan ->
+                                    drawAiPlan(
+                                        changes = plan.changes,
+                                        applyingIndex = state.aiApplyingIndex,
+                                        strokeWidth = 2.dp.toPx() / scale,
+                                    )
                                 }
                             }
                         }
                     }
 
+                    if (state.asking || state.aiApplyingIndex >= 0) {
+                        AiPhasePill(
+                            phase = state.aiPhase ?: if (state.asking) "正在生成修改…" else "正在应用修改…",
+                            startedAt = state.aiStartedAt,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 12.dp),
+                        )
+                    }
+
                     val selectedNodes = state.selectedNodes
-                    if (selectedNodes.isNotEmpty()) {
+                    if (aiPlan != null) {
+                        AiPreviewDock(
+                            plan = aiPlan,
+                            applyingIndex = state.aiApplyingIndex,
+                            onApply = onApplyAi,
+                            onCancel = onCancelAi,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                        )
+                    } else if (selectedNodes.isNotEmpty()) {
                         Row(
                             Modifier
                                 .align(Alignment.BottomCenter)
@@ -1416,6 +1480,11 @@ fun DesignCanvasScreen(
                 onSetTextColor = onSetTextColor,
                 onSetRadius = onSetRadius,
                 onSetOpacity = onSetOpacity,
+                onSetFontSize = onSetFontSize,
+                onSetFontWeight = onSetFontWeight,
+                onSetAlign = onSetAlign,
+                onSetStroke = onSetStroke,
+                onSetShadow = onSetShadow,
             )
         }
         if (aiOpen && screen != null) {
@@ -1426,10 +1495,16 @@ fun DesignCanvasScreen(
                 screenName = screen.name,
                 layerCount = screen.nodes.size,
                 asking = state.asking,
+                phase = state.aiPhase,
+                startedAt = state.aiStartedAt,
+                plan = state.aiPlan,
+                applyingIndex = state.aiApplyingIndex,
                 reply = state.aiReply,
                 canUndo = state.canUndo,
                 onScope = onSetAiScope,
                 onUndo = onUndo,
+                onCancelAi = onCancelAi,
+                onApplyAi = onApplyAi,
                 onDismiss = { aiOpen = false },
                 onAsk = onAskAi,
             )
@@ -1873,14 +1948,23 @@ private fun DesignEditSheet(
     onSetTextColor: (String) -> Unit,
     onSetRadius: (Float) -> Unit,
     onSetOpacity: (Float) -> Unit,
+    onSetFontSize: (Float) -> Unit,
+    onSetFontWeight: (Int) -> Unit,
+    onSetAlign: (String?) -> Unit,
+    onSetStroke: (String?) -> Unit,
+    onSetShadow: (Boolean) -> Unit,
 ) {
     var text by remember(node.id) { mutableStateOf(node.text.orEmpty()) }
     var radius by remember(node.id) {
         mutableFloatStateOf(node.radius?.tl ?: DesignSpec.radiusOf(node))
     }
     var opacity by remember(node.id) { mutableFloatStateOf(node.opacity ?: 1f) }
+    var fontSize by remember(node.id) {
+        mutableFloatStateOf(node.fontSize ?: DesignSpec.DEFAULT_FONT_SIZE)
+    }
+    val hasText = !node.text.isNullOrEmpty() || node.type == "text"
 
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .78f) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
         SheetHeader(
             title = "轻编辑",
             subtitle = "${node.name.ifBlank { node.type }} · ${node.type}",
@@ -1892,7 +1976,7 @@ private fun DesignEditSheet(
                 .padding(horizontal = 20.dp)
                 .imePadding(),
         ) {
-            if (!node.text.isNullOrEmpty() || node.type == "text") {
+            if (hasText) {
                 DesignFieldTitle("文案")
                 DesignInput(
                     value = text,
@@ -1902,6 +1986,39 @@ private fun DesignEditSheet(
                         onSetText(it)
                     },
                 )
+                Spacer(Modifier.height(14.dp))
+
+                DesignFieldTitle("字号  ${fontSize.roundToInt()}px")
+                Slider(
+                    value = fontSize,
+                    onValueChange = {
+                        fontSize = it
+                        onSetFontSize(it)
+                    },
+                    valueRange = 8f..72f,
+                    colors = designSliderColors(),
+                )
+                Spacer(Modifier.height(10.dp))
+
+                DesignFieldTitle("字重")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(400 to "常规", 500 to "中等", 600 to "半粗", 700 to "加粗").forEach { (value, label) ->
+                        EditChoice(
+                            text = label,
+                            active = (node.fontWeight ?: 400) == value,
+                            onClick = { onSetFontWeight(value) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                DesignFieldTitle("对齐")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EditChoice("默认", node.align == null) { onSetAlign(null) }
+                    EditChoice("左", node.align == "left") { onSetAlign("left") }
+                    EditChoice("中", node.align == "center") { onSetAlign("center") }
+                    EditChoice("右", node.align == "right") { onSetAlign("right") }
+                }
                 Spacer(Modifier.height(14.dp))
             }
 
@@ -1915,7 +2032,7 @@ private fun DesignEditSheet(
                 Spacer(Modifier.height(14.dp))
             }
 
-            if (!node.text.isNullOrEmpty() || node.color != null) {
+            if (hasText || node.color != null) {
                 DesignFieldTitle("文字颜色")
                 ColorRow(
                     selected = node.color,
@@ -1934,14 +2051,25 @@ private fun DesignEditSheet(
                         onSetRadius(it)
                     },
                     valueRange = 0f..80f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = V2Colors.accent,
-                        activeTrackColor = V2Colors.accent.copy(alpha = .55f),
-                        inactiveTrackColor = V2Colors.line,
-                    ),
+                    colors = designSliderColors(),
                 )
                 Spacer(Modifier.height(6.dp))
             }
+
+            DesignFieldTitle("描边")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditChoice("无", node.stroke == null) { onSetStroke(null) }
+                EditChoice("深色", node.stroke?.color == "#0F172A") { onSetStroke("#0F172A") }
+                EditChoice("主色", node.stroke?.color == "#0891B2") { onSetStroke("#0891B2") }
+            }
+            Spacer(Modifier.height(12.dp))
+
+            DesignFieldTitle("投影")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditChoice("无", node.shadow == null) { onSetShadow(false) }
+                EditChoice("柔和投影", node.shadow != null) { onSetShadow(true) }
+            }
+            Spacer(Modifier.height(14.dp))
 
             DesignFieldTitle("不透明度  ${(opacity * 100).roundToInt()}%")
             Slider(
@@ -1951,16 +2079,43 @@ private fun DesignEditSheet(
                     onSetOpacity(it)
                 },
                 valueRange = .1f..1f,
-                colors = SliderDefaults.colors(
-                    thumbColor = V2Colors.accent,
-                    activeTrackColor = V2Colors.accent.copy(alpha = .55f),
-                    inactiveTrackColor = V2Colors.line,
-                ),
+                colors = designSliderColors(),
             )
             Spacer(Modifier.height(10.dp))
             DesignAction("完成", filled = true, onClick = onDismiss, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(18.dp))
         }
+    }
+}
+
+@Composable
+private fun designSliderColors() = SliderDefaults.colors(
+    thumbColor = V2Colors.accent,
+    activeTrackColor = V2Colors.accent.copy(alpha = .55f),
+    inactiveTrackColor = V2Colors.line,
+)
+
+@Composable
+private fun EditChoice(text: String, active: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (active) V2Colors.accent.copy(alpha = .14f) else V2Colors.surface(.72f))
+            .border(
+                1.dp,
+                if (active) V2Colors.accent.copy(alpha = .38f) else V2Colors.lineSoft,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        Label(
+            text,
+            10.5f,
+            if (active) V2Colors.cyan800 else V2Colors.ink(.58f),
+            if (active) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+        )
     }
 }
 
@@ -2030,10 +2185,16 @@ private fun DesignAiSheet(
     screenName: String,
     layerCount: Int,
     asking: Boolean,
+    phase: String?,
+    startedAt: Long,
+    plan: DesignAiPlan?,
+    applyingIndex: Int,
     reply: String?,
     canUndo: Boolean,
     onScope: (String) -> Unit,
     onUndo: () -> Unit,
+    onCancelAi: () -> Unit,
+    onApplyAi: () -> Unit,
     onDismiss: () -> Unit,
     onAsk: (String) -> Unit,
 ) {
@@ -2050,8 +2211,21 @@ private fun DesignAiSheet(
         selectedCount == 1 -> "只作用于「${selectedName ?: "当前组件"}」，不会动其他图层"
         else -> "先选组件，或切到整屏"
     }
+    var elapsed by remember { mutableStateOf(0L) }
+    LaunchedEffect(asking, startedAt) {
+        while (asking) {
+            elapsed = if (startedAt > 0L) {
+                ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            kotlinx.coroutines.delay(500)
+        }
+    }
+    val busy = asking || applyingIndex >= 0
+    val planReady = plan != null && applyingIndex < 0
 
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .78f) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .84f) {
         SheetHeader(
             title = "让 AI 改画布",
             subtitle = subtitle,
@@ -2067,56 +2241,92 @@ private fun DesignAiSheet(
                 DesignScopeChip(
                     text = if (selectedCount > 0) "选中 $selectedCount" else "选中组件",
                     active = !screenScope,
-                    enabled = selectedCount > 0,
+                    enabled = selectedCount > 0 && !busy && plan == null,
                     onClick = { onScope("selection") },
                 )
                 DesignScopeChip(
                     text = "整屏",
                     active = screenScope,
-                    enabled = true,
+                    enabled = !busy && plan == null,
                     onClick = { onScope("screen") },
                 )
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                suggestions.take(2).forEach { item ->
-                    DesignSuggestion(item) { prompt = item }
+
+            // 过程面板：阶段 + 已用时 + 取消。这里只描述真实状态，
+            // 上游一次性返回时不会假装模型逐 token 生成。
+            if (asking) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(V2Colors.accent.copy(alpha = .08f))
+                        .border(1.dp, V2Colors.accent.copy(alpha = .18f), RoundedCornerShape(14.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(15.dp),
+                        strokeWidth = 1.6.dp,
+                        color = V2Colors.cyan700,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Label(
+                            phase ?: "正在生成修改…",
+                            11f,
+                            V2Colors.ink(.78f),
+                            FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Label("已用时 ${elapsed}s · 可随时取消", 9f, V2Colors.ink(.38f))
+                    }
+                    DesignAction("取消", filled = false, onClick = onCancelAi)
                 }
+                Spacer(Modifier.height(12.dp))
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                suggestions.drop(2).forEach { item ->
-                    DesignSuggestion(item) { prompt = item }
+
+            if (plan != null) {
+                AiPlanCard(
+                    plan = plan,
+                    applyingIndex = applyingIndex,
+                    onApply = onApplyAi,
+                    onCancel = onCancelAi,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
+            if (plan == null && !asking) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    suggestions.take(2).forEach { item ->
+                        DesignSuggestion(item) { prompt = item }
+                    }
                 }
-            }
-            Spacer(Modifier.height(14.dp))
-            DesignInput(
-                value = prompt,
-                placeholder = if (screenScope) {
-                    "例如：在内容卡下面加一张价格卡"
-                } else {
-                    "描述要怎么改，例如「按钮再高一点」"
-                },
-                onValueChange = { prompt = it },
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    suggestions.drop(2).forEach { item ->
+                        DesignSuggestion(item) { prompt = item }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                DesignInput(
+                    value = prompt,
+                    placeholder = if (screenScope) {
+                        "例如：在内容卡下面加一张价格卡"
+                    } else {
+                        "描述要怎么改，例如「按钮再高一点」"
+                    },
+                    onValueChange = { prompt = it },
+                )
+                Spacer(Modifier.height(12.dp))
                 DesignAction(
-                    if (asking) "正在思考…" else "让 AI 修改",
+                    "让 AI 修改",
                     filled = true,
-                    enabled = !asking && prompt.isNotBlank() && (screenScope || selectedCount > 0),
+                    enabled = prompt.isNotBlank() && (screenScope || selectedCount > 0),
                     onClick = { onAsk(prompt) },
                 )
-                Spacer(Modifier.width(12.dp))
-                if (asking) {
-                    Label(
-                        if (screenScope) "正在按整屏理解…" else "只返回选中图层的修改",
-                        9.5f,
-                        V2Colors.ink(.35f),
-                        maxLines = 1,
-                    )
-                }
             }
+
             if (reply != null) {
                 Spacer(Modifier.height(14.dp))
                 Row(
@@ -2132,16 +2342,187 @@ private fun DesignAiSheet(
                     Label(reply, 11f, V2Colors.ink(.72f), modifier = Modifier.weight(1f))
                 }
             }
-            if (canUndo) {
+            if (canUndo && !busy) {
                 Spacer(Modifier.height(12.dp))
                 DesignAction(
                     "撤销上一步修改",
                     filled = false,
-                    enabled = !asking,
                     onClick = onUndo,
                 )
             }
             Spacer(Modifier.height(18.dp))
+        }
+    }
+}
+
+/** 变更清单 + 应用 / 取消；应用时按项高亮推进。 */
+@Composable
+private fun AiPlanCard(
+    plan: DesignAiPlan,
+    applyingIndex: Int,
+    onApply: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val applying = applyingIndex >= 0
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(V2Colors.surface(.82f))
+            .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(14.dp))
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label(
+                if (applying) "正在应用…" else "待确认的修改",
+                11.5f,
+                V2Colors.ink(.84f),
+                FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Label(plan.statLine, 9.5f, V2Colors.ink(.42f), maxLines = 1)
+        }
+        Spacer(Modifier.height(8.dp))
+        if (applying) {
+            Label(
+                "第 ${applyingIndex + 1}/${plan.changes.size} 项 · " +
+                    (plan.changes.getOrNull(applyingIndex)?.title ?: ""),
+                10f,
+                V2Colors.cyan800,
+                FontWeight.Medium,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(V2Colors.ink(.08f)),
+            ) {
+                val fraction = if (plan.changes.isEmpty()) 1f else {
+                    (applyingIndex + 1f) / plan.changes.size
+                }
+                Box(
+                    Modifier
+                        .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                        .fillMaxHeight()
+                        .background(V2Colors.accent),
+                )
+            }
+        } else {
+            plan.changes.take(6).forEach { change ->
+                AiChangeRow(change)
+                Spacer(Modifier.height(5.dp))
+            }
+            if (plan.changes.size > 6) {
+                Label("还有 ${plan.changes.size - 6} 项…", 9f, V2Colors.ink(.36f))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DesignAction(
+                if (applying) "取消并回滚" else "应用全部",
+                filled = true,
+                onClick = if (applying) onCancel else onApply,
+            )
+            DesignAction("取消", filled = false, onClick = onCancel)
+        }
+    }
+}
+
+@Composable
+private fun AiChangeRow(change: DesignAiChange) {
+    val tone = when (change.kind) {
+        DesignChangeKind.CHANGED -> V2Colors.cyan700
+        DesignChangeKind.ADDED -> V2Colors.emerald700
+        DesignChangeKind.REMOVED -> V2Colors.rose
+        DesignChangeKind.REORDERED -> V2Colors.ink(.50f)
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Box(
+            Modifier
+                .padding(top = 4.dp)
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(tone),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Label(change.title, 10.5f, V2Colors.ink(.78f), FontWeight.Medium, maxLines = 1)
+            if (change.detail.isNotBlank()) {
+                Label(change.detail, 9.5f, V2Colors.ink(.42f), maxLines = 2)
+            }
+        }
+    }
+}
+
+/** 画布上的过程提示：阶段 + 已用时。 */
+@Composable
+private fun AiPhasePill(phase: String, startedAt: Long, modifier: Modifier = Modifier) {
+    var elapsed by remember { mutableStateOf(0L) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            elapsed = if (startedAt > 0L) {
+                ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            kotlinx.coroutines.delay(500)
+        }
+    }
+    Row(
+        modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(V2Colors.ink(.82f))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(11.dp),
+            strokeWidth = 1.4.dp,
+            color = V2Colors.surface,
+        )
+        Spacer(Modifier.width(8.dp))
+        Label(phase, 9.5f, V2Colors.surface, FontWeight.Medium, maxLines = 1)
+        Spacer(Modifier.width(8.dp))
+        Label("${elapsed}s", 9f, V2Colors.surface.copy(alpha = .62f), mono = true)
+    }
+}
+
+/** 预览期间的底部操作条：应用全部 / 取消。 */
+@Composable
+private fun AiPreviewDock(
+    plan: DesignAiPlan,
+    applyingIndex: Int,
+    onApply: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .shadowedDock()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Label(
+                if (applyingIndex >= 0) "正在应用第 ${applyingIndex + 1}/${plan.changes.size} 项" else "预览 AI 修改",
+                12f,
+                V2Colors.ink(.88f),
+                FontWeight.Medium,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(2.dp))
+            Label(plan.statLine, 9.5f, V2Colors.ink(.38f), maxLines = 1)
+        }
+        if (applyingIndex >= 0) {
+            DockButton("取消并回滚", Icons.Outlined.Close) { onCancel() }
+        } else {
+            DockButton("取消", Icons.Outlined.Close) { onCancel() }
+            Spacer(Modifier.width(8.dp))
+            DockButton("应用全部", Icons.Outlined.Check, accent = true) { onApply() }
         }
     }
 }
@@ -2593,6 +2974,80 @@ private fun rememberDesignResolver(measurer: TextMeasurer): DesignResolver {
     val fontScale = density.fontScale
     return remember(measurer, densityValue, fontScale) {
         DesignResolver(measurer, densityValue, fontScale)
+    }
+}
+
+/** AI 请求进行中的范围提示：选中图层各自描一圈，整屏则圈住整个画板。 */
+private fun DrawScope.drawAiScopeHint(
+    resolved: List<ResolvedNode>,
+    selectedIds: Set<String>,
+    screenW: Float,
+    screenH: Float,
+    scope: String,
+    strokeWidth: Float,
+) {
+    val effect = PathEffect.dashPathEffect(
+        floatArrayOf(strokeWidth * 4f, strokeWidth * 3f),
+    )
+    val color = DesignSpec.ACCENT.copy(alpha = .85f)
+    val frames = if (scope == "screen" || selectedIds.isEmpty()) {
+        listOf(Rect(0f, 0f, screenW, screenH))
+    } else {
+        flattenResolved(resolved)
+            .filter { it.id in selectedIds }
+            .map { Rect(it.x, it.y, it.right, it.bottom) }
+            .ifEmpty { listOf(Rect(0f, 0f, screenW, screenH)) }
+    }
+    frames.forEach { frame ->
+        if (frame.width <= 0f || frame.height <= 0f) return@forEach
+        drawRoundRect(
+            color = color.copy(alpha = .07f),
+            topLeft = Offset(frame.left, frame.top),
+            size = Size(frame.width, frame.height),
+            cornerRadius = CornerRadius(12f),
+        )
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(frame.left, frame.top),
+            size = Size(frame.width, frame.height),
+            cornerRadius = CornerRadius(12f),
+            style = Stroke(width = strokeWidth, pathEffect = effect),
+        )
+    }
+}
+
+/** 预览高亮：修改 / 新增 / 删除 / 调层序各一种颜色；分步应用时只亮到当前项。 */
+private fun DrawScope.drawAiPlan(
+    changes: List<DesignAiChange>,
+    applyingIndex: Int,
+    strokeWidth: Float,
+) {
+    val effect = PathEffect.dashPathEffect(
+        floatArrayOf(strokeWidth * 3f, strokeWidth * 2f),
+    )
+    changes.forEachIndexed { index, change ->
+        if (applyingIndex >= 0 && index > applyingIndex) return@forEachIndexed
+        val frame = change.frame ?: return@forEachIndexed
+        if (frame.width <= 0f || frame.height <= 0f) return@forEachIndexed
+        val color = when (change.kind) {
+            DesignChangeKind.CHANGED -> DesignSpec.ACCENT
+            DesignChangeKind.ADDED -> Color(0xFF10B981)
+            DesignChangeKind.REMOVED -> Color(0xFFE11D48)
+            DesignChangeKind.REORDERED -> Color(0xFF64748B)
+        }
+        drawRoundRect(
+            color = color.copy(alpha = .10f),
+            topLeft = Offset(frame.left, frame.top),
+            size = Size(frame.width, frame.height),
+            cornerRadius = CornerRadius(10f),
+        )
+        drawRoundRect(
+            color = color.copy(alpha = .95f),
+            topLeft = Offset(frame.left, frame.top),
+            size = Size(frame.width, frame.height),
+            cornerRadius = CornerRadius(10f),
+            style = Stroke(width = strokeWidth, pathEffect = effect),
+        )
     }
 }
 

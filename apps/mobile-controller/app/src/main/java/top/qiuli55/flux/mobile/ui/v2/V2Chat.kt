@@ -2259,7 +2259,7 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Label("产物默认私有，仅你可见", 8.5f, V2Colors.ink(.30f), mono = true)
+            Label("创作默认私有，仅你可见", 8.5f, V2Colors.ink(.30f), mono = true)
             Spacer(Modifier.weight(1f))
             Label("点开查看 · $time", 8.5f, V2Colors.ink(.26f), mono = true)
         }

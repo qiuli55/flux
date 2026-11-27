@@ -429,6 +429,52 @@ class FluxApi(
     suspend fun deleteArtifact(artifactId: String): JsonElement =
         delete("api/v1/artifacts/${Uri.encode(artifactId)}")
 
+    /** 版本历史列表；不带正文，点开某一版再取 [getArtifactVersion]。 */
+    suspend fun listArtifactVersions(
+        artifactId: String,
+        limit: Int = 50,
+    ): List<ArtifactVersion> =
+        get("api/v1/artifacts/${Uri.encode(artifactId)}/versions?limit=$limit")
+
+    suspend fun getArtifactVersion(artifactId: String, version: Int): ArtifactVersion =
+        get("api/v1/artifacts/${Uri.encode(artifactId)}/versions/$version")
+
+    /** 钉选 / 取消钉选；只影响当前用户看到的排序，不改变可见性。 */
+    suspend fun pinArtifact(artifactId: String): JsonElement =
+        post("api/v1/artifacts/${Uri.encode(artifactId)}/pin", buildJsonObject {})
+
+    suspend fun unpinArtifact(artifactId: String): JsonElement =
+        post("api/v1/artifacts/${Uri.encode(artifactId)}/unpin", buildJsonObject {})
+
+    suspend fun listArtifactAssets(artifactId: String): ArtifactAssetList =
+        get("api/v1/artifacts/${Uri.encode(artifactId)}/assets")
+
+    /** 读资产原始字节：WebView 拦截相对路径与 Markdown 图片都走它。 */
+    suspend fun downloadArtifactAsset(artifactId: String, assetId: String): ByteArray =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(url("api/v1/artifacts/${Uri.encode(artifactId)}/assets/${Uri.encode(assetId)}"))
+                .get()
+                .apply {
+                    if (config.token.isNotBlank()) {
+                        header("Authorization", "Bearer ${config.token.trim()}")
+                    }
+                }
+                .build()
+            val response = try {
+                client.newCall(request).execute()
+            } catch (e: Exception) {
+                val detail = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "网络请求失败"
+                throw FluxApiException("network_error", "网络请求失败（$detail）")
+            }
+            response.use {
+                if (!it.isSuccessful) {
+                    throw apiExceptionFrom(it.body?.string().orEmpty(), it.code)
+                }
+                it.body?.bytes() ?: ByteArray(0)
+            }
+        }
+
     // ---------------------------------------------------------- 设计工作室
 
     suspend fun listDesigns(projectId: String? = null): List<DesignSummary> {

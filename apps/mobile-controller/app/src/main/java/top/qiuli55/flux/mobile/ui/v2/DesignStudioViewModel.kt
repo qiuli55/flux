@@ -3,28 +3,31 @@ package top.qiuli55.flux.mobile.ui.v2
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
-import top.qiuli55.flux.mobile.data.DesignAiOp
 import top.qiuli55.flux.mobile.data.DesignDocument
 import top.qiuli55.flux.mobile.data.DesignNode
 import top.qiuli55.flux.mobile.data.DesignRadius
 import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
+import top.qiuli55.flux.mobile.data.DesignShadow
 import top.qiuli55.flux.mobile.data.DesignStroke
 import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.DesignWebPreview
 import top.qiuli55.flux.mobile.data.FluxApi
 import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.ui.FluxViewModel
+import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlan
+import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlanner
 
 data class DesignStudioState(
     val designs: List<DesignSummary> = emptyList(),
@@ -45,6 +48,14 @@ data class DesignStudioState(
     val deletingId: String? = null,
     val asking: Boolean = false,
     val aiReply: String? = null,
+    /** 请求进行中的阶段说明（正在理解 / 正在生成修改）；失败后清空，由 [error] 承接。 */
+    val aiPhase: String? = null,
+    /** 请求开始时间（毫秒），界面用它显示「已用时」。 */
+    val aiStartedAt: Long = 0L,
+    /** 待用户确认的 AI 修改计划：画布显示预览与高亮，确认后才真正写入。 */
+    val aiPlan: DesignAiPlan? = null,
+    /** 分步应用中的当前项下标；-1 表示没有在应用。 */
+    val aiApplyingIndex: Int = -1,
     val error: String? = null,
     val notice: String? = null,
     /** 本地撤销栈：每次手工编辑 / AI 修改前的画板快照（最多 30 步）。 */
@@ -137,12 +148,6 @@ class DesignStudioViewModel : FluxViewModel() {
         const val EDIT_COALESCE_MS = 1200L
     }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        explicitNulls = false
-        isLenient = true
-    }
-
     private val _state = MutableStateFlow(DesignStudioState())
     val state = _state.asStateFlow()
 
@@ -155,6 +160,7 @@ class DesignStudioViewModel : FluxViewModel() {
     private var openJob: Job? = null
     private var saveJob: Job? = null
     private var askJob: Job? = null
+    private var applyJob: Job? = null
     private var previewJob: Job? = null
     private var revisionsJob: Job? = null
     private var revertJob: Job? = null
@@ -322,6 +328,9 @@ class DesignStudioViewModel : FluxViewModel() {
                     undoStack = emptyList(),
                     dirty = false,
                     aiReply = null,
+                    aiPhase = null,
+                    aiPlan = null,
+                    aiApplyingIndex = -1,
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "openDesign failed id=$designId", e)
@@ -333,6 +342,7 @@ class DesignStudioViewModel : FluxViewModel() {
     fun closeDesign() {
         saveJob?.cancel()
         askJob?.cancel()
+        applyJob?.cancel()
         previewJob?.cancel()
         revisionsJob?.cancel()
         revertJob?.cancel()
@@ -353,6 +363,10 @@ class DesignStudioViewModel : FluxViewModel() {
             saving = false,
             asking = false,
             aiReply = null,
+            aiPhase = null,
+            aiStartedAt = 0L,
+            aiPlan = null,
+            aiApplyingIndex = -1,
             previewLoading = false,
             webPreview = null,
         )
@@ -367,6 +381,9 @@ class DesignStudioViewModel : FluxViewModel() {
             selectedNodeIds = emptySet(),
             aiScope = "selection",
             aiReply = null,
+            aiPhase = null,
+            aiPlan = null,
+            aiApplyingIndex = -1,
         )
     }
 
@@ -413,7 +430,13 @@ class DesignStudioViewModel : FluxViewModel() {
 
     fun setAiScope(scope: String) {
         if (scope !in setOf("selection", "screen")) return
-        _state.value = _state.value.copy(aiScope = scope, aiReply = null)
+        _state.value = _state.value.copy(
+            aiScope = scope,
+            aiReply = null,
+            aiPhase = null,
+            aiPlan = null,
+            aiApplyingIndex = -1,
+        )
     }
 
     // ------------------------------------------------------------ 轻编辑
@@ -453,6 +476,44 @@ class DesignStudioViewModel : FluxViewModel() {
 
     fun setNodeOpacity(opacity: Float) = editSelected("opacity") {
         it.copy(opacity = opacity.coerceIn(0.1f, 1f))
+    }
+
+    fun setNodeFontSize(size: Float) = editSelected("fontSize") {
+        it.copy(fontSize = size.coerceIn(6f, 200f))
+    }
+
+    fun setNodeFontWeight(weight: Int) = editSelected("fontWeight") {
+        it.copy(fontWeight = weight.coerceIn(1, 1000))
+    }
+
+    fun setNodeAlign(align: String?) = editSelected("align") {
+        it.copy(align = align?.takeIf { value -> value in setOf("left", "center", "right") })
+    }
+
+    /** 描边：颜色为空 / none 表示去掉；宽度沿用原值，默认 1px。 */
+    fun setNodeStroke(color: String?) = editSelected("stroke") {
+        val clean = color?.trim()?.takeIf { value -> value.isNotEmpty() && !value.equals("none", true) }
+        it.copy(
+            stroke = clean?.let { value ->
+                DesignStroke(color = value, width = it.stroke?.width ?: 1f)
+            },
+        )
+    }
+
+    fun setNodeStrokeWidth(width: Float) = editSelected("strokeWidth") {
+        val stroke = it.stroke ?: DesignStroke(color = "#0F172A")
+        it.copy(stroke = if (width <= 0f) null else stroke.copy(width = width.coerceAtMost(24f)))
+    }
+
+    /** 一键开关外投影；默认偏移 0/6、模糊 18、5% 黑，和卡片默认投影同一基调。 */
+    fun setNodeShadow(enabled: Boolean) = editSelected("shadow") {
+        it.copy(
+            shadow = if (enabled) {
+                it.shadow ?: DesignShadow(dx = 0f, dy = 6f, blur = 18f, color = "#14000000")
+            } else {
+                null
+            },
+        )
     }
 
     // ------------------------------------------------------------ 画布拖拽
@@ -559,7 +620,7 @@ class DesignStudioViewModel : FluxViewModel() {
         val document = current.document ?: return
         val screenIndex = current.screenIndex
         val screen = document.screens.getOrNull(screenIndex) ?: return
-        val (nodes, removed) = removeDesignNode(screen.nodes, id)
+        val (nodes, removed) = DesignAiPlanner.removeDesignNode(screen.nodes, id)
         if (!removed) return
         val screens = document.screens.toMutableList()
         screens[screenIndex] = screen.copy(nodes = nodes)
@@ -765,6 +826,12 @@ class DesignStudioViewModel : FluxViewModel() {
 
     // ------------------------------------------------------------ AI
 
+    /**
+     * 让 AI 给出一份修改计划，但**先不落盘到画布**。
+     *
+     * 请求进行中显示「正在理解 → 正在生成修改」两个阶段；结果到达后只生成预览稿与
+     * 变更清单（[DesignAiPlan]），由用户点「应用全部」才写入。取消 / 失败都不会留下半套补丁。
+     */
     fun askAi(prompt: String) {
         val current = _state.value
         val document = current.document ?: return
@@ -781,7 +848,23 @@ class DesignStudioViewModel : FluxViewModel() {
         val screenIndex = current.screenIndex
         val targetIds = targets.map { it.id }.toSet()
         askJob = viewModelScope.launch {
-            _state.value = _state.value.copy(asking = true, error = null, aiReply = null)
+            _state.value = _state.value.copy(
+                asking = true,
+                error = null,
+                aiReply = null,
+                aiPlan = null,
+                aiApplyingIndex = -1,
+                aiStartedAt = System.currentTimeMillis(),
+                aiPhase = if (scope == "screen") "正在理解整屏…" else "正在理解选区…",
+            )
+            // 上游 /api/ask 是一次性返回：这里不假装模型逐 token 输出，
+            // 只用阶段文案说明「还在等模型」，拿到 ops 后再分步应用到画布。
+            val phaseTicker = launch {
+                delay(1200)
+                if (_state.value.asking) {
+                    _state.value = _state.value.copy(aiPhase = "正在生成修改…")
+                }
+            }
             try {
                 val result = api().askDesignAi(
                     designId = document.id,
@@ -790,182 +873,113 @@ class DesignStudioViewModel : FluxViewModel() {
                     mode = scope,
                     prompt = text,
                 )
+                phaseTicker.cancel()
                 val latest = _state.value
                 val baseDoc = latest.document ?: return@launch
-                val (updated, applied) = applyOps(baseDoc, screenIndex, targetIds, result.ops)
+                val plan = DesignAiPlanner.plan(
+                    document = baseDoc,
+                    screenIndex = screenIndex,
+                    targets = targetIds,
+                    ops = result.ops,
+                    reply = result.reply,
+                )
                 Log.d(
                     TAG,
                     "askAi ok design=${document.id} scope=$scope targets=${targetIds.size} " +
-                        "ops=${result.ops.size} applied=$applied",
+                        "ops=${result.ops.size} applied=${plan.applied} changes=${plan.changes.size}",
                 )
-                if (applied > 0) lastEditKey = null
-                val base = if (applied > 0) latest.historyAfter(baseDoc) else latest
-                _state.value = base.copy(
+                if (!plan.hasChanges) {
+                    _state.value = latest.copy(
+                        asking = false,
+                        aiPhase = null,
+                        aiPlan = null,
+                        error = if (result.ops.isEmpty()) {
+                            "AI 没有给出可应用的修改，请换个说法再试"
+                        } else {
+                            "AI 给的修改无法应用到当前画布"
+                        },
+                    )
+                    return@launch
+                }
+                _state.value = latest.copy(
                     asking = false,
-                    document = if (applied > 0) updated else latest.document,
-                    dirty = latest.dirty || applied > 0,
-                    aiReply = result.reply.ifBlank { "已按你的要求调整画布" },
-                    notice = if (applied > 0) "AI 已应用 $applied 项修改，记得保存" else null,
+                    aiPhase = "已生成 ${plan.applied} 项修改，确认后应用",
+                    aiPlan = plan,
+                    aiReply = result.reply.ifBlank { "已准备好修改，确认后应用到画布" },
+                    notice = null,
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                phaseTicker.cancel()
+                throw e
             } catch (e: Exception) {
+                phaseTicker.cancel()
                 Log.w(TAG, "askAi failed design=${document.id}", e)
-                _state.value = _state.value.copy(asking = false, error = readable(e))
+                _state.value = _state.value.copy(
+                    asking = false,
+                    aiPhase = null,
+                    aiPlan = null,
+                    error = readable(e),
+                )
             }
         }
     }
 
-    /** 把 op 序列套到指定画板；返回新设计稿与实际生效条数。 */
-    private fun applyOps(
-        document: DesignDocument,
-        screenIndex: Int,
-        targets: Set<String>,
-        ops: List<DesignAiOp>,
-    ): Pair<DesignDocument, Int> {
-        val screens = document.screens.toMutableList()
-        var screen = screens.getOrNull(screenIndex) ?: return document to 0
-        var nodes = screen.nodes
-        var applied = 0
-        ops.forEach { op ->
-            when (op.op.ifBlank { "set" }.lowercase()) {
-                "set" -> {
-                    val target = op.target?.takeIf { it.isNotBlank() } ?: targets.firstOrNull()
-                    if (target.isNullOrBlank() || op.set.isEmpty()) return@forEach
-                    var hit = false
-                    nodes = mapDesignNode(nodes, target) { node ->
-                        hit = true
-                        patchNode(node, op.set)
-                    }
-                    if (hit) applied += 1
-                }
-                "add" -> {
-                    val payload = op.node ?: return@forEach
-                    val node = decodeNode(payload) ?: return@forEach
-                    if (findDesignNode(nodes, node.id) != null) return@forEach
-                    val index = op.index ?: Int.MAX_VALUE
-                    val target = op.target
-                    if (target.isNullOrBlank() || target == "@screen") {
-                        nodes = insertNode(nodes, index, node)
-                        applied += 1
-                    } else {
-                        var added = false
-                        nodes = mapDesignNode(nodes, target) { parent ->
-                            added = true
-                            parent.copy(children = insertNode(parent.children, index, node))
-                        }
-                        if (added) applied += 1
-                    }
-                }
-                "remove" -> {
-                    val target = op.target ?: return@forEach
-                    val (updated, removed) = removeDesignNode(nodes, target)
-                    if (removed) {
-                        nodes = updated
-                        applied += 1
-                    }
-                }
-                "reorder" -> {
-                    val target = op.target ?: return@forEach
-                    val (updated, moved) = reorderDesignNode(nodes, target, op.index ?: Int.MAX_VALUE)
-                    if (moved) {
-                        nodes = updated
-                        applied += 1
-                    }
-                }
+    /**
+     * 分步应用预览稿：每项高亮停留约 140ms，全部走完才一次性提交文档，
+     * 期间取消不会留下半套补丁。
+     */
+    fun applyAiPlan() {
+        val plan = _state.value.aiPlan ?: return
+        if (applyJob?.isActive == true) return
+        applyJob = viewModelScope.launch {
+            val changes = plan.changes
+            changes.indices.forEach { index ->
+                _state.value = _state.value.copy(
+                    aiApplyingIndex = index,
+                    aiPhase = "正在应用第 ${index + 1}/${changes.size} 项：" +
+                        changes[index].title,
+                )
+                delay(140)
             }
+            if (!isActive) return@launch
+            val latest = _state.value
+            val baseDoc = latest.document ?: return@launch
+            lastEditKey = null
+            _state.value = latest.historyAfter(baseDoc).copy(
+                document = plan.preview,
+                dirty = true,
+                aiPlan = null,
+                aiApplyingIndex = -1,
+                aiPhase = null,
+                aiReply = plan.reply.ifBlank { "已按你的要求调整画布" },
+                notice = "AI 已应用 ${plan.applied} 项修改，记得保存",
+            )
         }
-        if (applied == 0) return document to 0
-        screen = screen.copy(nodes = nodes)
-        screens[screenIndex] = screen
-        return document.copy(screens = screens) to applied
     }
 
-    private fun insertNode(nodes: List<DesignNode>, index: Int, node: DesignNode): List<DesignNode> {
-        val list = nodes.toMutableList()
-        list.add(index.coerceIn(0, list.size), node)
-        return list
+    /** 取消请求或丢弃预览稿：画布始终停在请求前，不产生任何修改。 */
+    fun cancelAi() {
+        val applying = applyJob?.isActive == true
+        askJob?.cancel()
+        applyJob?.cancel()
+        _state.value = _state.value.copy(
+            asking = false,
+            aiPhase = null,
+            aiPlan = null,
+            aiApplyingIndex = -1,
+            notice = if (applying || _state.value.aiPlan != null) "已取消这次 AI 修改" else null,
+        )
     }
 
-    private fun removeDesignNode(nodes: List<DesignNode>, id: String): Pair<List<DesignNode>, Boolean> {
-        var removed = false
-        val next = nodes.mapNotNull { node ->
-            when {
-                node.id == id -> {
-                    removed = true
-                    null
-                }
-                node.children.isNotEmpty() -> {
-                    val (children, hit) = removeDesignNode(node.children, id)
-                    if (hit) {
-                        removed = true
-                        node.copy(children = children)
-                    } else {
-                        node
-                    }
-                }
-                else -> node
-            }
-        }
-        return next to removed
+    /** 只丢弃预览稿，保留回复与提示（例如用户想换个说法再问）。 */
+    fun discardAiPlan() {
+        applyJob?.cancel()
+        _state.value = _state.value.copy(
+            aiPlan = null,
+            aiApplyingIndex = -1,
+            aiPhase = null,
+        )
     }
-
-    private fun reorderDesignNode(
-        nodes: List<DesignNode>,
-        id: String,
-        index: Int,
-    ): Pair<List<DesignNode>, Boolean> {
-        val mutable = nodes.toMutableList()
-        val at = mutable.indexOfFirst { it.id == id }
-        if (at >= 0) {
-            val node = mutable.removeAt(at)
-            mutable.add(index.coerceIn(0, mutable.size), node)
-            return mutable to true
-        }
-        var moved = false
-        val next = mutable.map { node ->
-            if (!moved && node.children.isNotEmpty()) {
-                val (children, hit) = reorderDesignNode(node.children, id, index)
-                if (hit) {
-                    moved = true
-                    node.copy(children = children)
-                } else {
-                    node
-                }
-            } else {
-                node
-            }
-        }
-        return next to moved
-    }
-
-    private fun decodeNode(payload: JsonObject): DesignNode? =
-        runCatching { json.decodeFromJsonElement(DesignNode.serializer(), payload) }
-            .getOrNull()
-            ?.takeIf { it.id.isNotBlank() && it.type.isNotBlank() }
-
-    private fun patchNode(node: DesignNode, patch: JsonObject): DesignNode = node.copy(
-        x = patch.float("x") ?: node.x,
-        y = patch.float("y") ?: node.y,
-        w = patch.float("w") ?: node.w,
-        h = patch.float("h") ?: node.h,
-        radius = patch.float("radius")?.let { DesignRadius.all(it) } ?: node.radius,
-        fill = patch.string("fill") ?: node.fill,
-        color = patch.string("color") ?: node.color,
-        text = patch.string("text") ?: node.text,
-        fontSize = patch.float("fontSize") ?: node.fontSize,
-        fontWeight = patch.float("fontWeight")?.toInt() ?: node.fontWeight,
-        opacity = patch.float("opacity") ?: node.opacity,
-        letterSpacing = patch.float("letterSpacing") ?: node.letterSpacing,
-        stroke = patch.string("stroke")?.let { DesignStroke(color = it) } ?: node.stroke,
-        lineHeight = patch.float("lineHeight") ?: node.lineHeight,
-        align = patch.string("align") ?: node.align,
-        blur = patch.float("blur") ?: node.blur,
-        padLeft = patch.float("padLeft") ?: node.padLeft,
-        value = patch.float("value") ?: node.value,
-        track = patch.string("track") ?: node.track,
-        on = patch.bool("on") ?: node.on,
-        items = patch.strings("items") ?: node.items,
-        active = patch.int("active") ?: node.active,
-    )
 
     private fun nodeContext(node: DesignNode, depth: Int = 0): JsonObject = buildJsonObject {
         put("id", node.id)
@@ -1171,6 +1185,7 @@ class DesignStudioViewModel : FluxViewModel() {
         openJob?.cancel()
         saveJob?.cancel()
         askJob?.cancel()
+        applyJob?.cancel()
         previewJob?.cancel()
         super.onCleared()
     }

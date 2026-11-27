@@ -698,6 +698,7 @@ fun FluxV2Root() {
                                     route = V2Route.ArtifactDetail(artifactId)
                                 }
                             },
+                            onPin = { artifactsVm.togglePin(it) },
                             onOpenDesignStudio = { route = V2Route.Designs },
                             onDismissMessages = { artifactsVm.clearMessages() },
                         )
@@ -716,9 +717,14 @@ fun FluxV2Root() {
                                 artifactsVm.delete(artifactId) { route = V2Route.Artifacts }
                             },
                             onOpenSourceTask = { taskId ->
-                                // 返回时仍回到这份产物详情，用户不会丢掉上下文。
+                                // 返回时仍回到这份创作详情，用户不会丢掉上下文。
                                 openChat(taskId, V2Route.ArtifactDetail(current.artifactId))
                             },
+                            onLoadVersions = { artifactsVm.loadVersions() },
+                            onPreviewVersion = { artifactsVm.previewVersion(it) },
+                            onRestoreVersion = { artifactsVm.restoreVersion(it) },
+                            onCloseVersionPreview = { artifactsVm.closeVersionPreview() },
+                            onDownloadAsset = { assetId -> artifactsVm.downloadAsset(assetId) },
                             onDismissMessages = { artifactsVm.clearMessages() },
                         )
 
@@ -901,7 +907,14 @@ fun FluxV2Root() {
                             onSetTextColor = { designVm.setNodeTextColor(it) },
                             onSetRadius = { designVm.setNodeRadius(it) },
                             onSetOpacity = { designVm.setNodeOpacity(it) },
+                            onSetFontSize = { designVm.setNodeFontSize(it) },
+                            onSetFontWeight = { designVm.setNodeFontWeight(it) },
+                            onSetAlign = { designVm.setNodeAlign(it) },
+                            onSetStroke = { designVm.setNodeStroke(it) },
+                            onSetShadow = { designVm.setNodeShadow(it) },
                             onAskAi = { designVm.askAi(it) },
+                            onApplyAi = { designVm.applyAiPlan() },
+                            onCancelAi = { designVm.cancelAi() },
                             onDismissMessages = { designVm.clearMessages() },
                         )
 
@@ -1145,7 +1158,7 @@ fun FluxV2Root() {
                             }
                         }
                     } else {
-                        // 手机：三个一级页面（对话 / Artifacts / 我的）带底部 Tab，二三级页面全屏
+                        // 手机：三个一级页面（对话 / 创作 / 我的）带底部 Tab，二三级页面全屏
                         val topTab = when (route) {
                             V2Route.Home -> V2TopTab.CHATS
                             V2Route.Artifacts -> V2TopTab.ARTIFACTS
@@ -1507,7 +1520,7 @@ private fun V2NavRail(
         Spacer(Modifier.height(4.dp))
         RailButton(
             icon = Icons.Outlined.Dashboard,
-            label = "Artifacts",
+            label = "创作",
             selected = selected == V2RailItem.ARTIFACTS,
         ) { onSelect(V2RailItem.ARTIFACTS) }
         Spacer(Modifier.height(4.dp))

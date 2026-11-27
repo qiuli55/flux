@@ -1226,10 +1226,10 @@ fun V2SectionLabel(text: String, modifier: Modifier = Modifier) {
 
 // ------------------------------------------------------------------ 底部 Tab
 
-/** 三个一级页面：对话 / Artifacts / 我的。 */
+/** 三个一级页面：对话 / 创作 / 我的。 */
 enum class V2TopTab(val label: String, val icon: ImageVector) {
     CHATS("对话", Icons.Outlined.ChatBubbleOutline),
-    ARTIFACTS("Artifacts", Icons.Outlined.Dashboard),
+    ARTIFACTS("创作", Icons.Outlined.Dashboard),
     PROFILE("我的", Icons.Outlined.Person),
 }
 

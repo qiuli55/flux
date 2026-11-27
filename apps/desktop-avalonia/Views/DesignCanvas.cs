@@ -256,9 +256,28 @@ public sealed class DesignCanvas : Control
     public static readonly StyledProperty<bool> IsThumbnailProperty =
         AvaloniaProperty.Register<DesignCanvas, bool>(nameof(IsThumbnail));
 
+    /// <summary>AI 预览稿：非空时画它而不是已保存的 Document，确认前不写回真源。</summary>
+    public static readonly StyledProperty<DesignDocument?> PreviewDocumentProperty =
+        AvaloniaProperty.Register<DesignCanvas, DesignDocument?>(nameof(PreviewDocument));
+
+    /// <summary>AI 变更高亮（画板绝对坐标），与预览稿一起显示。</summary>
+    public static readonly StyledProperty<IReadOnlyList<DesignHighlight>?> HighlightsProperty =
+        AvaloniaProperty.Register<DesignCanvas, IReadOnlyList<DesignHighlight>?>(nameof(Highlights));
+
+    /// <summary>AI 请求进行中：在画布上圈出作用范围，而不是只有按钮转圈。</summary>
+    public static readonly StyledProperty<bool> IsAiBusyProperty =
+        AvaloniaProperty.Register<DesignCanvas, bool>(nameof(IsAiBusy));
+
     static DesignCanvas()
     {
-        AffectsRender<DesignCanvas>(DocumentProperty, ScreenIndexProperty, PreviewProperty, IsThumbnailProperty);
+        AffectsRender<DesignCanvas>(
+            DocumentProperty,
+            ScreenIndexProperty,
+            PreviewProperty,
+            IsThumbnailProperty,
+            PreviewDocumentProperty,
+            HighlightsProperty,
+            IsAiBusyProperty);
     }
 
     public DesignDocument? Document
@@ -283,6 +302,24 @@ public sealed class DesignCanvas : Control
     {
         get => GetValue(IsThumbnailProperty);
         set => SetValue(IsThumbnailProperty, value);
+    }
+
+    public DesignDocument? PreviewDocument
+    {
+        get => GetValue(PreviewDocumentProperty);
+        set => SetValue(PreviewDocumentProperty, value);
+    }
+
+    public IReadOnlyList<DesignHighlight>? Highlights
+    {
+        get => GetValue(HighlightsProperty);
+        set => SetValue(HighlightsProperty, value);
+    }
+
+    public bool IsAiBusy
+    {
+        get => GetValue(IsAiBusyProperty);
+        set => SetValue(IsAiBusyProperty, value);
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -313,11 +350,88 @@ public sealed class DesignCanvas : Control
             using (context.PushClip(new RoundedRect(new Rect(0, 0, frame.Width, frame.Height), DeviceRadius)))
             {
                 context.FillRectangle(new ImmutableSolidColorBrush(bg), new Rect(0, 0, frame.Width, frame.Height));
-                foreach (var node in nodes)
+                if (IsThumbnail && nodes.Count == 0)
                 {
-                    DrawNode(context, node, 0, 0, 1d);
+                    DrawEmptyThumbnail(context, frame.Width, frame.Height);
+                }
+                else
+                {
+                    foreach (var node in nodes)
+                    {
+                        DrawNode(context, node, 0, 0, 1d);
+                    }
+                }
+
+                if (!IsThumbnail && Highlights is { Count: > 0 } highlights)
+                {
+                    DrawHighlights(context, highlights);
+                }
+
+                if (!IsThumbnail && IsAiBusy)
+                {
+                    DrawAiScope(context, frame.Width, frame.Height);
                 }
             }
+        }
+    }
+
+    /// <summary>列表缩略图没有预览节点时的占位：两张错开的页面轮廓，与手机封面一致。</summary>
+    private static void DrawEmptyThumbnail(DrawingContext context, double width, double height)
+    {
+        var color = Color.FromArgb(56, 0, 0, 0);
+        var w = width * .38;
+        var h = height * .28;
+        var cx = width / 2;
+        var cy = height / 2;
+        context.DrawRectangle(
+            new ImmutableSolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
+            null,
+            new RoundedRect(new Rect(cx - w / 2 + 4, cy - h / 2 - 3, w, h), 4));
+        context.DrawRectangle(
+            new ImmutableSolidColorBrush(Color.FromArgb(32, 0, 0, 0)),
+            new Pen(new ImmutableSolidColorBrush(color), 1),
+            new RoundedRect(new Rect(cx - w / 2 - 4, cy - h / 2 + 3, w, h), 4));
+    }
+
+    /// <summary>AI 请求进行中：整屏虚线框 + 顶部浅色底，明确「AI 在看这一块」。</summary>
+    private static void DrawAiScope(DrawingContext context, double width, double height)
+    {
+        var fill = new ImmutableSolidColorBrush(Color.FromArgb(12, Accent.R, Accent.G, Accent.B));
+        var pen = new Pen(
+            new ImmutableSolidColorBrush(Color.FromArgb(220, Accent.R, Accent.G, Accent.B)),
+            2,
+            new DashStyle(new double[] { 4, 3 }, 0));
+        context.DrawRectangle(fill, pen, new Rect(0, 0, width, height), DeviceRadius, DeviceRadius);
+    }
+
+    /// <summary>AI 变更高亮：改 / 增 / 删 / 调层序各一种颜色，虚线框 + 半透明底。</summary>
+    private static void DrawHighlights(DrawingContext context, IReadOnlyList<DesignHighlight> highlights)
+    {
+        foreach (var highlight in highlights)
+        {
+            if (highlight.W <= 0 || highlight.H <= 0)
+            {
+                continue;
+            }
+
+            var color = highlight.Kind switch
+            {
+                "added" => Color.Parse("#10B981"),
+                "removed" => Color.Parse("#E11D48"),
+                "reordered" => Color.Parse("#64748B"),
+                _ => Accent,
+            };
+            var fill = new ImmutableSolidColorBrush(Color.FromArgb(26, color.R, color.G, color.B));
+            var pen = new Pen(
+                new ImmutableSolidColorBrush(color),
+                2,
+                new DashStyle(new double[] { 3, 2 }, 0));
+            context.DrawRectangle(
+                fill,
+                pen,
+                new Rect(highlight.X, highlight.Y, highlight.W, highlight.H),
+                8,
+                8);
         }
     }
 
@@ -348,7 +462,9 @@ public sealed class DesignCanvas : Control
         }
         else
         {
-            var screens = Document?.Screens;
+            // AI 预览时画预览稿；确认前 Document（已保存内容）不变。
+            var active = PreviewDocument ?? Document;
+            var screens = active?.Screens;
             var index = ScreenIndex;
             if (screens is null || index < 0 || index >= screens.Count)
             {
@@ -360,7 +476,7 @@ public sealed class DesignCanvas : Control
             height = screen.H is > 0 ? screen.H!.Value : 844;
             nodes = screen.Nodes ?? new List<DesignNode>();
             // 与手机端 / 后端一致：画板底色只看文档级 bg，忽略 screen.bg。
-            rawBg = Document?.Bg;
+            rawBg = active?.Bg;
         }
 
         if (width <= 0 || height <= 0)
@@ -406,7 +522,7 @@ public sealed class DesignCanvas : Control
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
-        if (IsThumbnail || Document is null || ProbeLayout(Bounds) is not { } frame)
+        if (IsThumbnail || PreviewDocument is not null || Document is null || ProbeLayout(Bounds) is not { } frame)
         {
             return;
         }
@@ -435,7 +551,7 @@ public sealed class DesignCanvas : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (IsThumbnail || Document is null || ProbeLayout(Bounds) is not { } frame)
+        if (IsThumbnail || PreviewDocument is not null || Document is null || ProbeLayout(Bounds) is not { } frame)
         {
             return;
         }
@@ -459,7 +575,8 @@ public sealed class DesignCanvas : Control
         _dragSlider = null;
         e.Pointer.Capture(null);
 
-        if (pressed is null || IsThumbnail || Document is null || ProbeLayout(Bounds) is not { } frame)
+        if (pressed is null || IsThumbnail || PreviewDocument is not null || Document is null ||
+            ProbeLayout(Bounds) is not { } frame)
         {
             return;
         }

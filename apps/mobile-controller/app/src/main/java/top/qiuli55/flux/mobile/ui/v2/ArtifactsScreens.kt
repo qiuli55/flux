@@ -2,11 +2,17 @@ package top.qiuli55.flux.mobile.ui.v2
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +35,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,14 +46,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.DesignServices
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,30 +70,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.runBlocking
 import top.qiuli55.flux.mobile.data.Artifact
+import top.qiuli55.flux.mobile.data.ArtifactAsset
+import top.qiuli55.flux.mobile.data.ArtifactVersion
 
 private const val FILTER_ALL = ""
 private const val FILTER_DESIGN = "design"
@@ -92,7 +106,7 @@ private fun artifactTypeLabel(type: String): String = when (type) {
     "doc" -> "文档"
     "page" -> "页面"
     // 后端将来新增类型时不要崩，也不要误标成「页面」：用通用标签兜底。
-    else -> "产物"
+    else -> "创作"
 }
 
 private fun artifactTypeIcon(type: String): ImageVector = when (type) {
@@ -124,6 +138,7 @@ fun ArtifactsScreen(
     onOpenArtifact: (String) -> Unit,
     onOpenDesign: (String) -> Unit,
     onCreate: (String, String) -> Unit,
+    onPin: (Artifact) -> Unit,
     onOpenDesignStudio: () -> Unit,
     onDismissMessages: () -> Unit,
 ) {
@@ -133,12 +148,12 @@ fun ArtifactsScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             V2PageTitle(
-                title = "Artifacts",
+                title = "创作",
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = when {
-                    state.loading && state.artifacts.isEmpty() -> "正在读取产物…"
-                    state.artifacts.isEmpty() -> "对话里产出的成品会出现在这里"
-                    else -> "${state.artifacts.size} 个产物 · 设计、页面与文档"
+                    state.loading && state.artifacts.isEmpty() -> "正在读取创作…"
+                    state.artifacts.isEmpty() -> "对话里产出的创作会出现在这里"
+                    else -> "${state.artifacts.size} 个创作 · 设计、页面与文档"
                 },
                 trailing = {
                     if (showBack) {
@@ -200,13 +215,17 @@ fun ArtifactsScreen(
 
             when {
                 state.loading && state.artifacts.isEmpty() ->
-                    ArtifactEmpty("正在读取产物…") {}
+                    ArtifactEmpty("正在读取创作…") {}
+                state.error != null && state.artifacts.isEmpty() -> ArtifactEmpty(
+                    "列表加载失败\n${state.error}",
+                    onReload,
+                )
                 visible.isEmpty() -> ArtifactEmpty(
                     when (state.filter) {
                         FILTER_DESIGN -> "还没有设计稿\n进设计工作室新建或导入一份"
                         FILTER_PAGE -> "还没有页面\n点右下角 + 新建一个"
                         FILTER_DOC -> "还没有文档\n点右下角 + 新建一篇"
-                        else -> "还没有产物\n点右下角 + 新建页面或文档"
+                        else -> "还没有创作\n点右下角 + 新建页面或文档"
                     },
                     onReload,
                 )
@@ -230,11 +249,19 @@ fun ArtifactsScreen(
                             }
                         }
                         items(visible, key = { it.id }) { artifact ->
-                            ArtifactGridCard(artifact) {
-                                val designId = artifact.designId
-                                if (designId != null) onOpenDesign(designId)
-                                else onOpenArtifact(artifact.id)
-                            }
+                            ArtifactGridCard(
+                                artifact = artifact,
+                                loading = state.loading,
+                                failed = state.error != null,
+                                pinning = state.pinningId == artifact.id,
+                                onClick = {
+                                    val designId = artifact.designId
+                                    if (designId != null) onOpenDesign(designId)
+                                    else onOpenArtifact(artifact.id)
+                                },
+                                onRetry = onReload,
+                                onPin = { onPin(artifact) },
+                            )
                         }
                     }
                 }
@@ -246,7 +273,7 @@ fun ArtifactsScreen(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 20.dp, bottom = 24.dp),
-            contentDescription = "新建产物",
+            contentDescription = "新建创作",
         )
 
         if (newOpen) {
@@ -290,27 +317,63 @@ private fun ArtifactFilterChip(text: String, count: Int, active: Boolean, onClic
 }
 
 @Composable
-private fun ArtifactGridCard(artifact: Artifact, onClick: () -> Unit) {
+private fun ArtifactGridCard(
+    artifact: Artifact,
+    loading: Boolean,
+    failed: Boolean,
+    pinning: Boolean,
+    onClick: () -> Unit,
+    onRetry: () -> Unit,
+    onPin: () -> Unit,
+) {
     val shape = RoundedCornerShape(18.dp)
-    WhiteCard(
-        Modifier
-            .clip(shape)
-            .clickable(onClick = onClick),
-    ) {
-        ArtifactCover(artifact)
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Label(
-                artifact.title.ifBlank { "未命名产物" },
-                12.5f,
-                V2Colors.ink(.92f),
-                FontWeight.SemiBold,
-                maxLines = 2,
-            )
-            Spacer(Modifier.height(4.dp))
-            Label(artifactMeta(artifact), 9f, V2Colors.ink(.38f), maxLines = 1)
-            if (artifact.summary.isBlank() && artifact.description.isNotBlank()) {
-                Spacer(Modifier.height(3.dp))
-                Label(artifact.description, 8.5f, V2Colors.ink(.34f), maxLines = 1)
+    Box {
+        WhiteCard(
+            Modifier
+                .clip(shape)
+                .clickable(onClick = onClick),
+        ) {
+            ArtifactCover(artifact, loading, failed, onRetry)
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Label(
+                    artifact.title.ifBlank { "未命名创作" },
+                    12.5f,
+                    V2Colors.ink(.92f),
+                    FontWeight.SemiBold,
+                    maxLines = 2,
+                )
+                Spacer(Modifier.height(4.dp))
+                Label(artifactMeta(artifact), 9f, V2Colors.ink(.38f), maxLines = 1)
+                if (artifact.summary.isBlank() && artifact.description.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Label(artifact.description, 8.5f, V2Colors.ink(.34f), maxLines = 1)
+                }
+            }
+        }
+        // 设计稿是只读投影，钉选只对页面 / 文档开放。
+        if (artifact.designId == null) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (artifact.pinned) {
+                            V2Colors.accent.copy(alpha = .92f)
+                        } else {
+                            V2Colors.surface.copy(alpha = .84f)
+                        },
+                    )
+                    .clickable(enabled = !pinning, onClick = onPin),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.PushPin,
+                    contentDescription = if (artifact.pinned) "取消钉选" else "钉选",
+                    tint = if (artifact.pinned) V2Colors.actionInk else V2Colors.ink(.55f),
+                    modifier = Modifier.size(13.dp),
+                )
             }
         }
     }
@@ -322,6 +385,30 @@ private fun ArtifactGridCard(artifact: Artifact, onClick: () -> Unit) {
  * 判定独立成纯函数，列表只管画，单测也能直接覆盖「有预览 / 无预览 / 空节点」。
  */
 internal enum class ArtifactCoverMode { DESIGN_CANVAS, TEXT_PREVIEW, PLACEHOLDER }
+
+/**
+ * 列表封面的四种可区分状态：
+ *  - 真实画布 / 文本预览：内容已加载；
+ *  - [MISSING]：确实没有可预览内容；
+ *  - [LOADING] / [FAILED]：还在读 / 读取失败，都可以通过刷新重试。
+ */
+internal enum class ArtifactCoverStatus {
+    DESIGN_CANVAS, TEXT_PREVIEW, MISSING, LOADING, FAILED
+}
+
+internal fun artifactCoverStatus(
+    artifact: Artifact,
+    loading: Boolean,
+    failed: Boolean,
+): ArtifactCoverStatus = when (artifactCoverMode(artifact)) {
+    ArtifactCoverMode.DESIGN_CANVAS -> ArtifactCoverStatus.DESIGN_CANVAS
+    ArtifactCoverMode.TEXT_PREVIEW -> ArtifactCoverStatus.TEXT_PREVIEW
+    ArtifactCoverMode.PLACEHOLDER -> when {
+        failed -> ArtifactCoverStatus.FAILED
+        loading -> ArtifactCoverStatus.LOADING
+        else -> ArtifactCoverStatus.MISSING
+    }
+}
 
 internal fun artifactCoverMode(artifact: Artifact): ArtifactCoverMode = when {
     artifact.type == "design" ->
@@ -398,8 +485,14 @@ internal fun plainMarkdownLine(raw: String): String {
 }
 
 @Composable
-private fun ArtifactCover(artifact: Artifact) {
+private fun ArtifactCover(
+    artifact: Artifact,
+    loading: Boolean,
+    failed: Boolean,
+    onRetry: () -> Unit,
+) {
     val type = artifact.type
+    val status = artifactCoverStatus(artifact, loading, failed)
     Box(
         Modifier
             .fillMaxWidth()
@@ -413,8 +506,8 @@ private fun ArtifactCover(artifact: Artifact) {
                 ),
             ),
     ) {
-        when (artifactCoverMode(artifact)) {
-            ArtifactCoverMode.DESIGN_CANVAS -> {
+        when (status) {
+            ArtifactCoverStatus.DESIGN_CANVAS -> {
                 val preview = artifact.preview
                 if (preview != null) {
                     DesignCoverPreview(
@@ -423,16 +516,24 @@ private fun ArtifactCover(artifact: Artifact) {
                         bg = null,
                     )
                 } else {
-                    ArtifactCoverPlaceholder(type, Modifier.fillMaxSize())
+                    ArtifactCoverPlaceholder(type, Modifier.fillMaxSize(), status)
                 }
             }
-            ArtifactCoverMode.TEXT_PREVIEW -> ArtifactTextCoverPreview(
+            ArtifactCoverStatus.TEXT_PREVIEW -> ArtifactTextCoverPreview(
                 type = type,
                 lines = artifactCoverText(artifact),
                 modifier = Modifier.fillMaxSize(),
             )
-            ArtifactCoverMode.PLACEHOLDER ->
-                ArtifactCoverPlaceholder(type, Modifier.fillMaxSize())
+            else -> Box(Modifier.fillMaxSize()) {
+                ArtifactCoverPlaceholder(type, Modifier.fillMaxSize(), status)
+                if (status == ArtifactCoverStatus.FAILED) {
+                    GhostButton(
+                        "重试",
+                        onRetry,
+                        Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
+                    )
+                }
+            }
         }
         ArtifactCoverTypeBadge(
             type,
@@ -454,10 +555,15 @@ private fun ArtifactCover(artifact: Artifact) {
 
 /** 占位图标：两张略微错开的圆角页面轮廓，对齐参考图的「空白文档」视觉。 */
 @Composable
-internal fun ArtifactCoverPlaceholder(type: String, modifier: Modifier = Modifier) {
+internal fun ArtifactCoverPlaceholder(
+    type: String,
+    modifier: Modifier = Modifier,
+    status: ArtifactCoverStatus = ArtifactCoverStatus.MISSING,
+) {
     val outline = V2Colors.ink(.22f)
     val pageFill = V2Colors.surface
-    Canvas(modifier) {
+    Box(modifier) {
+    Canvas(Modifier.fillMaxSize()) {
         val pageHeight = size.height * .46f
         val pageWidth = pageHeight * .74f
         val overlap = pageWidth * .20f
@@ -552,6 +658,25 @@ internal fun ArtifactCoverPlaceholder(type: String, modifier: Modifier = Modifie
                     )
                 }
             }
+        }
+    }
+        val caption = when (status) {
+            ArtifactCoverStatus.LOADING -> "正在读取…"
+            ArtifactCoverStatus.FAILED -> "封面加载失败"
+            else -> null
+        }
+        if (caption != null) {
+            Label(
+                caption,
+                8.5f,
+                V2Colors.ink(.42f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 10.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(V2Colors.surface.copy(alpha = .86f))
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            )
         }
     }
 }
@@ -688,7 +813,7 @@ private fun ArtifactCreateSheet(
     var title by remember { mutableStateOf("") }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .58f) {
         SheetHeader(
-            "新建产物",
+            "新建创作",
             "页面是单文件 HTML；文档是 Markdown。设计稿请进设计工作室。",
             onClose = onDismiss,
         )
@@ -786,6 +911,11 @@ fun ArtifactDetailScreen(
     onSave: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onOpenSourceTask: (String) -> Unit = {},
+    onLoadVersions: () -> Unit = {},
+    onPreviewVersion: (Int) -> Unit = {},
+    onRestoreVersion: (ArtifactVersion) -> Unit = {},
+    onCloseVersionPreview: () -> Unit = {},
+    onDownloadAsset: suspend (String) -> ByteArray? = { null },
     onDismissMessages: () -> Unit,
 ) {
     val artifact = state.detail?.takeIf { it.id == artifactId }
@@ -793,13 +923,33 @@ fun ArtifactDetailScreen(
     var content by remember(artifactId) { mutableStateOf("") }
     var editing by remember(artifactId) { mutableStateOf(false) }
     var deleteOpen by remember(artifactId) { mutableStateOf(false) }
+    var historyOpen by remember(artifactId) { mutableStateOf(false) }
     val context = LocalContext.current
 
-    // 只按产物 id 初始化本地草稿：保存冲突后刷新版本号不能把用户正在改的内容冲掉。
-    LaunchedEffect(artifact?.id) {
+    LaunchedEffect(historyOpen) {
+        if (historyOpen) onLoadVersions()
+    }
+
+    // 同步策略：首次打开 / 用历史版本覆盖 / 保存成功时同步本地草稿；
+    // 保存冲突刷新版本号时（本地有改动）不覆盖用户正在编辑的内容。
+    var syncedTitle by remember(artifactId) { mutableStateOf<String?>(null) }
+    var syncedContent by remember(artifactId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(artifact?.id, artifact?.version) {
         val loaded = artifact ?: return@LaunchedEffect
-        title = loaded.title
-        content = loaded.content.orEmpty()
+        val loadedContent = loaded.content.orEmpty()
+        val localDirty = syncedTitle != null &&
+            (title != syncedTitle || content != syncedContent)
+        if (loaded.title == title && loadedContent == content) {
+            syncedTitle = loaded.title
+            syncedContent = loadedContent
+            return@LaunchedEffect
+        }
+        if (syncedTitle == null || !localDirty) {
+            title = loaded.title
+            content = loadedContent
+            syncedTitle = loaded.title
+            syncedContent = loadedContent
+        }
     }
 
     fun shareArtifact() {
@@ -818,7 +968,7 @@ fun ArtifactDetailScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             V2PageTitle(
-                title = artifact?.title?.ifBlank { "未命名产物" } ?: "产物详情",
+                title = artifact?.title?.ifBlank { "未命名创作" } ?: "创作详情",
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = artifact?.let {
                     if (it.summary.isBlank() && it.description.isNotBlank()) {
@@ -852,6 +1002,14 @@ fun ArtifactDetailScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         RoundIconButton(
+                            Icons.Outlined.History,
+                            onClick = { historyOpen = true },
+                            size = 34.dp,
+                            iconSize = 16.dp,
+                            contentDescription = "版本历史",
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        RoundIconButton(
                             Icons.Outlined.Delete,
                             onClick = { deleteOpen = true },
                             size = 34.dp,
@@ -874,8 +1032,8 @@ fun ArtifactDetailScreen(
 
             when {
                 artifact == null && state.detailLoading ->
-                    ArtifactEmpty("正在读取产物…") {}
-                artifact == null -> ArtifactEmpty("产物不存在或已被删除", {})
+                    ArtifactEmpty("正在读取创作…") {}
+                artifact == null -> ArtifactEmpty("创作不存在或已被删除", {})
                 else -> Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
                     ArtifactModeSwitch(
                         typeLabel = artifactTypeLabel(artifact.type),
@@ -914,10 +1072,19 @@ fun ArtifactDetailScreen(
                         ArtifactHtmlPreview(
                             html = content,
                             versionKey = "${artifact.id}:${artifact.version}",
+                            assets = state.assets,
+                            onDownloadAsset = onDownloadAsset,
+                            onEdit = { editing = true },
                             modifier = Modifier.weight(1f),
                         )
                     } else {
-                        ArtifactDocPreview(content, Modifier.weight(1f))
+                        ArtifactDocPreview(
+                            content = content,
+                            artifactId = artifact.id,
+                            assets = state.assets,
+                            onDownloadAsset = onDownloadAsset,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                     Spacer(Modifier.height(14.dp))
                 }
@@ -948,6 +1115,166 @@ fun ArtifactDetailScreen(
                     Spacer(Modifier.height(22.dp))
                 }
             }
+        }
+
+        if (historyOpen && artifact != null) {
+            ArtifactHistorySheet(
+                versions = state.versions,
+                loading = state.versionsLoading,
+                currentVersion = artifact.version,
+                preview = state.versionPreview,
+                previewLoading = state.versionPreviewLoading,
+                restoringVersion = state.restoringVersion,
+                onPreview = onPreviewVersion,
+                onClosePreview = onCloseVersionPreview,
+                onRestore = onRestoreVersion,
+                onDismiss = {
+                    historyOpen = false
+                    onCloseVersionPreview()
+                },
+            )
+        }
+    }
+}
+
+/**
+ * 版本历史：列表 / 单版预览 / 「用此版本覆盖保存」。
+ *
+ * 覆盖保存走 update + base_version，会生成新版本；冲突时 VM 保留草稿并要求重试，
+ * 不偷偷 force。
+ */
+@Composable
+private fun ArtifactHistorySheet(
+    versions: List<ArtifactVersion>,
+    loading: Boolean,
+    currentVersion: Int,
+    preview: ArtifactVersion?,
+    previewLoading: Int?,
+    restoringVersion: Int?,
+    onPreview: (Int) -> Unit,
+    onClosePreview: () -> Unit,
+    onRestore: (ArtifactVersion) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .78f) {
+        if (preview != null) {
+            SheetHeader(
+                title = "预览 v${preview.version}",
+                subtitle = preview.title.ifBlank { "历史版本" },
+                onClose = onDismiss,
+            )
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 360.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(V2Colors.ink(.035f))
+                        .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(14.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                ) {
+                    val text = preview.content.orEmpty()
+                    if (text.isBlank()) {
+                        Label("这一版没有正文", 11.5f, V2Colors.ink(.38f))
+                    } else {
+                        Label(
+                            text.take(6000),
+                            10.5f,
+                            V2Colors.ink(.72f),
+                            mono = true,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GhostButton("返回列表", onClosePreview, Modifier.weight(1f))
+                    Box(Modifier.weight(1f)) {
+                        AccentButton(
+                            text = if (restoringVersion == preview.version) {
+                                "正在恢复…"
+                            } else {
+                                "用此版本覆盖保存"
+                            },
+                            enabled = restoringVersion == null,
+                            onClick = { onRestore(preview) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+            }
+        } else {
+        SheetHeader(
+            title = "版本历史",
+            subtitle = "当前 v$currentVersion · 每次保存自动留档",
+            onClose = onDismiss,
+        )
+        when {
+            loading && versions.isEmpty() -> Box(
+                Modifier.fillMaxWidth().height(120.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 1.8.dp,
+                    color = V2Colors.cyan700,
+                )
+            }
+            versions.isEmpty() -> Box(
+                Modifier.fillMaxWidth().padding(vertical = 34.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Label("还没有历史版本，保存一次后就会留档", 10.5f, V2Colors.ink(.42f))
+            }
+            else -> LazyColumn(Modifier.fillMaxWidth()) {
+                items(versions, key = { it.version }) { item ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Label(
+                                "v${item.version} · ${item.title.ifBlank { "未命名" }}",
+                                12f,
+                                V2Colors.ink(.82f),
+                                FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Label(
+                                prettyTime(item.createdAt).ifBlank { "时间未知" },
+                                9.5f,
+                                V2Colors.ink(.36f),
+                                maxLines = 1,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        if (previewLoading == item.version) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 1.6.dp,
+                                color = V2Colors.cyan700,
+                            )
+                        } else {
+                            GhostButton("预览", { onPreview(item.version) })
+                        }
+                    }
+                }
+                item { Spacer(Modifier.height(18.dp)) }
+            }
+        }
+        if (loading && versions.isNotEmpty()) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(15.dp),
+                    strokeWidth = 1.6.dp,
+                    color = V2Colors.cyan700,
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
         }
     }
 }
@@ -988,65 +1315,224 @@ private fun ArtifactModeButton(text: String, active: Boolean, onClick: () -> Uni
     }
 }
 
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun ArtifactHtmlPreview(html: String, versionKey: String, modifier: Modifier = Modifier) {
-    Box(
+private fun ArtifactHtmlPreview(
+    html: String,
+    versionKey: String,
+    assets: List<ArtifactAsset>,
+    onDownloadAsset: suspend (String) -> ByteArray?,
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var desktop by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    var reload by remember { mutableStateOf(0) }
+    val latestAssets = rememberUpdatedStateCompat(assets)
+    val latestDownload = rememberUpdatedStateCompat(onDownloadAsset)
+    val blank = html.isBlank()
+
+    Column(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(V2Colors.surface)
             .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(16.dp)),
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                WebView(context).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                    )
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        loadWithOverviewMode = true
-                        useWideViewPort = true
-                        setSupportZoom(true)
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                        allowFileAccess = false
-                        allowContentAccess = false
-                    }
-                    // 成品预览是同机离线渲染：使用独立的 flux-artifact.local origin，
-                    // 且不带第三方 cookie，避免读到内置浏览器里的站点登录态。
-                    runCatching {
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(V2Colors.ink(.03f))
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Label("预览", 9.5f, V2Colors.ink(.38f), FontWeight.Medium)
+            Spacer(Modifier.weight(1f))
+            ArtifactViewportChip("手机", !desktop) { desktop = false }
+            Spacer(Modifier.width(6.dp))
+            ArtifactViewportChip("桌面", desktop) { desktop = true }
+            Spacer(Modifier.width(10.dp))
+            GhostButton("重新加载", {
+                failed = false
+                reload += 1
+            })
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (blank) {
+                Column(
+                    Modifier.fillMaxSize().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Label("这个页面还没有内容", 12f, V2Colors.ink(.52f), FontWeight.Medium)
+                    Spacer(Modifier.height(6.dp))
+                    Label("切到「源码」写下第一段 HTML。", 10f, V2Colors.ink(.36f))
+                    Spacer(Modifier.height(12.dp))
+                    GhostButton("去源码编辑", onEdit)
+                }
+            } else {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { context ->
+                        WebView(context).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                loadWithOverviewMode = true
+                                useWideViewPort = true
+                                setSupportZoom(true)
+                                builtInZoomControls = true
+                                displayZoomControls = false
+                                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                allowFileAccess = false
+                                allowContentAccess = false
+                            }
+                            // 成品预览是同机离线渲染：使用独立的 flux-artifact.local origin，
+                            // 且不带第三方 cookie，避免读到内置浏览器里的站点登录态。
+                            runCatching {
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                            }
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldInterceptRequest(
+                                    view: WebView,
+                                    request: WebResourceRequest,
+                                ): WebResourceResponse? = interceptArtifactRequest(
+                                    url = request.url.toString(),
+                                    assets = latestAssets.value,
+                                    download = latestDownload.value,
+                                )
+
+                                override fun onReceivedError(
+                                    view: WebView,
+                                    request: WebResourceRequest,
+                                    error: android.webkit.WebResourceError,
+                                ) {
+                                    if (request.isForMainFrame) failed = true
+                                }
+                            }
+                        }
+                    },
+                    update = { web ->
+                        // 资产是异步加载的：数量变化时补一次刷新，相对图片/字体不会一直 403。
+                        val key = "$versionKey:${if (desktop) "desktop" else "mobile"}:$reload:${assets.size}"
+                        if (web.tag != key) {
+                            web.tag = key
+                            web.loadDataWithBaseURL(
+                                ArtifactWebPolicy.ORIGIN,
+                                ArtifactWebPolicy.viewportHtml(html, desktop),
+                                "text/html",
+                                "utf-8",
+                                null,
+                            )
+                        }
+                    },
+                )
+                if (failed) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .background(V2Colors.surface.copy(alpha = .94f)),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Label("页面预览加载失败", 12f, V2Colors.rose, FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        Label("可能是脚本或外部资源被拦截。", 10f, V2Colors.ink(.38f))
+                        Spacer(Modifier.height(12.dp))
+                        GhostButton("重试", {
+                            failed = false
+                            reload += 1
+                        })
                     }
                 }
-            },
-            update = { web ->
-                if (web.tag != versionKey) {
-                    web.tag = versionKey
-                    web.loadDataWithBaseURL(
-                        "https://flux-artifact.local/",
-                        html.ifBlank { "<html><body></body></html>" },
-                        "text/html",
-                        "utf-8",
-                        null,
-                    )
-                }
-            },
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtifactViewportChip(text: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (active) V2Colors.accent.copy(alpha = .14f) else Color.Transparent)
+            .border(
+                1.dp,
+                if (active) V2Colors.accent.copy(alpha = .34f) else V2Colors.lineSoft,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 4.dp),
+    ) {
+        Label(
+            text,
+            9f,
+            if (active) V2Colors.cyan800 else V2Colors.ink(.45f),
+            if (active) FontWeight.Medium else FontWeight.Normal,
         )
     }
 }
 
+/** `shouldInterceptRequest` 的纯策略外壳：白名单外一律拦截，相对路径走资产库。 */
+private fun interceptArtifactRequest(
+    url: String,
+    assets: List<ArtifactAsset>,
+    download: suspend (String) -> ByteArray?,
+): WebResourceResponse? {
+    if (url.startsWith(ArtifactWebPolicy.ORIGIN, ignoreCase = true)) {
+        val path = runCatching { android.net.Uri.parse(url).path.orEmpty() }.getOrDefault("")
+        if (path.isEmpty() || path == "/") return null
+        val asset = ArtifactWebPolicy.assetForPath(path, assets)
+            ?: return blockedArtifactResponse()
+        val bytes = runBlocking { download(asset.id) } ?: ByteArray(0)
+        return WebResourceResponse(
+            asset.contentType.ifBlank { "application/octet-stream" },
+            null,
+            200,
+            "OK",
+            mapOf(
+                "Access-Control-Allow-Origin" to "*",
+                "Cache-Control" to "no-store",
+            ),
+            java.io.ByteArrayInputStream(bytes),
+        )
+    }
+    if (ArtifactWebPolicy.isLocal(url)) return null
+    if (ArtifactWebPolicy.shouldBlock(url)) return blockedArtifactResponse()
+    return null
+}
+
+private fun blockedArtifactResponse(): WebResourceResponse = WebResourceResponse(
+    "text/plain",
+    "utf-8",
+    403,
+    "Blocked by artifact policy",
+    mapOf("Cache-Control" to "no-store"),
+    java.io.ByteArrayInputStream(ByteArray(0)),
+)
+
+@Composable
+private fun <T> rememberUpdatedStateCompat(value: T) =
+    androidx.compose.runtime.rememberUpdatedState(value)
+
 /**
- * 文档预览：覆盖标题、有序 / 无序列表、代码块、引用、链接与粗体 / 斜体。
- *
- * 不引入第三方 Markdown 渲染器；解析器只做常用语法的只读展示，源码模式仍可编辑。
+ * 文档预览：解析结果来自纯函数 [ArtifactMarkdown.parseMarkdown]，
+ * 覆盖标题、段落、引用、代码块（带语言标签与轻量高亮）、嵌套 / 任务列表、
+ * 表格、分隔线与图片（data URI / 产物资产）。
  */
 @Composable
-private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
+private fun ArtifactDocPreview(
+    content: String,
+    artifactId: String,
+    assets: List<ArtifactAsset>,
+    onDownloadAsset: suspend (String) -> ByteArray?,
+    modifier: Modifier = Modifier,
+) {
+    val doc = remember(content) { ArtifactMarkdown.parseMarkdown(content) }
     Column(
         modifier
             .fillMaxWidth()
@@ -1056,27 +1542,25 @@ private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
-        val lines = content.split('\n')
-        var index = 0
-        while (index < lines.size) {
-            val raw = lines[index].trimEnd()
-            val trimmed = raw.trimStart()
-            if (trimmed.startsWith("```")) {
-                val code = mutableListOf<String>()
-                index += 1
-                while (index < lines.size && !lines[index].trimStart().startsWith("```")) {
-                    code.add(lines[index])
-                    index += 1
-                }
-                if (index < lines.size) index += 1 // 跳过收尾的 ```
-                CodeBlock(code.joinToString("\n"))
-                continue
+        if (content.isBlank()) {
+            Label("还没有内容，切到「源码」写点什么。", 12f, V2Colors.ink(.35f))
+        } else {
+        doc.warning?.let { warning ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(V2Colors.ink(.05f))
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            ) {
+                Label(warning, 9.5f, V2Colors.ink(.52f))
             }
-            when {
-                raw.isBlank() -> Spacer(Modifier.height(8.dp))
-                Regex("^#{1,6}\\s+").containsMatchIn(trimmed) -> {
-                    val level = trimmed.takeWhile { it == '#' }.length
-                    val size = when (level) {
+            Spacer(Modifier.height(8.dp))
+        }
+        doc.blocks.forEach { block ->
+            when (block) {
+                is MdBlock.Heading -> {
+                    val size = when (block.level) {
                         1 -> 19f
                         2 -> 16f
                         3 -> 14f
@@ -1084,24 +1568,18 @@ private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
                         else -> 12f
                     }
                     MarkdownInlineText(
-                        text = trimmed.drop(level).trimStart(),
+                        text = block.text,
                         size = size,
                         color = V2Colors.ink(.95f),
-                        weight = if (level <= 2) FontWeight.Bold else FontWeight.SemiBold,
+                        weight = if (block.level <= 2) FontWeight.Bold else FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(5.dp))
                 }
-                Regex("^[-*+]\\s+").containsMatchIn(trimmed) -> {
-                    MarkdownListRow(
-                        marker = "•",
-                        text = trimmed.drop(2),
-                    )
+                is MdBlock.Paragraph -> {
+                    MarkdownInlineText(block.text, 12.5f, V2Colors.ink(.78f))
+                    Spacer(Modifier.height(5.dp))
                 }
-                Regex("^\\d+[.)]\\s+").containsMatchIn(trimmed) -> {
-                    val marker = trimmed.substringBefore(' ').trimEnd('.', ')')
-                    MarkdownListRow(marker = "$marker.", text = trimmed.substringAfter(' ').trimStart())
-                }
-                trimmed.startsWith("> ") || trimmed == ">" -> {
+                is MdBlock.Quote -> {
                     Row(Modifier.fillMaxWidth()) {
                         Box(
                             Modifier
@@ -1111,56 +1589,237 @@ private fun ArtifactDocPreview(content: String, modifier: Modifier = Modifier) {
                         )
                         Spacer(Modifier.width(10.dp))
                         MarkdownInlineText(
-                            text = trimmed.removePrefix(">").trimStart(),
+                            text = block.text,
                             size = 12.5f,
                             color = V2Colors.ink(.55f),
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                 }
-                Regex("^-{3,}$").matches(trimmed) -> {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                            .height(1.dp)
-                            .background(V2Colors.ink(.08f)),
+                is MdBlock.Code -> {
+                    CodeBlock(block.language, block.code)
+                    Spacer(Modifier.height(6.dp))
+                }
+                is MdBlock.ListBlock -> {
+                    block.items.forEachIndexed { index, item ->
+                        MarkdownListItemRow(block, item, index)
+                    }
+                    Spacer(Modifier.height(5.dp))
+                }
+                is MdBlock.Table -> {
+                    MarkdownTable(block)
+                    Spacer(Modifier.height(8.dp))
+                }
+                is MdBlock.Image -> {
+                    MarkdownImage(
+                        alt = block.alt,
+                        source = block.source,
+                        assets = assets,
+                        onDownloadAsset = onDownloadAsset,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                MdBlock.Rule -> Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .height(1.dp)
+                        .background(V2Colors.ink(.08f)),
+                )
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownListItemRow(block: MdBlock.ListBlock, item: MdListItem, index: Int) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = (item.depth * 16).dp, top = 1.dp, bottom = 1.dp),
+    ) {
+        when {
+            item.checked != null -> Box(
+                Modifier
+                    .padding(top = 2.dp)
+                    .size(12.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(
+                        if (item.checked) V2Colors.accent else Color.Transparent,
+                    )
+                    .border(1.dp, V2Colors.ink(.22f), RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (item.checked) {
+                    Icon(
+                        Icons.Outlined.Check,
+                        null,
+                        tint = V2Colors.actionInk,
+                        modifier = Modifier.size(9.dp),
                     )
                 }
-                else -> {
-                    MarkdownInlineText(raw, 12.5f, V2Colors.ink(.78f))
-                    Spacer(Modifier.height(3.dp))
+            }
+            block.ordered -> Label(
+                "${item.marker ?: (block.start + index)}.",
+                12f,
+                V2Colors.ink(.5f),
+                modifier = Modifier.width(22.dp),
+            )
+            else -> Label("•", 12f, V2Colors.ink(.5f), modifier = Modifier.width(16.dp))
+        }
+        Spacer(Modifier.width(if (item.checked != null) 8.dp else 2.dp))
+        MarkdownInlineText(
+            item.text,
+            12.5f,
+            if (item.checked == true) V2Colors.ink(.48f) else V2Colors.ink(.78f),
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun MarkdownTable(table: MdBlock.Table) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(10.dp)),
+    ) {
+        MarkdownTableRow(table.header, table.aligns, header = true)
+        table.rows.forEach { row ->
+            Box(Modifier.fillMaxWidth().height(1.dp).background(V2Colors.ink(.08f)))
+            MarkdownTableRow(row, table.aligns, header = false)
+        }
+    }
+}
+
+@Composable
+private fun MarkdownTableRow(cells: List<String>, aligns: List<MdAlign>, header: Boolean) {
+    Row(Modifier.fillMaxWidth().background(if (header) V2Colors.ink(.04f) else Color.Transparent)) {
+        cells.forEachIndexed { index, cell ->
+            val align = when (aligns.getOrNull(index)) {
+                MdAlign.CENTER -> TextAlign.Center
+                MdAlign.RIGHT -> TextAlign.End
+                else -> TextAlign.Start
+            }
+            Box(Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 7.dp)) {
+                MarkdownInlineText(
+                    text = cell,
+                    size = 11f,
+                    color = if (header) V2Colors.ink(.82f) else V2Colors.ink(.70f),
+                    weight = if (header) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = align,
+                )
+            }
+        }
+    }
+}
+
+/** 图片：data URI 直接解码；产物资产走已登录的 FluxApi；缺失时有设计过的占位。 */
+@Composable
+private fun MarkdownImage(
+    alt: String,
+    source: String,
+    assets: List<ArtifactAsset>,
+    onDownloadAsset: suspend (String) -> ByteArray?,
+) {
+    var bitmap by remember(source, assets) { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember(source, assets) { mutableStateOf(false) }
+    LaunchedEffect(source, assets) {
+        bitmap = null
+        failed = false
+        val bytes = when {
+            source.startsWith("data:image/", ignoreCase = true) -> {
+                val payload = source.substringAfter("base64,", "")
+                if (payload.isBlank()) null else {
+                    runCatching { Base64.decode(payload, Base64.DEFAULT) }.getOrNull()
                 }
             }
-            index += 1
+            else -> {
+                val asset = ArtifactWebPolicy.assetForPath(source, assets)
+                if (asset == null) null else onDownloadAsset(asset.id)
+            }
         }
-        if (content.isBlank()) {
-            Label("还没有内容，切到「源码」写点什么。", 12f, V2Colors.ink(.35f))
+        val decoded = bytes?.let {
+            runCatching { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }.getOrNull()
+        }
+        if (decoded != null) bitmap = decoded else failed = true
+    }
+    val image = bitmap
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = alt.ifBlank { null },
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp)
+                .clip(RoundedCornerShape(10.dp)),
+            contentScale = ContentScale.Fit,
+        )
+    } else {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(V2Colors.ink(.04f))
+                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                Icons.Outlined.Image,
+                contentDescription = null,
+                tint = V2Colors.ink(.26f),
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                when {
+                    failed -> "图片无法显示"
+                    else -> "正在读取图片…"
+                },
+                10f,
+                V2Colors.ink(.40f),
+            )
+            if (alt.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Label(alt, 9f, V2Colors.ink(.30f), maxLines = 1)
+            }
         }
     }
 }
 
 @Composable
-private fun MarkdownListRow(marker: String, text: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
-        Label(marker, 12f, V2Colors.ink(.5f), modifier = Modifier.width(20.dp))
-        MarkdownInlineText(text, 12.5f, V2Colors.ink(.78f), modifier = Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun CodeBlock(code: String) {
-    Box(
+private fun CodeBlock(language: String, code: String) {
+    val label = ArtifactCode.label(language)
+    Column(
         Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(V2Colors.ink(.05f))
-            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(10.dp)),
     ) {
-        Label(code.ifBlank { " " }, 11f, V2Colors.ink(.82f), mono = true)
+        if (label.isNotBlank()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(V2Colors.ink(.04f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Label(label, 8.5f, V2Colors.ink(.38f), FontWeight.Medium, mono = true)
+            }
+        }
+        Text(
+            text = ArtifactCode.highlight(code, language),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            color = V2Colors.ink(.82f),
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            lineHeight = 16.sp,
+        )
     }
 }
 
@@ -1171,6 +1830,7 @@ private fun MarkdownInlineText(
     color: Color,
     weight: FontWeight = FontWeight.Normal,
     modifier: Modifier = Modifier,
+    textAlign: TextAlign = TextAlign.Start,
 ) {
     Text(
         text = inlineMarkdown(text),
@@ -1179,52 +1839,8 @@ private fun MarkdownInlineText(
         fontSize = size.sp,
         fontWeight = weight,
         lineHeight = (size * 1.55f).sp,
+        textAlign = textAlign,
     )
-}
-
-/**
- * 行内 Markdown：`**粗体**`、`*斜体*`、`_斜体_`、`` `代码` ``、`[文字](链接)`。
- *
- * 链接以「文字 (URL)」展示，保证在不能跳转的预览里也能读到地址。
- */
-internal fun inlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
-    val pattern = Regex(
-        """\*\*(.+?)\*\*|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<![\w])_(.+?)_(?![\w])|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)""",
-    )
-    var last = 0
-    for (match in pattern.findAll(text)) {
-        if (match.range.first > last) append(text.substring(last, match.range.first))
-        val values = match.groupValues
-        when {
-            values[1].isNotEmpty() ->
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(values[1]) }
-            values[2].isNotEmpty() ->
-                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(values[2]) }
-            values[3].isNotEmpty() ->
-                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(values[3]) }
-            values[4].isNotEmpty() ->
-                withStyle(
-                    SpanStyle(
-                        fontFamily = FontFamily.Monospace,
-                        background = V2Colors.ink(.06f),
-                    ),
-                ) { append(values[4]) }
-            values[5].isNotEmpty() -> {
-                withStyle(
-                    SpanStyle(
-                        textDecoration = TextDecoration.Underline,
-                        fontWeight = FontWeight.Medium,
-                    ),
-                ) { append(values[5]) }
-                withStyle(SpanStyle(color = V2Colors.ink(.42f))) {
-                    append(" (${values[6]})")
-                }
-            }
-            else -> append(match.value)
-        }
-        last = match.range.last + 1
-    }
-    if (last < text.length) append(text.substring(last))
 }
 
 @Composable
@@ -1249,7 +1865,7 @@ private fun SourceConversationRow(taskId: String, onOpen: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Label("打开来源对话", 12f, V2Colors.ink(.82f), FontWeight.Medium)
             Spacer(Modifier.height(2.dp))
-            Label("这段产物由对话发布 · ${taskId.take(8)}", 9.5f, V2Colors.ink(.38f), maxLines = 1)
+            Label("这段创作由对话发布 · ${taskId.take(8)}", 9.5f, V2Colors.ink(.38f), maxLines = 1)
         }
         Icon(
             Icons.Outlined.KeyboardArrowRight,
