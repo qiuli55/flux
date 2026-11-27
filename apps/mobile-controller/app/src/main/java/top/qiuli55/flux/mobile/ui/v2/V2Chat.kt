@@ -909,7 +909,7 @@ fun V2ChatScreen(
             Spacer(Modifier.height(6.dp))
         }
 
-        // 输入卡：第一行正文，第二行工具条（附件 / Agent·模型 / 权限 / 发送）
+        // 输入卡：第一行正文，第二行工具条（附件 / 权限 / Agent·模型·上下文 / 发送）
         val composerShape = RoundedCornerShape(26.dp)
         Column(
             Modifier
@@ -919,10 +919,10 @@ fun V2ChatScreen(
                 .clip(composerShape)
                 .background(V2Colors.surface)
                 .border(1.dp, composerBorder, composerShape)
-                .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 10.dp),
+                .padding(start = 12.dp, end = 6.dp, top = 12.dp, bottom = 10.dp),
         ) {
-            // 输入行右侧：上下文占用环 + 模型线框立方体。
-            // 放在输入框同一行（而不是顶部整行进度条），窄屏也能和 Agent / 权限 / 发送共存。
+            // 第一行只放正文输入：模型立方体与上下文环移到下方工具条，
+            // 和 Agent / 权限 / 发送排成一行，输入区不再被右侧图标压缩。
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 Box(Modifier.weight(1f).heightIn(min = 22.dp)) {
                     if (input.isEmpty()) {
@@ -952,44 +952,11 @@ fun V2ChatScreen(
                         maxLines = 5,
                     )
                 }
-                // 上下文占用环：真实对话才有数据；新建对话不显示空仪表。
-                if (chat.conversationId != null && contextUsage != null) {
-                    Box {
-                        ContextRingButton(
-                            usage = contextUsage,
-                            onClick = { contextInfoOpen = true },
-                        )
-                        DropdownMenu(
-                            expanded = contextInfoOpen,
-                            onDismissRequest = { contextInfoOpen = false },
-                            modifier = Modifier.background(V2Colors.surface),
-                        ) {
-                            ContextInfoContent(contextUsage)
-                        }
-                    }
-                }
-                Box {
-                    ModelCubeButton(
-                        enabled = canSwitchModel && modelOptions.isNotEmpty() && !locked,
-                        onClick = { modelMenuOpen = true },
-                    )
-                    FluxModelMenu(
-                        expanded = modelMenuOpen && modelOptions.isNotEmpty(),
-                        onDismissRequest = { modelMenuOpen = false },
-                        options = modelOptions,
-                        currentModel = chat.model,
-                        currentModelKeyId = chat.modelKeyId,
-                        onPick = { option ->
-                            val selected = option.model == chat.model && option.keyId == chat.modelKeyId
-                            if (!selected) onSwitchModel(option)
-                        },
-                    )
-                }
             }
             Spacer(Modifier.height(10.dp))
-            // 底部工具条：+ / Agent 胶囊 / 权限 / 发送。
-            // Agent 胶囊吃掉剩余宽度（名称由 maxLines = 1 + Ellipsis 截断），
-            // 保证右侧盾牌与发送钮始终按固定尺寸量出来（窄屏 + 大字号下曾复现发送钮消失）。
+            // 底部工具条，从左到右：+、权限盾牌、（空档）、Agent 官方图标、
+            // 模型线框立方体、上下文环、发送。
+            // 固定尺寸图标不用文字撑宽，窄屏 + 大字号下盾牌与发送仍然完整可见。
             Row(
                 Modifier.fillMaxWidth().testTag(V2ComposerTags.TOOLBAR),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1006,41 +973,6 @@ fun V2ChatScreen(
                         null
                     },
                 )
-                Spacer(Modifier.width(2.dp))
-                // Agent 触发器只画官方运行时图标：当前 Agent 名称放进 contentDescription
-                // 与下拉菜单，不再用 weight / fillMaxWidth 拉满，避免名字后拖出一长截空尾。
-                Box(Modifier.testTag(V2ComposerTags.MODEL_CHIP)) {
-                    AgentPill(
-                        agent = agent,
-                        pendingAgentLabel = pendingAgentLabel,
-                        enabled = !locked,
-                        onClick = {
-                            if (agentOptions.isNotEmpty()) {
-                                agentMenuOpen = true
-                            } else {
-                                onOpenAgentPicker()
-                            }
-                        },
-                    )
-                    // 菜单仍保留图标 + Agent 名称（以及排队/选中信息），方便同 runtime 的多个 Agent 区分。
-                    FluxAgentMenu(
-                        expanded = agentMenuOpen && agentOptions.isNotEmpty(),
-                        onDismissRequest = { agentMenuOpen = false },
-                        options = agentOptions,
-                        currentAgentId = chat.agentId,
-                        currentModel = chat.model,
-                        currentModelKeyId = chat.modelKeyId,
-                        pendingAgentId = pendingAgentId,
-                        onPick = { agentId ->
-                            // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
-                            if (agentId != chat.agentId || pendingAgentId != null) onSwitchAgent(agentId)
-                        },
-                    )
-                }
-                // 固定宽度的触发器 + Spacer(weight) 顶开剩余空间：
-                // 右侧盾牌与发送钮在窄屏 / 大字号下仍按固定尺寸量出来，不会消失。
-                Spacer(Modifier.weight(1f))
-                Spacer(Modifier.width(2.dp))
                 // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息。
                 // 外层 48dp 只负责触摸目标，内层 32dp 保持原有视觉尺寸。
                 Box(
@@ -1071,7 +1003,76 @@ fun V2ChatScreen(
                         )
                     }
                 }
-                Spacer(Modifier.width(4.dp))
+                // 中间空档把右侧图标组顶到工具条末端；宽度不足时只压缩空档，
+                // 加号 / 盾牌 / 发送仍按固定尺寸量出来，不会消失。
+                Spacer(Modifier.weight(1f))
+                // Agent 触发器只画官方运行时图标：当前 Agent 名称放进 contentDescription
+                // 与下拉菜单，不再用 weight / fillMaxWidth 拉满，避免名字后拖出一长截空尾。
+                Box(Modifier.testTag(V2ComposerTags.MODEL_CHIP)) {
+                    AgentPill(
+                        agent = agent,
+                        pendingAgentLabel = pendingAgentLabel,
+                        enabled = !locked,
+                        size = 44.dp,
+                        onClick = {
+                            if (agentOptions.isNotEmpty()) {
+                                agentMenuOpen = true
+                            } else {
+                                onOpenAgentPicker()
+                            }
+                        },
+                    )
+                    // 菜单仍保留图标 + Agent 名称（以及排队/选中信息），方便同 runtime 的多个 Agent 区分。
+                    FluxAgentMenu(
+                        expanded = agentMenuOpen && agentOptions.isNotEmpty(),
+                        onDismissRequest = { agentMenuOpen = false },
+                        options = agentOptions,
+                        currentAgentId = chat.agentId,
+                        currentModel = chat.model,
+                        currentModelKeyId = chat.modelKeyId,
+                        pendingAgentId = pendingAgentId,
+                        onPick = { agentId ->
+                            // 已排队时再点当前 Agent = 撤销排队，后端会把 pending 清掉
+                            if (agentId != chat.agentId || pendingAgentId != null) onSwitchAgent(agentId)
+                        },
+                    )
+                }
+                // 模型线框立方体：入口仍在工具条上，菜单里才显示模型名称。
+                Box {
+                    ModelCubeButton(
+                        enabled = canSwitchModel && modelOptions.isNotEmpty() && !locked,
+                        onClick = { modelMenuOpen = true },
+                        diameter = 40.dp,
+                    )
+                    FluxModelMenu(
+                        expanded = modelMenuOpen && modelOptions.isNotEmpty(),
+                        onDismissRequest = { modelMenuOpen = false },
+                        options = modelOptions,
+                        currentModel = chat.model,
+                        currentModelKeyId = chat.modelKeyId,
+                        onPick = { option ->
+                            val selected = option.model == chat.model && option.keyId == chat.modelKeyId
+                            if (!selected) onSwitchModel(option)
+                        },
+                    )
+                }
+                // 上下文占用环：真实对话才有数据；新建对话不显示空仪表。
+                if (chat.conversationId != null && contextUsage != null) {
+                    Box {
+                        ContextRingButton(
+                            usage = contextUsage,
+                            onClick = { contextInfoOpen = true },
+                            diameter = 40.dp,
+                        )
+                        DropdownMenu(
+                            expanded = contextInfoOpen,
+                            onDismissRequest = { contextInfoOpen = false },
+                            modifier = Modifier.background(V2Colors.surface),
+                        ) {
+                            ContextInfoContent(contextUsage)
+                        }
+                    }
+                }
                 val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
                 // 发送 / 停止共用同一个圆钮：执行中就地变成停止
                 ChatSendButton(

@@ -100,10 +100,11 @@ internal fun AgentPill(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    size: Dp = 48.dp,
 ) {
     Box(
         modifier
-            .size(48.dp)
+            .size(size)
             .testTag(V2ComposerTags.AGENT_BUTTON)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
@@ -137,13 +138,14 @@ internal fun ContextRingButton(
     usage: TaskContextUsage,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    diameter: Dp = 44.dp,
 ) {
     val percent = usage.percent.coerceIn(0, 100)
     val arcColor = contextRingColor(usage)
     Box(
         modifier
             .testTag(V2ComposerTags.CONTEXT_RING)
-            .size(44.dp)
+            .size(diameter)
             .clip(CircleShape)
             .clickable(onClick = onClick)
             .semantics { contentDescription = "上下文占用 $percent%" },
@@ -236,12 +238,13 @@ internal fun ModelCubeButton(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    diameter: Dp = 44.dp,
 ) {
     val tint = if (enabled) V2Colors.ink(.62f) else V2Colors.ink(.20f)
     Box(
         modifier
             .testTag(V2ComposerTags.MODEL_BUTTON)
-            .size(44.dp)
+            .size(diameter)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = "切换模型" },
