@@ -2842,6 +2842,44 @@
               "description": "design / page / doc；缺省返回全部",
               "title": "Type"
             }
+          },
+          {
+            "description": "分页大小；缺省返回全部",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "分页大小；缺省返回全部",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "上一页返回的 next_page_token",
+            "in": "query",
+            "name": "page_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "上一页返回的 next_page_token",
+              "title": "Page Token"
+            }
           }
         ],
         "responses": {
@@ -2922,6 +2960,35 @@
           }
         ],
         "summary": "Create Artifact",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/types": {
+      "get": {
+        "description": "支持的类型说明；page / doc 可发布，design 是 Luma 的只读投影。",
+        "operationId": "list_artifact_types_api_v1_artifacts_types_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Artifact Types Api V1 Artifacts Types Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Artifact Types",
         "tags": [
           "artifacts"
         ]
@@ -3077,6 +3144,472 @@
           }
         ],
         "summary": "Update Artifact",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/assets": {
+      "get": {
+        "operationId": "list_artifact_assets_api_v1_artifacts__artifact_id__assets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Artifact Assets Api V1 Artifacts  Artifact Id  Assets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Artifact Assets",
+        "tags": [
+          "artifacts"
+        ]
+      },
+      "post": {
+        "description": "上传一个资产。沿用聊天附件的约定：裸请求体 + 查询参数传文件名。",
+        "operationId": "upload_artifact_asset_api_v1_artifacts__artifact_id__assets_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "原始文件名",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "原始文件名",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "客户端给的 MIME，可留空",
+            "in": "query",
+            "name": "mime",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "客户端给的 MIME，可留空",
+              "maxLength": 200,
+              "title": "Mime",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upload Artifact Asset Api V1 Artifacts  Artifact Id  Assets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload Artifact Asset",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/assets/{asset_id}": {
+      "delete": {
+        "operationId": "delete_artifact_asset_api_v1_artifacts__artifact_id__assets__asset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Artifact Asset Api V1 Artifacts  Artifact Id  Assets  Asset Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Artifact Asset",
+        "tags": [
+          "artifacts"
+        ]
+      },
+      "get": {
+        "operationId": "download_artifact_asset_api_v1_artifacts__artifact_id__assets__asset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Artifact Asset",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/pin": {
+      "post": {
+        "operationId": "pin_artifact_api_v1_artifacts__artifact_id__pin_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pin Artifact Api V1 Artifacts  Artifact Id  Pin Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Pin Artifact",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/unpin": {
+      "post": {
+        "operationId": "unpin_artifact_api_v1_artifacts__artifact_id__unpin_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unpin Artifact Api V1 Artifacts  Artifact Id  Unpin Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unpin Artifact",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/versions": {
+      "get": {
+        "operationId": "list_artifact_versions_api_v1_artifacts__artifact_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Artifact Versions Api V1 Artifacts  Artifact Id  Versions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Artifact Versions",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_artifact_version_api_v1_artifacts__artifact_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Artifact Version Api V1 Artifacts  Artifact Id  Versions  Version  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Artifact Version",
         "tags": [
           "artifacts"
         ]

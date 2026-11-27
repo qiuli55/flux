@@ -90,7 +90,9 @@ private const val FILTER_DOC = "doc"
 private fun artifactTypeLabel(type: String): String = when (type) {
     "design" -> "设计"
     "doc" -> "文档"
-    else -> "页面"
+    "page" -> "页面"
+    // 后端将来新增类型时不要崩，也不要误标成「页面」：用通用标签兜底。
+    else -> "产物"
 }
 
 private fun artifactTypeIcon(type: String): ImageVector = when (type) {
@@ -306,6 +308,10 @@ private fun ArtifactGridCard(artifact: Artifact, onClick: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Label(artifactMeta(artifact), 9f, V2Colors.ink(.38f), maxLines = 1)
+            if (artifact.summary.isBlank() && artifact.description.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Label(artifact.description, 8.5f, V2Colors.ink(.34f), maxLines = 1)
+            }
         }
     }
 }
@@ -815,7 +821,11 @@ fun ArtifactDetailScreen(
                 title = artifact?.title?.ifBlank { "未命名产物" } ?: "产物详情",
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = artifact?.let {
-                    "${artifactTypeLabel(it.type)} · v${it.version}"
+                    if (it.summary.isBlank() && it.description.isNotBlank()) {
+                        it.description
+                    } else {
+                        "${artifactTypeLabel(it.type)} · v${it.version}"
+                    }
                 } ?: "正在读取…",
                 trailing = {
                     if (showBack) {

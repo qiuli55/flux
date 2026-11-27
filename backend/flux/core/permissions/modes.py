@@ -36,6 +36,9 @@ PLAN_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "design.revisions",
         "artifact.list",
         "artifact.get",
+        "artifact.list_types",
+        "artifact.list_assets",
+        "artifact.get_asset",
         "github.list_repos",
         "github.read_file",
         "plan.write",
@@ -82,7 +85,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
         "can": [
             "workspace.read/search/tree/diff",
             "design.list/get/revisions",
-            "artifact.list/get",
+            "artifact.list/get/list_types/list_assets/get_asset",
             "github.list_repos / github.read_file",
             "plan.write",
             "memory.remember",
@@ -92,7 +95,7 @@ MODE_BOUNDARIES: dict[str, dict[str, object]] = {
             "github.commit / github.create_pr",
             "proposal.create/preview",
             "design.create/update/ai/revert/share/icon_create",
-            "artifact.publish",
+            "artifact.publish / pin / unpin / upload_asset / delete_asset",
         ],
     },
     PermissionMode.NORMAL.value: {

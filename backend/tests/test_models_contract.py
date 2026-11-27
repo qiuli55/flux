@@ -43,6 +43,10 @@ SPEC_TABLES = {
     # §11.2 之外的新增表：Artifacts 页面 / 文档成品（默认私有，设计稿仍由 Luma 持有）。
     # 与 task_messages 分离：成品有自己的版本与正文，对话里只落一张引用卡片。
     "artifacts",
+    # Artifacts 对齐 Claude Code：每次正文 / 元数据写入的完整快照，与资产元数据。
+    # 资产实体文件落 uploads 目录；删除产物时两表随 artifacts 级联清理。
+    "artifact_versions",
+    "artifact_assets",
     # §11.2 之外的新增表：DSH Agent Run 的生命周期权威记录（修复方案 §2.2）。
     # Run 状态、心跳、进程归属（pid/pgid/owner_pid）落库，重启与多实例共享同库时可对账。
     "agent_runs",
