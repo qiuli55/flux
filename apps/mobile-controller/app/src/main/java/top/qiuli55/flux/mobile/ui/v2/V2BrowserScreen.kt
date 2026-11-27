@@ -4,9 +4,11 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.os.Message
 import android.view.View
@@ -26,6 +28,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,14 +58,20 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -76,8 +85,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -114,7 +125,12 @@ private class V2PermissionPrompt(
     val onDeny: () -> Unit,
 )
 
-private class V2DownloadInfo(val status: Int, val done: Long, val total: Long)
+private class V2DownloadInfo(
+    val status: Int,
+    val done: Long,
+    val total: Long,
+    val reason: Int,
+)
 
 /**
  * App 内嵌浏览器：对话里点开的网址、Codex / GitHub 这类登录授权页、以及「我的」里的
@@ -144,21 +160,46 @@ fun V2BrowserScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val offlineHtml = html
     val policy = remember(offlineHtml) { browserPolicyFor(offlineHtml) }
-    val initialUrl = remember(url) { browserStartUrl(url) }
-    val initialAddress = remember(url) { browserAddressText(url) }
+    val settingsStore = remember { V2BrowserSettingsStore(context) }
+    val clipboard = LocalClipboardManager.current
+    // 空白入口（「我的」内置浏览器）恢复上次页面；明确链接仍然直接打开该链接
+    val savedUrl = remember(url, offlineHtml) {
+        if (policy.isOfflinePreview) {
+            null
+        } else {
+            V2BrowserRetainedState.siteUrl ?: settingsStore.lastSiteUrl()
+        }
+    }
+    val initialUrl = remember(url, offlineHtml) { browserEntryUrl(policy, url, savedUrl) }
+    val initialAddress = remember(initialUrl) { browserAddressText(initialUrl) }
+    // 只有「恢复上次页面」时才用 WebView saveState；打开新链接不套用旧历史
+    val retainedWebState = remember(initialUrl, offlineHtml) {
+        if (
+            !policy.isOfflinePreview &&
+            shouldRestoreBrowserSession(policy, url) &&
+            V2BrowserRetainedState.siteUrl == initialUrl
+        ) {
+            V2BrowserRetainedState.siteState
+        } else {
+            null
+        }
+    }
 
     var address by remember(initialUrl) { mutableStateOf(initialAddress) }
     var addressDirty by remember(initialUrl) { mutableStateOf(false) }
     var progress by remember(initialUrl) { mutableStateOf(0f) }
     var canGoBack by remember(initialUrl) { mutableStateOf(false) }
     var canGoForward by remember(initialUrl) { mutableStateOf(false) }
-    var errorText by remember(initialUrl) { mutableStateOf<String?>(null) }
+    // 失败页是一套有分类、文案和动作的状态；不再只有一个 errorText 字符串
+    var failure by remember(initialUrl) { mutableStateOf<V2BrowserFailure?>(null) }
     // OAuth / 登录弹窗：onCreateWindow 创建的 WebView 叠在主页面上，可手动关闭
     var popupView by remember(initialUrl) { mutableStateOf<WebView?>(null) }
     var popupOpen by remember(initialUrl) { mutableStateOf(false) }
+    // 顶栏溢出菜单：复制 / 分享 / 系统浏览器
+    var toolsOpen by remember(initialUrl) { mutableStateOf(false) }
 
-    // 站点会话默认桌面 UA；可切回移动 UA 并刷新
-    var desktopMode by remember(initialUrl) { mutableStateOf(true) }
+    // 站点会话的 UA 选择跨进入 / 退出保留，默认桌面版
+    var desktopMode by remember(initialUrl) { mutableStateOf(settingsStore.desktopMode()) }
     // 页内查找
     var findOpen by remember(initialUrl) { mutableStateOf(false) }
     var findQuery by remember(initialUrl) { mutableStateOf("") }
@@ -236,6 +277,8 @@ fun V2BrowserScreen(
         runCatching { popup.destroy() }
         if (popupView === popup) popupView = null
         popupOpen = popupView != null
+        // 登录弹窗关闭时就把新 cookie 落盘，不必等用户退出浏览器
+        runCatching { cookieManager.flush() }
     }
 
     fun closePopup() {
@@ -256,6 +299,8 @@ fun V2BrowserScreen(
             title = title?.trim().orEmpty(),
             visitedAt = System.currentTimeMillis(),
         )
+        // 进程随时可能被杀：最后页面也落盘，重进浏览器 / 重启后仍能回去
+        settingsStore.saveLastSiteUrl(entry.url)
         val next = addBrowserHistory(history, entry)
         if (next === history) return
         history = next
@@ -404,7 +449,7 @@ fun V2BrowserScreen(
                 // 离线预览不加载外部网络资源，也不把预览页的 cookie 带到真实站点
                 if (shouldBlockPreviewRequest(policy, scheme, target.host)) {
                     if (!isPopup && request?.isForMainFrame == true) {
-                        errorText = "离线预览不会加载外部网络资源"
+                        failure = browserPreviewBlockedFailure()
                     }
                     return true
                 }
@@ -444,16 +489,31 @@ fun V2BrowserScreen(
                 handler: SslErrorHandler,
                 error: SslError,
             ) {
-                val host = runCatching { Uri.parse(error.url).host.orEmpty() }
+                val failedUrl = error.url
+                val host = runCatching { Uri.parse(failedUrl).host.orEmpty() }
                     .getOrDefault("")
                 if (isTrustedSslHost(host)) {
                     handler.proceed()
                 } else {
                     handler.cancel()
-                    if (!isPopup) {
-                        errorText = "证书不受信任：$host\n内置浏览器只信任 A 机与 B 机的自签证书"
+                    val sslFailure = browserSslFailure(host, failedUrl)
+                    if (isPopup) {
+                        // 登录弹窗叠在主页面上，错误层会挡住主页面；用系统提示说明拦截
+                        Toast.makeText(
+                            context,
+                            "证书不受信任：${host.ifBlank { "该网站" }}，已阻止登录窗口加载",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    } else {
+                        failure = preferredBrowserFailure(failure, sslFailure)
                     }
                 }
+            }
+
+            override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: Bitmap?) {
+                if (isPopup) return
+                // 新导航开始才清旧错误；progress 完成回调不再碰失败态
+                failure = null
             }
 
             override fun onReceivedError(
@@ -462,8 +522,31 @@ fun V2BrowserScreen(
                 error: WebResourceError?,
             ) {
                 if (!isPopup && request?.isForMainFrame == true) {
-                    errorText = error?.description?.toString() ?: "页面加载失败"
+                    val failedUrl = request.url?.toString()
+                    val networkUnavailable = isBrowserNetworkErrorCode(error?.errorCode ?: 0)
+                    failure = preferredBrowserFailure(
+                        failure,
+                        browserLoadFailure(
+                            failedUrl = failedUrl,
+                            networkUnavailable = networkUnavailable,
+                            description = error?.description?.toString(),
+                        ),
+                    )
                 }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?,
+            ) {
+                if (isPopup || request?.isForMainFrame != true) return
+                val statusCode = errorResponse?.statusCode ?: return
+                if (statusCode < 400) return
+                failure = preferredBrowserFailure(
+                    failure,
+                    browserHttpFailure(request.url?.toString(), statusCode),
+                )
             }
 
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
@@ -485,16 +568,23 @@ fun V2BrowserScreen(
                 if (!addressDirty && !url.isNullOrBlank() && url != "about:blank") {
                     address = url
                 }
+                // 单页应用 pushState 不一定触发 onPageFinished，这里也记一次最后页面
+                settingsStore.saveLastSiteUrl(url)
             }
         }
         web.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (isPopup) return
-                progress = (newProgress.coerceIn(0, 100)) / 100f
+                // 只推进度条；100% 不能清掉 SSL / HTTP / 加载失败
+                val next = applyBrowserProgress(
+                    V2BrowserProgressState(progress = progress, failure = failure),
+                    newProgress,
+                )
+                progress = next.progress
+                failure = next.failure
                 if (newProgress >= 100) {
                     canGoBack = view?.canGoBack() == true
                     canGoForward = view?.canGoForward() == true
-                    errorText = null
                 }
             }
 
@@ -660,7 +750,7 @@ fun V2BrowserScreen(
         createWebView(isPopup = false).also { frame.addView(it) }
     }
 
-    // 离开页面：flush cookie 后再销毁 WebView，避免进程随后被杀时丢掉登录态
+    // 离开页面：先把页面状态和 cookie 收好，再销毁 WebView
     DisposableEffect(webView) {
         onDispose {
             // 未完成的文件选择 / JS 对话框 / 权限请求都要显式收尾，避免 WebView 或页面卡住
@@ -671,6 +761,19 @@ fun V2BrowserScreen(
             permissionPrompt?.let { runCatching { it.onDeny() } }
             permissionPrompt = null
             runCatching { cookieManager.flush() }
+            if (!policy.isOfflinePreview) {
+                settingsStore.saveDesktopMode(desktopMode)
+                val lastUrl = webView.url
+                // 只有真实网页才值得恢复；空会话不覆盖上一次的页面
+                if (shouldRecordHistory(policy, lastUrl)) {
+                    settingsStore.saveLastSiteUrl(lastUrl)
+                    runCatching {
+                        val state = Bundle()
+                        webView.saveState(state)
+                        V2BrowserRetainedState.remember(lastUrl, state)
+                    }
+                }
+            }
             popupView?.let { popup ->
                 frame.removeView(popup)
                 runCatching { popup.stopLoading() }
@@ -723,8 +826,9 @@ fun V2BrowserScreen(
                 }
                 DownloadManager.STATUS_FAILED -> {
                     downloadProgress = null
-                    downloadMessage = "下载失败"
-                    delay(3_000)
+                    val reason = downloadFailureReason(info.reason)
+                    downloadMessage = if (reason != null) "下载失败：$reason" else "下载失败"
+                    delay(4_000)
                     break
                 }
                 else -> {
@@ -748,22 +852,70 @@ fun V2BrowserScreen(
 
     fun loadHtml() {
         val source = offlineHtml ?: return
-        errorText = null
+        failure = null
         progress = 0f
         webView.loadDataWithBaseURL(policy.baseUrl, source, "text/html", "utf-8", null)
     }
 
     fun reloadPage() {
+        failure = null
         if (offlineHtml != null) loadHtml() else webView.reload()
     }
 
+    /** 地址栏 / 最近访问 / 失败页重试共用的导航入口；空输入不导航。 */
     fun load(target: String) {
-        val normalized = normalizeUrl(target)
-        address = if (target.isBlank() || normalized == "about:blank") "" else normalized
+        val normalized = browserNavigationTarget(target) ?: return
+        address = if (normalized == "about:blank") "" else normalized
         addressDirty = false
-        errorText = null
+        failure = null
         downloadMessage = null
         webView.loadUrl(normalized)
+    }
+
+    /** 失败页重试：回到当前页 / 进入地址，而不是拿空的地址栏把页面清成 about:blank。 */
+    fun retryAfterFailure() {
+        failure = null
+        if (offlineHtml != null) {
+            loadHtml()
+            return
+        }
+        val target = browserRetryUrl(policy, webView.url, initialUrl, address)
+        if (target != null) webView.loadUrl(target) else webView.reload()
+    }
+
+    /** 当前可复制 / 分享 / 外开的链接；空白页与离线预览返回 null。 */
+    fun currentLink(): String? = browserShareableUrl(policy, webView.url, address)
+
+    fun copyCurrentLink() {
+        val link = currentLink() ?: return
+        clipboard.setText(AnnotatedString(link))
+        Toast.makeText(context, "已复制链接", Toast.LENGTH_SHORT).show()
+    }
+
+    fun shareCurrentLink() {
+        val link = currentLink() ?: return
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, link)
+            webView.title?.takeIf { it.isNotBlank() }
+                ?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+        }
+        val launched = runCatching {
+            context.startActivity(Intent.createChooser(send, "分享链接"))
+        }
+        if (launched.isFailure) {
+            Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openInSystemBrowser(url: String?) {
+        val target = browserShareableUrl(policy, url, null) ?: return
+        val launched = runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
+        }
+        if (launched.isFailure) {
+            Toast.makeText(context, "没有可用的系统浏览器", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun runFind(query: String) {
@@ -787,6 +939,7 @@ fun V2BrowserScreen(
     fun toggleDesktopMode() {
         if (policy.isOfflinePreview) return
         desktopMode = !desktopMode
+        settingsStore.saveDesktopMode(desktopMode)
         applyUserAgent(webView)
         popupView?.let { applyUserAgent(it) }
         reloadPage()
@@ -955,6 +1108,71 @@ fun V2BrowserScreen(
                     iconSize = 15.dp,
                     contentDescription = "最近访问",
                 )
+                Spacer(Modifier.width(6.dp))
+                // 页面工具放在溢出菜单里，不新增底栏 Tab
+                Box {
+                    RoundIconButton(
+                        Icons.Outlined.MoreVert,
+                        onClick = { toolsOpen = true },
+                        size = 32.dp,
+                        iconSize = 15.dp,
+                        contentDescription = "页面工具",
+                    )
+                    DropdownMenu(
+                        expanded = toolsOpen,
+                        onDismissRequest = { toolsOpen = false },
+                    ) {
+                        val link = currentLink()
+                        DropdownMenuItem(
+                            text = { Label("复制链接", 12f, V2Colors.ink(.82f)) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.ContentCopy,
+                                    contentDescription = null,
+                                    tint = V2Colors.ink(.5f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            enabled = link != null,
+                            onClick = {
+                                toolsOpen = false
+                                copyCurrentLink()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Label("分享链接", 12f, V2Colors.ink(.82f)) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Share,
+                                    contentDescription = null,
+                                    tint = V2Colors.ink(.5f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            enabled = link != null,
+                            onClick = {
+                                toolsOpen = false
+                                shareCurrentLink()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Label("在系统浏览器打开", 12f, V2Colors.ink(.82f)) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.OpenInNew,
+                                    contentDescription = null,
+                                    tint = V2Colors.ink(.5f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            enabled = link != null,
+                            onClick = {
+                                toolsOpen = false
+                                openInSystemBrowser(link)
+                            },
+                        )
+                    }
+                }
             }
         }
 
@@ -1012,27 +1230,31 @@ fun V2BrowserScreen(
                         },
                         modifier = Modifier.weight(1f),
                     )
-                    if (findQuery.isNotBlank()) {
+                    browserFindStatus(findQuery, findActive, findTotal)?.let { status ->
                         Label(
-                            "$findActive/$findTotal",
+                            status,
                             9f,
                             V2Colors.ink(.42f),
                             mono = true,
                         )
                     }
                 }
+                // 没有匹配时前后跳转置灰，避免用户反复点一个不会动的按钮
+                val findNavigable = findQuery.isNotBlank() && findTotal > 0
                 RoundIconButton(
                     Icons.Outlined.KeyboardArrowUp,
-                    onClick = { if (findQuery.isNotBlank()) webView.findNext(false) },
+                    onClick = { if (findNavigable) webView.findNext(false) },
                     size = 30.dp,
                     iconSize = 14.dp,
+                    tint = if (findNavigable) V2Colors.ink(.62f) else V2Colors.ink(.22f),
                     contentDescription = "上一个",
                 )
                 RoundIconButton(
                     Icons.Outlined.KeyboardArrowDown,
-                    onClick = { if (findQuery.isNotBlank()) webView.findNext(true) },
+                    onClick = { if (findNavigable) webView.findNext(true) },
                     size = 30.dp,
                     iconSize = 14.dp,
+                    tint = if (findNavigable) V2Colors.ink(.62f) else V2Colors.ink(.22f),
                     contentDescription = "下一个",
                 )
                 RoundIconButton(
@@ -1120,7 +1342,15 @@ fun V2BrowserScreen(
             AndroidView(
                 factory = {
                     frame.also {
-                        if (offlineHtml != null) loadHtml() else webView.loadUrl(initialUrl)
+                        if (offlineHtml != null) {
+                            loadHtml()
+                        } else {
+                            // 从空白入口回来：先尝试恢复上次的 WebView 历史；失败再按 URL 加载
+                            val restored = retainedWebState?.let { state ->
+                                runCatching { webView.restoreState(state) }.getOrNull()
+                            }
+                            if (restored == null) webView.loadUrl(initialUrl)
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -1147,7 +1377,8 @@ fun V2BrowserScreen(
                     )
                 }
             }
-            errorText?.let { message ->
+            // 失败页：分类标题 + 说明 + 可执行动作，而不是只改一行错误文字
+            failure?.let { problem ->
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1159,25 +1390,75 @@ fun V2BrowserScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Label(
-                            if (policy.isOfflinePreview) "预览打不开" else "页面打不开",
+                            if (
+                                policy.isOfflinePreview &&
+                                problem.kind == V2BrowserFailureKind.LOAD
+                            ) {
+                                "预览打不开"
+                            } else {
+                                problem.title
+                            },
                             14f,
                             V2Colors.ink(.86f),
                             FontWeight.SemiBold,
                         )
                         Spacer(Modifier.height(6.dp))
                         Label(
-                            message,
+                            problem.message,
                             10f,
                             V2Colors.ink(.48f),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
+                        problem.detail?.let { detail ->
+                            Spacer(Modifier.height(6.dp))
+                            Label(
+                                detail,
+                                9f,
+                                V2Colors.ink(.34f),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                maxLines = 3,
+                            )
+                        }
+                        problem.failedUrl
+                            ?.takeIf { !policy.isOfflinePreview && httpUrlHost(it) != null }
+                            ?.let { url ->
+                                Spacer(Modifier.height(6.dp))
+                                Label(
+                                    url,
+                                    8.5f,
+                                    V2Colors.ink(.30f),
+                                    mono = true,
+                                    maxLines = 2,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                )
+                            }
                         Spacer(Modifier.height(14.dp))
-                        GhostButton(
-                            text = "重新加载",
-                            onClick = { if (offlineHtml != null) loadHtml() else load(address) },
-                            modifier = Modifier.fillMaxWidth(),
-                            icon = Icons.Outlined.Refresh,
-                        )
+                        if (problem.canRetry) {
+                            GhostButton(
+                                text = "重试",
+                                onClick = { retryAfterFailure() },
+                                modifier = Modifier.fillMaxWidth(),
+                                icon = Icons.Outlined.Refresh,
+                            )
+                        }
+                        if (problem.canOpenExternally) {
+                            Spacer(Modifier.height(8.dp))
+                            GhostButton(
+                                text = "在系统浏览器打开",
+                                onClick = { openInSystemBrowser(problem.failedUrl) },
+                                modifier = Modifier.fillMaxWidth(),
+                                icon = Icons.Outlined.OpenInNew,
+                            )
+                        }
+                        if (problem.canShowPageAnyway) {
+                            Spacer(Modifier.height(8.dp))
+                            GhostButton(
+                                text = "继续查看网页",
+                                onClick = { failure = null },
+                                modifier = Modifier.fillMaxWidth(),
+                                icon = Icons.Outlined.Language,
+                            )
+                        }
                     }
                 }
             }
@@ -1436,6 +1717,7 @@ private fun queryDownload(manager: DownloadManager?, id: Long): V2DownloadInfo? 
                 it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
             ),
             total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
+            reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
         )
     }
 }
