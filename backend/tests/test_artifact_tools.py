@@ -292,6 +292,13 @@ def test_artifact_tools_are_registered_and_instructed() -> None:
         assert TOOLS[name].description
     assert "artifact.publish" in RUNTIME_BOOTSTRAP
     assert "artifact.publish" in SERVER_INSTRUCTIONS
+    # artifact.publish 的工具描述要写清与 design.* 的互斥关系。
+    publish_desc = TOOLS["artifact.publish"].description
+    assert "type=page" in publish_desc
+    assert "type=doc" in publish_desc
+    assert "design.share" in publish_desc
+    # 常驻说明不能再说所有页面都必须进设计工作室。
+    assert "use the design studio tools (design.list" not in RUNTIME_BOOTSTRAP
     # Plan 模式只读：能看产物与资产，不能发布 / 钉选 / 上传
     assert {
         "artifact.list",

@@ -2159,9 +2159,8 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Label(card.name, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 1)
-                val subtitle = listOf(card.project, card.description)
-                    .filter { it.isNotBlank() }
-                    .joinToString(" · ")
+                // 先把「这是设计稿、点开进画布」说清楚，再放项目与描述。
+                val subtitle = designCardSubtitle(card.project, card.description)
                 if (subtitle.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Label(subtitle, 9f, V2Colors.ink(.42f), maxLines = 1)
@@ -2175,7 +2174,7 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label("点开预览", 9f, V2Colors.actionInk, FontWeight.SemiBold)
+                Label("进画布", 9f, V2Colors.actionInk, FontWeight.SemiBold)
             }
         }
         Spacer(Modifier.height(9.dp))
@@ -2189,7 +2188,7 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Label(
-                "${card.screenCount} 画板 · ${card.layerCount} 图层",
+                "${card.screenCount} 画板 · ${card.layerCount} 图层 · 点开进画布",
                 9f,
                 V2Colors.ink(.52f),
                 mono = true,
@@ -2203,12 +2202,13 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
 /**
  * Artifact 卡片：Agent 通过 artifact.publish 把页面 / 文档发布进对话。
  *
- * 正文内容留在产物详情里，卡片只展示类型、标题、摘要与「已发布」状态；
+ * 正文内容留在产物详情里，卡片只展示类型、标题、摘要与「可交互 / 可阅读」状态；
  * 点开进入 ArtifactDetail。产物默认私有，所以这里也不出现任何分享链接。
  */
 @Composable
 private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () -> Unit) {
     val doc = card.type == "doc"
+    val kind = artifactKindUi(card.type)
     Column(
         Modifier
             .fillMaxWidth()
@@ -2237,9 +2237,8 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
             Column(Modifier.weight(1f)) {
                 Label(card.title, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 1)
                 Spacer(Modifier.height(2.dp))
-                val kind = if (doc) "文档" else "页面"
                 val version = if (card.version > 0) " · v${card.version}" else ""
-                Label("$kind$version", 9f, V2Colors.ink(.42f), maxLines = 1)
+                Label("${kind.label}$version", 9f, V2Colors.ink(.42f), maxLines = 1)
             }
             Spacer(Modifier.width(8.dp))
             Row(
@@ -2249,7 +2248,8 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label("已发布", 9f, V2Colors.accent, FontWeight.SemiBold)
+                // 角标直接回答「能不能点 / 能不能读」，不做含糊的「已发布」。
+                Label(artifactCardBadge(card.type), 9f, V2Colors.accent, FontWeight.SemiBold)
             }
         }
         val subtitle = card.summary.ifBlank { card.description }
@@ -2259,9 +2259,16 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Label("创作默认私有，仅你可见", 8.5f, V2Colors.ink(.30f), mono = true)
-            Spacer(Modifier.weight(1f))
-            Label("点开查看 · $time", 8.5f, V2Colors.ink(.26f), mono = true)
+            Label(
+                kind.description,
+                8.5f,
+                V2Colors.ink(.30f),
+                mono = true,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Label("${kind.openHint} · $time", 8.5f, V2Colors.ink(.26f), mono = true)
         }
     }
 }
