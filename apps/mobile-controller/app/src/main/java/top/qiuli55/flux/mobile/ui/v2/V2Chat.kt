@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -266,9 +267,10 @@ fun V2ChatScreen(
     pendingChangeRemoved: Int = 0,
     /** 打开文件改动页（待审核卡片的「去审核」）。 */
     onOpenChanges: (() -> Unit)? = null,
+    /** 消息列表状态：测试可注入；生产环境用内部 remember 的默认值。 */
+    listState: LazyListState = rememberLazyListState(),
 ) {
     val agent = demoAgent(chat.agentId)
-    val listState = rememberLazyListState()
     // 草稿跨配置变更/低内存重建保留：用户打了一半的字不能因为返回或旋转就消失。
     var input by rememberSaveable(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
@@ -424,7 +426,7 @@ fun V2ChatScreen(
                 }
             }
     }
-    // 跟随模式：内容一变化就贴底；非跟随模式只记「有新内容」，绝不再把用户拽下去。
+    // 跟随模式：内容一变化就贴到最后一项的**底部**；非跟随模式只记「有新内容」，绝不再把用户拽下去。
     LaunchedEffect(
         displayedMessages.size,
         stream.revision,
@@ -447,7 +449,27 @@ fun V2ChatScreen(
         lastSeenRevision = stream.revision
         // 等首帧布局完成再定位：还没量出高度时滚动会被夹到顶部
         withFrameNanos { }
-        listState.scrollToItem(bottomIndex)
+        // 用户自己滑回底部触发恢复跟随时，列表已经在真正底部：此时再滚会把
+        // 最后一项的顶部对齐视口（长消息 = 被拽回开头），所以直接稳住。
+        if (listState.canScrollForward) {
+            listState.scrollToBottomOfItem(bottomIndex)
+        }
+    }
+    // 最后一项自己变高（流式正文变长 / 步骤条展开等）时继续贴它的末尾。
+    // 只看上面的内容 key 不够：高度变化不一定伴随 revision 变化。
+    LaunchedEffect(listState, followingStream, bottomIndex) {
+        if (!followingStream || bottomIndex < 0) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val item = info.visibleItemsInfo.firstOrNull { it.index == bottomIndex }
+            item?.let { it.offset + it.size }
+        }
+            .distinctUntilChanged()
+            .collect { end ->
+                if (end != null && listState.canScrollForward) {
+                    listState.scrollToBottomOfItem(bottomIndex)
+                }
+            }
     }
     val jumpToBottom: () -> Unit = {
         followingStream = true
@@ -458,7 +480,8 @@ fun V2ChatScreen(
             "jump to bottom tapped messages=${messages.size} revision=${stream.revision}",
         )
         scope.launch {
-            if (bottomIndex >= 0) listState.animateScrollToItem(bottomIndex)
+            // 「回到最新」同样贴最后一项的末尾，不能滚到长消息开头。
+            if (bottomIndex >= 0) listState.scrollToBottomOfItem(bottomIndex)
         }
     }
 
