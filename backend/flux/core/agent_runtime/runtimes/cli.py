@@ -41,6 +41,7 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 用 tomli（见 pyproject
     import tomli as tomllib
 
 from flux.config import Settings
+from flux.core.agent_runtime.claude_account import claude_account_env
 from flux.core.agent_runtime.codex_account import (
     codex_account_home,
     codex_proxy_env,
@@ -710,10 +711,15 @@ class CliRuntime:
             )
         )
         env.update(runtime_env)
-        if self.runtime_id == RUNTIME_CLAUDE_CODE and channel is not None:
-            # 密钥库通道要压过用户环境里的订阅令牌：ANTHROPIC_API_KEY 与 AUTH_TOKEN 同时
-            # 存在时 Claude Code 的行为由 CLI 决定，这里直接移除，避免"用了 key 却还没生效"。
-            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        if self.runtime_id == RUNTIME_CLAUDE_CODE:
+            if channel is not None:
+                # 密钥库通道要压过用户环境里的订阅令牌：ANTHROPIC_API_KEY 与 AUTH_TOKEN 同时
+                # 存在时 Claude Code 的行为由 CLI 决定，这里直接移除，避免"用了 key 却还没生效"。
+                env.pop("ANTHROPIC_AUTH_TOKEN", None)
+            elif env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+                # 订阅通道：Flux 账号令牌优先于父进程里可能残留的 API Key / 旧令牌。
+                env.pop("ANTHROPIC_API_KEY", None)
+                env.pop("ANTHROPIC_AUTH_TOKEN", None)
         # 子进程 cwd 变了但 PWD 仍是 Flux 服务进程的旧值；OpenCode 用它判定项目目录
         # （会话会落到错误 workspace，原生文件工具也会看错仓库），必须同步覆盖。
         env["PWD"] = str(workspace)
@@ -1088,6 +1094,8 @@ class CliRuntime:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
             raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
+        # 用户自定义 MCP 连接器（设置页添加、探测通过）注入所有 CLI runtime 的隔离配置。
+        custom_mcp = _custom_mcp_servers(getattr(self, "_container", None))
         if self.runtime_id == RUNTIME_CLAUDE_CODE:
             # 只有 MCP 配置落盘（0600）；模型通道的密钥只进子进程环境，绝不写文件。
             # 先校验通道再写文件：校验失败时不在 run 目录留下含令牌的半成品。
@@ -1115,9 +1123,13 @@ class CliRuntime:
                     env["ANTHROPIC_BASE_URL"] = base_url
                 # 置空后由 prepare 移除：订阅令牌不能盖过本次 Run 的密钥库通道
                 env["ANTHROPIC_AUTH_TOKEN"] = ""
+            if channel is None:
+                # 订阅通道：只把 Flux 隔离目录里的长期令牌注入环境，不碰用户全局 ~/.claude。
+                # 有 Flux 登录态时它优先于父进程里可能存在的 ANTHROPIC_* 变量。
+                env.update(claude_account_env(self._settings))
             config = run_dir / "claude-mcp.json"
             config.write_text(
-                claude_mcp_config(url, token_raw, run_id),
+                claude_mcp_config(url, token_raw, run_id, extra_servers=custom_mcp),
                 encoding="utf-8",
             )
             self._secure(config)
@@ -1136,7 +1148,11 @@ class CliRuntime:
                     model=model,
                     channel=channel,
                     task_id=task_id,
-                    user_mcp_servers=_read_user_mcp_servers(user_home / "config.toml"),
+                    # 用户的 ~/.codex MCP 与设置页添加的自定义连接器都要带进隔离配置
+                    user_mcp_servers={
+                        **_read_user_mcp_servers(user_home / "config.toml"),
+                        **custom_mcp,
+                    },
                 ),
                 encoding="utf-8",
             )
@@ -1162,6 +1178,7 @@ class CliRuntime:
                 uploads_dir=str(self._settings.uploads_dir),
                 mode=mode,
                 task_id=task_id,
+                extra_mcp=custom_mcp,
             ),
             encoding="utf-8",
         )
@@ -1178,6 +1195,7 @@ class CliRuntime:
                 uploads_dir=str(self._settings.uploads_dir),
                 mode=mode,
                 task_id=task_id,
+                extra_mcp=custom_mcp,
             )
         return env
 
@@ -2356,6 +2374,21 @@ def _user_codex_home() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".codex"
 
 
+def _custom_mcp_servers(container: Any) -> dict[str, dict[str, Any]]:
+    """设置页添加、且探测通过的自定义 MCP 连接器（`{name: {url}}`）。
+
+    存量服务 / 单测可能没有装配服务：返回空字典，不影响原有 Run。
+    """
+    service = getattr(container, "mcp_connectors", None)
+    if service is None:
+        return {}
+    try:
+        return service.servers()
+    except Exception:  # noqa: BLE001 - 连接器存储损坏不应阻断 Run
+        logger.warning("自定义 MCP 连接器读取失败，本次 Run 跳过注入", exc_info=True)
+        return {}
+
+
 def _read_user_mcp_servers(config_path: Path) -> dict[str, Any]:
     """只取用户 config.toml 里的 `[mcp_servers.*]`，其余键（model / profile 等）不带。
 
@@ -2615,6 +2648,7 @@ def _opencode_config(
     uploads_dir: str = "",
     mode: str = "normal",
     task_id: str = "",
+    extra_mcp: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
 
@@ -2671,6 +2705,7 @@ def _opencode_config(
         permission["bash"] = "ask"
     if permission:
         payload["permission"] = permission
+    mcp: dict[str, Any] = {}
     if token is not None:
         # 头部按可用身份拼：独占进程有 run_id；池化进程是任务级常驻，没有固定 run_id，
         # 靠 `X-Flux-Task-Id` 让 MCP 侧解析「该任务当前活动的 Run」。
@@ -2679,14 +2714,24 @@ def _opencode_config(
             headers["X-Flux-Run-Id"] = run_id
         if task_id:
             headers["X-Flux-Task-Id"] = task_id
-        payload["mcp"] = {
-            "flux": {
+        mcp["flux"] = {
+            "type": "remote",
+            "url": url,
+            "headers": headers,
+            "enabled": True,
+        }
+    for name, spec in (extra_mcp or {}).items():
+        if str(name) == "flux":
+            continue
+        remote_url = str(spec.get("url") or "").strip()
+        if remote_url:
+            mcp[str(name)] = {
                 "type": "remote",
-                "url": url,
-                "headers": headers,
+                "url": remote_url,
                 "enabled": True,
             }
-        }
+    if mcp:
+        payload["mcp"] = mcp
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 

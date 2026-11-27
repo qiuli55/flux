@@ -243,3 +243,77 @@ def test_codex_config_for_chatgpt_keeps_mcp_block_and_no_provider(
     assert "[mcp_servers.flux]" in config
     assert "model_provider" not in config
     assert "env_key" not in config
+
+# --- 账号 API 脱敏 ---
+
+
+def test_api_status_and_logout_never_return_tokens(client) -> None:
+    from fastapi.testclient import TestClient  # noqa: F401 - 类型提示用
+
+    container = client.app.state.container
+    home = Path(container.settings.codex_account_home)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "id_token": _jwt({"email": "api@example.com", "exp": 1893456000}),
+                    "access_token": "secret-access-token",
+                    "refresh_token": "secret-refresh-token",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = client.get("/api/v1/codex-account")
+    assert status.status_code == 200
+    assert status.json()["data"]["logged_in"] is True
+    assert "secret-access-token" not in status.text
+    assert "secret-refresh-token" not in status.text
+
+    logout = client.post("/api/v1/codex-account/logout")
+    assert logout.status_code == 200
+    assert logout.json()["data"]["removed"] is True
+    assert "secret-access-token" not in logout.text
+    assert "secret-refresh-token" not in logout.text
+
+
+def test_api_login_poll_never_return_tokens(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_start(self: CodexAccountService) -> dict[str, object]:
+        return {
+            "login_id": "codex-login",
+            "status": "pending",
+            "url": "https://auth.openai.com/codex/device",
+            "code": "ABCD-EFGH",
+            "message": "",
+            "expires_in": 900,
+        }
+
+    def fake_state(self: CodexAccountService, login_id: str) -> dict[str, object] | None:
+        if login_id != "codex-login":
+            return None
+        return {
+            "login_id": login_id,
+            "status": "pending",
+            "url": "https://auth.openai.com/codex/device",
+            "code": "ABCD-EFGH",
+            "message": "",
+            "expires_in": 800,
+        }
+
+    monkeypatch.setattr(CodexAccountService, "start_login", fake_start)
+    monkeypatch.setattr(CodexAccountService, "login_state", fake_state)
+
+    start = client.post("/api/v1/codex-account/login")
+    assert start.status_code == 200
+    assert start.json()["data"]["code"] == "ABCD-EFGH"
+    assert "secret" not in start.text
+
+    state = client.get("/api/v1/codex-account/login/codex-login")
+    assert state.status_code == 200
+    assert state.json()["data"]["status"] == "pending"
+    assert "secret" not in state.text
+

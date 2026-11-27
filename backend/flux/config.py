@@ -192,6 +192,15 @@ class Settings(BaseSettings):
     # Claude Code 的默认模型；空 = 用 Claude Code 自己的默认（~/.claude/settings.json 的
     # model / env.ANTHROPIC_MODEL）。非空时以 `--model` 传给 CLI（任务级覆盖优先）。
     claude_code_model: str = ""
+    # Claude Code 订阅（claude.ai）的登录态目录。服务端用官方 `claude setup-token`
+    # 拿到一年期 OAuth 令牌，存在这里（0600）；Run 时只以 CLAUDE_CODE_OAUTH_TOKEN
+    # 注入子进程环境，不读写用户全局 ~/.claude。
+    claude_account_home: str = "~/.flux/claude-account"
+
+    # --- 连接器设置页（自定义 MCP 服务器）---
+    # 用户添加的自定义 MCP 连接器（名称 + URL）。只有探测通过（initialize + tools/list）
+    # 才会写入；Run 时注入对应 Agent 的隔离 MCP 配置。留空 = ~/.flux/mcp-connectors.json。
+    mcp_connectors_file: str | None = None
 
     # --- GitHub 账号（OAuth App 设备码授权 + 仓库读写）---
     # client_id 是公开值，可安全入库；设备码流程不消费 client_secret。
@@ -460,6 +469,15 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "github" / "account.json"
+
+    @property
+    def mcp_connectors_path(self) -> Path:
+        """自定义 MCP 连接器存储；未配置时为 ~/.flux/mcp-connectors.json。"""
+        raw = (self.mcp_connectors_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "mcp-connectors.json"
 
     def agent_limits(self, runtime_id: str):
         """取某个 runtime 的生效执行时限（能力表默认值 + 本类覆盖项）。

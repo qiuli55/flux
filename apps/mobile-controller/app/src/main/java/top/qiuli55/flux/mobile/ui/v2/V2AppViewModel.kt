@@ -20,6 +20,8 @@ import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
+import top.qiuli55.flux.mobile.data.ClaudeAccountStatus
+import top.qiuli55.flux.mobile.data.ClaudeLoginSession
 import top.qiuli55.flux.mobile.data.CloudApi
 import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.CodexLoginSession
@@ -31,6 +33,7 @@ import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
 import top.qiuli55.flux.mobile.data.KeyProbeResult
+import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
@@ -79,13 +82,21 @@ data class V2AppState(
     val codexAccount: CodexAccountStatus? = null,
     val codexLogin: CodexLoginSession? = null,
     val codexLoading: Boolean = false,
-    /** GitHub 账号（仓库读写）；设置页打开时加载。 */
+    /** Claude Code 订阅（claude.ai）；统一订阅入口打开时加载。 */
+    val claudeAccount: ClaudeAccountStatus? = null,
+    val claudeLogin: ClaudeLoginSession? = null,
+    val claudeLoading: Boolean = false,
+    /** GitHub 账号（连接器页）；进入连接器页时加载。 */
     val githubAccount: GitHubAccountStatus? = null,
-    /** 授权码登录拿到的 GitHub 授权页地址；根容器打开系统浏览器后清空。 */
+    /** 授权码登录拿到的 GitHub 授权页地址；根容器用内置浏览器打开后清空。 */
     val githubAuthorizeUrl: String? = null,
     val githubLoading: Boolean = false,
     val githubRepos: List<GitHubRepo> = emptyList(),
     val githubReposLoading: Boolean = false,
+    /** 连接器设置页：内置目录 + 自定义 MCP 服务器。 */
+    val connectors: List<McpConnector> = emptyList(),
+    val connectorsLoading: Boolean = false,
+    val connectorsError: String? = null,
     /** 套餐额度（成本中心）；进首页时加载，失败不影响任务主流程。 */
     val billing: BillingOverview? = null,
     /** 官方 API 价目表；与额度一起加载，失败只是不展示。 */
@@ -119,6 +130,8 @@ class V2AppViewModel : FluxViewModel() {
     private var refreshJob: Job? = null
     private var pollingJob: Job? = null
     private var codexLoginJob: Job? = null
+    private var claudeLoginJob: Job? = null
+    private var connectorsJob: Job? = null
     private var billingJob: Job? = null
     private var foreground = true
 
@@ -796,9 +809,186 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    // ------------------------------------------------------------ Claude Code 订阅（claude.ai）
+
+    /** 统一订阅入口打开时读取 Claude 登录态；有进行中的登录就继续轮询。 */
+    fun loadClaudeAccount() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(claudeLoading = true)
+            try {
+                val status = api().claudeAccount()
+                val active = status.pendingLogin
+                    ?: _state.value.claudeLogin?.takeIf { it.isPending }
+                _state.value = _state.value.copy(
+                    claudeAccount = status,
+                    claudeLogin = active,
+                    claudeLoading = false,
+                )
+                if (active != null) pollClaudeLogin(active.loginId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(claudeLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    fun startClaudeLogin() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(claudeLoading = true, error = null)
+            try {
+                val session = api().startClaudeLogin()
+                _state.value = _state.value.copy(claudeLogin = session, claudeLoading = false)
+                if (session.isPending) pollClaudeLogin(session.loginId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(claudeLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** 用户在浏览器授权页拿到 `code#state` 后粘回；后端转交 CLI 换票。 */
+    fun submitClaudeLoginCode(loginId: String, code: String, onResult: (String?) -> Unit = {}) {
+        if (code.isBlank()) {
+            onResult("请先粘贴授权页给出的授权码")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(claudeLoading = true, error = null)
+            try {
+                val session = api().submitClaudeLoginCode(loginId, code.trim())
+                _state.value = _state.value.copy(claudeLogin = session, claudeLoading = false)
+                if (session.isPending) pollClaudeLogin(session.loginId)
+                onResult(null)
+            } catch (e: Exception) {
+                val message = readable(e)
+                _state.value = _state.value.copy(claudeLoading = false, error = message)
+                onResult(message)
+            }
+        }
+    }
+
+    fun logoutClaudeAccount() {
+        claudeLoginJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(claudeLoading = true, error = null)
+            try {
+                val result = api().logoutClaudeAccount()
+                _state.value = _state.value.copy(
+                    claudeAccount = result.status,
+                    claudeLogin = null,
+                    claudeLoading = false,
+                    notice = "已退出 Claude Code 订阅",
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(claudeLoading = false, error = readable(e))
+            }
+        }
+    }
+
+    /** setup-token 的授权码通常 10 分钟内有效：20 分钟内每 2 秒轮询。 */
+    private fun pollClaudeLogin(loginId: String) {
+        claudeLoginJob?.cancel()
+        claudeLoginJob = viewModelScope.launch {
+            repeat(600) {
+                delay(2000)
+                val current = _state.value.claudeLogin ?: return@launch
+                if (current.loginId != loginId || !current.isPending) return@launch
+                val next = runCatching { api().claudeLoginState(loginId) }.getOrNull()
+                    ?: return@launch
+                val refreshed = if (next.status == "success") {
+                    runCatching { api().claudeAccount() }.getOrNull()
+                } else {
+                    null
+                }
+                _state.value = _state.value.copy(
+                    claudeLogin = next,
+                    claudeAccount = refreshed ?: _state.value.claudeAccount,
+                    notice = if (next.status == "success") {
+                        "Claude Code 订阅已连接"
+                    } else {
+                        _state.value.notice
+                    },
+                )
+                if (!next.isPending) return@launch
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 连接器设置（内置 + 自定义 MCP）
+
+    /** 进入连接器页 / 「我的」时读取列表；[quiet] 用于页面切换时的静默刷新。 */
+    fun loadConnectors(quiet: Boolean = false) {
+        if (quiet && connectorsJob?.isActive == true) return
+        connectorsJob?.cancel()
+        connectorsJob = viewModelScope.launch {
+            if (!quiet) _state.value = _state.value.copy(connectorsLoading = true)
+            try {
+                val page = api().listMcpConnectors()
+                _state.value = _state.value.copy(
+                    connectors = page.items,
+                    connectorsLoading = false,
+                    connectorsError = null,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    connectorsLoading = false,
+                    connectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    /**
+     * 添加自定义连接器：后端会先做 MCP 握手 + tools/list，成功才落盘。
+     * 失败原因通过 [onResult] 回给表单，输入内容由界面保留。
+     */
+    fun addConnector(name: String, url: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val item = api().addMcpConnector(name.trim(), url.trim())
+                loadConnectors(quiet = true)
+                _state.value = _state.value.copy(notice = "${item.name} 已连接")
+                onResult(null)
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    /** 重新测试连接器；返回失败原因（null = 已恢复连接）。 */
+    fun probeConnector(connectorId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val item = api().probeMcpConnector(connectorId)
+                loadConnectors(quiet = true)
+                if (item.status == "connected") {
+                    _state.value = _state.value.copy(notice = "${item.name} 已恢复连接")
+                    onResult(null)
+                } else {
+                    onResult(item.error ?: "连接失败，请检查服务器 URL")
+                }
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    fun deleteConnector(connectorId: String, onResult: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                api().deleteMcpConnector(connectorId)
+                _state.value = _state.value.copy(
+                    connectors = _state.value.connectors.filterNot { it.id == connectorId },
+                    notice = "连接器已移除",
+                )
+                onResult(null)
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
     // ------------------------------------------------------------ GitHub 账号（全仓库读写）
 
-    /** 设置页打开时读取 GitHub 账号态；已连接就顺带拉一次仓库。 */
+    /** 进入连接器页时读取 GitHub 账号态；已连接就顺带拉一次仓库。 */
     fun loadGitHubAccount() {
         viewModelScope.launch {
             _state.value = _state.value.copy(githubLoading = true)

@@ -661,6 +661,47 @@ class FluxApi(
     suspend fun logoutCodexAccount(): CodexLogoutResult =
         post("api/v1/codex-account/logout", buildJsonObject {})
 
+    // ---------------------------------------------------------- Claude Code 订阅（claude.ai）
+
+    suspend fun claudeAccount(): ClaudeAccountStatus = get("api/v1/claude-account")
+
+    /** 官方 setup-token 登录：返回手机可打开的授权链接。 */
+    suspend fun startClaudeLogin(): ClaudeLoginSession =
+        post("api/v1/claude-account/login", buildJsonObject {})
+
+    suspend fun claudeLoginState(loginId: String): ClaudeLoginSession =
+        get("api/v1/claude-account/login/${Uri.encode(loginId)}")
+
+    /** 浏览器授权页显示的 `code#state` 粘回后端，由 CLI 完成换票。 */
+    suspend fun submitClaudeLoginCode(loginId: String, code: String): ClaudeLoginSession =
+        post(
+            "api/v1/claude-account/login/${Uri.encode(loginId)}/code",
+            buildJsonObject { put("code", code) },
+        )
+
+    suspend fun logoutClaudeAccount(): ClaudeLogoutResult =
+        post("api/v1/claude-account/logout", buildJsonObject {})
+
+    // ---------------------------------------------------------- 连接器设置（内置 + 自定义 MCP）
+
+    suspend fun listMcpConnectors(): McpConnectorList = get("api/v1/mcp-connectors")
+
+    /** 新增自定义 MCP 服务器；后端探测通过才保存，失败会抛出带原因的 FluxApiException。 */
+    suspend fun addMcpConnector(name: String, url: String): McpConnector =
+        post(
+            "api/v1/mcp-connectors",
+            buildJsonObject {
+                put("name", name)
+                put("url", url)
+            },
+        )
+
+    suspend fun probeMcpConnector(connectorId: String): McpConnector =
+        post("api/v1/mcp-connectors/${Uri.encode(connectorId)}/probe", buildJsonObject {})
+
+    suspend fun deleteMcpConnector(connectorId: String): JsonElement =
+        delete("api/v1/mcp-connectors/${Uri.encode(connectorId)}")
+
     // ---------------------------------------------------------- GitHub 账号（仓库读写）
 
     suspend fun githubAccount(): GitHubAccountStatus = get("api/v1/github/status")

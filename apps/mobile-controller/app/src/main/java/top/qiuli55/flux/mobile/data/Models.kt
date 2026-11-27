@@ -891,6 +891,71 @@ data class GitHubLogoutResult(
     val status: GitHubAccountStatus = GitHubAccountStatus(),
 )
 
+/** Claude Code 订阅（claude.ai）的登录态；后端只给状态，不下发令牌。 */
+@Serializable
+data class ClaudeAccountStatus(
+    @SerialName("logged_in") val loggedIn: Boolean = false,
+    @SerialName("auth_mode") val authMode: String? = null,
+    val home: String = "",
+    val binary: String = "",
+    @SerialName("binary_found") val binaryFound: Boolean = false,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("pending_login") val pendingLogin: ClaudeLoginSession? = null,
+)
+
+/**
+ * Claude 订阅登录会话。
+ *
+ * [needsCode] 为 true：用户在浏览器授权后，需要把页面上显示的 `code#state` 粘回 App。
+ */
+@Serializable
+data class ClaudeLoginSession(
+    @SerialName("login_id") val loginId: String = "",
+    /** starting / pending / success / failed / cancelled */
+    val status: String = "starting",
+    val url: String = "",
+    val message: String = "",
+    @SerialName("needs_code") val needsCode: Boolean = true,
+    @SerialName("expires_in") val expiresIn: Int = 0,
+) {
+    val isPending: Boolean get() = status == "starting" || status == "pending"
+}
+
+@Serializable
+data class ClaudeLogoutResult(
+    val removed: Boolean = false,
+    val status: ClaudeAccountStatus = ClaudeAccountStatus(),
+)
+
+/**
+ * 连接器设置页的一项。
+ *
+ * [kind] 为 builtin（GitHub / 即将支持）或 custom（用户添加的 MCP 服务器）。
+ * [status]：connected / disconnected / needs_reauth / error / coming_soon。
+ */
+@Serializable
+data class McpConnector(
+    val id: String = "",
+    val name: String = "",
+    val kind: String = "builtin",
+    val status: String = "disconnected",
+    val description: String = "",
+    val available: Boolean = true,
+    val url: String? = null,
+    val tools: List<String> = emptyList(),
+    val account: String? = null,
+    val error: String? = null,
+    val featured: Boolean = false,
+    val action: String = "",
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("last_checked_at") val lastCheckedAt: String? = null,
+)
+
+@Serializable
+data class McpConnectorList(
+    val items: List<McpConnector> = emptyList(),
+)
+
 class FluxApiException(
     val code: String,
     override val message: String,

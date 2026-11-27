@@ -89,6 +89,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.delay
+import top.qiuli55.flux.mobile.data.GitHubLinkBus
 
 /** 网页 JS 对话框的类型；三种都必须在 App 内应答，否则页面会卡住。 */
 private enum class V2JsDialogKind { ALERT, CONFIRM, PROMPT }
@@ -409,6 +410,14 @@ fun V2BrowserScreen(
                 }
                 // http/https 一律留在内置浏览器里，不跳系统浏览器
                 if (isWebViewInternalScheme(scheme)) return false
+                if (scheme == "flux" && target.host == "github-link") {
+                    // GitHub 授权回跳直接交给仓库登录总线，不离开内置浏览器。
+                    GitHubLinkBus.publish(
+                        code = target.getQueryParameter("code").orEmpty(),
+                        state = target.getQueryParameter("state").orEmpty(),
+                    )
+                    return true
+                }
                 // 非网页协议（tel / mailto / 第三方 App scheme）交回系统处理
                 if (!shouldHandOffToSystem(policy, scheme)) return true
                 runCatching {

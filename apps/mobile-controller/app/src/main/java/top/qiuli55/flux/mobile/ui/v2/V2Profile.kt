@@ -19,12 +19,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,8 +52,12 @@ fun V2ProfileScreen(
     memoryCount: Int,
     billingNote: String,
     version: String,
+    connectorCount: Int,
+    subscriptionCount: Int,
     extraTop: Dp,
     onOpenDevices: () -> Unit,
+    onOpenConnectors: () -> Unit,
+    onOpenSubscriptions: () -> Unit,
     onOpenTerminals: () -> Unit,
     onOpenKeys: () -> Unit,
     onOpenBilling: () -> Unit,
@@ -84,9 +90,30 @@ fun V2ProfileScreen(
                 showDivider = true,
             )
             V2SettingRow(
+                icon = Icons.Outlined.Extension,
+                title = "连接器",
+                onClick = onOpenConnectors,
+                value = if (connectorCount > 0) "$connectorCount 个" else "未连接",
+                showDivider = true,
+            )
+            V2SettingRow(
                 icon = Icons.Outlined.Terminal,
                 title = "终端会话",
                 onClick = onOpenTerminals,
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        V2SettingsCard {
+            V2SettingRow(
+                icon = Icons.Outlined.WorkspacePremium,
+                title = "订阅与账号",
+                onClick = onOpenSubscriptions,
+                value = if (subscriptionCount > 0) {
+                    "$subscriptionCount 个已登录"
+                } else {
+                    "未登录"
+                },
             )
         }
 
@@ -192,3 +219,16 @@ private fun accountsInitials(name: String): String {
         else -> "FL"
     }
 }
+
+/** 「我的」里的二级入口标题；GitHub 与 ChatGPT 不再从这里直接登录。 */
+internal val PROFILE_SETTINGS_TITLES = listOf(
+    "设备与连接",
+    "连接器",
+    "终端会话",
+    "订阅与账号",
+    "模型与密钥",
+    "套餐额度",
+    "用户记忆",
+    "通知与偏好",
+    "检查更新",
+)
