@@ -12,8 +12,9 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from flux.api.v1.tasks import _attachments_brief
 from flux.core.agent_runtime.runtimes.service import _execution_instruction
-from flux.core.attachment_store import ATTACHMENT_MAX_BYTES
+from flux.core.attachment_store import ATTACHMENT_MAX_BYTES, UploadedFile
 
 PREFIX = "/api/v1"
 
@@ -86,6 +87,22 @@ def test_task_attachments_are_recorded_and_reach_instruction(client: TestClient)
     )
     assert "## 附件" in instruction
     assert first["path"] in instruction and second["path"] in instruction
+
+
+def test_attachments_brief_includes_readable_path() -> None:
+    """只发附件时，任务描述 / 助手 brief 也必须带绝对路径，不能只有文件名。"""
+    files = [
+        UploadedFile(
+            id="a1",
+            name="合同.pdf",
+            size=2048,
+            mime="application/pdf",
+            path="/opt/flux/uploads/a1/合同.pdf",
+        )
+    ]
+    brief = _attachments_brief(files)
+    assert "合同.pdf" in brief
+    assert "/opt/flux/uploads/a1/合同.pdf" in brief
 
 
 def test_message_requires_content_or_attachments(client: TestClient) -> None:

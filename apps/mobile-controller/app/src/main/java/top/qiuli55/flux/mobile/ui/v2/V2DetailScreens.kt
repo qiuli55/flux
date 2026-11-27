@@ -1,7 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
 import android.util.Log
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -84,7 +83,6 @@ import top.qiuli55.flux.mobile.data.Run
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.TaskMessage
 import top.qiuli55.flux.mobile.data.TerminalSession
-import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.changes.ChangeViewModel
 import top.qiuli55.flux.mobile.ui.tasks.TaskDetailViewModel
 import top.qiuli55.flux.mobile.ui.tasks.canSwitchTaskAgent
@@ -538,6 +536,9 @@ fun V2TaskChatScreen(
     onOpenAssistantBoard: (() -> Unit)? = null,
     /** 对话末尾待审核卡：跳到本次任务的文件改动列表。 */
     onOpenChanges: () -> Unit = {},
+    /** 系统分享注入到这段对话：文字进输入框，附件进草稿。 */
+    seed: ComposerSeed? = null,
+    onSeedApplied: (Long) -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -673,20 +674,13 @@ fun V2TaskChatScreen(
                 vm.onDraftChange(text)
                 vm.send()
             },
-            attachments = state.pendingAttachments,
-            uploading = state.uploading,
-            onAddAttachments = { uris ->
-                val remaining = UploadedAttachment.MAX_FILES - state.pendingAttachments.size
-                if (remaining <= 0) {
-                    Toast.makeText(context, "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件", Toast.LENGTH_SHORT).show()
-                } else {
-                    if (uris.size > remaining) {
-                        Toast.makeText(context, "最多 5 个附件，已忽略多选的 ${uris.size - remaining} 个", Toast.LENGTH_SHORT).show()
-                    }
-                    vm.addAttachments(uris, context.contentResolver)
-                }
-            },
+            attachmentDrafts = state.attachmentDrafts,
+            // 上限 / 大小 / 空文件规则统一在 controller 里，和新建对话完全一致。
+            onAddAttachments = { uris -> vm.addAttachments(uris, context.contentResolver) },
             onRemoveAttachment = { vm.removeAttachment(it) },
+            onRetryAttachment = { vm.retryAttachment(it) },
+            seed = seed,
+            onSeedApplied = onSeedApplied,
             designOptions = designOptions,
             designsLoading = designsLoading,
             onRequestDesigns = onRequestDesigns,

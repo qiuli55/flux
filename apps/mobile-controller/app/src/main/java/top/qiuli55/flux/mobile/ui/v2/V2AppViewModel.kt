@@ -4,7 +4,6 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,7 +11,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.AccountSession
@@ -39,7 +37,7 @@ import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
 import top.qiuli55.flux.mobile.ui.FluxViewModel
-import top.qiuli55.flux.mobile.ui.tasks.readPickedAttachment
+import top.qiuli55.flux.mobile.ui.tasks.PickedAttachment
 import java.io.ByteArrayInputStream
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -462,82 +460,29 @@ class V2AppViewModel : FluxViewModel() {
     }
 
     /**
-     * 新建对话草稿区：把选中的文件逐个上传，结果通过回调交给页面的本地状态。
-     * 附件状态不进 ViewModel，避免离开页面后还挂着一组没人用的草稿。
+     * 新建对话草稿区上传单个文件：状态机与已有对话共用 [ComposerAttachmentController]。
+     * 这里只负责提供真实的 API 与取消生命周期（离开页面时 controller 随之清空）。
      */
-    fun uploadDraftAttachments(
-        uris: List<Uri>,
+    internal suspend fun uploadPickedFile(
+        uri: Uri,
+        picked: PickedAttachment,
         resolver: ContentResolver,
-        onUploaded: (UploadedAttachment) -> Unit,
-        onError: (String) -> Unit,
-        onFinished: () -> Unit,
-    ) {
-        if (uris.isEmpty()) {
-            onFinished()
-            return
-        }
-        viewModelScope.launch {
-            val problems = mutableListOf<String>()
-            try {
-                val api = api()
-                uris.forEach { uri ->
-                    val picked = withContext(Dispatchers.IO) { readPickedAttachment(resolver, uri) }
-                    if (picked == null) {
-                        problems += "无法读取所选文件"
-                        return@forEach
-                    }
-                    if (picked.size > UploadedAttachment.MAX_BYTES) {
-                        problems += "「${picked.name}」超过 50MB，已跳过"
-                        return@forEach
-                    }
-                    try {
-                        val uploaded = api.uploadAttachment(
-                            name = picked.name,
-                            mime = picked.mime,
-                            size = picked.size,
-                        ) {
-                            resolver.openInputStream(uri)
-                                ?: throw FluxApiException("attachment_unreadable", "无法读取「${picked.name}」")
-                        }
-                        onUploaded(uploaded)
-                    } catch (e: Exception) {
-                        problems += readable(e)
-                    }
-                }
-                if (problems.isNotEmpty()) onError(problems.take(2).joinToString("；"))
-            } finally {
-                onFinished()
-            }
-        }
-    }
+    ): UploadedAttachment = uploadPickedAttachment({ api() }, uri, picked, resolver)
 
     /**
      * 设计稿当附件：先按设计稿 id 导出 SVG，再走同一条上传通道，不落地临时文件。
-     * 上传结果通过回调交回页面，与 [uploadDraftAttachments] 的状态管理保持一致。
      */
-    fun uploadDraftDesign(
+    internal suspend fun uploadDesignAsAttachment(
         designId: String,
         name: String,
-        onUploaded: (UploadedAttachment) -> Unit,
-        onError: (String) -> Unit,
-        onFinished: () -> Unit,
-    ) {
-        viewModelScope.launch {
-            try {
-                val api = api()
-                val svg = api.exportDesignSvg(designId)
-                val uploaded = api.uploadAttachment(
-                    name = "${name.ifBlank { "design" }}.svg",
-                    mime = "image/svg+xml",
-                    size = svg.size.toLong(),
-                ) { ByteArrayInputStream(svg) }
-                onUploaded(uploaded)
-            } catch (e: Exception) {
-                onError(readable(e))
-            } finally {
-                onFinished()
-            }
-        }
+    ): UploadedAttachment {
+        val api = api()
+        val svg = api.exportDesignSvg(designId)
+        return api.uploadAttachment(
+            name = "${name.ifBlank { "design" }}.svg",
+            mime = "image/svg+xml",
+            size = svg.size.toLong(),
+        ) { ByteArrayInputStream(svg) }
     }
 
     // ------------------------------------------------------------ 密钥库

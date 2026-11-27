@@ -35,6 +35,13 @@ internal object V2ComposerTags {
     /** 小窗里的单行：前缀 + agentId / model（含 keyId 时可再拼 keyId）。 */
     const val AGENT_MENU_ROW_PREFIX = "v2_composer_agent_menu_row_"
     const val MODEL_MENU_ROW_PREFIX = "v2_composer_model_menu_row_"
+
+    /** 输入栏上方的一张附件草稿（按 localId 区分）。 */
+    fun attachmentDraft(localId: String) = "v2_composer_attachment_$localId"
+    /** 图片附件的本地缩略图。 */
+    fun attachmentThumb(localId: String) = "v2_composer_attachment_thumb_$localId"
+    /** 失败草稿的重试入口。 */
+    fun attachmentRetry(localId: String) = "v2_composer_attachment_retry_$localId"
 }
 
 /** 交互类修复统一使用的日志 tag。 */

@@ -131,9 +131,13 @@ async def _record_attachments(
 
 
 def _attachments_brief(files: list[UploadedFile]) -> str:
-    """只发附件没写正文时，给助手/Agent 的一句人话说明。"""
+    """只发附件没写正文时，给助手/Agent 的一句人话说明。
+
+    路径也带上：只发附件时任务描述就是这段 brief，Agent / 助手需要能直接定位文件，
+    不能只看到文件名。执行指令里的「## 附件」段仍会再列一次路径，两处口径一致。
+    """
     return "请看我随消息附上的文件：" + "、".join(
-        f"{item.name}（{size_label(item.size)}）" for item in files
+        f"{item.name}（{size_label(item.size)}，路径：{item.path}）" for item in files
     )
 
 

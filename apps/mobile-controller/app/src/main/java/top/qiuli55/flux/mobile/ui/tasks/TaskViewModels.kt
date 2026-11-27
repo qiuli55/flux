@@ -6,7 +6,6 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import java.io.ByteArrayInputStream
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -15,7 +14,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.sse.EventSource
@@ -31,15 +29,20 @@ import top.qiuli55.flux.mobile.data.TaskContextUsage
 import top.qiuli55.flux.mobile.data.TaskMessage
 import top.qiuli55.flux.mobile.data.TaskRunSummary
 import top.qiuli55.flux.mobile.data.TaskStreamEvent
-import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.ui.FluxViewModel
+import top.qiuli55.flux.mobile.ui.v2.AttachmentDraftStatus
+import top.qiuli55.flux.mobile.ui.v2.ComposerAttachmentController
+import top.qiuli55.flux.mobile.ui.v2.ComposerAttachmentDraft
 import top.qiuli55.flux.mobile.ui.v2.FLUX_STREAM_LOG_TAG
 import top.qiuli55.flux.mobile.ui.v2.StreamApply
 import top.qiuli55.flux.mobile.ui.v2.StreamUiSnapshot
 import top.qiuli55.flux.mobile.ui.v2.TaskStreamReducer
+import top.qiuli55.flux.mobile.ui.v2.attachmentSendBlocker
 import top.qiuli55.flux.mobile.ui.v2.isFinished
 import top.qiuli55.flux.mobile.ui.v2.readable
 import top.qiuli55.flux.mobile.ui.v2.reconnectDelayMs
+import top.qiuli55.flux.mobile.ui.v2.readyAttachments
+import top.qiuli55.flux.mobile.ui.v2.uploadPickedAttachment
 
 // ---------------------------------------------------------------- 任务列表
 
@@ -145,11 +148,14 @@ data class TaskDetailUiState(
     //: 用户点过「继续聊」的等级（warning / full）：同一等级不再打扰，涨档再提醒
     val contextDismissedLevel: String? = null,
     val handoffBusy: Boolean = false,
-    //: 已上传、等待随下一条消息发送的附件；发送成功才清空，失败保留便于重试
-    val pendingAttachments: List<UploadedAttachment> = emptyList(),
+    //: 待发送附件草稿（上传中 / 已就绪 / 失败）；发送成功才清空，失败保留便于重试
+    val attachmentDrafts: List<ComposerAttachmentDraft> = emptyList(),
+) {
     //: 附件上传中：禁止发送，UI 显示「上传中…」
-    val uploading: Boolean = false,
-)
+    val uploading: Boolean get() = attachmentDrafts.any {
+        it.status == AttachmentDraftStatus.UPLOADING
+    }
+}
 
 /** 用户点 X 关掉会话提示：error / notice 一起清空。 */
 internal fun TaskDetailUiState.withDismissedNotice(): TaskDetailUiState =
@@ -163,6 +169,21 @@ internal fun TaskDetailUiState.withDismissedNotice(): TaskDetailUiState =
  */
 internal fun TaskDetailUiState.withSendStarted(): TaskDetailUiState =
     copy(sending = true, error = null, notice = null, draft = "")
+
+/** 发送失败：输入文字和附件草稿都保留，用户可以直接再点发送。 */
+internal fun TaskDetailUiState.withSendFailed(content: String, message: String?): TaskDetailUiState =
+    copy(sending = false, draft = content, error = message)
+
+/** 发送成功：清空附件草稿；输入框由 V2ChatScreen 在 sending 结束后清空。 */
+internal fun TaskDetailUiState.withSendSucceeded(
+    task: Task,
+    newMessages: List<TaskMessage>,
+): TaskDetailUiState = copy(
+    sending = false,
+    task = task,
+    messages = (messages + newMessages).distinctBy { it.id },
+    attachmentDrafts = emptyList(),
+)
 
 /**
  * 把一次成功的刷新并入当前 UI 状态。
@@ -304,6 +325,18 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     val state = _state.asStateFlow()
 
     /**
+     * 已有对话的附件草稿：与新建对话共用同一套上传状态机。
+     * 失败/上传中的草稿会阻止发送，成功后清空。
+     */
+    private val attachmentController = ComposerAttachmentController(
+        scope = viewModelScope,
+        upload = { uri, picked, resolver ->
+            uploadPickedAttachment({ api() }, uri, picked, resolver)
+        },
+        onProblem = { message -> _state.value = _state.value.copy(error = message) },
+    )
+
+    /**
      * SSE 每条事件原来各起一个协程，落到 [applyStreamEvent] 的顺序无法保证：
      * assistant_delta 乱序会让正文错位，终态事件抢在前面又会让后到的 delta 把气泡重新点亮。
      * 统一进队列，由单个协程按到达顺序消费。
@@ -318,6 +351,12 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     init {
         refresh()
         startPolling()
+        // 草稿状态只由 controller 维护，ViewModel 只做镜像，避免两套状态漂移。
+        viewModelScope.launch {
+            attachmentController.drafts.collect { drafts ->
+                _state.value = _state.value.copy(attachmentDrafts = drafts)
+            }
+        }
         viewModelScope.launch {
             for (event in streamEvents) applyStreamEvent(event)
         }
@@ -367,90 +406,35 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     }
 
     /**
-     * 选中文件后逐个上传；超过 5 个的部分跳过，单个超过 50MB 的文件也跳过并提示。
-     * 上传中禁止发送由 [send] 与 UI 共同兜住。
+     * 选中文件后交给共用控制器：上限 5 个、50MB、空文件、重复 Uri 的规则只实现一处。
+     * 上传中/失败禁止发送由 [send] 与 UI 共同兜住。
      */
     fun addAttachments(uris: List<Uri>, resolver: ContentResolver) {
-        if (uris.isEmpty() || _state.value.uploading) return
-        val remaining = UploadedAttachment.MAX_FILES - _state.value.pendingAttachments.size
-        if (remaining <= 0) {
-            _state.value = _state.value.copy(error = "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件")
-            return
-        }
-        val accepted = uris.take(remaining)
-        val ignored = uris.size - accepted.size
-        viewModelScope.launch {
-            _state.value = _state.value.copy(uploading = true, error = null)
-            val problems = mutableListOf<String>()
-            accepted.forEach { uri ->
-                val picked = withContext(Dispatchers.IO) { readPickedAttachment(resolver, uri) }
-                if (picked == null) {
-                    problems += "无法读取所选文件"
-                    return@forEach
-                }
-                if (picked.size > UploadedAttachment.MAX_BYTES) {
-                    problems += "「${picked.name}」超过 50MB，已跳过"
-                    return@forEach
-                }
-                try {
-                    val uploaded = api().uploadAttachment(
-                        name = picked.name,
-                        mime = picked.mime,
-                        size = picked.size,
-                    ) {
-                        resolver.openInputStream(uri)
-                            ?: throw FluxApiException("attachment_unreadable", "无法读取「${picked.name}」")
-                    }
-                    _state.value = _state.value.copy(
-                        pendingAttachments = _state.value.pendingAttachments + uploaded,
-                    )
-                } catch (e: Exception) {
-                    problems += readable(e)
-                }
-            }
-            if (ignored > 0) {
-                problems += "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件，已忽略多选的 $ignored 个"
-            }
-            _state.value = _state.value.copy(
-                uploading = false,
-                error = problems.take(2).joinToString("；").takeIf { it.isNotBlank() },
-            )
-        }
+        if (uris.isEmpty()) return
+        _state.value = _state.value.copy(error = null)
+        attachmentController.add(uris, resolver)
     }
 
-    /**
-     * 设计稿当附件：先按设计稿 id 导出 SVG，再走同一条上传通道，不落地临时文件。
-     */
+    /** 设计稿当附件：先导出 SVG，再走同一条上传通道，不落地临时文件。 */
     fun attachDesign(designId: String, name: String) {
-        if (_state.value.uploading) return
-        if (_state.value.pendingAttachments.size >= UploadedAttachment.MAX_FILES) {
-            _state.value = _state.value.copy(error = "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件")
-            return
-        }
-        viewModelScope.launch {
-            _state.value = _state.value.copy(uploading = true, error = null)
-            try {
-                val svg = api().exportDesignSvg(designId)
-                val uploaded = api().uploadAttachment(
-                    name = "${name.ifBlank { "design" }}.svg",
-                    mime = "image/svg+xml",
-                    size = svg.size.toLong(),
-                ) { ByteArrayInputStream(svg) }
-                _state.value = _state.value.copy(
-                    pendingAttachments = _state.value.pendingAttachments + uploaded,
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(error = readable(e))
-            } finally {
-                _state.value = _state.value.copy(uploading = false)
-            }
+        attachmentController.addDesign(name) {
+            val svg = api().exportDesignSvg(designId)
+            api().uploadAttachment(
+                name = "${name.ifBlank { "design" }}.svg",
+                mime = "image/svg+xml",
+                size = svg.size.toLong(),
+            ) { ByteArrayInputStream(svg) }
         }
     }
 
-    fun removeAttachment(id: String) {
-        _state.value = _state.value.copy(
-            pendingAttachments = _state.value.pendingAttachments.filterNot { it.id == id },
-        )
+    /** 按草稿 localId 移除；失败项也占名额，需要能单独删掉。 */
+    fun removeAttachment(localId: String) {
+        attachmentController.remove(localId)
+    }
+
+    /** 失败草稿重试：沿用同一份本地文件重新上传。 */
+    fun retryAttachment(localId: String) {
+        attachmentController.retry(localId)
     }
 
     /** 「继续聊」：同一占用等级不再打扰；涨到下一档（full）会再提醒一次。 */
@@ -849,8 +833,15 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
     fun send() {
         val current = _state.value
         val content = current.draft.trim()
-        val attachmentIds = current.pendingAttachments.map { it.id }
-        if (current.sending || current.busyAction != null || current.uploading) return
+        if (current.sending || current.busyAction != null) return
+        val drafts = attachmentController.drafts.value
+        // 有失败 / 上传中的草稿时不发：避免只把成功的发出去、留下失败项造成错觉。
+        val blocker = attachmentSendBlocker(drafts)
+        if (blocker != null) {
+            _state.value = current.copy(error = blocker)
+            return
+        }
+        val attachmentIds = readyAttachments(drafts).map { it.id }
         if (content.isEmpty() && attachmentIds.isEmpty()) return
         viewModelScope.launch {
             // 新的一轮：上一轮的思考/命令过程清掉（连接与 seq 水位保留）。
@@ -866,21 +857,17 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 } else {
                     api.sendMessage(taskId, content, attachmentIds)
                 }
-                _state.value = _state.value.copy(
-                    sending = false,
-                    task = outcome.task,
-                    messages = (_state.value.messages + outcome.messages).distinctBy { it.id },
-                    // 发送成功：清空附件；失败时保留，用户可以直接重试
-                    pendingAttachments = emptyList(),
-                )
+                // 发送成功：清空附件；失败时保留，用户可以直接重试
+                attachmentController.clear()
+                _state.value = _state.value.withSendSucceeded(outcome.task, outcome.messages)
                 // 拉一次全量历史：既补齐上下文，也避免终态/续跑后的状态漂移。
                 refresh()
                 // 上次连接重试耗尽后流是停的：新一轮消息发出时顺手把实时流重新建起来
                 if (!streamEnabled) startStream()
             } catch (e: FluxApiException) {
-                _state.value = _state.value.copy(sending = false, draft = content, error = e.message)
+                _state.value = _state.value.withSendFailed(content, e.message)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(sending = false, draft = content, error = e.message ?: "发送失败")
+                _state.value = _state.value.withSendFailed(content, e.message ?: "发送失败")
             }
         }
     }
