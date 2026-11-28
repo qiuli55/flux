@@ -494,9 +494,7 @@ async def create_task(
 
     # "auto"：服务端判定首轮由谁接。手机端只传 auto，不自己判。
     if _is_auto(payload.start):
-        decision = _turn_decision(
-            payload.description, files, task_description=payload.description
-        )
+        decision = _turn_decision(payload.description, files, task_description=payload.description)
         user_message = (
             await container.task_repo.add_messages(
                 task.id,
@@ -526,9 +524,7 @@ async def create_task(
             artifact_data = artifact.to_dict(include_content=False)
         elif decision.route in {TurnRoute.SERVER_ASSISTANT, TurnRoute.CLARIFY}:
             if decision.route is TurnRoute.CLARIFY:
-                reply = await _add_assistant_text(
-                    container, task.id, _clarify_text(decision)
-                )
+                reply = await _add_assistant_text(container, task.id, _clarify_text(decision))
                 messages.append(reply.to_dict())
             else:
                 task, reply, _turn = await _respond_with_assistant(

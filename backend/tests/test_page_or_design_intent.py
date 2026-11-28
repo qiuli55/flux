@@ -118,6 +118,7 @@ def test_doc_intent(text: str) -> None:
 # 明确指定：用户点名工具 / 类型时按指定
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     ("text", "intent"),
     [
@@ -185,6 +186,7 @@ def test_unclear_intent_needs_clarification(text: str) -> None:
 # 否定词：不能把「不要设计稿」也算成设计信号
 # ---------------------------------------------------------------------------
 
+
 def test_negated_design_signal_does_not_trigger_design() -> None:
     decision = classify_page_or_design("不要设计稿，我要能点击的网页")
     assert decision.intent is PageOrDesignIntent.PAGE
@@ -206,6 +208,7 @@ def test_only_negation_without_target_still_clarifies() -> None:
 # ---------------------------------------------------------------------------
 # 事后纠正：另做正确类型，不静默转换
 # ---------------------------------------------------------------------------
+
 
 def test_correct_design_to_interactive_page() -> None:
     decision = classify_page_or_design(
@@ -292,6 +295,7 @@ def test_correction_guidance_is_none_for_normal_decisions() -> None:
 # ---------------------------------------------------------------------------
 # 常驻说明的语义锁：两条互斥路径必须同时存在，且不再一刀切
 # ---------------------------------------------------------------------------
+
 
 def test_resident_instructions_route_both_ways() -> None:
     from flux.core.agent_runtime.protocol import RUNTIME_BOOTSTRAP

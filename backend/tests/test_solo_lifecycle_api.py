@@ -799,9 +799,7 @@ def test_auto_message_keeps_a_simple_question_on_the_server(
         assert factory.created == []
 
 
-def test_auto_message_starts_the_agent_for_execution(
-    settings: Settings, tmp_path: Path
-) -> None:
+def test_auto_message_starts_the_agent_for_execution(settings: Settings, tmp_path: Path) -> None:
     with _solo(settings, tmp_path) as (client, factory):
         task = _create(client, description="改造待办服务")
         replied = client.post(
@@ -839,9 +837,7 @@ def test_auto_continue_simple_question_does_not_restart_the_agent(
         assert len(factory.created) == 1
 
 
-def test_auto_continue_execution_restarts_the_agent(
-    settings: Settings, tmp_path: Path
-) -> None:
+def test_auto_continue_execution_restarts_the_agent(settings: Settings, tmp_path: Path) -> None:
     with _solo(settings, tmp_path, behavior=default_dsh_behavior) as (client, factory):
         task = _create(client, description="给待办服务加过滤接口")
         _start(client, task["id"])

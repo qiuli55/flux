@@ -263,10 +263,7 @@ def _looks_like_direct_question(text: str) -> bool:
     if _CLARIFICATION_RE.search(text):
         return True
     return bool(
-        _QUESTION_ZH_RE.search(text)
-        or "?" in text
-        or "？" in text
-        or _QUESTION_EN_RE.search(text)
+        _QUESTION_ZH_RE.search(text) or "?" in text or "？" in text or _QUESTION_EN_RE.search(text)
     )
 
 
@@ -352,9 +349,7 @@ def decide_turn(
 
     # 3) 长需求 / 指向工作区：电脑 Agent。
     if _is_long(length_source):
-        return TurnDecision(
-            TurnRoute.COMPUTER_AGENT, TurnReason.LONG_REQUEST, needs_computer=True
-        )
+        return TurnDecision(TurnRoute.COMPUTER_AGENT, TurnReason.LONG_REQUEST, needs_computer=True)
     workspace = _WORKSPACE_REF_RE.search(body) or _LOOK_AT_RE.search(body)
     if workspace is not None:
         return TurnDecision(
@@ -392,6 +387,4 @@ def decide_turn(
         )
 
     # 6) 拿不准：宁可交给电脑 Agent，也不要把该跑的活留在聊天里。
-    return TurnDecision(
-        TurnRoute.COMPUTER_AGENT, TurnReason.CONSERVATIVE, needs_computer=True
-    )
+    return TurnDecision(TurnRoute.COMPUTER_AGENT, TurnReason.CONSERVATIVE, needs_computer=True)
