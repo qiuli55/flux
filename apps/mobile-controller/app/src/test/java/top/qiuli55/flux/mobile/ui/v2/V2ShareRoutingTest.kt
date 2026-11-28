@@ -1,6 +1,7 @@
 package top.qiuli55.flux.mobile.ui.v2
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -110,4 +111,101 @@ class V2ShareRoutingTest {
         assertEquals("第二条", second?.text)
         assertTrue(afterSecond.pending.isEmpty())
     }
+
+    // ---------------------------------------------------------------- 首页未发送草稿冲突
+
+    @Test
+    fun `home with an unsent draft asks before discarding it`() {
+        assertEquals(
+            ShareLanding.ASK_DRAFT_CONFLICT,
+            resolveShareLanding(
+                route = V2Route.Home,
+                bootReady = true,
+                hasDraftChat = true,
+                hasUnsentDraft = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `home without unsent content still opens a new chat directly`() {
+        assertEquals(
+            ShareLanding.NEW_CHAT,
+            resolveShareLanding(
+                route = V2Route.Home,
+                bootReady = true,
+                hasDraftChat = true,
+                hasUnsentDraft = false,
+            ),
+        )
+        assertEquals(
+            ShareLanding.NEW_CHAT,
+            resolveShareLanding(
+                route = V2Route.Profile,
+                bootReady = true,
+                hasDraftChat = false,
+                hasUnsentDraft = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `login wall still holds even with an unsent draft`() {
+        assertEquals(
+            ShareLanding.HOLD,
+            resolveShareLanding(
+                route = V2Route.Home,
+                bootReady = false,
+                hasDraftChat = true,
+                hasUnsentDraft = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `chat route keeps merging into the current draft without asking`() {
+        assertEquals(
+            ShareLanding.CURRENT_DRAFT,
+            resolveShareLanding(
+                route = V2Route.Chat,
+                bootReady = true,
+                hasDraftChat = true,
+                hasUnsentDraft = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `unsent draft detection ignores an empty or welcome-only draft`() {
+        assertFalse(hasUnsentDraft(chat = null, messages = emptyList(), attachmentCount = 0))
+        assertFalse(
+            hasUnsentDraft(
+                chat = draftChat(),
+                messages = listOf(V2Message(V2MessageRole.SYSTEM, "描述你的需求", "10:00")),
+                attachmentCount = 0,
+            ),
+        )
+        assertTrue(
+            hasUnsentDraft(
+                chat = draftChat(),
+                messages = listOf(V2Message(V2MessageRole.SYSTEM, "描述你的需求", "10:00")),
+                attachmentCount = 1,
+            ),
+        )
+        assertTrue(
+            hasUnsentDraft(
+                chat = draftChat(),
+                messages = listOf(V2Message(V2MessageRole.USER, "还没发出去", "10:00")),
+                attachmentCount = 0,
+            ),
+        )
+    }
+
+    private fun draftChat(): V2ChatState = V2ChatState(
+        conversationId = null,
+        title = "新的对话",
+        device = "本机",
+        agentId = "arch",
+        model = "deepseek-v4.1-flash",
+    )
 }

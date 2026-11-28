@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.ByteArrayInputStream
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -11,8 +13,13 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import top.qiuli55.flux.mobile.data.IncomingShare
+import top.qiuli55.flux.mobile.data.SharedAttachmentRef
 import top.qiuli55.flux.mobile.data.htmlToPlainText
+import top.qiuli55.flux.mobile.data.materializeSharedAttachments
 import top.qiuli55.flux.mobile.data.parseShareIntent
 
 /**
@@ -164,5 +171,111 @@ class ShareIntakeTest {
         assertFalse(text.contains("<div>"))
         assertTrue(text.contains("你好"))
         assertTrue(text.contains("世界 <Flux>"))
+    }
+
+    // ---------------------------------------------------------------- 非法码点 / 解析兜底
+
+    @Test
+    fun `out of range html code points keep the original text instead of crashing`() {
+        val text = htmlToPlainText("<p>越界 &#x110000; 和 &#99999999999999; 仍在</p>")
+        assertTrue(text.contains("仍在"))
+        // 非法码点保留原文，不抛 IllegalArgumentException。
+        assertTrue(text.contains("&#x110000;"))
+        assertTrue(text.contains("&#99999999999999;"))
+    }
+
+    @Test
+    fun `surrogate html code points do not crash parsing`() {
+        val intent = send("text/html", "<p>代理项 &#xD800; 也要安全</p>")
+        val share = parseShareIntent(intent)
+        assertNotNull(share)
+        assertTrue(share!!.text.contains("也要安全"))
+        assertTrue(share.text.contains("&#xD800;"))
+    }
+
+    @Test
+    fun `html share with illegal entity still parses as a normal share`() {
+        val intent = send("text/html", "<div>&#x110000;</div>").apply {
+            putExtra(Intent.EXTRA_SUBJECT, "标题")
+        }
+        val share = parseShareIntent(intent)
+        assertNotNull(share)
+        assertTrue(share!!.text.contains("标题"))
+    }
+
+    // ---------------------------------------------------------------- 本地附件固化
+
+    @Test
+    fun `file uri is copied into the shared inbox instead of staying outside`() {
+        val context = RuntimeEnvironment.getApplication()
+        val source = File(context.cacheDir, "share-source-${System.nanoTime()}.txt")
+        source.writeText("本地文件内容")
+        val share = IncomingShare(
+            attachments = listOf(SharedAttachmentRef(Uri.fromFile(source), "source.txt")),
+        )
+
+        val prepared = materializeSharedAttachments(context, share)
+
+        val copied = prepared.attachments.single().uri
+        assertEquals("file", copied.scheme)
+        assertTrue("应复制到 shared-inbox: ${copied.path}", copied.path.orEmpty().contains("shared-inbox"))
+        assertEquals("本地文件内容", File(copied.path!!).readText())
+        assertFalse("原路径不应再被引用", copied.path == source.path)
+    }
+
+    @Test
+    fun `unreadable local uri is skipped with a readable error`() {
+        val context = RuntimeEnvironment.getApplication()
+        val missing = File(context.cacheDir, "missing-${System.nanoTime()}.bin")
+        val share = IncomingShare(
+            attachments = listOf(SharedAttachmentRef(Uri.fromFile(missing), "missing.bin")),
+        )
+
+        val prepared = materializeSharedAttachments(context, share)
+
+        assertTrue(prepared.attachments.isEmpty())
+        assertTrue(prepared.errors.joinToString().contains("missing.bin"))
+    }
+
+    @Test
+    fun `content uri larger than the limit is aborted and removed while others continue`() {
+        val context = RuntimeEnvironment.getApplication()
+        val resolver = context.contentResolver
+        val big = Uri.parse("content://test/big-${System.nanoTime()}")
+        val ok = Uri.parse("content://test/ok-${System.nanoTime()}")
+        shadowOf(resolver).registerInputStream(big, ByteArrayInputStream(ByteArray(16)))
+        shadowOf(resolver).registerInputStream(ok, ByteArrayInputStream("ok".toByteArray()))
+        val share = IncomingShare(
+            attachments = listOf(
+                SharedAttachmentRef(big, "大文件.bin"),
+                SharedAttachmentRef(ok, "正常.txt"),
+            ),
+        )
+
+        // 用很小的上限验证「复制中计数」路径，不需要真的写 50MB。
+        val prepared = materializeSharedAttachments(context, share, maxBytes = 8)
+
+        assertEquals(listOf("正常.txt"), prepared.attachments.map { it.name })
+        assertTrue(prepared.errors.joinToString().contains("「大文件.bin」超过 50MB，已跳过"))
+        val inbox = File(context.cacheDir, "shared-inbox")
+        val leftovers = inbox.listFiles().orEmpty().filter { it.name.contains("大文件") }
+        assertTrue("超限文件不能留在 shared-inbox: $leftovers", leftovers.isEmpty())
+    }
+
+    @Test
+    fun `content uri within the limit is still copied`() {
+        val context = RuntimeEnvironment.getApplication()
+        val resolver = context.contentResolver
+        val uri = Uri.parse("content://test/small-${System.nanoTime()}")
+        shadowOf(resolver).registerInputStream(uri, ByteArrayInputStream("hello".toByteArray()))
+
+        val prepared = materializeSharedAttachments(
+            context,
+            IncomingShare(attachments = listOf(SharedAttachmentRef(uri, "small.txt"))),
+            maxBytes = 16,
+        )
+
+        val copied = prepared.attachments.single().uri
+        assertEquals("hello", File(copied.path!!).readText())
     }
 }

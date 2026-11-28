@@ -1303,6 +1303,7 @@ fun V2Fab(
 internal object FluxConfirmTags {
     const val CONFIRM = "flux_confirm_confirm"
     const val DISMISS = "flux_confirm_dismiss"
+    const val ALTERNATE = "flux_confirm_alternate"
 }
 
 @Composable
@@ -1314,14 +1315,27 @@ fun FluxConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     destructive: Boolean = true,
+    /** 可选的第三个动作（例如「新开对话」）；为空时保持原来的双按钮布局。 */
+    alternateLabel: String? = null,
+    onAlternate: () -> Unit = {},
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Label(title, 16f, V2Colors.ink(.92f), FontWeight.SemiBold) },
         text = { Label(message, 12.5f, V2Colors.ink(.55f)) },
         confirmButton = {
-            TextButton(onClick = onConfirm, modifier = Modifier.testTag(FluxConfirmTags.CONFIRM)) {
-                Label(confirmLabel, 13f, if (destructive) V2Colors.rose else V2Colors.ink(.9f))
+            Row {
+                if (alternateLabel != null) {
+                    TextButton(
+                        onClick = onAlternate,
+                        modifier = Modifier.testTag(FluxConfirmTags.ALTERNATE),
+                    ) {
+                        Label(alternateLabel, 13f, V2Colors.rose)
+                    }
+                }
+                TextButton(onClick = onConfirm, modifier = Modifier.testTag(FluxConfirmTags.CONFIRM)) {
+                    Label(confirmLabel, 13f, if (destructive) V2Colors.rose else V2Colors.ink(.9f))
+                }
             }
         },
         dismissButton = {

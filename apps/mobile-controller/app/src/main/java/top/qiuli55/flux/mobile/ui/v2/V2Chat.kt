@@ -184,6 +184,8 @@ data class ComposerSeed(
     val text: String = "",
     val attachmentUris: List<Uri> = emptyList(),
     val notice: String? = null,
+    /** 这次分享在磁盘上的待消费记录 id；页面真正应用后由外层删除。 */
+    val shareRecordId: String? = null,
 )
 
 /** 外部文字并入现有草稿：保留用户已经打的内容，分享内容另起一段。 */
@@ -341,13 +343,19 @@ fun V2ChatScreen(
         if (incoming.text.isNotBlank()) {
             input = appendComposerText(input, incoming.text)
         }
-        if (incoming.attachmentUris.isNotEmpty()) {
+        // 与「+」按钮同一套规则：Plan 模式只读，不接收附件，也不让它们进入草稿/发送路径。
+        val attachmentsRejected = incoming.attachmentUris.isNotEmpty() && chat.permissionMode == "plan"
+        if (incoming.attachmentUris.isNotEmpty() && !attachmentsRejected) {
             onAddAttachments(incoming.attachmentUris)
         }
-        if (!incoming.notice.isNullOrBlank()) {
-            Toast.makeText(context, incoming.notice, Toast.LENGTH_LONG).show()
+        val notices = buildList {
+            incoming.notice?.takeIf { it.isNotBlank() }?.let(::add)
+            if (attachmentsRejected) add("Plan 模式不支持附件，已只把文字放进输入框")
         }
-        if (incoming.text.isNotBlank() || incoming.attachmentUris.isNotEmpty()) {
+        if (notices.isNotEmpty()) {
+            Toast.makeText(context, notices.joinToString("；"), Toast.LENGTH_LONG).show()
+        }
+        if (incoming.text.isNotBlank() || (incoming.attachmentUris.isNotEmpty() && !attachmentsRejected)) {
             // 预览 / 测试环境可能还没完成首帧布局，聚焦失败不影响内容已经进入草稿。
             runCatching { inputFocus.requestFocus() }
         }
@@ -363,6 +371,14 @@ fun V2ChatScreen(
     val requestSend: (String) -> Unit = { text ->
         if (!inputEnabled) {
             Log.i(FLUX_UX_LOG_TAG, "send tap ignored enabled=false (busy or locked)")
+        } else if (chat.permissionMode == "plan" && attachmentDrafts.isNotEmpty()) {
+            // Plan 模式不发送附件：即使是切模式前留下的草稿，也不能悄悄发出去。
+            Toast.makeText(
+                context,
+                "Plan 模式不支持附件，请先移除附件或切换到普通模式",
+                Toast.LENGTH_SHORT,
+            ).show()
+            Log.i(FLUX_UX_LOG_TAG, "send blocked: plan mode with ${attachmentDrafts.size} attachments")
         } else if (attachmentBlocker != null) {
             // 失败 / 上传中的草稿不能悄悄跳过：明确告诉用户先处理附件。
             Toast.makeText(context, attachmentBlocker, Toast.LENGTH_SHORT).show()

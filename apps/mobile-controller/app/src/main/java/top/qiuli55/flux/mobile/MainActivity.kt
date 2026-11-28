@@ -18,6 +18,9 @@ import kotlinx.coroutines.withContext
 import top.qiuli55.flux.mobile.data.CloudAuthBus
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
+import top.qiuli55.flux.mobile.data.ShareIntakeRecovery
+import top.qiuli55.flux.mobile.data.SharedIntakeStorage
+import top.qiuli55.flux.mobile.data.SharedIntakeStore
 import top.qiuli55.flux.mobile.data.materializeSharedAttachments
 import top.qiuli55.flux.mobile.data.parseShareIntent
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Root
@@ -26,6 +29,8 @@ import top.qiuli55.flux.mobile.ui.v2.V2Colors
 
 /** 唯一 Activity：v2 浅色移动控制台。 */
 class MainActivity : ComponentActivity() {
+    private val shareStore: SharedIntakeStore by lazy { SharedIntakeStorage.of(this) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -36,8 +41,14 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = true
         }
         handleAuthRedirect(intent)
-        // 进程重建时系统可能把旧的分享 intent 再带回来；只在首次创建时消费，避免重复落草稿。
-        if (savedInstanceState == null) handleShareIntent(intent)
+        // 冷启动 / 进程重建：先把磁盘上还没消费的分享恢复出来（OAuth 回跳后进程被杀也靠它）。
+        // 恢复与 intent 解析互不依赖——回来时 intent 往往只剩 flux://auth 回跳。
+        val recreate = savedInstanceState != null
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { ShareIntakeRecovery.restore(shareStore) }
+            // 进程重建时系统可能把旧的分享 intent 再带回来；不重新解析，避免重复落草稿。
+            if (!recreate) handleShareIntent(intent)
+        }
         setContent {
             FluxV2Theme {
                 Box(Modifier.fillMaxSize().background(V2Colors.bg)) {
@@ -64,8 +75,9 @@ class MainActivity : ComponentActivity() {
      */
     private fun handleShareIntent(intent: Intent?) {
         val target = intent ?: return
-        val parsed = parseShareIntent(target) ?: return
-        // 消费掉这次分享：同一份 Intent 不再参与后续重建。
+        // 解析失败（畸形分享 / 非法 HTML）时既不能崩溃，也不能清掉无关 intent：
+        // 只有解析出有效分享后才消费这次 Intent。
+        val parsed = runCatching { parseShareIntent(target) }.getOrNull() ?: return
         target.action = null
         target.removeExtra(Intent.EXTRA_TEXT)
         target.removeExtra(Intent.EXTRA_SUBJECT)
@@ -76,9 +88,16 @@ class MainActivity : ComponentActivity() {
         val appContext = applicationContext
         lifecycleScope.launch {
             val prepared = withContext(Dispatchers.IO) {
-                materializeSharedAttachments(appContext, parsed)
+                runCatching { materializeSharedAttachments(appContext, parsed) }
+                    .getOrElse {
+                        parsed.copy(errors = parsed.errors + "分享内容处理失败，请重试")
+                    }
             }
-            ShareIntakeBus.publish(prepared)
+            // 先落盘再投递：登录墙 / 选设备期间进程被杀，回来时还能恢复。
+            val persisted = withContext(Dispatchers.IO) {
+                ShareIntakeRecovery.persist(shareStore, prepared)
+            }
+            ShareIntakeBus.publish(persisted)
         }
     }
 
