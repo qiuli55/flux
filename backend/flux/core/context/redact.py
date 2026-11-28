@@ -118,6 +118,59 @@ _COMMON_PATH_COMPONENTS = frozenset(
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
+#: 整串标准 base64 的形态：字母表含 `+` / `/`，`=` 只出现在末尾。
+#: 用于判断「带 `/` 的候选其实是一个令牌，而不是文件路径」（验收遗留 A/B）。
+_BASE64_STANDARD_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+#: 明确的目录 / 文件名（小写比较）。整串既是标准 base64、又含这些段时，更可能是
+#: 「带密钥段的真实路径」（`/api/keys/<secret>`、`/home/user/...`），不能回退成
+#: 整串打码。**只用于整串回退的排除，不参与 Bearer / 密钥判定。**
+_EXPLICIT_PATH_COMPONENTS = frozenset(
+    {
+        "api",
+        "key",
+        "keys",
+        "home",
+        "user",
+        "users",
+        "upload",
+        "uploads",
+        "flux",
+        "data",
+        "doc",
+        "docs",
+        "file",
+        "files",
+        "note",
+        "notes",
+        "storage",
+        "object",
+        "objects",
+        "blob",
+        "blobs",
+        "payload",
+        "config",
+        "cache",
+        "static",
+        "public",
+        "private",
+        "assets",
+        "media",
+        "image",
+        "images",
+        "script",
+        "scripts",
+        "test",
+        "tests",
+        "build",
+        "dist",
+        "logs",
+        "foo",
+        "bar",
+        "baz",
+    }
+)
+#: 整串回退时用于排除真实路径的目录名词表（常见短目录名 + 上面的明确目录名）。
+_CLEAR_PATH_COMPONENTS = _EXPLICIT_PATH_COMPONENTS | _COMMON_PATH_COMPONENTS
 
 
 @dataclass(frozen=True)
@@ -352,6 +405,11 @@ def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
     带连字符 UUID）与普通段保留。分隔符原样保留（Windows 路径的 `\\` 不会被改写
     成 `/`）；若没有任何段被换，返回原串，避免拆分后无意改写。
     """
+    # 整串本身就是标准 base64 令牌（只是碰巧含 `/`，或含会被误当成目录名的词形态
+    # 碎片）时，按段打码会留下前缀碎片（验收遗留 A/B）。这种情况整段打码，
+    # 且 `matches` 记录整串原文。
+    if _looks_like_bare_base64_secret(token):
+        return replace(token)
     parts = _PATH_SPLIT_RE.split(token)
     segments = [part for part in parts if part and part not in ("/", "\\")]
     changed = False
@@ -371,6 +429,51 @@ def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
     if any(_looks_like_path_identifier(part) for part in segments):
         return token
     return replace(token) if _has_secret_entropy(token) else token
+
+
+def _looks_like_bare_base64_secret(token: str) -> bool:
+    """整串是否更像一个标准 base64 令牌，而不是真实文件路径。
+
+    只供 `_redact_path_segments` 在按段打码前判断，用于收口验收遗留 A/B：
+
+    - A：恰以 `/` 开头的标准 base64，旧口径当 POSIX 绝对路径切段，留下短前缀；
+    - B：碰巧含词形态碎片（`bnak` / `uzs`）的多斜杠 base64，旧口径当相对路径切段，
+      前缀碎片留下。
+
+    两者整串都是 44 位标准 base64（长度是 4 的倍数、字母表为 `[A-Za-z0-9+/]`），
+    按段替换只会漏出碎片，应整段打码。
+
+    **必须先排除真实路径**：uploads 绝对路径整串熵约 4.53，已越过 4.5，天真的
+    「整串高熵就打码」会再次把附件路径打成 `[REDACTED:key].txt`（官方 CI 修过的
+    事故）。排除信号：Windows `\\`、强标识符段（32/40/64 位纯 hex、UUID）、明确
+    目录名（`api` / `keys` / `home` / `uploads` / `tmp` / `foo` / `bar` 等）。
+    这些词表只用于路径形态排除，**不接入** Bearer 判定。
+    """
+    if "\\" in token:
+        return False
+    if _BASE64_STANDARD_RE.fullmatch(token) is None:
+        return False
+    if len(token) % 4 != 0:
+        return False
+    segments = [part for part in _PATH_SPLIT_RE.split(token) if part and part not in ("/", "\\")]
+    for part in segments:
+        if _looks_like_strong_path_identifier(part):
+            return False
+        if part.lower() in _CLEAR_PATH_COMPONENTS:
+            return False
+    return _has_secret_entropy(token)
+
+
+def _looks_like_strong_path_identifier(segment: str) -> bool:
+    """路径段是否是强标识符：32/40/64 位纯 hex，或 UUID。
+
+    与 `_looks_like_path_identifier` 分开：后者把任意纯 hex 段都当标识符（用于段级
+    打码判定，宁可少打）；整串回退的排除只需要内容寻址 id 这种强信号，避免某个
+    恰好像 hex 的 base64 碎片把真正的令牌排除掉。
+    """
+    if _UUID_RE.fullmatch(segment) is not None:
+        return True
+    return set(segment) <= _HEX_CHARS and len(segment) in (32, 40, 64)
 
 
 def _looks_like_secret_segment(segment: str) -> bool:
@@ -484,7 +587,13 @@ def _looks_like_filesystem_path(token: str) -> bool:
     if token.startswith("/"):
         return True
     # 相对路径 + 内容寻址 id（uploads 形态：`uploads/<hex>/a`）。
-    return components >= 1 and any(_looks_like_path_identifier(part) for part in segments)
+    if components >= 1 and any(_looks_like_path_identifier(part) for part in segments):
+        return True
+    # 收口验收遗留 D：只有一个真正的路径分量，但另有一段密钥形（`foo/x/<24 位>`）。
+    # `bnak` / `uzs` 这类 base64 碎片也可能被当成词形态分量，含这种形态的多斜杠
+    # base64 会一并走到这里；`_redact_path_segments` 的整串回退会把它整段打码，
+    # 因此不会把标准 base64 切碎漏出。
+    return components >= 1 and any(_looks_like_secret_segment(part) for part in segments)
 
 
 def _looks_like_path_component(segment: str) -> bool:

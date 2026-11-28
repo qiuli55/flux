@@ -246,6 +246,52 @@ def test_entropy_catches_multislash_base64_with_all_short_segments() -> None:
     assert result.matches[0].original == token
 
 
+def test_entropy_catches_base64_starting_with_slash() -> None:
+    """恰以 `/` 开头的标准 base64 仍要整串打码，不能只按 POSIX 绝对路径留短前缀。
+
+    验收遗留 A（虚构种子 386）：整串是 44 位标准 base64，只是首字符碰巧是 `/`；
+    按段打码会留下 13 位前缀段。应回退为整段 `[REDACTED:key]`，`original` 为整串。
+    """
+    token = _fictional_standard_base64(386)
+    assert token.startswith("/")
+    assert token.count("/") >= 2
+    assert any(len(segment) < 20 for segment in token.split("/"))
+
+    result = redact(f"value {token}")
+    assert result.text == "value [REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == token
+
+
+def test_entropy_catches_multislash_base64_with_word_fragments() -> None:
+    """含词形态碎片的多斜杠标准 base64 不能部分打码。
+
+    验收遗留 B（虚构种子 1377）：`bnak` / `uzs` 这类短小写片段碰巧过了元音比例，
+    被当成目录名，导致前缀碎片留下。整串仍是标准 base64 时应整段打码。
+    """
+    token = _fictional_standard_base64(1377)
+    assert not token.startswith("/")
+    assert token.count("/") >= 2
+
+    result = redact(f"value {token}")
+    assert result.text == "value [REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == token
+
+
+def test_entropy_redacts_narrow_relative_path_secret_segment() -> None:
+    """窄口径相对路径 `foo/x/<24 位密钥>` 要打码密钥段，保留 `foo/x/`。
+
+    验收遗留 D：只有一个真正目录名 + 1 字符段时走不进按段打码；整串又不到全局
+    32 位下限。应把 24 位密钥形段按段打码，路径前缀原样保留。
+    """
+    secret = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1"
+    result = redact(f"见 foo/x/{secret}")
+    assert result.text == "见 foo/x/[REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == secret
+
+
 def test_entropy_redacts_secret_segment_inside_absolute_path() -> None:
     """绝对路径中间的无前缀高熵密钥段要打码，路径前缀保留。"""
     secret = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae"
