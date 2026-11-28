@@ -18,7 +18,7 @@ export function WorkspacePicker() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/v1/workspace/root")
+    fetch("/api/v1/workspace/root", { credentials: "include" })
       .then((response) => response.json())
       .then((payload) => {
         if (alive && payload?.success && typeof payload.data?.root === "string") setRoot(payload.data.root);

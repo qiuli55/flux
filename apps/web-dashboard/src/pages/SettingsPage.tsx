@@ -4,6 +4,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 
+import { logoutCloudSession } from "../api/auth";
 import { API_BASE, api, ApiError } from "../api/client";
 import { toast } from "../app/toast";
 import { KeyVaultPanel } from "../components/KeyVaultPanel";
@@ -96,7 +97,7 @@ export function SettingsPage() {
               <div className="fx-kv" style={{ marginTop: 12 }}>
                 <Kv k="工作区根" v={root} />
                 <Kv k="API 前缀" v={API_BASE} />
-                <Kv k="认证方式" v="单一共享 Token（本地单用户）" />
+                <Kv k="认证方式" v="账号云令牌 / 本机 Token / 同机直连" />
               </div>
             </Card>
           ) : null}
@@ -113,6 +114,23 @@ export function SettingsPage() {
                 <Kv k="界面" v="Flux Console v2" />
                 <Kv k="前端" v="React + Vite" />
                 <Kv k="默认视图" v="概览 / Solo 执行 / IDE 工作台 / 任务 / Skills / 系统诊断" />
+              </div>
+              <div className="fx-set-row">
+                <div className="fx-info">
+                  <div className="fx-t">退出账号云登录</div>
+                  <div className="fx-d">
+                    调用后端清除 HttpOnly 登录 cookie；未配置账号云时无副作用。
+                  </div>
+                </div>
+                <div className="fx-ctl">
+                  <Button
+                    onClick={() => {
+                      void logoutCloudSession().then(() => window.location.reload());
+                    }}
+                  >
+                    退出登录
+                  </Button>
+                </div>
               </div>
               <div className="fx-set-row">
                 <div className="fx-info">

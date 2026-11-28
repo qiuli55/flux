@@ -46,8 +46,20 @@ def _b64url_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode(segment + padding)
 
 
-def verify_hs256(token: str, secret: str) -> dict[str, Any] | None:
-    """校验 HS256 签名的 JWT：签名与 `exp` 都通过才返回 payload，否则 None。"""
+def verify_hs256(
+    token: str,
+    secret: str,
+    *,
+    issuer: str | None = None,
+    audience: str | None = None,
+) -> dict[str, Any] | None:
+    """校验 HS256 签名的 JWT：签名、`exp`（必填）与可选的 iss/aud 都通过才返回 payload。
+
+    账号云当前的 access token 只有 `sub/typ/iat/exp`，没有 iss/aud，因此这两项
+    **只在配置了期望值时才校验**；配置为空且 token 也不带对应声明时保持兼容。
+    反过来说，token 带了声明但与配置不一致 → 拒绝；缺少 `exp` 或 `exp` 不是数字
+    同样拒绝（不能把"永不过期"的令牌当成有效登录态）。
+    """
     if not token or not secret:
         return None
     parts = token.split(".")
@@ -69,8 +81,28 @@ def verify_hs256(token: str, secret: str) -> dict[str, Any] | None:
     if not hmac.compare_digest(expected, signature):
         return None
     exp = payload.get("exp")
-    if isinstance(exp, (int, float)) and time.time() >= float(exp):
+    # bool 是 int 的子类：True 不能被当成 exp=1（否则一个畸形令牌会被认为"已过期"，
+    # 这里直接按"不是数字"拒绝，语义更清楚）。
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
         return None
+    if time.time() >= float(exp):
+        return None
+    if issuer is not None:
+        expected_issuer = str(issuer).strip()
+        if expected_issuer and payload.get("iss") != expected_issuer:
+            return None
+    if audience is not None:
+        expected_audience = str(audience).strip()
+        if expected_audience:
+            aud = payload.get("aud")
+            if isinstance(aud, str):
+                values = [aud]
+            elif isinstance(aud, list):
+                values = [item for item in aud if isinstance(item, str)]
+            else:
+                values = []
+            if expected_audience not in values:
+                return None
     return payload
 
 

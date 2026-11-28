@@ -381,18 +381,30 @@ async def mcp_stream(request: Request, container: Container = Depends(get_contai
 
 
 def _request_token(request: Request) -> str | None:
-    """取调用方令牌：Authorization 头优先，其次 URL 查询参数。
+    """取调用方令牌：默认只认 Authorization 头。
 
-    移动端连接器表单往往只让填「服务器 URL」，没有自定义 Header 入口；
-    允许把令牌放在 `token` / `access_token` / `apikey` / `key` 查询参数里，
-    让这类客户端也能接入。查询参数会进访问日志，建议只在本机/自有实例使用。
+    URL 查询参数会进 nginx / 代理的访问日志，令牌等同泄露，因此默认关闭
+    （安全审查 P2-4）。确有无法设置 Header 的受控客户端时，显式配置
+    `FLUX_MCP_ALLOW_QUERY_TOKEN=true`，并接受一条审计日志。
     """
     token = _bearer_token(request.headers.get("authorization"))
     if token:
         return token
+
+    container = getattr(request.app.state, "container", None)
+    settings = getattr(container, "settings", None)
+    if not getattr(settings, "mcp_allow_query_token", False):
+        return None
+
     for name in ("token", "access_token", "apikey", "key"):
         value = request.query_params.get(name)
         if value and value.strip():
+            logger.warning(
+                "MCP 使用查询参数令牌（FLUX_MCP_ALLOW_QUERY_TOKEN=true）name=%s path=%s client=%s",
+                name,
+                request.url.path,
+                request.client.host if request.client else "unknown",
+            )
             return value.strip()
     return None
 

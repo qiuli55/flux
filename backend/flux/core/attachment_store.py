@@ -43,12 +43,26 @@ class UploadedFile:
     path: str
 
     def to_dict(self) -> dict[str, Any]:
+        """内部序列化：落盘 meta.json 用，必须保留服务端绝对路径。"""
         return {
             "id": self.id,
             "name": self.name,
             "size": self.size,
             "mime": self.mime,
             "path": self.path,
+        }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """对外序列化：上传接口与任务消息 payload 用，绝不返回服务器绝对路径。
+
+        Agent 需要路径时由服务端按 id 还原（`resolve_upload`），不要把这个字段
+        下发给客户端——它会泄露部署目录结构。
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "size": self.size,
+            "mime": self.mime,
         }
 
 

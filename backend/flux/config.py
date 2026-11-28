@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -10,6 +11,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/flux/config.py -> backend/flux -> backend -> 仓库根
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: 视为"回环"的监听地址。只有 env 不是 server 且监听这些地址时才允许
+#: 未配置 FLUX_AUTH_TOKEN 的 fail-open（见 Settings.auth_required）。
+LOOPBACK_LISTEN_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"})
+
+
+def _normalize_host(value: str) -> str:
+    """去掉 IPv6 方括号与空白，统一小写比较。"""
+    raw = (value or "").strip().lower()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return raw
+
+
+def _uvicorn_host_from_argv(argv: list[str]) -> str:
+    """从 uvicorn 命令行解析 `--host`（`--host X` / `--host=X`）。"""
+    for index, arg in enumerate(argv):
+        if arg == "--host" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--host="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+def is_loopback_listen_host(host: str) -> bool:
+    return _normalize_host(host) in LOOPBACK_LISTEN_HOSTS
 
 
 class Settings(BaseSettings):
@@ -28,6 +55,10 @@ class Settings(BaseSettings):
     env: str = "local"
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
+    # 进程实际监听的地址（uvicorn --host）。留空时从 sys.argv 的 `--host` 推断；
+    # 两者都拿不到时：env=local/test 按回环处理，其余（尤其 server）按"非回环"处理。
+    # 它决定"没配 FLUX_AUTH_TOKEN 时能不能 fail-open"（见 auth_required）。
+    host: str | None = None
     # REST 面单用户令牌（公网暴露前置，见 flux.api.auth）。留空 = 关闭鉴权，
     # 本地开发与桌面端（同机直连）零配置可用；公网部署必须显式设置。
     auth_token: str | None = None
@@ -167,6 +198,10 @@ class Settings(BaseSettings):
     dsh_mcp_agent_id: str = "flux-builtin"
     # 单次工具调用超时（毫秒）
     dsh_mcp_tool_timeout_ms: int = 60000
+    # 是否允许 MCP 从 URL 查询参数（token/access_token/apikey/key）取令牌。
+    # 默认 False：查询参数会进反向代理访问日志，令牌等同泄露；只在客户端确实
+    # 无法设置 Authorization 头的受控场景下临时打开，打开时会写审计日志。
+    mcp_allow_query_token: bool = False
 
     # --- 外部 CLI Agent：Codex 的模型通道（P2-1 §6.2 续，2026-10-06）---
     # codex 把「鉴权方式」当全局状态，Flux 只能给它一个隔离的 CODEX_HOME（顺便注入 MCP），
@@ -348,6 +383,18 @@ class Settings(BaseSettings):
     # 与账号云共享的 HS256 密钥（FLUX_CLOUD_SECRET_KEY）。留空 = 不认账号云令牌，
     # 登录闭环整体关闭，退回"FLUX_AUTH_TOKEN / 回环直连"的老口径。
     cloud_secret_key: str | None = None
+    # 云 access token 的签发方 / 受众（都留空 = 不校验，兼容现网账号云：
+    # 当前 access token 载荷只有 sub/typ/iat/exp）。若配置了，token 必须带对应声明且匹配；
+    # token 自己带了 iss/aud 但与配置不一致同样拒绝。
+    cloud_issuer: str | None = None
+    cloud_audience: str | None = None
+    # 允许使用本实例的账号云用户 id（对应 access token 的 sub），逗号 / 分号 / 空白分隔。
+    # 公网部署必须配置它；留空时退回"本机绑定主人"机制（见 cloud_owner_file）。
+    cloud_allowed_users: str = ""
+    # 本机绑定的账号云主人（user id + username），0600。留空 = ~/.flux/cloud-owner.json。
+    # 只有通过本机主人鉴权（回环直连或有效 FLUX_AUTH_TOKEN）的请求才能写入，
+    # 避免公网任意登录者把自己的账号绑成机器主人。
+    cloud_owner_file: str | None = None
     # 是否要求走账号云登录（FLUX_CLOUD_LOGIN_REQUIRED）。桌面端安装包用：它不
     # 携带共享密钥（随包分发就等于泄露签名密钥），但产品上必须要求登录，于是把
     # 「要不要登录」与「能不能本地验签」拆开——置 True 时前端会跳账号云登录页。
@@ -372,6 +419,50 @@ class Settings(BaseSettings):
     completion_prefs_file: str | None = None
     # IDE 行内补全埋点（接受率 / 首字延迟）的落盘位置；留空 = ~/.flux/completion-stats.json
     completion_stats_file: str | None = None
+
+    @property
+    def listen_host(self) -> str:
+        """进程实际监听地址（用于判定能否在未配令牌时 fail-open）。
+
+        优先级：FLUX_HOST > sys.argv 的 uvicorn `--host` > 按 env 兜底。
+        兜底只在 local/test 假设回环；server 或未知环境一律按"非回环"处理，
+        绝不把生产默认成"空令牌也安全"。
+        """
+        raw = (self.host or "").strip()
+        if raw:
+            return _normalize_host(raw)
+        from_argv = _uvicorn_host_from_argv(sys.argv)
+        if from_argv:
+            return _normalize_host(from_argv)
+        if (self.env or "").strip().lower() in {"local", "test"}:
+            return "127.0.0.1"
+        return ""
+
+    @property
+    def auth_required(self) -> bool:
+        """是否必须配置 FLUX_AUTH_TOKEN（server 或非回环监听）。
+
+        只有 "env 不是 server 且监听回环" 才允许空令牌 fail-open（本地开发、
+        测试、桌面端同机直连）。其余情况启动期直接失败，请求期也拒绝空令牌。
+        """
+        if (self.env or "").strip().lower() == "server":
+            return True
+        return not is_loopback_listen_host(self.listen_host)
+
+    @property
+    def cloud_allowed_user_ids(self) -> set[str]:
+        """允许使用本实例的账号云用户 id 集合（空 = 走本机绑定主人）。"""
+        raw = self.cloud_allowed_users or ""
+        return {part for part in re.split(r"[,;\s]+", raw.strip()) if part}
+
+    @property
+    def cloud_owner_path(self) -> Path:
+        """本机绑定主人的落盘文件；未配置时为 ~/.flux/cloud-owner.json。"""
+        raw = (self.cloud_owner_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "cloud-owner.json"
 
     @property
     def is_sqlite(self) -> bool:
