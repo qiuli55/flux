@@ -790,8 +790,10 @@ class FeishuImService:
             message_id=inbound.event_id,
             text=inbound.text,
         )
-        if reply.duplicate or not reply.text:
+        if not reply.text:
             return
+        # 至少一次：如果上一次回复发送失败，飞书会重推同一 event_id，此时
+        # assistant 返回 duplicate + 上次回复内容；仍然要把它发出去。
         await self.client.reply_text(inbound.message_id, reply.text)
 
     async def notify(self, text: str) -> bool:

@@ -60,10 +60,8 @@ class FakeAssistant:
                 "text": text,
             }
         )
-        return ImReply(
-            text="" if self.duplicate else self.text,
-            duplicate=self.duplicate,
-        )
+        # 真实 assistant 在判重时会回放上次回复；假实现保持一致。
+        return ImReply(text=self.text, duplicate=self.duplicate)
 
 
 class FakeFeishuClient:
@@ -287,10 +285,11 @@ async def test_feishu_service_replies_only_to_p2p(tmp_path: Path) -> None:
     assert assistant.calls[0]["session_key"] == "oc_chat_1"
     assert client.replies == [("om_evt-1", "好的，收到。")]
 
-    # 同一 event_id 重投：assistant 判重后不再回复。
+    # 同一 event_id 重投（典型场景：上次回复发送失败）：assistant 判重并回放上次回复，
+    # 出站仍按「至少一次」再发一遍，避免用户永远收不到。
     assistant.duplicate = True
     await service.handle_event(_feishu_payload(text="帮我看看进度"))
-    assert len(client.replies) == 1
+    assert len(client.replies) == 2
     assert store.feishu()["chat_id"] == "oc_chat_1"
 
 
@@ -540,7 +539,8 @@ async def test_wechat_poller_replies_with_exact_context_token(
     assert store.wechat()["get_updates_buf"] == "cursor-2"
     assert store.wechat()["last_context_token"] == "ctx-1"
 
-    # 同一条消息重投：assistant 幂等回放，但不会再次发送。
+    # 同一条消息重投（上次发送失败 / 崩溃在游标推进前）：assistant 幂等回放，
+    # 出站按「至少一次」再发一遍，避免用户永远收不到。
     client.updates = [
         {
             "ret": 0,
@@ -549,7 +549,8 @@ async def test_wechat_poller_replies_with_exact_context_token(
         }
     ]
     assert await poller.poll_once() == "ok"
-    assert len(client.sent) == 1
+    assert len(client.sent) == 2
+    assert client.sent[1]["context_token"] == "ctx-1"
 
 
 async def test_wechat_poller_ignores_group_and_other_senders(

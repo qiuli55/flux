@@ -743,7 +743,9 @@ class WechatPoller:
             message_id=message_id,
             text=text,
         )
-        if not reply.duplicate and reply.text:
+        if reply.text:
+            # 至少一次：发送失败时不推进游标，服务端会重投；重复时 assistant
+            # 回放上次回复，这里仍然再发一次，避免用户永远收不到。
             await self.client.send_text(
                 token=token,
                 to_user_id=from_user_id,
