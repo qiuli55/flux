@@ -15,6 +15,7 @@ import type {
 import { toast } from "../app/toast";
 import { Modal } from "../shell/Overlay";
 import { Badge, Button, Card, Field, Input, SectionTitle, Switch, Textarea } from "../shell/ui";
+import { notifyModelCatalogChanged } from "../utils/modelCatalog";
 import {
   focusProbeField,
   isUnreachable,
@@ -129,6 +130,9 @@ export function KeyVaultPanel() {
       });
     } finally {
       await load();
+      // 检查成功或请求失败（配置仍在）都刷新选择器：拿到最新通/不通，
+      // 或至少让新保存的模型以「未检查」出现，而不是停留在旧目录。
+      notifyModelCatalogChanged();
     }
   }, [load]);
 
@@ -170,6 +174,8 @@ export function KeyVaultPanel() {
       setEditing(saved);
       setSavedId(saved.id);
       setForm((prev) => ({ ...prev, api_key: "" }));
+      // 配置已落盘，先广播一次：即使这次探测较慢或失败，选择器也能看到新模型。
+      notifyModelCatalogChanged();
       await runProbe(saved.id);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : "保存失败");

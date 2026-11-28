@@ -593,6 +593,11 @@ class V2AppViewModel : FluxViewModel() {
                 runCatching { api.listKeys() }.getOrNull()?.let {
                     _state.value = _state.value.copy(keys = it)
                 }
+                // 上面的 refresh 发生在探测之前，选择器仍拿旧目录。探测前那次静默
+                // 刷新可能还没结束（refresh 会直接 return），先等它收尾，再刷新一次
+                // Agent/模型目录，让已挂载的模型菜单拿到最新通/不通和原因。
+                refreshJob?.join()
+                refresh(quiet = true)
                 onResult("", saved, probe)
             } catch (e: Exception) {
                 onResult(readable(e), null, null)
