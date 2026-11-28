@@ -95,6 +95,7 @@ ORGANIZE_CLARIFY_QUESTION = "要整理成 Markdown 文档，还是可交互页�
 # ---------------------------------------------------------------------------
 
 #: 用户明确说「整理」（而不是让 Agent 分析文件）。
+#: 这些词本身就把已有材料重新组织，不依赖上下文即可认定整理。
 _ORGANIZE_CUES: tuple[str, ...] = (
     "整理成",
     "整理为",
@@ -108,17 +109,29 @@ _ORGANIZE_CUES: tuple[str, ...] = (
     "归纳成",
     "汇总成",
     "总结成",
+    "沉淀成",
+)
+
+#: 过宽的中转词：「做成 / 生成一个 / 写成 / 转成 / 保存为」也可能是从零创建或
+#: 让 Agent 干活。只有同时明确指向「已有材料」（见 _MATERIAL_REF_RE）才算整理。
+_ORGANIZE_TRANSITION_CUES: tuple[str, ...] = (
     "转成",
-    "转成文档",
-    "转成页面",
+    "变成",
     "保存为",
     "存成",
     "做成",
     "生成一份",
     "生成一个",
     "写成",
-    "变成",
-    "沉淀成",
+)
+
+#: 指向已有材料的说法，例如「这张图」「这份分享」「把这段内容」。
+_MATERIAL_REF_RE = re.compile(
+    r"(这|那|该|上面|刚才|前面|现有|已有|原有)\s*"
+    r"(张|份|段|个|些|篇|条)?\s*的?\s*"
+    r"(图|图片|照片|截图|文件|文档|附件|材料|内容|对话|记录|表格|数据|网页|页面|文字|分享)"
+    r"|(把|将)\s*(这张|这份|这段|这个|该|上面的?|刚才的?|"
+    r"图片|照片|截图|文件|文档|附件|表格|数据|网页|页面)"
 )
 
 #: 明确的目标类型。只有带这些词才认定用户选了 doc / page。
@@ -242,7 +255,14 @@ def _normalize(text: str) -> str:
 
 
 def _has_organize_cue(text: str) -> tuple[str, ...]:
-    return tuple(cue for cue in _ORGANIZE_CUES if cue in text)
+    cues = tuple(cue for cue in _ORGANIZE_CUES if cue in text)
+    if cues:
+        return cues
+    # 「做成 / 生成一个 / 写成 / 转成」单独出现时可能只是从零创建，
+    # 只有上下文明确是在处理已有材料时才按整理处理。
+    if _MATERIAL_REF_RE.search(text) is None:
+        return ()
+    return tuple(cue for cue in _ORGANIZE_TRANSITION_CUES if cue in text)
 
 
 def _target_hits(text: str, targets: tuple[str, ...]) -> tuple[str, ...]:

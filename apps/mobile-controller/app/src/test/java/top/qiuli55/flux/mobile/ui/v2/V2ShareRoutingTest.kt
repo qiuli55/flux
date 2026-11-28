@@ -1,6 +1,7 @@
 package top.qiuli55.flux.mobile.ui.v2
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -77,6 +78,22 @@ class V2ShareRoutingTest {
             ShareLanding.HOLD,
             resolveShareLanding(V2Route.TaskChat("t"), bootReady = false, hasDraftChat = true),
         )
+    }
+
+    @Test
+    fun `held share toast matches the current boot stage`() {
+        assertNull(shareHeldToast(V2Boot.READY))
+
+        val loading = shareHeldToast(V2Boot.LOADING)!!
+        assertTrue(loading.contains("启动"))
+        assertFalse(loading.contains("登录"))
+
+        val login = shareHeldToast(V2Boot.LOGIN)!!
+        assertTrue(login.contains("登录"))
+
+        val devices = shareHeldToast(V2Boot.DEVICES)!!
+        assertTrue(devices.contains("设备"))
+        assertFalse(devices.contains("登录"))
     }
 
     @Test
