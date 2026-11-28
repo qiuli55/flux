@@ -60,7 +60,10 @@ import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.CloudAuthBus
 import top.qiuli55.flux.mobile.data.DeviceInfo
+import top.qiuli55.flux.mobile.ui.auth.AccountAccessSheet
+import top.qiuli55.flux.mobile.ui.auth.ForgotFormState
 import top.qiuli55.flux.mobile.ui.auth.LoginViewModel
+import top.qiuli55.flux.mobile.ui.auth.RegisterFormState
 import top.qiuli55.flux.mobile.ui.setup.SetupViewModel
 
 /**
@@ -73,8 +76,8 @@ fun V2LoginScreen(
     onSignedIn: (AccountSession) -> Unit,
     onManualConnected: () -> Unit,
     hint: String? = null,
+    vm: LoginViewModel = viewModel(),
 ) {
-    val vm: LoginViewModel = viewModel()
     val state by vm.state.collectAsState()
     val context = LocalContext.current
     var manualOpen by remember { mutableStateOf(false) }
@@ -133,6 +136,24 @@ fun V2LoginScreen(
                 }
             }
 
+            if (state.notice != null) {
+                Spacer(Modifier.height(14.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(V2Colors.emerald700.copy(alpha = .08f))
+                        .border(
+                            1.dp,
+                            V2Colors.emerald700.copy(alpha = .18f),
+                            RoundedCornerShape(12.dp),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    Label(state.notice.orEmpty(), 11f, V2Colors.emerald700)
+                }
+            }
+
             Spacer(Modifier.height(26.dp))
             V2LoginField(
                 value = state.identifier,
@@ -172,7 +193,18 @@ fun V2LoginScreen(
                 enabled = !state.busy,
             )
 
-            Spacer(Modifier.height(22.dp))
+            if (state.mailChecked) {
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    LoginTextLink("注册") { vm.openRegister() }
+                    if (state.mailEnabled) {
+                        Label("·", 12f, V2Colors.ink(.24f))
+                        LoginTextLink("忘记密码") { vm.openForgot() }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
             Label(
                 "手动连接服务器",
                 12f,
@@ -200,6 +232,239 @@ fun V2LoginScreen(
                 onManualConnected()
             },
         )
+    }
+
+    when (state.sheet) {
+        AccountAccessSheet.REGISTER -> RegisterSheet(
+            form = state.register,
+            mailEnabled = state.mailEnabled,
+            busy = state.busy,
+            onEmailChange = vm::onRegisterEmailChange,
+            onUsernameChange = vm::onRegisterUsernameChange,
+            onPasswordChange = vm::onRegisterPasswordChange,
+            onCodeChange = vm::onRegisterCodeChange,
+            onSendCode = vm::sendRegisterCode,
+            onSubmit = { vm.submitRegister(onSignedIn) },
+            onDismiss = vm::dismissAccessSheet,
+        )
+        AccountAccessSheet.FORGOT -> ForgotPasswordSheet(
+            form = state.forgot,
+            onEmailChange = vm::onForgotEmailChange,
+            onCodeChange = vm::onForgotCodeChange,
+            onPasswordChange = vm::onForgotPasswordChange,
+            onSendCode = vm::sendForgotCode,
+            onSubmit = vm::submitForgotReset,
+            onDismiss = vm::dismissAccessSheet,
+        )
+        null -> Unit
+    }
+}
+
+/** 与「手动连接服务器」同级的小号文本入口，不抢登录按钮的注意力。 */
+@Composable
+private fun LoginTextLink(text: String, onClick: () -> Unit) {
+    Label(
+        text,
+        12f,
+        V2Colors.ink(.42f),
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
+}
+
+/** 注册：邮件服务开启时带验证码，关闭时走无验证码注册。 */
+@Composable
+private fun RegisterSheet(
+    form: RegisterFormState,
+    mailEnabled: Boolean,
+    busy: Boolean,
+    onEmailChange: (String) -> Unit,
+    onUsernameChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onCodeChange: (String) -> Unit,
+    onSendCode: () -> Unit,
+    onSubmit: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .9f) {
+        SheetHeader(
+            title = "注册 Flux 账号",
+            subtitle = if (mailEnabled) {
+                "验证邮箱后即可登录，同一账号下的设备会自动连接"
+            } else {
+                "当前邮件服务未开启，可直接注册"
+            },
+            onClose = onDismiss,
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+        ) {
+            V2Field(
+                label = "邮箱",
+                value = form.email,
+                placeholder = "you@example.com",
+                onValueChange = onEmailChange,
+                keyboardType = KeyboardType.Email,
+            )
+            Spacer(Modifier.height(12.dp))
+            V2Field(
+                label = "用户名",
+                value = form.username,
+                placeholder = "用户名",
+                onValueChange = onUsernameChange,
+            )
+            Spacer(Modifier.height(12.dp))
+            V2Field(
+                label = "密码",
+                value = form.password,
+                placeholder = "至少 8 位，含字母和数字",
+                onValueChange = onPasswordChange,
+                password = true,
+                keyboardType = KeyboardType.Password,
+            )
+            if (mailEnabled) {
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Box(Modifier.weight(1f)) {
+                        V2Field(
+                            label = "验证码",
+                            value = form.code,
+                            placeholder = "邮箱验证码",
+                            onValueChange = onCodeChange,
+                            keyboardType = KeyboardType.Number,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    GhostButton(
+                        text = when {
+                            form.sendingCode -> "发送中…"
+                            form.cooldownSec > 0 -> "重新发送 ${form.cooldownSec}s"
+                            else -> "发送验证码"
+                        },
+                        onClick = onSendCode,
+                        modifier = Modifier.width(122.dp),
+                        enabled = !form.sendingCode && form.cooldownSec == 0 && !busy,
+                    )
+                }
+            }
+            if (form.error != null) {
+                Spacer(Modifier.height(12.dp))
+                Label(form.error, 11f, V2Colors.rose700)
+            }
+            Spacer(Modifier.height(10.dp))
+            Label(
+                if (mailEnabled) {
+                    "密码至少 8 位，需同时包含字母和数字，不能与邮箱或用户名相同。"
+                } else {
+                    "密码至少 8 位，需同时包含字母和数字，不能与邮箱或用户名相同；如注册失败，稍后邮件服务可用时再试。"
+                },
+                10.5f,
+                V2Colors.ink(.40f),
+            )
+            Spacer(Modifier.height(18.dp))
+        }
+        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            PrimaryButton(
+                text = if (busy) "注册中…" else "注册并登录",
+                onClick = onSubmit,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+/** 忘记密码：邮箱 + 验证码 + 新密码；成功后只回登录页提示，不写会话。 */
+@Composable
+private fun ForgotPasswordSheet(
+    form: ForgotFormState,
+    onEmailChange: (String) -> Unit,
+    onCodeChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onSendCode: () -> Unit,
+    onSubmit: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .9f) {
+        SheetHeader(
+            title = "找回密码",
+            subtitle = "验证邮箱后设置新密码",
+            onClose = onDismiss,
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+        ) {
+            V2Field(
+                label = "邮箱",
+                value = form.email,
+                placeholder = "you@example.com",
+                onValueChange = onEmailChange,
+                keyboardType = KeyboardType.Email,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) {
+                    V2Field(
+                        label = "验证码",
+                        value = form.code,
+                        placeholder = "邮箱验证码",
+                        onValueChange = onCodeChange,
+                        keyboardType = KeyboardType.Number,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                GhostButton(
+                    text = when {
+                        form.sendingCode -> "发送中…"
+                        form.cooldownSec > 0 -> "重新发送 ${form.cooldownSec}s"
+                        else -> "发送验证码"
+                    },
+                    onClick = onSendCode,
+                    modifier = Modifier.width(122.dp),
+                    enabled = !form.sendingCode && form.cooldownSec == 0 && !form.submitting,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            V2Field(
+                label = "新密码",
+                value = form.newPassword,
+                placeholder = "至少 8 位，含字母和数字",
+                onValueChange = onPasswordChange,
+                password = true,
+                keyboardType = KeyboardType.Password,
+            )
+            if (form.error != null) {
+                Spacer(Modifier.height(12.dp))
+                Label(form.error, 11f, V2Colors.rose700)
+            }
+            Spacer(Modifier.height(10.dp))
+            Label(
+                "密码至少 8 位，需同时包含字母和数字，不能与邮箱或用户名相同。",
+                10.5f,
+                V2Colors.ink(.40f),
+            )
+            Spacer(Modifier.height(18.dp))
+        }
+        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            PrimaryButton(
+                text = if (form.submitting) "重置中…" else "重置密码",
+                onClick = onSubmit,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !form.submitting,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
     }
 }
 

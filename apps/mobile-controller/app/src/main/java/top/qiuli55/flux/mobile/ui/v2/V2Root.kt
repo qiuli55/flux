@@ -718,6 +718,14 @@ fun FluxV2Root() {
                                     origin = V2Route.Profile,
                                 )
                             },
+                            onOpenAccountSecurity = {
+                                vm.openAccountSecurity(
+                                    onOpen = { url -> openInternalBrowser(url) },
+                                    onError = { message ->
+                                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                    },
+                                )
+                            },
                             onOpenSettings = { settingsOpen = true },
                             onCheckUpdate = { UpdateCenter.checkManually() },
                         )

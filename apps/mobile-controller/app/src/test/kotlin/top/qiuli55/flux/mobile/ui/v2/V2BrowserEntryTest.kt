@@ -50,6 +50,7 @@ class V2BrowserEntryTest {
                 onOpenBilling = {},
                 onOpenMemories = {},
                 onOpenBrowser = { openBrowserCount += 1 },
+                onOpenAccountSecurity = {},
                 onOpenSettings = {},
                 onCheckUpdate = {},
             )

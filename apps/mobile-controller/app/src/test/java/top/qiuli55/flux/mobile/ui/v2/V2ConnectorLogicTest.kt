@@ -145,6 +145,7 @@ class V2ConnectorLogicTest {
     fun `github moved from profile settings into connectors`() {
         assertTrue(PROFILE_SETTINGS_TITLES.contains("连接器"))
         assertTrue(PROFILE_SETTINGS_TITLES.contains("订阅与账号"))
+        assertTrue(PROFILE_SETTINGS_TITLES.contains("账号与安全"))
         assertFalse(PROFILE_SETTINGS_TITLES.any { it.contains("GitHub") })
         assertFalse(PROFILE_SETTINGS_TITLES.any { it.contains("ChatGPT") })
 
