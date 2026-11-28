@@ -27,6 +27,14 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Upgrade schema."""
     with op.batch_alter_table("tasks", schema=None) as batch_op:
+        # origin 新增 project_assistant（17 字符），原 String(16) 在 PostgreSQL 会截断/报错
+        batch_op.alter_column(
+            "origin",
+            existing_type=sa.String(length=16),
+            type_=sa.String(length=32),
+            existing_nullable=False,
+            existing_server_default="chat",
+        )
         batch_op.add_column(sa.Column("parent_task_id", sa.Uuid(), nullable=True))
         batch_op.create_index("ix_tasks_parent_task_id", ["parent_task_id"])
         batch_op.create_foreign_key(
@@ -68,3 +76,10 @@ def downgrade() -> None:
         batch_op.drop_constraint("fk_tasks_parent_task_id", type_="foreignkey")
         batch_op.drop_index("ix_tasks_parent_task_id")
         batch_op.drop_column("parent_task_id")
+        batch_op.alter_column(
+            "origin",
+            existing_type=sa.String(length=32),
+            type_=sa.String(length=16),
+            existing_nullable=False,
+            existing_server_default="chat",
+        )

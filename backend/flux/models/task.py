@@ -64,7 +64,12 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # 助理对话是真实任务（能跑 Agent、选模型），但不进首页对话列表。
     # 取值见 flux.enums.TaskOrigin；旧数据由 server_default 补成 chat。
     origin: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="chat", server_default="chat", index=True
+        # project_assistant 有 17 个字符：列宽必须 >=32，PostgreSQL 会严格校验
+        String(32),
+        nullable=False,
+        default="chat",
+        server_default="chat",
+        index=True,
     )
     # 临时子任务（2026-11-28）：挂在主助理对话下的一次执行工作。
     # 子任务本身是真实 Task（有 Run / 流式输出 / 产出），但只作为只读过程视图展示，
