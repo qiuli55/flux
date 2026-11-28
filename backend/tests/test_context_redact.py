@@ -193,6 +193,23 @@ def test_entropy_spares_plain_digits() -> None:
     assert result.matches == ()
 
 
+def test_entropy_spares_uploads_absolute_path() -> None:
+    """附件绝对路径不能被熵检测误判成 KEY（uploads 下的 hex 目录 + 文件名）。"""
+    path = "/tmp/flux/uploads/0123456789abcdef0123456789abcdef/a.txt"
+    result = redact(f"附件在 {path}")
+    assert result.text == f"附件在 {path}"
+    assert result.matches == ()
+
+
+def test_entropy_still_catches_base64_with_single_slash() -> None:
+    """只含一个 `/` 的候选不是路径，仍按高熵 base64 密钥打码。"""
+    token = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae/abcdefGHIJKL0123456789"
+    result = redact(f"value {token}")
+    assert result.text == "value [REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == token
+
+
 # --- 占位符编号与复用（映射 1:1）---
 
 

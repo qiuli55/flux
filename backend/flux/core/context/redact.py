@@ -276,7 +276,27 @@ def _looks_like_secret(token: str) -> bool:
     # 整串都是十六进制 → 是哈希/摘要（自家 sha256、事实脊柱凭证正在此列），不误伤
     if set(token) <= _HEX_CHARS:
         return False
+    # 文件系统路径不是密钥。候选字符类包含 `/`（标准 base64 需要），否则
+    # `/tmp/.../uploads/<hex>/a` 这类绝对路径会被整体当成一个高熵候选。
+    if _looks_like_filesystem_path(token):
+        return False
     return _entropy(token) >= _MIN_ENTROPY
+
+
+def _looks_like_filesystem_path(token: str) -> bool:
+    """候选是否更像文件系统路径，而不是密钥。
+
+    ``_CANDIDATE_RE`` 的字符类必须含 `/`（标准 base64 用的就是它），于是绝对路径
+    （尤其附件所在的 ``/tmp/.../uploads/<hex>/a.txt``）会被整体匹配成一个候选，
+    长度与熵都越线，被打成 ``[REDACTED:key]``。路径本身不是机密，且调用方（附件
+    必读路径）依赖它可读，故这里按"以 ``/`` 开头且再含至少一个 ``/``"排除 POSIX
+    绝对路径。
+
+    只含单个 `/` 的候选**不**在此列：那仍可能是夹了一个 `/` 的标准 base64 密钥，
+    照常走熵检测。Windows 盘符路径里的 `\\` / `:` 不在候选字符类中，正则会在那里
+    断开；`C:/Users/...` 的 ``/Users/...`` 部分同样按绝对路径排除。
+    """
+    return token.startswith("/") and token.count("/") >= 2
 
 
 def _entropy(token: str) -> float:
