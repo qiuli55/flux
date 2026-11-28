@@ -107,6 +107,66 @@
                     </StackPanel>
                 </Grid>
 
+                <!-- Cursor / 谷歌 Antigravity 官方账号连接（与手机「连接器」同一套后端 API） -->
+                <Border Classes="card pad" Margin="0,0,0,16" IsVisible="{Binding HasAgentConnectors}">
+                    <StackPanel Spacing="12">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Agent 连接器" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="用你自己的账号连接 Cursor / 谷歌 Antigravity。授权在电脑上的官方 CLI 完成，Flux 只下发任务并接收结果。"
+                                       FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}" />
+                        </StackPanel>
+                        <ItemsControl ItemsSource="{Binding AgentConnectors}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:AgentConnectorView">
+                                    <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="1"
+                                            CornerRadius="6" Padding="14" Margin="0,0,0,10">
+                                        <Grid ColumnDefinitions="*,Auto">
+                                            <StackPanel Grid.Column="0" Spacing="4">
+                                                <TextBlock Text="{Binding Title}" FontSize="13"
+                                                           FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                           Foreground="{DynamicResource TnText3}" />
+                                                <TextBlock Text="{Binding Detail}" FontSize="11"
+                                                           TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource TnText4}" />
+                                                <TextBlock Text="{Binding Message}" FontSize="11"
+                                                           TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource TnDanger}"
+                                                           IsVisible="{Binding HasMessage}" />
+                                                <Button Classes="btn subtle" Content="打开官方授权页"
+                                                        HorizontalAlignment="Left"
+                                                        Command="{Binding OpenUrlCommand}"
+                                                        IsVisible="{Binding HasUrl}" />
+                                                <StackPanel Orientation="Horizontal" Spacing="8"
+                                                            IsVisible="{Binding NeedsCode}">
+                                                    <TextBox Text="{Binding Code, Mode=TwoWay}"
+                                                             Width="240"
+                                                             Watermark="官方页面给出的授权码" />
+                                                    <Button Classes="btn subtle" Content="提交授权码"
+                                                            Command="{Binding SubmitCodeCommand}" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Spacing="8"
+                                                        VerticalAlignment="Center">
+                                                <Button Classes="btn primary"
+                                                        Content="{Binding ConnectLabel}"
+                                                        Command="{Binding ConnectCommand}"
+                                                        IsVisible="{Binding !IsConnected}"
+                                                        IsEnabled="{Binding !IsBusy}" />
+                                                <Button Classes="btn subtle" Content="退出"
+                                                        Command="{Binding LogoutCommand}"
+                                                        IsVisible="{Binding IsConnected}"
+                                                        IsEnabled="{Binding !IsBusy}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
                 <!-- 工具条：筛选项 + 计数 -->
                 <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,16">
                     <Border BorderBrush="{DynamicResource TnLine}" BorderThickness="1" CornerRadius="6"

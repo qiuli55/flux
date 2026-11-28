@@ -227,6 +227,8 @@ const RUNTIME_LABELS: Record<string, string> = {
   dsh: "内置 DSH",
   codex: "Codex CLI",
   opencode: "OpenCode CLI",
+  cursor: "Cursor",
+  antigravity: "谷歌 / Antigravity",
 };
 
 /**
@@ -260,7 +262,7 @@ function ExternalAgentsSection({
       </div>
       {installations.length === 0 ? (
         <div className="card m-agent-empty">
-          <p>还没扫描过本机 CLI Agent。点「扫描本机」会发现 codex / opencode 的安装与凭据状态。</p>
+          <p>还没扫描过本机 CLI Agent。点「扫描本机」会发现 codex / opencode / Cursor / Antigravity 的安装与凭据状态。</p>
         </div>
       ) : (
         <div className="m-agent-list">

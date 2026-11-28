@@ -147,6 +147,12 @@ public partial class AgentsViewModel : ViewModelBase
     [RelayCommand]
     private async Task Refresh() => await RefreshAsync();
 
+    private static bool IsUnreadyConnectorRuntime(string? runtime, HashSet<string> ready)
+    {
+        var value = runtime ?? "";
+        return value is "cursor" or "antigravity" && !ready.Contains(value);
+    }
+
     public async Task RefreshAsync()
     {
         var api = _api();
@@ -161,8 +167,17 @@ public partial class AgentsViewModel : ViewModelBase
         try
         {
             var agents = (await api.ListAgentDetailsAsync())?.Data ?? new List<AgentDetail>();
+            // 未接入的 Cursor / Antigravity 不展示成可派活的 Agent（与手机 / Web 同一口径）。
+            var installations = (await api.ListInstallationsAsync())?.Data ?? [];
+            var ready = installations
+                .Where(item => item.Status == "READY")
+                .Select(item => item.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var visible = agents
+                .Where(agent => !IsUnreadyConnectorRuntime(agent.Spec.Runtime, ready))
+                .ToList();
             Agents.Clear();
-            foreach (var agent in agents)
+            foreach (var agent in visible)
             {
                 Agents.Add(new AgentCard(agent, Brand, Muted));
             }
@@ -173,7 +188,12 @@ public partial class AgentsViewModel : ViewModelBase
             DshText = dsh is null
                 ? "DSH 状态未知"
                 : $"DSH {dsh.Provider ?? "—"} / {dsh.Model ?? "—"} · 原生模型 {models?.Models.Length ?? 0} · 密钥模型 {models?.KeyModels?.Length ?? 0}";
-            Hint = HasAgents ? $"共 {Agents.Count} 个 Agent" : "注册表为空，可先导入 Agent";
+            var hidden = agents.Count - visible.Count;
+            Hint = HasAgents
+                ? hidden > 0
+                    ? $"共 {Agents.Count} 个 Agent（另有 {hidden} 个未接入的 Agent 已隐藏）"
+                    : $"共 {Agents.Count} 个 Agent"
+                : "注册表为空，可先导入 Agent";
             AppLog.Info($"Agent 页刷新 · {Agents.Count} 个 · {DshText}");
         }
         catch (Exception ex)

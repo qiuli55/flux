@@ -106,6 +106,43 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<List<Installation>>?> ListInstallationsAsync(CancellationToken ct = default)
         => GetAsync<List<Installation>>("/api/v1/installations", ct);
 
+    public Task<ApiEnvelope<McpConnectorList>?> ListMcpConnectorsAsync(CancellationToken ct = default)
+        => GetAsync<McpConnectorList>("/api/v1/mcp-connectors", ct);
+
+    public Task<ApiEnvelope<AgentCliAccountStatus>?> CursorAccountAsync(CancellationToken ct = default)
+        => GetAsync<AgentCliAccountStatus>("/api/v1/cursor-account", ct);
+
+    public Task<ApiEnvelope<AgentCliAccountStatus>?> AntigravityAccountAsync(CancellationToken ct = default)
+        => GetAsync<AgentCliAccountStatus>("/api/v1/antigravity-account", ct);
+
+    public Task<ApiEnvelope<AgentCliLoginSession>?> StartAgentLoginAsync(
+        string kind,
+        CancellationToken ct = default)
+        => PostAsync<AgentCliLoginSession>($"/api/v1/{kind}-account/login", new { }, ct);
+
+    public Task<ApiEnvelope<AgentCliLoginSession>?> AgentLoginStateAsync(
+        string kind,
+        string loginId,
+        CancellationToken ct = default)
+        => GetAsync<AgentCliLoginSession>(
+            $"/api/v1/{kind}-account/login/{Uri.EscapeDataString(loginId)}",
+            ct);
+
+    public Task<ApiEnvelope<AgentCliLoginSession>?> SubmitAgentLoginCodeAsync(
+        string kind,
+        string loginId,
+        string code,
+        CancellationToken ct = default)
+        => PostAsync<AgentCliLoginSession>(
+            $"/api/v1/{kind}-account/login/{Uri.EscapeDataString(loginId)}/code",
+            new { code },
+            ct);
+
+    public Task<ApiEnvelope<AgentCliLogoutResult>?> LogoutAgentAccountAsync(
+        string kind,
+        CancellationToken ct = default)
+        => PostAsync<AgentCliLogoutResult>($"/api/v1/{kind}-account/logout", new { }, ct);
+
     public Task<ApiEnvelope<List<ImportedCapability>>?> ListCapabilitiesAsync(CancellationToken ct = default)
         => GetAsync<List<ImportedCapability>>("/api/v1/capabilities", ct);
 

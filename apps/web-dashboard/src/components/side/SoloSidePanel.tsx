@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../../api/client";
+import { AgentConnectorsCard } from "../AgentConnectorsCard";
 import type {
   CapabilityCandidate,
   CapabilityScanReport,
@@ -441,7 +442,9 @@ export function SoloSidePanel({
   );
 
   const connectorsPage = (
-    <section className="card side-card">
+    <>
+      <AgentConnectorsCard onChanged={onScan} />
+      <section className="card side-card">
       <div className="side-head">
         <b>连接器市场</b>
         <button type="button" className="link" disabled={installBusy === "scan"} onClick={onScan}>
@@ -450,7 +453,7 @@ export function SoloSidePanel({
       </div>
       {installations.length === 0 ? (
         <div className="empty-note">
-          还没扫描过本机 CLI。点「扫描本机」会发现 codex / opencode 的安装与凭据状态。
+          还没扫描过本机 CLI。点「扫描本机」会发现 codex / opencode / Cursor / Antigravity 的安装与凭据状态。
         </div>
       ) : (
         <ul className="side-list">
@@ -481,7 +484,8 @@ export function SoloSidePanel({
         </ul>
       )}
       <p className="ext-agent-note">接入 = 本机具备该 CLI 且验证通过；任务要真正走它，还需建一个该 runtime 的 Agent。</p>
-    </section>
+      </section>
+    </>
   );
 
   const connectorPage = (

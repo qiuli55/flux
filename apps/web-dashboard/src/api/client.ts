@@ -13,13 +13,15 @@ import { getAccessToken, getAuth, refreshAuth } from "./auth";
 import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
+  AgentCliAccountStatus, AgentCliLoginSession, AgentCliLogoutResult,
   ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
   CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change,
   ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
-  ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit,
+  ImportedCapability, Installation, McpConnectorList, Project, ReadyData,
+  RecoveryItem, ScanOutcome, SearchHit,
   SupervisorAssessResult, SupervisorDispatchOutcome, SupervisorDispatchThreadResult,
   SupervisorOverview, SupervisorPlanResult, SupervisorProcessResult, SupervisorProjectOverview,
   SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
@@ -187,6 +189,17 @@ export const api = {
   listAgents: () => getData<AgentHandle[]>("GET", "/agents"),
   createAgent: (body: AgentCreateRequest) => getData<AgentHandle>("POST", "/agents", body),
   listInstallations: () => getData<Installation[]>("GET", "/installations"),
+  listMcpConnectors: () => getData<McpConnectorList>("GET", "/mcp-connectors"),
+  cursorAccount: () => getData<AgentCliAccountStatus>("GET", "/cursor-account"),
+  antigravityAccount: () => getData<AgentCliAccountStatus>("GET", "/antigravity-account"),
+  startAgentLogin: (kind: "cursor" | "antigravity") =>
+    getData<AgentCliLoginSession>("POST", `/${kind}-account/login`, {}),
+  agentLoginState: (kind: "cursor" | "antigravity", loginId: string) =>
+    getData<AgentCliLoginSession>("GET", `/${kind}-account/login/${encodeURIComponent(loginId)}`),
+  submitAgentLoginCode: (kind: "cursor" | "antigravity", loginId: string, code: string) =>
+    getData<AgentCliLoginSession>("POST", `/${kind}-account/login/${encodeURIComponent(loginId)}/code`, { code }),
+  logoutAgentAccount: (kind: "cursor" | "antigravity") =>
+    getData<AgentCliLogoutResult>("POST", `/${kind}-account/logout`, {}),
   scanInstallations: () => getData<Installation[]>("POST", "/installations/scan"),
   connectInstallation: (body: { agent?: string; all?: boolean }) => getData<Installation | Installation[]>("POST", "/installations/connect", body),
   removeInstallation: (name: string) => getData<{ agent: string; removed: boolean }>("DELETE", `/installations/${name}`),

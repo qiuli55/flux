@@ -1182,10 +1182,21 @@ public partial class SoloViewModel : ViewModelBase
         SelectedModel ??= ModelChoices.FirstOrDefault();
 
         var agents = (await api.ListAgentDetailsAsync())?.Data ?? [];
+        var installations = (await api.ListInstallationsAsync())?.Data ?? [];
+        var ready = installations
+            .Where(item => item.Status == "READY")
+            .Select(item => item.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         AgentChoices.Clear();
         AgentChoices.Add(new AgentChoice(null, "内置 DSH"));
         foreach (var agent in agents)
         {
+            var runtime = agent.Spec.Runtime ?? "";
+            // 未接入的 Cursor / Antigravity 不进入可选执行者列表；接入后自动出现。
+            if (runtime is "cursor" or "antigravity" && !ready.Contains(runtime))
+            {
+                continue;
+            }
             var label = $"{agent.Spec.Name} · {agent.Spec.Role ?? agent.Spec.Runtime ?? "agent"}";
             // 非逐字流式的 Agent 仍可正常使用，只在选项上如实标注
             if (agent.Spec.NativeStreaming == false)
