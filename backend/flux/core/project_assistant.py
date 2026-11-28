@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections import defaultdict
 from typing import Any
@@ -50,12 +51,6 @@ _ACTIVE_STATUSES = {
     TaskStatus.RUNNING.value,
     TaskStatus.WAITING_FOR_USER_DECISION.value,
 }
-_FINAL_STATUSES = {
-    TaskStatus.COMPLETED.value,
-    TaskStatus.CANCELLED.value,
-    TaskStatus.FAILED.value,
-}
-
 _BUCKET_LABELS = {
     "running": "进行中",
     "possibly_stalled": "可能已停住",
@@ -321,10 +316,8 @@ class ProjectAssistantService:
                 continue
             messages, _ = await container.task_repo.list_messages(task_uuid, limit=1)
             last_message = messages[-1] if messages else None
-            last_activity = last_message.created_at if last_message is not None else task.updated_at
-            if last_activity is None:
-                last_activity = task.created_at
-            idle_seconds = max(0, int((now - as_utc(last_activity)).total_seconds()))
+            last_activity = _last_activity(task, last_message)
+            idle_seconds = _idle_seconds(last_activity, now)
             bucket = _progress_bucket(task.status, idle_seconds)
             counts[bucket] += 1
             items.append(
@@ -399,6 +392,8 @@ class ProjectAssistantService:
         """「接着干」：二次确认后，把新任务发进已有相关对话并续跑。
 
         `confirmed=False` / 缺失时直接 409，什么都不写；目标对话原样不动。
+        只有真正「进行中」（这一轮还在跑、更新尚未过期）才 409；「可能已停住」
+        在用户确认后先安全结束旧的一轮，再开始新一轮，避免并行写入。
         这不是临时子任务：目标对话仍是普通对话，不设 parent_task_id。
         """
         if not confirmed:
@@ -411,13 +406,25 @@ class ProjectAssistantService:
             raise ValidationError(
                 "接着干需要带上要发送的内容", details={"source_task_id": source_task_id}
             )
-        if task.status not in _FINAL_STATUSES:
+
+        # 与进度汇总同一套分桶：只有 recently active 的「进行中」才挡；可能已停住放行。
+        messages, _ = await container.task_repo.list_messages(task.id, limit=1)
+        last_message = messages[-1] if messages else None
+        idle_seconds = _idle_seconds(_last_activity(task, last_message), utcnow())
+        bucket = _progress_bucket(task.status, idle_seconds)
+        if bucket == "running":
             raise ConflictError(
                 "这段对话还在进行中；等这一轮结束后再接着干，或先看它的进度",
                 details={"task_id": str(task.id), "status": task.status},
             )
 
         previous_status = task.status
+        if bucket == "possibly_stalled":
+            await self._end_stalled_run(task)
+            # 旧的一轮已结束：起不来时退回「已取消」，不留下没有 Run 的 running 僵尸。
+            fallback_status = TaskStatus.CANCELLED
+        else:
+            fallback_status = TaskStatus(previous_status)
         task = await container.task_repo.reopen(task.id)
         user_message = (
             await container.task_repo.add_messages(
@@ -456,7 +463,7 @@ class ProjectAssistantService:
             # 不留下没有 Run 支撑的 running 僵尸。
             current = await container.task_repo.get(task.id)
             if current.run_id is None and current.status in _ACTIVE_STATUSES:
-                await container.task_repo.set_status(task.id, TaskStatus(previous_status))
+                await container.task_repo.set_status(task.id, fallback_status)
             raise
         logger.info("接着干：项目助理=%s 目标对话=%s 附件=%d", assistant.id, task.id, len(files))
         return {
@@ -531,6 +538,21 @@ class ProjectAssistantService:
             "origin": TaskOrigin.CHAT.value,
         }
 
+    async def _end_stalled_run(self, task: Task) -> None:
+        """安全结束「可能已停住」的一轮：取消排队/还在的旧 Run，再标记为已取消。
+
+        先标终态再 reopen：旧 Run 的终态事件即便晚到，也会因为任务已不是终态前的
+        active 状态（且随后 run_id 被清掉）而不会把新一轮写回 running。
+        """
+        container = self._container
+        with contextlib.suppress(NotFoundError):
+            container.scheduler.cancel(str(task.id))
+        if task.run_id:
+            # Run 可能早已不存在或已属终态：结束失败不应挡住用户接着干。
+            with contextlib.suppress(Exception):
+                await container.dsh.cancel(task.run_id)
+        await container.task_repo.set_status(task.id, TaskStatus.CANCELLED)
+
     async def _related_task(self, assistant: ProjectAssistant, source_task_id: str) -> Task:
         """校验目标对话确实属于这个项目助理的来源集合，且是一条普通对话。"""
         try:
@@ -596,6 +618,16 @@ def _task_status_label(status: str) -> str:
         TaskStatus.FAILED.value: "失败",
         TaskStatus.CANCELLED.value: "已取消",
     }.get(status, status)
+
+
+def _last_activity(task: Task, last_message: Any | None) -> Any:
+    """最后一次活动时间：有消息看消息时间，没消息看任务更新时间。"""
+    last_activity = last_message.created_at if last_message is not None else task.updated_at
+    return last_activity if last_activity is not None else task.created_at
+
+
+def _idle_seconds(last_activity: Any, now: Any) -> int:
+    return max(0, int((now - as_utc(last_activity)).total_seconds()))
 
 
 def _progress_bucket(status: str, idle_seconds: int) -> str:

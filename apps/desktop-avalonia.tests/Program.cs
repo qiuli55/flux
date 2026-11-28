@@ -119,7 +119,7 @@ internal static class Program
             "",
             3,
             true);
-        True("可能已停住先不叠第二轮", !stalled.CanContinue);
+        True("可能已停住可以接着干", stalled.CanContinue);
         Equal("空闲文案", "最后更新 10 小时前", stalled.IdleText);
 
         var running = stalled with { Bucket = "running" };
@@ -127,6 +127,9 @@ internal static class Program
 
         var done = stalled with { Bucket = "completed" };
         True("已完成可以接着干", done.CanContinue);
+
+        var failed = stalled with { Bucket = "failed" };
+        True("失败可以接着干", failed.CanContinue);
 
         var progress = new AssistantProgress(
             "a1",

@@ -41,6 +41,12 @@ import kotlinx.coroutines.delay
 import top.qiuli55.flux.mobile.data.AssistantHistoryDetail
 import top.qiuli55.flux.mobile.data.AssistantProgressItem
 
+/**
+ * 「接着干」是否可用：只有真正进行中（这一轮还在跑、更新尚未过期）先不叠第二轮。
+ * 「可能已停住」在用户二次确认后由后端安全结束旧的一轮，可以接着干。
+ */
+internal fun canContinueConversation(bucket: String): Boolean = bucket != "running"
+
 private fun bucketTone(bucket: String): Color = when (bucket) {
     "possibly_stalled" -> V2Colors.amber700
     "running" -> V2Colors.cyan700
@@ -218,10 +224,8 @@ fun V2ProjectAssistantScreen(
                                 }
                                 ActionChip(
                                     "接着干",
-                                    // 仍在进行中 / 可能已停住的对话先别叠第二轮，等这一轮收尾
-                                    enabled = !busy &&
-                                        item.bucket != "running" &&
-                                        item.bucket != "possibly_stalled",
+                                    // 真正进行中先别叠第二轮；可能已停住可在二次确认后继续
+                                    enabled = !busy && canContinueConversation(item.bucket),
                                 ) {
                                     continueTarget = item
                                     continueText = ""

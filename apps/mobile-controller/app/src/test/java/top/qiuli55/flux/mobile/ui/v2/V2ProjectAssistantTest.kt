@@ -47,6 +47,15 @@ class V2ProjectAssistantTest {
     }
 
     @Test
+    fun `continue is blocked only while the current round is running`() {
+        assertFalse(canContinueConversation("running"))
+        assertTrue(canContinueConversation("possibly_stalled"))
+        assertTrue(canContinueConversation("completed"))
+        assertTrue(canContinueConversation("failed"))
+        assertTrue(canContinueConversation("cancelled"))
+    }
+
+    @Test
     fun `read history detail stays read only and keeps messages`() {
         val detail = json.decodeFromString<AssistantHistoryDetail>(
             """

@@ -243,8 +243,10 @@ def test_continue_after_confirmation_sends_task_into_existing_conversation(
 
 
 def test_continue_rejects_running_target(client: TestClient) -> None:
+    """真正进行中（这一轮还在跑、更新尚未过期）仍然不允许接着干。"""
     source = _source(client)
     _set_status(client, source["id"], TaskStatus.RUNNING)
+    _add_message(client, source["id"], TaskMessageRole.USER.value, "刚发了一句")
     created = _assistant(client, sources=[source["id"]])
     assistant_id = created.json()["data"]["id"]
 
@@ -253,6 +255,58 @@ def test_continue_rejects_running_target(client: TestClient) -> None:
         json={"source_task_id": source["id"], "content": "继续", "confirmed": True},
     )
     assert response.status_code == 409
+    assert "还在进行中" in response.json()["message"]
+
+
+def test_continue_rejects_possibly_stalled_without_confirmation(client: TestClient) -> None:
+    """可能已停住也必须二次确认：未确认时 409，原对话一条消息都不变。"""
+    source = _source(client)
+    _set_status(client, source["id"], TaskStatus.RUNNING)
+    _age_task(client, source["id"], hours=10)
+    before = _messages(client, source["id"])
+    created = _assistant(client, sources=[source["id"]])
+    assistant_id = created.json()["data"]["id"]
+
+    response = client.post(
+        f"{PREFIX}/assistants/{assistant_id}/continue",
+        json={"source_task_id": source["id"], "content": "继续", "confirmed": False},
+    )
+    assert response.status_code == 409
+    assert _messages(client, source["id"]) == before
+    assert client.get(f"{PREFIX}/tasks/{source['id']}").json()["data"]["status"] == "running"
+
+
+def test_continue_allows_possibly_stalled_after_confirmation(client: TestClient) -> None:
+    """可能已停住：用户再次确认后，先结束旧的一轮，再追加消息并续跑。"""
+    source = _source(client)
+    _set_status(client, source["id"], TaskStatus.RUNNING)
+    _age_task(client, source["id"], hours=10)
+    created = _assistant(client, sources=[source["id"]])
+    assistant_id = created.json()["data"]["id"]
+    container: Container = client.app.state.container
+    started: list[str] = []
+
+    async def _fake_start(task, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        started.append(str(task.id))
+        updated = await container.task_repo.set_status(task.id, TaskStatus.RUNNING)
+        return SimpleNamespace(task=updated, run={"run_id": "fake"})
+
+    container.task_run_service.start = _fake_start  # type: ignore[method-assign]
+
+    response = client.post(
+        f"{PREFIX}/assistants/{assistant_id}/continue",
+        json={
+            "source_task_id": source["id"],
+            "content": "登录页的错误分支还没补，接着做",
+            "confirmed": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["task"]["id"] == source["id"]
+    assert started == [source["id"]]
+    assert _messages(client, source["id"])[-1]["content"] == "登录页的错误分支还没补，接着做"
+    assert client.get(f"{PREFIX}/tasks/{source['id']}").json()["data"]["status"] == "running"
 
 
 # --- 开副本 ---

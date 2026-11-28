@@ -83,8 +83,8 @@ public sealed record AssistantProgressItem(
 
     public string SummaryText => LastMessage.Length > 0 ? $"{IdleText} · {LastMessage}" : IdleText;
 
-    /// <summary>仍在进行中 / 可能已停住时先别叠第二轮；等这一轮收尾或先停止。</summary>
-    public bool CanContinue => Bucket is not ("running" or "possibly_stalled");
+    /// <summary>真正进行中先别叠第二轮；可能已停住可在二次确认后接着干。</summary>
+    public bool CanContinue => Bucket is not "running";
 }
 
 /// <summary>GET /assistants/{id}/progress：只读汇总，不启动电脑 Agent、不派子任务。</summary>
