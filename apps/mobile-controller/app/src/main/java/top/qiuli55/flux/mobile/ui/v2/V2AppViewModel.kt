@@ -1514,3 +1514,10 @@ internal fun relativeTime(raw: String?): String {
  */
 internal fun Task.isOrdinaryConversation(): Boolean =
     origin != "assistant" && origin != "subtask" && origin != "project_assistant"
+
+/** 右上角切换器的可选项：主助理永远第一，其后是已创建的项目助理；临时子任务不在其中。 */
+internal fun AssistantList.switcherOptions(): List<AssistantEntry> =
+    buildList {
+        add(master)
+        addAll(projects)
+    }

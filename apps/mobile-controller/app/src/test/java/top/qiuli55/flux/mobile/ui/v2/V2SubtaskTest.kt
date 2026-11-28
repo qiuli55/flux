@@ -10,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import top.qiuli55.flux.mobile.data.AssistantList
 import top.qiuli55.flux.mobile.data.Task
 
 class V2SubtaskTest {
@@ -47,6 +48,26 @@ class V2SubtaskTest {
     fun `subtask payload without id is ignored instead of crashing`() {
         val payload = Json.parseToJsonElement("""{"status":"running"}""")
         assertNull(parseSubtaskCard(payload))
+    }
+
+    @Test
+    fun `assistant switcher starts with master and only lists created projects`() {
+        val list = Json { ignoreUnknownKeys = true }.decodeFromString<AssistantList>(
+            """
+            {
+              "master": {"id":"master","name":"主助理","kind":"master","conversation_task_id":"t-master"},
+              "projects": [
+                {"id":"p1","name":"登录改造","kind":"project","conversation_task_id":"t-p1"}
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        val options = list.switcherOptions()
+        assertEquals(listOf("master", "p1"), options.map { it.id })
+        assertEquals("主助理", options.first().name)
+        // 切换器只有主助理 + 已创建项目助理，不含临时子任务
+        assertTrue(options.none { it.kind == "subtask" })
     }
 
     @Test

@@ -596,7 +596,7 @@ fun FluxV2Root() {
                             conversations = app.conversations,
                             extraTop = extraTop,
                             onOpenArtifacts = { route = V2Route.Artifacts },
-                            assistantOptions = listOf(app.assistants.master) + app.assistants.projects,
+                            assistantOptions = app.assistants.switcherOptions(),
                             activeAssistantId = activeAssistantId,
                             assistantsLoading = app.assistantsLoading,
                             onSelectAssistant = { openAssistantEntry(it) },
