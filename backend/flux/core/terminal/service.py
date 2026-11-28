@@ -409,13 +409,17 @@ class TerminalService:
         ingestor = self._context_ingestor
         if ingestor is None:
             return
+        # target_ref 会被目录行 / 折叠行 / 事实脊柱投影给 agent，必须在写入前先打码——
+        # 否则命令行里的密钥/连接串密码可绕过「明文不进 head/blob」的契约。与 `_emit` /
+        # `ContextIngestor` 用同一套规则；正文仍交给 ingest 打码，不重复处理占位符。
+        target = redact(command).text
         body = f"$ {command}\nexit={exit_code}\n{output}"
         await ingestor.ingest(
             run_id=run_id,
             turn_id=turn_id,
             kind=StepKind.COMMAND,
             status=StepStatus.OK if exit_code == 0 else StepStatus.FAIL,
-            target_ref=command[:1024] or None,
+            target_ref=target[:1024] or None,
             exit_code=exit_code,
             text=body,
         )

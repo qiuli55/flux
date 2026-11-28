@@ -20,11 +20,14 @@ import pytest
 
 from flux.container import Container
 from flux.core.agent_runtime import platforms
+from flux.core.context.catalog import catalog_line, render_catalog
+from flux.core.context.spine import evidence_line
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools.base import ToolContext
 from flux.core.mcp.tools.terminal_tools import terminal_execute
 from flux.enums import (
     Capability,
+    StepKind,
     TerminalEventKind,
     TerminalSessionKind,
     TerminalSessionStatus,
@@ -99,6 +102,69 @@ async def test_terminal_events_are_redacted_before_storage(
     assert key not in stored
     assert "TEST_SECRET_12345" not in stored
     assert "user:TEST_SECRET_12345" not in stored
+
+
+async def test_terminal_command_target_ref_is_redacted_before_context_ingest(
+    apply_container: Container,
+) -> None:
+    """命令写入 `context_steps.target_ref` 前必须打码（§10.1，PR #42 P1）。
+
+    目录行（`catalog_line` / `_fold_line`）与事实脊柱（`evidence_line`）都会把
+    `target_ref` 投影给 agent；若原样写入命令行，密钥就能绕过「明文不进 head/blob」的
+    契约进入库和模型上下文。用例走真实 `run_command`，再从落库 step 校验。值全部虚构。
+    """
+    session = await apply_container.terminal.create_session()
+    key = "sk-TEST_SECRET_12345abcdefghijklmnop"
+    dsn = "postgres://user:TEST_SECRET_12345@db.internal:5432/app"
+    # 用 echo 让密钥出现在命令开头：目录行会截断到 60 字符，这样占位符也能被验证到。
+    key_command = f"echo {key}"
+    dsn_command = f"echo {dsn}"
+
+    # key 命令跑两次：两次 target_ref 相同 → 目录行折叠走 `_fold_line` 分支。
+    await apply_container.terminal.run_command(session.id, key_command)
+    await apply_container.terminal.run_command(session.id, key_command)
+    await apply_container.terminal.run_command(session.id, dsn_command)
+
+    # 无绑定 Run 时归属键是会话 id（见 `_run_locked` 的 run_id 取值）。
+    steps = await apply_container.context_steps.list_by_run(str(session.id))
+    command_steps = [step for step in steps if step.kind == StepKind.COMMAND.value]
+    assert len(command_steps) == 3
+    key_step, dsn_step = command_steps[0], command_steps[-1]
+
+    # 1) 落库 step 的 target_ref：没有明文，且带着脱敏占位符。
+    assert key_step.target_ref is not None
+    assert key not in key_step.target_ref
+    assert "TEST_SECRET_12345" not in key_step.target_ref
+    assert "[REDACTED:key]" in key_step.target_ref
+
+    assert dsn_step.target_ref is not None
+    assert "TEST_SECRET_12345" not in dsn_step.target_ref
+    assert "user:TEST_SECRET_12345" not in dsn_step.target_ref
+    assert "[REDACTED:cred]" in dsn_step.target_ref
+
+    # 2) 目录行（含折叠行）投影不含明文。
+    line = catalog_line(key_step)
+    assert key not in line
+    assert "TEST_SECRET_12345" not in line
+    assert "[REDACTED:key]" in line
+
+    folded = render_catalog(command_steps)
+    assert "×2" in folded  # 确认真的走了 `_fold_line`
+    assert key not in folded
+    assert "TEST_SECRET_12345" not in folded
+    assert "[REDACTED:key]" in folded
+
+    # 3) 事实脊柱行不含明文（key 走命令目标分支；dsn 走 URL 分支）。
+    key_spine = evidence_line(key_step)
+    assert key_spine is not None
+    assert key not in key_spine
+    assert "[REDACTED:key]" in key_spine
+
+    dsn_spine = evidence_line(dsn_step)
+    assert dsn_spine is not None
+    assert "TEST_SECRET_12345" not in dsn_spine
+    assert "user:TEST_SECRET_12345" not in dsn_spine
+    assert "[REDACTED:cred]" in dsn_spine
 
 
 async def test_run_command_reports_failure_exit_code(apply_container: Container) -> None:
