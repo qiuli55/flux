@@ -430,6 +430,69 @@ export interface AssistantSuggestion {
   titles: string[];
 }
 
+/** 项目助理的进度汇总项：只读，来自服务端已有记录。 */
+export interface AssistantProgressItem {
+  task_id: string;
+  title: string;
+  status: string;
+  status_label: string;
+  /** running / possibly_stalled / failed / completed / cancelled / unknown */
+  bucket: string;
+  bucket_label: string;
+  idle_hours: number;
+  last_activity_at: string;
+  last_message: string;
+  message_count: number;
+  read_only: boolean;
+}
+
+/** GET /assistants/{id}/progress */
+export interface AssistantProgress {
+  assistant_id: string;
+  assistant_name: string;
+  generated_at: string;
+  /** 「可能已停住」阈值（小时），由服务端常量返回 */
+  stalled_after_hours: number;
+  counts: Record<string, number>;
+  conversations: AssistantProgressItem[];
+  missing_sources: string[];
+}
+
+/** GET /assistants/{id}/history */
+export interface AssistantHistory {
+  assistant_id: string;
+  assistant_name: string;
+  read_only: boolean;
+  count: number;
+  conversations: AssistantProgressItem[];
+  missing_sources: string[];
+}
+
+/** GET /assistants/{id}/history/{task_id}：只读打开一条相关对话 */
+export interface AssistantHistoryDetail {
+  assistant_id: string;
+  read_only: boolean;
+  has_more: boolean;
+  task: Task;
+  messages: TaskMessage[];
+}
+
+/** POST /assistants/{id}/continue：二次确认后接着干 */
+export interface AssistantContinueOutcome {
+  task: Task;
+  messages: TaskMessage[];
+  read_only: boolean;
+}
+
+/** POST /assistants/{id}/fork：二次确认后开副本 */
+export interface AssistantForkOutcome {
+  task: Task;
+  source_task_id: string;
+  summary_chars: number;
+  parent_task_id: null;
+  origin: string;
+}
+
 /** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
 export interface ApiKeyEntry {
   id: string;
