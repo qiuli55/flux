@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.WorkspacePremium
@@ -63,6 +64,7 @@ fun V2ProfileScreen(
     onOpenBilling: () -> Unit,
     onOpenMemories: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onOpenAccountSecurity: () -> Unit,
     onOpenSettings: () -> Unit,
     onCheckUpdate: () -> Unit,
 ) {
@@ -77,8 +79,18 @@ fun V2ProfileScreen(
         AccountCard(
             name = accountName,
             deviceName = deviceName,
-            onClick = onOpenSettings,
+            onClick = onOpenAccountSecurity,
         )
+
+        Spacer(Modifier.height(14.dp))
+        V2SettingsCard {
+            // 账号卡与这一行走同一个账号云入口；不再误链到「通知与偏好」。
+            V2SettingRow(
+                icon = Icons.Outlined.Security,
+                title = "账号与安全",
+                onClick = onOpenAccountSecurity,
+            )
+        }
 
         Spacer(Modifier.height(14.dp))
         V2SettingsCard {
@@ -229,6 +241,7 @@ internal val PROFILE_SETTINGS_TITLES = listOf(
     "模型与密钥",
     "套餐额度",
     "用户记忆",
+    "账号与安全",
     "通知与偏好",
     "检查更新",
 )

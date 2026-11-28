@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -268,6 +269,43 @@ class V2AppViewModel : FluxViewModel() {
                 error = null,
             )
             refresh()
+        }
+    }
+
+    /**
+     * 「账号与安全」：先用当前登录态换一次性网页地址，再交给内置浏览器。
+     *
+     * access token 即将过期时先续期，并把新的 refresh / access token 合并写回，
+     * 保留已选设备信息；失败只回调中文错误，不打开会落到未登录页的裸地址。
+     */
+    fun openAccountSecurity(onOpen: (String) -> Unit, onError: (String) -> Unit) {
+        val session = _state.value.account
+        if (session == null || !session.isSignedIn) {
+            onError("请先登录 Flux 账号后再管理账号与安全")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                var active = session
+                if (active.isExpiringSoon && active.refreshToken.isNotBlank()) {
+                    active = runCatching {
+                        val fresh = CloudApi(active.cloudUrl).refresh(active.refreshToken)
+                        fresh.copy(deviceId = active.deviceId, deviceName = active.deviceName)
+                    }.onSuccess { fresh ->
+                        FluxEnv.settings.saveAccount(fresh)
+                        if (fresh.hasDevice) {
+                            FluxEnv.settings.save(fresh.proxyBaseUrl, fresh.accessToken)
+                        }
+                        _state.value = _state.value.copy(account = fresh)
+                    }.getOrElse { active }
+                }
+                val url = CloudApi(active.cloudUrl).webSession(active.accessToken)
+                onOpen(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onError(readable(e))
+            }
         }
     }
 

@@ -67,6 +67,17 @@ data class CloudTokenResponse(
 )
 
 @Serializable
+data class MailStatus(
+    @SerialName("enabled") val enabled: Boolean = false,
+)
+
+@Serializable
+data class WebSessionResponse(
+    val url: String = "",
+    @SerialName("expires_in") val expiresIn: Int = 0,
+)
+
+@Serializable
 data class DeviceInfo(
     @SerialName("device_id") val deviceId: String = "",
     val name: String = "",
@@ -91,8 +102,43 @@ class CloudApiException(
     override val message: String,
 ) : Exception(message)
 
-/** 账号云 REST 客户端：登录 / 换取 / 续期 / 设备列表。 */
-class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
+/**
+ * 账号云登录相关接口。
+ *
+ * 抽成接口只是为了让登录页能在 JVM 测试里注入假实现；生产环境仍然只用 [CloudApi]。
+ */
+interface CloudAuthApi {
+    fun oauthStartUrl(
+        provider: String,
+        redirect: String = "flux://auth",
+        codeChallenge: String = "",
+    ): String
+
+    suspend fun login(identifier: String, password: String): AccountSession
+
+    suspend fun exchange(code: String, codeVerifier: String = ""): AccountSession
+
+    /** 账号云当前是否允许发送邮件；网络失败由调用方按「不可用」处理。 */
+    suspend fun mailStatus(): Boolean
+
+    suspend fun sendRegisterCode(email: String)
+
+    /** 注册并直接换回会话；邮件服务关闭时 [code] 可以省略。 */
+    suspend fun register(
+        email: String,
+        username: String,
+        password: String,
+        code: String? = null,
+    ): AccountSession
+
+    suspend fun forgotPassword(email: String)
+
+    /** 重置密码只返回服务端消息，不会带来登录态。 */
+    suspend fun resetPassword(email: String, code: String, newPassword: String): String
+}
+
+/** 账号云 REST 客户端：登录 / 换取 / 续期 / 设备列表 / 注册与找回密码。 */
+class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) : CloudAuthApi {
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -104,7 +150,7 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun login(identifier: String, password: String): AccountSession =
+    override suspend fun login(identifier: String, password: String): AccountSession =
         toSession(
             postJson(
                 "api/auth/login/token",
@@ -115,7 +161,7 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
             ),
         )
 
-    suspend fun exchange(code: String, codeVerifier: String = ""): AccountSession =
+    override suspend fun exchange(code: String, codeVerifier: String): AccountSession =
         toSession(
             postJson(
                 "api/auth/exchange",
@@ -125,6 +171,73 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
                 }.toString(),
             ),
         )
+
+    override suspend fun mailStatus(): Boolean =
+        json.decodeFromString<MailStatus>(getJson("api/auth/mail-status")).enabled
+
+    override suspend fun sendRegisterCode(email: String) {
+        postJson(
+            "api/auth/register/send-code",
+            buildJsonObject { put("email", email.trim()) }.toString(),
+        )
+    }
+
+    override suspend fun register(
+        email: String,
+        username: String,
+        password: String,
+        code: String?,
+    ): AccountSession = toSession(
+        postJson(
+            "api/auth/register/token",
+            buildJsonObject {
+                put("email", email.trim())
+                put("username", username.trim())
+                put("password", password)
+                if (!code.isNullOrBlank()) put("code", code.trim())
+            }.toString(),
+        ),
+    )
+
+    override suspend fun forgotPassword(email: String) {
+        postJson(
+            "api/auth/password/forgot",
+            buildJsonObject { put("email", email.trim()) }.toString(),
+        )
+    }
+
+    override suspend fun resetPassword(
+        email: String,
+        code: String,
+        newPassword: String,
+    ): String = postJson(
+        "api/auth/password/reset",
+        buildJsonObject {
+            put("email", email.trim())
+            put("code", code.trim())
+            put("new_password", newPassword)
+        }.toString(),
+    )
+
+    /**
+     * 用当前 access token 换一次性网页登录地址（内置浏览器打开）。
+     *
+     * 账号云约定是 `POST /api/auth/web-session`（需 Bearer），不是 GET；
+     * 空 body 用 `{}` 满足 JSON 请求体校验。
+     */
+    suspend fun webSession(accessToken: String): String {
+        val text = postJson("api/auth/web-session", "{}", accessToken)
+        val dto = try {
+            json.decodeFromString<WebSessionResponse>(text)
+        } catch (_: Exception) {
+            throw CloudApiException("invalid_response", "账号云返回的登录链接无法解析")
+        }
+        val url = dto.url.trim()
+        if (url.isBlank()) {
+            throw CloudApiException("invalid_response", "账号云没有返回有效的登录链接")
+        }
+        return url
+    }
 
     suspend fun refresh(refreshToken: String): AccountSession =
         toSession(
@@ -144,10 +257,10 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
         json.decodeFromString(execute(request))
     }
 
-    fun oauthStartUrl(
+    override fun oauthStartUrl(
         provider: String,
-        redirect: String = "flux://auth",
-        codeChallenge: String = "",
+        redirect: String,
+        codeChallenge: String,
     ): String {
         val base = "${baseUrl.trimEnd('/')}/api/auth/oauth/$provider/start?next=" +
             URLEncoder.encode(redirect, "UTF-8")
@@ -170,31 +283,50 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
         )
     }
 
-    private suspend fun postJson(path: String, body: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
+    private suspend fun postJson(
+        path: String,
+        body: String,
+        accessToken: String = "",
+    ): String = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
             .url("${baseUrl.trimEnd('/')}/$path")
             .header("Accept", "application/json")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-        execute(request)
+        if (accessToken.isNotBlank()) {
+            builder.header("Authorization", "Bearer $accessToken")
+        }
+        execute(builder.build())
     }
+
+    private suspend fun getJson(path: String, accessToken: String = ""): String =
+        withContext(Dispatchers.IO) {
+            val builder = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}/$path")
+                .header("Accept", "application/json")
+                .get()
+            if (accessToken.isNotBlank()) {
+                builder.header("Authorization", "Bearer $accessToken")
+            }
+            execute(builder.build())
+        }
 
     private fun execute(request: Request): String {
         val response = client.newCall(request).execute()
         response.use {
             val text = it.body?.string().orEmpty()
             if (it.isSuccessful) return text
-            val detail = runCatching {
-                json.decodeFromString<Map<String, String>>(text)["detail"]
-            }.getOrNull()
-            val code = when (it.code) {
-                401 -> "unauthenticated"
-                403 -> "forbidden"
-                else -> "http_${it.code}"
-            }
-            throw CloudApiException(code, detail ?: "请求失败（HTTP ${it.code}）")
+            throw parseCloudError(text, it.code)
         }
     }
+}
+
+/**
+ * 账号云错误体解析：复用 FluxApi 的严格解析，兼容
+ * `{"detail":"中文"}`、`{"detail":[{"msg":"中文"}]}` 与 `{"message":"中文"}`。
+ */
+internal fun parseCloudError(text: String, status: Int): CloudApiException {
+    val info = parseApiError(text, status)
+    return CloudApiException(info.code, info.message)
 }
 
 /** OAuth 回跳（flux://auth?code=...）把授权码交给登录页。 */
