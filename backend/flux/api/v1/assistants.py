@@ -14,11 +14,16 @@ from fastapi import APIRouter, Depends
 from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
+from flux.core.project_assistant import progress_text
 from flux.core.task_engine.subtask_dispatcher import status_label
 from flux.enums import TaskOrigin
 from flux.errors import BadRequestError, NotFoundError
 from flux.logging import get_logger
-from flux.schemas.api import ProjectAssistantCreateRequest
+from flux.schemas.api import (
+    ProjectAssistantContinueRequest,
+    ProjectAssistantCreateRequest,
+    ProjectAssistantForkRequest,
+)
 
 router = APIRouter(prefix="/assistants", tags=["assistants"])
 logger = get_logger(__name__)
@@ -62,6 +67,74 @@ async def get_assistant(
 ) -> dict[str, object]:
     assistant = await _require_assistant(container, assistant_id)
     return ok(_project_summary(assistant))
+
+
+@router.get("/{assistant_id}/progress")
+async def get_assistant_progress(
+    assistant_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """只读汇总相关对话进度：进行中 / 可能已停住 / 失败 / 已完成。
+
+    数据全部来自服务端已有记录，不启动电脑 Agent、不派子任务。
+    """
+    assistant = await _require_assistant(container, assistant_id)
+    progress = await container.project_assistant_service.progress(assistant)
+    return ok(progress, metadata={"text": progress_text(progress)})
+
+
+@router.get("/{assistant_id}/history")
+async def list_assistant_history(
+    assistant_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """「读历史」：列出可只读查看的相关对话；只读，不写来源对话。"""
+    assistant = await _require_assistant(container, assistant_id)
+    history = await container.project_assistant_service.history(assistant)
+    return ok(history, metadata={"count": history["count"]})
+
+
+@router.get("/{assistant_id}/history/{task_id}")
+async def read_assistant_history(
+    assistant_id: str, task_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """「读历史」：只读打开一条相关对话及其消息（输入在客户端禁用）。"""
+    assistant = await _require_assistant(container, assistant_id)
+    data = await container.project_assistant_service.read_history(assistant, task_id)
+    return ok(data)
+
+
+@router.post("/{assistant_id}/continue")
+async def continue_assistant_conversation(
+    assistant_id: str,
+    payload: ProjectAssistantContinueRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """「接着干」：二次确认后向已有相关对话发送新任务并续跑。未确认则 409、什么都不写。"""
+    assistant = await _require_assistant(container, assistant_id)
+    data = await container.project_assistant_service.continue_confirmed(
+        assistant,
+        source_task_id=payload.source_task_id,
+        content=payload.content,
+        attachment_ids=payload.attachment_ids,
+        confirmed=payload.confirmed,
+    )
+    return ok(data, metadata={"route": "continue", "read_only": False})
+
+
+@router.post("/{assistant_id}/fork")
+async def fork_assistant_conversation(
+    assistant_id: str,
+    payload: ProjectAssistantForkRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """「开副本」：二次确认后新建独立常驻对话，带上源对话摘要；原文不变。"""
+    assistant = await _require_assistant(container, assistant_id)
+    data = await container.project_assistant_service.fork_confirmed(
+        assistant,
+        source_task_id=payload.source_task_id,
+        name=payload.name,
+        confirmed=payload.confirmed,
+    )
+    return ok(data, metadata={"route": "fork"})
 
 
 @router.delete("/{assistant_id}")

@@ -30,6 +30,7 @@ from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
+from flux.core.project_assistant import progress_text
 from flux.core.task_engine.assistant import validate_confirmation_items
 from flux.core.task_engine.context_usage import (
     CONTEXT_MESSAGE_KINDS,
@@ -745,6 +746,12 @@ async def _project_assistant_reply(
         if assistant is not None
         else "（还没有关联任何项目对话）"
     )
+    # 进入项目助理对话 / 询问进度时，先给一份确定性的状态汇总，再让助理补充分析。
+    # 这份汇总只读服务端已有记录，不启动电脑 Agent、不派子任务。
+    summary_text = ""
+    if assistant is not None:
+        progress = await container.project_assistant_service.progress(assistant)
+        summary_text = progress_text(progress)
     history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
     await container.task_stream.publish(task_uuid, "assistant_start", {})
 
@@ -763,14 +770,19 @@ async def _project_assistant_reply(
         on_delta=_on_delta,
         persona="project_assistant",
     )
+    reply_text = f"{summary_text}\n\n{turn.reply}" if summary_text else turn.reply
+    payload = turn.payload()
+    if summary_text:
+        # 客户端可据此渲染「进度汇总」区块，而不必从正文里猜。
+        payload = {**payload, "progress_summary": True}
     reply = (
         await container.task_repo.add_messages(
             task_uuid,
             [
                 MessageDraft(
                     role=TaskMessageRole.ASSISTANT.value,
-                    content=turn.reply,
-                    payload=turn.payload(),
+                    content=reply_text,
+                    payload=payload,
                 )
             ],
         )

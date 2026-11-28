@@ -95,6 +95,29 @@ class ProjectAssistantCreateRequest(BaseModel):
     confirmed: bool = False
 
 
+class ProjectAssistantContinueRequest(BaseModel):
+    """「接着干」：二次确认后向一条已有相关对话发送新任务。
+
+    `confirmed` 必须为 true；false / 缺失时后端直接 409，什么都不写。
+    """
+
+    source_task_id: str = Field(min_length=1, max_length=64)
+    content: str = Field(default="", max_length=8000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    confirmed: bool = False
+
+
+class ProjectAssistantForkRequest(BaseModel):
+    """「开副本」：二次确认后新建一条独立常驻对话。
+
+    `confirmed` 必须为 true；false / 缺失时后端直接 409，不创建任何内容。
+    """
+
+    source_task_id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, max_length=64)
+    confirmed: bool = False
+
+
 class TaskMessageCreateRequest(BaseModel):
     """发一条任务消息（任务执行中心的对话输入）。
 

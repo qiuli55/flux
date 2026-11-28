@@ -15,8 +15,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from flux.enums import TaskOrigin
-from flux.errors import ConflictError, NotFoundError
+from flux.core.agent_runtime.run_repository import as_utc, utcnow
+from flux.core.attachment_store import resolve_uploads, size_label
+from flux.core.task_engine.repository import MessageDraft
+from flux.enums import TaskMessageRole, TaskOrigin, TaskStatus
+from flux.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
 from flux.logging import get_logger
 from flux.models.project_assistant import ProjectAssistant
 from flux.models.task import Task
@@ -29,6 +32,38 @@ _SOURCE_MESSAGE_LIMIT = 40
 _CONTEXT_CHAR_LIMIT = 12000
 #: 建议里每个项目最多列出的对话条数（只是建议卡片的摘要，不是全量）。
 _SUGGESTION_PREVIEW = 5
+#: 「可能已停住」阈值：对话仍在进行中，但超过这么多小时没有新消息。
+#: 写成可测常量——接口会把它原样返回，客户端与测试都按同一个数展示。
+STALLED_AFTER_HOURS = 6
+_STALLED_AFTER_SECONDS = STALLED_AFTER_HOURS * 3600
+#: 读历史时一次最多带上的消息条数（只读查看，不写入）。
+_HISTORY_MESSAGE_LIMIT = 200
+#: 开副本时摘要最多带的来源消息条数 / 字符数（确定性摘要，不调用外部模型）。
+_FORK_SOURCE_MESSAGES = 24
+_FORK_SUMMARY_CHARS = 4000
+#: 进度汇总里每段对话最多列出的摘录字数。
+_PROGRESS_EXCERPT = 80
+
+#: 进行中的任务状态：这些状态可能被归入「进行中」或「可能已停住」。
+_ACTIVE_STATUSES = {
+    TaskStatus.PENDING.value,
+    TaskStatus.RUNNING.value,
+    TaskStatus.WAITING_FOR_USER_DECISION.value,
+}
+_FINAL_STATUSES = {
+    TaskStatus.COMPLETED.value,
+    TaskStatus.CANCELLED.value,
+    TaskStatus.FAILED.value,
+}
+
+_BUCKET_LABELS = {
+    "running": "进行中",
+    "possibly_stalled": "可能已停住",
+    "failed": "失败",
+    "completed": "已完成",
+    "cancelled": "已取消",
+    "unknown": "状态未知",
+}
 
 
 class ProjectAssistantRepository:
@@ -264,5 +299,367 @@ class ProjectAssistantService:
         )
         return assistant
 
+    # --- 进度汇总 / 读历史 / 接着干 / 开副本（2026-11-28 补齐） ---
 
-__all__ = ["ProjectAssistantRepository", "ProjectAssistantService"]
+    async def progress(self, assistant: ProjectAssistant) -> dict[str, Any]:
+        """只读汇总相关对话的进度：进行中 / 可能已停住 / 失败 / 已完成。
+
+        全部数据来自服务端已有记录（SELECT only）：不启动电脑 Agent、不派子任务，
+        也不要求用户的电脑一直开着。来源对话缺失时跳过并记在 `missing_sources`。
+        """
+        container = self._container
+        now = utcnow()
+        items: list[dict[str, Any]] = []
+        missing: list[str] = []
+        counts = {key: 0 for key in _BUCKET_LABELS}
+        for task_id in assistant.source_ids():
+            try:
+                task_uuid = uuid.UUID(task_id)
+                task = await container.task_repo.get(task_uuid)
+            except (ValueError, NotFoundError):
+                missing.append(task_id)
+                continue
+            messages, _ = await container.task_repo.list_messages(task_uuid, limit=1)
+            last_message = messages[-1] if messages else None
+            last_activity = last_message.created_at if last_message is not None else task.updated_at
+            if last_activity is None:
+                last_activity = task.created_at
+            idle_seconds = max(0, int((now - as_utc(last_activity)).total_seconds()))
+            bucket = _progress_bucket(task.status, idle_seconds)
+            counts[bucket] += 1
+            items.append(
+                {
+                    "task_id": str(task.id),
+                    "title": _task_title(task),
+                    "status": task.status,
+                    "status_label": _task_status_label(task.status),
+                    "bucket": bucket,
+                    "bucket_label": _BUCKET_LABELS[bucket],
+                    "idle_hours": round(idle_seconds / 3600, 1),
+                    "last_activity_at": last_activity.isoformat(),
+                    "last_message": _excerpt(
+                        last_message.content if last_message is not None else ""
+                    ),
+                    "message_count": await _message_count(container, task_uuid),
+                    "read_only": True,
+                }
+            )
+
+        # 进行中的排在前面，其余按最后活动时间倒序：用户先看到需要决定的事。
+        order = {"possibly_stalled": 0, "running": 1, "failed": 2, "cancelled": 3, "unknown": 4}
+        items.sort(key=lambda item: (order.get(item["bucket"], 9), -item["idle_hours"]))
+        return {
+            "assistant_id": str(assistant.id),
+            "assistant_name": assistant.name,
+            "generated_at": now.isoformat(),
+            "stalled_after_hours": STALLED_AFTER_HOURS,
+            "counts": counts,
+            "conversations": items,
+            "missing_sources": missing,
+        }
+
+    async def history(self, assistant: ProjectAssistant) -> dict[str, Any]:
+        """列出可「读历史」的相关对话（只读元数据，不写任何来源对话）。"""
+        progress = await self.progress(assistant)
+        return {
+            "assistant_id": str(assistant.id),
+            "assistant_name": assistant.name,
+            "read_only": True,
+            "count": len(progress["conversations"]),
+            "conversations": progress["conversations"],
+            "missing_sources": progress["missing_sources"],
+        }
+
+    async def read_history(
+        self, assistant: ProjectAssistant, source_task_id: str
+    ) -> dict[str, Any]:
+        """只读打开一条相关对话及其消息；这里绝不写入来源对话。"""
+        task = await self._related_task(assistant, source_task_id)
+        container = self._container
+        messages, has_more = await container.task_repo.list_messages(
+            task.id, limit=_HISTORY_MESSAGE_LIMIT
+        )
+        return {
+            "assistant_id": str(assistant.id),
+            "read_only": True,
+            "has_more": has_more,
+            "task": task.to_dict(),
+            "messages": [message.to_dict() for message in messages],
+        }
+
+    async def continue_confirmed(
+        self,
+        assistant: ProjectAssistant,
+        *,
+        source_task_id: str,
+        content: str,
+        attachment_ids: list[str] | None,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        """「接着干」：二次确认后，把新任务发进已有相关对话并续跑。
+
+        `confirmed=False` / 缺失时直接 409，什么都不写；目标对话原样不动。
+        这不是临时子任务：目标对话仍是普通对话，不设 parent_task_id。
+        """
+        if not confirmed:
+            raise ConflictError("接着干需要用户再次确认；未确认时不会向原对话发送任何内容")
+        task = await self._related_task(assistant, source_task_id)
+        container = self._container
+        files = resolve_uploads(container.settings, attachment_ids or [])
+        text = (content or "").strip()
+        if not text and not files:
+            raise ValidationError(
+                "接着干需要带上要发送的内容", details={"source_task_id": source_task_id}
+            )
+        if task.status not in _FINAL_STATUSES:
+            raise ConflictError(
+                "这段对话还在进行中；等这一轮结束后再接着干，或先看它的进度",
+                details={"task_id": str(task.id), "status": task.status},
+            )
+
+        previous_status = task.status
+        task = await container.task_repo.reopen(task.id)
+        user_message = (
+            await container.task_repo.add_messages(
+                task.id,
+                [MessageDraft(role=TaskMessageRole.USER.value, content=text)],
+            )
+        )[0]
+        await container.task_stream.publish(
+            task.id, "user_message", {"message": user_message.to_dict()}
+        )
+        if files:
+            attachment_message = (
+                await container.task_repo.add_messages(
+                    task.id,
+                    [
+                        MessageDraft(
+                            role=TaskMessageRole.USER.value,
+                            kind="attachments",
+                            content="、".join(item.name for item in files),
+                            payload={"files": [item.to_dict() for item in files]},
+                        )
+                    ],
+                )
+            )[0]
+            await container.task_stream.publish(
+                task.id, "user_message", {"message": attachment_message.to_dict()}
+            )
+        followup = text or (
+            "请看我随消息附上的文件："
+            + "、".join(f"{item.name}（{size_label(item.size)}）" for item in files)
+        )
+        try:
+            result = await container.task_run_service.start(task, followup=followup)
+        except Exception:
+            # 起不来时退回原终态：用户消息保留，修好 runtime 后可以重试，
+            # 不留下没有 Run 支撑的 running 僵尸。
+            current = await container.task_repo.get(task.id)
+            if current.run_id is None and current.status in _ACTIVE_STATUSES:
+                await container.task_repo.set_status(task.id, TaskStatus(previous_status))
+            raise
+        logger.info("接着干：项目助理=%s 目标对话=%s 附件=%d", assistant.id, task.id, len(files))
+        return {
+            "task": result.task.to_dict(),
+            "messages": [user_message.to_dict()],
+            "read_only": False,
+        }
+
+    async def fork_confirmed(
+        self,
+        assistant: ProjectAssistant,
+        *,
+        source_task_id: str,
+        name: str | None,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        """「开副本」：二次确认后新建一条独立常驻对话，带上源对话的思路/上下文。
+
+        原文一条消息都不改。副本是普通对话（origin=chat、无 parent_task_id），
+        既不是临时子任务，也不会进右上角切换器。
+        """
+        if not confirmed:
+            raise ConflictError("开副本需要用户再次确认；未确认时不会创建任何内容")
+        source = await self._related_task(assistant, source_task_id)
+        summary = await self._source_digest(source)
+        if not summary:
+            raise ConflictError(
+                "这段对话还没有可以带过去的内容，先在原对话里聊几句再开副本",
+                details={"source_task_id": source_task_id},
+            )
+        clean_name = (name or "").strip() or f"{_task_title(source)}（副本）"
+        clean_name = clean_name[:64]
+        container = self._container
+        fork = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description=clean_name,
+            priority=source.priority,
+            project_id=source.project_id,
+            agent_id=source.agent_id,
+            decision_mode=source.decision_mode,
+            permission_mode=source.permission_mode,
+            model=source.model,
+            api_key_id=source.api_key_id,
+            # 副本是常驻普通对话：不是临时子任务，也不挂到主助理子任务列表
+            origin=TaskOrigin.CHAT,
+            bot_name=clean_name,
+            parent_task_id=None,
+        )
+        await container.task_repo.add_messages(
+            fork.id,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="summary",
+                    content=summary,
+                    payload={"from_task_id": str(source.id), "source": "project_assistant_fork"},
+                )
+            ],
+        )
+        logger.info(
+            "开副本：项目助理=%s 源对话=%s 副本=%s 摘要字数=%d",
+            assistant.id,
+            source.id,
+            fork.id,
+            len(summary),
+        )
+        return {
+            "task": fork.to_dict(),
+            "source_task_id": str(source.id),
+            "summary_chars": len(summary),
+            "parent_task_id": None,
+            "origin": TaskOrigin.CHAT.value,
+        }
+
+    async def _related_task(self, assistant: ProjectAssistant, source_task_id: str) -> Task:
+        """校验目标对话确实属于这个项目助理的来源集合，且是一条普通对话。"""
+        try:
+            task_uuid = uuid.UUID(str(source_task_id))
+        except ValueError as exc:
+            raise BadRequestError(
+                f"source_task_id 不是合法 UUID：{source_task_id}",
+                details={"source_task_id": source_task_id},
+            ) from exc
+        if str(task_uuid) not in assistant.source_ids():
+            raise NotFoundError(
+                "这段对话不在这个项目助理的相关对话里",
+                details={"assistant_id": str(assistant.id), "task_id": str(task_uuid)},
+            )
+        task = await self._container.task_repo.get(task_uuid)
+        if task.origin != TaskOrigin.CHAT.value or task.parent_task_id is not None:
+            raise ConflictError(
+                "项目助理只能读普通对话；临时子任务和助理对话不能作为目标",
+                details={"task_id": str(task_uuid), "origin": task.origin},
+            )
+        return task
+
+    async def _source_digest(self, source: Task) -> str:
+        """生成确定性的只读前情摘要（不调用外部模型，原文不动）。
+
+        只带用户与助理/Agent 的正文；密钥、附件记录等跳过。
+        """
+        messages, _ = await self._container.task_repo.list_messages(
+            source.id, limit=_FORK_SOURCE_MESSAGES
+        )
+        lines = [f"来自已有对话「{_task_title(source)}」的前情摘要："]
+        used = 0
+        for message in messages:
+            if message.role not in {"user", "assistant"}:
+                continue
+            if message.kind in {"secure_input", "secure_input_result", "attachments"}:
+                continue
+            text = " ".join((message.content or "").split())
+            if not text:
+                continue
+            speaker = "用户" if message.role == "user" else "助理/Agent"
+            line = f"- {speaker}：{text[:400]}"
+            if used + len(line) > _FORK_SUMMARY_CHARS:
+                lines.append("…（已截断）")
+                break
+            lines.append(line)
+            used += len(line)
+        if len(lines) <= 1:
+            return ""
+        return "\n".join(lines)
+
+
+def _task_title(task: Task) -> str:
+    return (task.bot_name or task.description or "未命名对话").strip()[:60]
+
+
+def _task_status_label(status: str) -> str:
+    return {
+        TaskStatus.PENDING.value: "已派出",
+        TaskStatus.RUNNING.value: "进行中",
+        TaskStatus.WAITING_FOR_USER_DECISION.value: "等你决定",
+        TaskStatus.COMPLETED.value: "已完成",
+        TaskStatus.FAILED.value: "失败",
+        TaskStatus.CANCELLED.value: "已取消",
+    }.get(status, status)
+
+
+def _progress_bucket(status: str, idle_seconds: int) -> str:
+    """把任务状态 + 静默时长归入用户能理解的进度分组。"""
+    if status in _ACTIVE_STATUSES:
+        return "possibly_stalled" if idle_seconds >= _STALLED_AFTER_SECONDS else "running"
+    if status == TaskStatus.FAILED.value:
+        return "failed"
+    if status == TaskStatus.COMPLETED.value:
+        return "completed"
+    if status == TaskStatus.CANCELLED.value:
+        return "cancelled"
+    return "unknown"
+
+
+def _excerpt(text: str, limit: int = _PROGRESS_EXCERPT) -> str:
+    return " ".join((text or "").split())[:limit]
+
+
+async def _message_count(container: Any, task_id: uuid.UUID) -> int:
+    """来源对话的消息条数：用于「读历史」列表呈现，不额外拉全量消息。"""
+    try:
+        messages, has_more = await container.task_repo.list_messages(
+            task_id, limit=_HISTORY_MESSAGE_LIMIT
+        )
+    except NotFoundError:
+        return 0
+    # has_more 只表示「还有更早的消息」，这里按至少再多一条计数即可。
+    return len(messages) + (1 if has_more else 0)
+
+
+def progress_text(progress: dict[str, Any]) -> str:
+    """把进度汇总写成 Flux 自己的简体中文短报（项目助理回复先给这份）。"""
+    counts = progress.get("counts", {})
+    stalled_hours = progress.get("stalled_after_hours", STALLED_AFTER_HOURS)
+    lines = [
+        "进度汇总：",
+        f"- 进行中：{counts.get('running', 0)}",
+        f"- 可能已停住：{counts.get('possibly_stalled', 0)}（超过 {stalled_hours} 小时没有新消息）",
+        f"- 失败：{counts.get('failed', 0)}",
+        f"- 已完成：{counts.get('completed', 0)}",
+    ]
+    if counts.get("cancelled"):
+        lines.append(f"- 已取消：{counts['cancelled']}")
+    conversations = progress.get("conversations") or []
+    if not conversations:
+        lines.append("还没有关联任何已有对话。")
+    else:
+        lines.append("相关对话：")
+        for item in conversations[:8]:
+            lines.append(
+                f"- [{item['bucket_label']}] {item['title']}"
+                f"（最后更新 {item['idle_hours']} 小时前）"
+            )
+    lines.append(
+        "接下来可以：读历史（只读查看）、接着干（确认后继续原对话）、"
+        "开副本（确认后另开一条常驻对话）。"
+    )
+    return "\n".join(lines)
+
+
+__all__ = [
+    "ProjectAssistantRepository",
+    "ProjectAssistantService",
+    "STALLED_AFTER_HOURS",
+    "progress_text",
+]

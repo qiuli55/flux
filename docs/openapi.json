@@ -1633,6 +1633,41 @@
         "title": "PermissionModeRequest",
         "type": "object"
       },
+      "ProjectAssistantContinueRequest": {
+        "description": "「接着干」：二次确认后向一条已有相关对话发送新任务。\n\n`confirmed` 必须为 true；false / 缺失时后端直接 409，什么都不写。",
+        "properties": {
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Attachment Ids",
+            "type": "array"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "content": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Content",
+            "type": "string"
+          },
+          "source_task_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_task_id"
+        ],
+        "title": "ProjectAssistantContinueRequest",
+        "type": "object"
+      },
       "ProjectAssistantCreateRequest": {
         "description": "创建项目助理（2026-11-28）。\n\n`confirmed` 必须为 true：产品要求「用户确认前什么都不创建；取消就是不创建」。\n`source_task_ids` 只是只读上下文，不会被写入；项目助理自己的常驻对话由服务端建。",
         "properties": {
@@ -1672,6 +1707,39 @@
           "name"
         ],
         "title": "ProjectAssistantCreateRequest",
+        "type": "object"
+      },
+      "ProjectAssistantForkRequest": {
+        "description": "「开副本」：二次确认后新建一条独立常驻对话。\n\n`confirmed` 必须为 true；false / 缺失时后端直接 409，不创建任何内容。",
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source_task_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_task_id"
+        ],
+        "title": "ProjectAssistantForkRequest",
         "type": "object"
       },
       "ProjectCreateRequest": {
@@ -3894,6 +3962,285 @@
           }
         ],
         "summary": "Get Assistant",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/continue": {
+      "post": {
+        "description": "「接着干」：二次确认后向已有相关对话发送新任务并续跑。未确认则 409、什么都不写。",
+        "operationId": "continue_assistant_conversation_api_v1_assistants__assistant_id__continue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectAssistantContinueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Continue Assistant Conversation Api V1 Assistants  Assistant Id  Continue Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Continue Assistant Conversation",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/fork": {
+      "post": {
+        "description": "「开副本」：二次确认后新建独立常驻对话，带上源对话摘要；原文不变。",
+        "operationId": "fork_assistant_conversation_api_v1_assistants__assistant_id__fork_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectAssistantForkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Fork Assistant Conversation Api V1 Assistants  Assistant Id  Fork Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Fork Assistant Conversation",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/history": {
+      "get": {
+        "description": "「读历史」：列出可只读查看的相关对话；只读，不写来源对话。",
+        "operationId": "list_assistant_history_api_v1_assistants__assistant_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Assistant History Api V1 Assistants  Assistant Id  History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Assistant History",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/history/{task_id}": {
+      "get": {
+        "description": "「读历史」：只读打开一条相关对话及其消息（输入在客户端禁用）。",
+        "operationId": "read_assistant_history_api_v1_assistants__assistant_id__history__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Assistant History Api V1 Assistants  Assistant Id  History  Task Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Assistant History",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/progress": {
+      "get": {
+        "description": "只读汇总相关对话进度：进行中 / 可能已停住 / 失败 / 已完成。\n\n数据全部来自服务端已有记录，不启动电脑 Agent、不派子任务。",
+        "operationId": "get_assistant_progress_api_v1_assistants__assistant_id__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Assistant Progress Api V1 Assistants  Assistant Id  Progress Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Assistant Progress",
         "tags": [
           "assistants"
         ]
