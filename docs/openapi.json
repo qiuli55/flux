@@ -10736,7 +10736,7 @@
     },
     "/api/v1/tasks": {
       "get": {
-        "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。",
+        "description": "列出任务（任务执行中心的任务列表）。默认按创建时间倒序。\n\n`unfinished=true` 只返回 pending / running / waiting_for_user_decision，\n供移动端关注服务轮询；配合 `offset` 可分页取全，不受默认 50 条限制。",
         "operationId": "list_tasks_api_v1_tasks_get",
         "parameters": [
           {
@@ -10789,11 +10789,31 @@
           },
           {
             "in": "query",
+            "name": "unfinished",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unfinished",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
               "default": 50,
               "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
               "type": "integer"
             }
           }

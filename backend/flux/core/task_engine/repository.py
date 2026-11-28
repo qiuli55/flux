@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from flux.enums import (
+    UNFINISHED_TASK_STATUSES,
     DecisionMode,
     DecisionStatus,
     PermissionMode,
@@ -134,14 +135,29 @@ class TaskRepository:
         project_id: uuid.UUID | None = None,
         status: TaskStatus | None = None,
         origin: TaskOrigin | None = None,
+        unfinished: bool = False,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[Task]:
-        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。"""
-        statement = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
+        """按创建时间倒序列出任务；project_id / status / origin / unfinished 为可选过滤条件。
+
+        `unfinished` 只看未结束状态（移动端关注服务轮询用），调用方不要与单个 `status` 同传；
+        `offset` 供调用方分页拉全，避免 limit 截断后漏掉旧任务。
+        """
+        statement = (
+            select(Task)
+            .order_by(Task.created_at.desc(), Task.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         if project_id is not None:
             statement = statement.where(Task.project_id == project_id)
         if status is not None:
             statement = statement.where(Task.status == status.value)
+        if unfinished:
+            statement = statement.where(
+                Task.status.in_([item.value for item in UNFINISHED_TASK_STATUSES])
+            )
         if origin is not None:
             statement = statement.where(Task.origin == origin.value)
         async with self._session_factory() as session:

@@ -241,10 +241,16 @@ async def list_tasks(
     project_id: str | None = None,
     status: str | None = None,
     origin: str | None = None,
+    unfinished: bool = False,
     limit: int = 50,
+    offset: int = 0,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """列出任务（任务执行中心的任务列表）。默认按创建时间倒序。"""
+    """列出任务（任务执行中心的任务列表）。默认按创建时间倒序。
+
+    `unfinished=true` 只返回 pending / running / waiting_for_user_decision，
+    供移动端关注服务轮询；配合 `offset` 可分页取全，不受默认 50 条限制。
+    """
     project_uuid = _parse_uuid(project_id, field="project_id") if project_id else None
     wanted: TaskStatus | None = None
     if status:
@@ -266,8 +272,20 @@ async def list_tasks(
             ) from exc
     if limit < 1 or limit > 200:
         raise BadRequestError("limit 必须在 1~200 之间", details={"limit": limit})
+    if offset < 0:
+        raise BadRequestError("offset 不能为负数", details={"offset": offset})
+    if unfinished and wanted is not None:
+        raise BadRequestError(
+            "status 与 unfinished 不能同时使用",
+            details={"status": status, "unfinished": unfinished},
+        )
     tasks = await container.task_repo.list(
-        project_id=project_uuid, status=wanted, origin=origin_filter, limit=limit
+        project_id=project_uuid,
+        status=wanted,
+        origin=origin_filter,
+        unfinished=unfinished,
+        limit=limit,
+        offset=offset,
     )
     return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
 

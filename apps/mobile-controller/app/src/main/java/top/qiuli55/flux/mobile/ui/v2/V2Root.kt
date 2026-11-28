@@ -90,6 +90,7 @@ import top.qiuli55.flux.mobile.notify.PendingOpenTask
 import top.qiuli55.flux.mobile.notify.TaskAlertService
 import top.qiuli55.flux.mobile.notify.notificationProblem
 import top.qiuli55.flux.mobile.notify.readNotificationStatus
+import top.qiuli55.flux.mobile.notify.shouldCancelPostedAlerts
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
@@ -713,13 +714,15 @@ fun FluxV2Root() {
         }
     }
     // 关掉开关立即停止该类提醒；已发出的同类通知也一并取消。
-    LaunchedEffect(notifPrefs.decisionAlerts) {
-        if (!notifPrefs.decisionAlerts) {
+    // 必须等 DataStore 读回（notifPrefsReady）后再判断：初始值里 taskAlerts 默认
+    // false，冷启动时按初始值取消会把用户还没点的完成通知误清掉。
+    LaunchedEffect(notifPrefs.decisionAlerts, notifPrefsReady) {
+        if (shouldCancelPostedAlerts(AlertKind.DECISION, notifPrefs, notifPrefsReady)) {
             FluxNotificationCenter.cancelKind(context, AlertKind.DECISION)
         }
     }
-    LaunchedEffect(notifPrefs.taskAlerts) {
-        if (!notifPrefs.taskAlerts) {
+    LaunchedEffect(notifPrefs.taskAlerts, notifPrefsReady) {
+        if (shouldCancelPostedAlerts(AlertKind.FINISHED, notifPrefs, notifPrefsReady)) {
             FluxNotificationCenter.cancelKind(context, AlertKind.FINISHED)
         }
     }
