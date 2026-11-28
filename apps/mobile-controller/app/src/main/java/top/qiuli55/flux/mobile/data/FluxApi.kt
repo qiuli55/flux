@@ -682,6 +682,47 @@ class FluxApi(
     suspend fun logoutClaudeAccount(): ClaudeLogoutResult =
         post("api/v1/claude-account/logout", buildJsonObject {})
 
+    // ---------------------------------------------------------- Cursor / Antigravity（官方 CLI 授权）
+
+    suspend fun cursorAccount(): AgentCliAccountStatus = get("api/v1/cursor-account")
+
+    /** 在电脑上拉起官方 `agent login`；返回手机可打开的官方授权链接。 */
+    suspend fun startCursorLogin(): AgentCliLoginSession =
+        post("api/v1/cursor-account/login", buildJsonObject {})
+
+    suspend fun cursorLoginState(loginId: String): AgentCliLoginSession =
+        get("api/v1/cursor-account/login/${Uri.encode(loginId)}")
+
+    suspend fun submitCursorLoginCode(loginId: String, code: String): AgentCliLoginSession =
+        post(
+            "api/v1/cursor-account/login/${Uri.encode(loginId)}/code",
+            buildJsonObject { put("code", code) },
+        )
+
+    suspend fun logoutCursorAccount(): AgentCliLogoutResult =
+        post("api/v1/cursor-account/logout", buildJsonObject {})
+
+    suspend fun antigravityAccount(): AgentCliAccountStatus = get("api/v1/antigravity-account")
+
+    /** 在电脑上拉起官方 `agy` 登录；返回手机可打开的官方授权链接。 */
+    suspend fun startAntigravityLogin(): AgentCliLoginSession =
+        post("api/v1/antigravity-account/login", buildJsonObject {})
+
+    suspend fun antigravityLoginState(loginId: String): AgentCliLoginSession =
+        get("api/v1/antigravity-account/login/${Uri.encode(loginId)}")
+
+    suspend fun submitAntigravityLoginCode(loginId: String, code: String): AgentCliLoginSession =
+        post(
+            "api/v1/antigravity-account/login/${Uri.encode(loginId)}/code",
+            buildJsonObject { put("code", code) },
+        )
+
+    suspend fun logoutAntigravityAccount(): AgentCliLogoutResult =
+        post("api/v1/antigravity-account/logout", buildJsonObject {})
+
+    /** 本机 CLI 的安装/接入事实：用于判断 Cursor / Antigravity 是否已可派活。 */
+    suspend fun listInstallations(): List<Installation> = get("api/v1/installations")
+
     // ---------------------------------------------------------- 连接器设置（内置 + 自定义 MCP）
 
     suspend fun listMcpConnectors(): McpConnectorList = get("api/v1/mcp-connectors")

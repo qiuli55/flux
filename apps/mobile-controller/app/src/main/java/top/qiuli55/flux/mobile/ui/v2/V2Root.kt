@@ -175,6 +175,7 @@ fun FluxV2Root() {
     var customConnectorOpen by remember { mutableStateOf(false) }
     var githubSheetOpen by remember { mutableStateOf(false) }
     var connectorDetail by remember { mutableStateOf<McpConnector?>(null) }
+    var agentConnectorKind by remember { mutableStateOf<String?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
@@ -733,11 +734,16 @@ fun FluxV2Root() {
                             onAdd = { customConnectorOpen = true },
                             onGitHub = { githubSheetOpen = true },
                             onReconnect = { item ->
-                                if (item.id == "github") {
-                                    githubSheetOpen = false
-                                    vm.startGitHubLogin()
-                                } else {
-                                    vm.probeConnector(item.id) { failure ->
+                                when (item.id) {
+                                    "github" -> {
+                                        githubSheetOpen = false
+                                        vm.startGitHubLogin()
+                                    }
+                                    "cursor", "antigravity" -> {
+                                        agentConnectorKind = item.id
+                                        vm.loadAgentConnectorAccount(item.id)
+                                    }
+                                    else -> vm.probeConnector(item.id) { failure ->
                                         if (failure != null) {
                                             Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
                                         }
@@ -1225,6 +1231,26 @@ fun FluxV2Root() {
                                 githubSheetOpen = false
                             },
                             onDismiss = { githubSheetOpen = false },
+                        )
+                    }
+
+                    agentConnectorKind?.let { kind ->
+                        val isCursor = kind == "cursor"
+                        AgentConnectorSheet(
+                            kind = kind,
+                            status = if (isCursor) app.cursorAccount else app.antigravityAccount,
+                            session = if (isCursor) app.cursorLogin else app.antigravityLogin,
+                            loading = if (isCursor) app.cursorLoading else app.antigravityLoading,
+                            onDismiss = { agentConnectorKind = null },
+                            onStart = { vm.startAgentConnectorLogin(kind) },
+                            onSubmitCode = { loginId, code, onResult ->
+                                vm.submitAgentConnectorCode(kind, loginId, code, onResult)
+                            },
+                            onLogout = {
+                                vm.logoutAgentConnector(kind)
+                                agentConnectorKind = null
+                            },
+                            onOpenUrl = { openInternalBrowser(it) },
                         )
                     }
 

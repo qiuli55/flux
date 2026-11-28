@@ -579,6 +579,15 @@ fun AgentPickerSheet(
                         Spacer(Modifier.width(6.dp))
                     }
                     Label(agent.role, 12f, V2Colors.ink(.42f), maxLines = 1)
+                    if (agent.runtime == "cursor" || agent.runtime == "antigravity") {
+                        Spacer(Modifier.width(8.dp))
+                        Label(
+                            if (agent.runtime == "cursor") "Cursor" else "Antigravity",
+                            10f,
+                            V2Colors.accent,
+                            FontWeight.Medium,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 // 模型清单：浅灰圆角块，选中的直接打勾，点一下即生效

@@ -927,6 +927,63 @@ data class ClaudeLogoutResult(
     val status: ClaudeAccountStatus = ClaudeAccountStatus(),
 )
 
+/** 本机 CLI Agent 的安装/接入事实（GET /api/v1/installations）。 */
+@Serializable
+data class Installation(
+    val id: String = "",
+    val name: String = "",
+    val adapter: String = "",
+    val status: String = "",
+    val executable: String? = null,
+    val path: String? = null,
+    val version: String? = null,
+    val source: String = "",
+    @SerialName("auth_status") val authStatus: String = "unknown",
+    val capabilities: List<String> = emptyList(),
+)
+
+/**
+ * Cursor / 谷歌 Antigravity 的官方 CLI 登录态。
+ *
+ * 后端只给是否已登录等公开字段，不返回 access token / refresh token / cookie / API key。
+ */
+@Serializable
+data class AgentCliAccountStatus(
+    @SerialName("logged_in") val loggedIn: Boolean = false,
+    @SerialName("auth_mode") val authMode: String? = null,
+    val home: String = "",
+    val binary: String = "",
+    @SerialName("binary_found") val binaryFound: Boolean = false,
+    @SerialName("official_status") val officialStatus: String = "unknown",
+    @SerialName("stale_login") val staleLogin: Boolean = false,
+    @SerialName("last_login_at") val lastLoginAt: String? = null,
+    @SerialName("pending_login") val pendingLogin: AgentCliLoginSession? = null,
+)
+
+/**
+ * 官方 CLI 浏览器登录会话。
+ *
+ * [needsCode] 为 true 时，官方 CLI 自己要求回填授权码（不是粘贴 API token / key）。
+ */
+@Serializable
+data class AgentCliLoginSession(
+    @SerialName("login_id") val loginId: String = "",
+    /** starting / pending / success / failed / cancelled */
+    val status: String = "starting",
+    val url: String = "",
+    val message: String = "",
+    @SerialName("needs_code") val needsCode: Boolean = false,
+    @SerialName("expires_in") val expiresIn: Int = 0,
+) {
+    val isPending: Boolean get() = status == "starting" || status == "pending"
+}
+
+@Serializable
+data class AgentCliLogoutResult(
+    val removed: Boolean = false,
+    val status: AgentCliAccountStatus = AgentCliAccountStatus(),
+)
+
 /**
  * 连接器设置页的一项。
  *

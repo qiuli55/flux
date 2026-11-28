@@ -17,6 +17,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.Agent
+import top.qiuli55.flux.mobile.data.AgentCliAccountStatus
+import top.qiuli55.flux.mobile.data.AgentCliLoginSession
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
@@ -33,6 +35,7 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
+import top.qiuli55.flux.mobile.data.Installation
 import top.qiuli55.flux.mobile.data.KeyProbeResult
 import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.Task
@@ -87,6 +90,15 @@ data class V2AppState(
     val claudeAccount: ClaudeAccountStatus? = null,
     val claudeLogin: ClaudeLoginSession? = null,
     val claudeLoading: Boolean = false,
+    /** Cursor / 谷歌 Antigravity：官方 CLI 浏览器授权；连接器页打开时加载。 */
+    val cursorAccount: AgentCliAccountStatus? = null,
+    val cursorLogin: AgentCliLoginSession? = null,
+    val cursorLoading: Boolean = false,
+    val antigravityAccount: AgentCliAccountStatus? = null,
+    val antigravityLogin: AgentCliLoginSession? = null,
+    val antigravityLoading: Boolean = false,
+    /** 本机 CLI 安装/接入事实：未 READY 的 Cursor / Antigravity 不进入可选 Agent 列表。 */
+    val installations: List<Installation> = emptyList(),
     /** GitHub 账号（连接器页）；进入连接器页时加载。 */
     val githubAccount: GitHubAccountStatus? = null,
     /** 授权码登录拿到的 GitHub 授权页地址；根容器用内置浏览器打开后清空。 */
@@ -133,6 +145,8 @@ class V2AppViewModel : FluxViewModel() {
     private var codexLoginJob: Job? = null
     private var claudeLoginJob: Job? = null
     private var connectorsJob: Job? = null
+    private var cursorLoginJob: Job? = null
+    private var antigravityLoginJob: Job? = null
     private var billingJob: Job? = null
     private var foreground = true
 
@@ -306,9 +320,17 @@ class V2AppViewModel : FluxViewModel() {
                 // 串行请求：并发失败时会整组取消（真机踩过坑）。
                 val tasks = api.listTasks()
                 val agents = runCatching { api.listAgents() }.getOrDefault(emptyList())
+                val installations =
+                    runCatching { api.listInstallations() }.getOrDefault(emptyList())
+                val readyRuntimes = installations
+                    .filter { it.status == "READY" }
+                    .map { it.name }
+                    .toSet()
+                // 未连接 / 未安装的 Cursor / Antigravity 不展示成可派活的 Agent。
+                val visibleAgents = agents.visibleForReadyRuntimes(readyRuntimes)
                 val models = runCatching { api.dshStatus() }.getOrNull()
                     ?.model?.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
-                val mapped = agents.toV2Agents(tasks)
+                val mapped = visibleAgents.toV2Agents(tasks)
                 V2Registry.agents = mapped
                 V2Registry.models = models
                 // 每个 Agent 的可用模型 = 原生模型 + 密钥库模型（带 keyId，切换时一起提交）
@@ -334,6 +356,7 @@ class V2AppViewModel : FluxViewModel() {
                 _state.value = _state.value.copy(
                     tasks = tasks,
                     agents = mapped,
+                    installations = installations,
                     models = models,
                     refreshing = false,
                     error = null,
@@ -922,6 +945,167 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
+    // ------------------------------------------------------------ Cursor / 谷歌 Antigravity（官方 CLI 授权）
+
+    /** 打开连接器详情时读取对应官方 CLI 的登录态；有进行中的登录就继续轮询。 */
+    fun loadAgentConnectorAccount(kind: String) {
+        viewModelScope.launch {
+            setAgentLoading(kind, true)
+            try {
+                val status = if (kind == "cursor") api().cursorAccount() else api().antigravityAccount()
+                val active = status.pendingLogin ?: agentLogin(kind)?.takeIf { it.isPending }
+                applyAgentAccount(kind, status)
+                applyAgentLogin(kind, active)
+                if (active != null) pollAgentLogin(kind, active.loginId)
+            } catch (e: Exception) {
+                setAgentLoading(kind, false)
+                _state.value = _state.value.copy(error = readable(e))
+            }
+        }
+    }
+
+    fun startAgentConnectorLogin(kind: String) {
+        viewModelScope.launch {
+            setAgentLoading(kind, true)
+            _state.value = _state.value.copy(error = null)
+            try {
+                val session = if (kind == "cursor") {
+                    api().startCursorLogin()
+                } else {
+                    api().startAntigravityLogin()
+                }
+                applyAgentLogin(kind, session)
+                if (session.isPending) pollAgentLogin(kind, session.loginId)
+            } catch (e: Exception) {
+                setAgentLoading(kind, false)
+                _state.value = _state.value.copy(error = readable(e))
+            }
+        }
+    }
+
+    /** 仅当官方 CLI 自己要求回填授权码时调用；不是粘贴 API token / key 的入口。 */
+    fun submitAgentConnectorCode(
+        kind: String,
+        loginId: String,
+        code: String,
+        onResult: (String?) -> Unit = {},
+    ) {
+        if (code.isBlank()) {
+            onResult("请先填写官方页面给出的授权码")
+            return
+        }
+        viewModelScope.launch {
+            setAgentLoading(kind, true)
+            try {
+                val session = if (kind == "cursor") {
+                    api().submitCursorLoginCode(loginId, code.trim())
+                } else {
+                    api().submitAntigravityLoginCode(loginId, code.trim())
+                }
+                applyAgentLogin(kind, session)
+                if (session.isPending) pollAgentLogin(kind, session.loginId)
+                onResult(null)
+            } catch (e: Exception) {
+                val message = readable(e)
+                setAgentLoading(kind, false)
+                _state.value = _state.value.copy(error = message)
+                onResult(message)
+            }
+        }
+    }
+
+    fun logoutAgentConnector(kind: String) {
+        val job = if (kind == "cursor") cursorLoginJob else antigravityLoginJob
+        job?.cancel()
+        viewModelScope.launch {
+            setAgentLoading(kind, true)
+            try {
+                val result = if (kind == "cursor") {
+                    api().logoutCursorAccount()
+                } else {
+                    api().logoutAntigravityAccount()
+                }
+                applyAgentAccount(kind, result.status)
+                applyAgentLogin(kind, null)
+                loadConnectors(quiet = true)
+                _state.value = _state.value.copy(
+                    notice = if (kind == "cursor") {
+                        "已退出 Cursor 账号"
+                    } else {
+                        "已退出谷歌 / Antigravity 账号"
+                    },
+                )
+            } catch (e: Exception) {
+                setAgentLoading(kind, false)
+                _state.value = _state.value.copy(error = readable(e))
+            }
+        }
+    }
+
+    private fun pollAgentLogin(kind: String, loginId: String) {
+        val job = if (kind == "cursor") cursorLoginJob else antigravityLoginJob
+        job?.cancel()
+        val nextJob = viewModelScope.launch {
+            repeat(600) {
+                delay(2000)
+                val current = agentLogin(kind) ?: return@launch
+                if (current.loginId != loginId || !current.isPending) return@launch
+                val next = runCatching {
+                    if (kind == "cursor") api().cursorLoginState(loginId) else api().antigravityLoginState(loginId)
+                }.getOrNull() ?: return@launch
+                val refreshed = if (next.status == "success") {
+                    runCatching {
+                        if (kind == "cursor") api().cursorAccount() else api().antigravityAccount()
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                applyAgentLogin(kind, next)
+                refreshed?.let { applyAgentAccount(kind, it) }
+                if (next.status == "success") {
+                    loadConnectors(quiet = true)
+                    refresh(quiet = true)
+                    _state.value = _state.value.copy(
+                        notice = if (kind == "cursor") {
+                            "Cursor 已连接，可在 Agent 列表中选择"
+                        } else {
+                            "谷歌 / Antigravity 已连接，可在 Agent 列表中选择"
+                        },
+                    )
+                }
+                if (!next.isPending) return@launch
+            }
+        }
+        if (kind == "cursor") cursorLoginJob = nextJob else antigravityLoginJob = nextJob
+    }
+
+    private fun agentLogin(kind: String): AgentCliLoginSession? =
+        if (kind == "cursor") _state.value.cursorLogin else _state.value.antigravityLogin
+
+    private fun setAgentLoading(kind: String, value: Boolean) {
+        _state.value = if (kind == "cursor") {
+            _state.value.copy(cursorLoading = value)
+        } else {
+            _state.value.copy(antigravityLoading = value)
+        }
+    }
+
+    private fun applyAgentLogin(kind: String, session: AgentCliLoginSession?) {
+        _state.value = if (kind == "cursor") {
+            _state.value.copy(cursorLogin = session, cursorLoading = false)
+        } else {
+            _state.value.copy(antigravityLogin = session, antigravityLoading = false)
+        }
+    }
+
+    private fun applyAgentAccount(kind: String, status: AgentCliAccountStatus) {
+        _state.value = if (kind == "cursor") {
+            _state.value.copy(cursorAccount = status, cursorLoading = false)
+        } else {
+            _state.value.copy(antigravityAccount = status, antigravityLoading = false)
+        }
+    }
+
     // ------------------------------------------------------------ 连接器设置（内置 + 自定义 MCP）
 
     /** 进入连接器页 / 「我的」时读取列表；[quiet] 用于页面切换时的静默刷新。 */
@@ -1251,6 +1435,16 @@ private val agentTints = listOf(
     V2Colors.amber700,
     V2Colors.indigo,
 )
+
+/** 走「连接器 → 官方 CLI 授权」的 runtime；未 READY 时不进入可选 Agent 列表。 */
+internal val AGENT_CONNECTOR_RUNTIMES = setOf("cursor", "antigravity")
+
+/** 未 READY 的 Cursor / Antigravity 档案不进入可选 Agent 列表（DSH 等不受影响）。 */
+internal fun List<Agent>.visibleForReadyRuntimes(readyRuntimes: Set<String>): List<Agent> =
+    filterNot { agent ->
+        val runtime = agent.spec?.runtime.orEmpty()
+        runtime in AGENT_CONNECTOR_RUNTIMES && runtime !in readyRuntimes
+    }
 
 internal fun List<Agent>.toV2Agents(tasks: List<Task>): List<V2Agent> =
     mapIndexed { index, agent ->
