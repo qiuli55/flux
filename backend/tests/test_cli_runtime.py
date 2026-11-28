@@ -1131,6 +1131,7 @@ def test_cli_runtime_requires_ready_installation(
 
 
 def test_agent_runtime_value_is_validated(settings: Settings, db_schema: None) -> None:
+    # create_app 会立刻建容器；没有 lifespan 时必须自己 dispose，避免 aiosqlite 线程泄漏
     container = create_app(settings).state.container
 
     async def _attempt() -> None:
@@ -1139,7 +1140,10 @@ def test_agent_runtime_value_is_validated(settings: Settings, db_schema: None) -
                 AgentSpec(name="bad", role=AgentRole.DEVELOPER, runtime="nope")
             )
 
-    asyncio.run(_attempt())
+    try:
+        asyncio.run(_attempt())
+    finally:
+        asyncio.run(container.dispose())
 
 
 def test_default_agent_runtime_is_dsh(settings: Settings, db_schema: None) -> None:
@@ -1149,7 +1153,10 @@ def test_default_agent_runtime_is_dsh(settings: Settings, db_schema: None) -> No
         handle = await container.agents.create(AgentSpec(name="默认", role=AgentRole.DEVELOPER))
         return handle.spec.runtime
 
-    assert asyncio.run(_create()) == DEFAULT_RUNTIME
+    try:
+        assert asyncio.run(_create()) == DEFAULT_RUNTIME
+    finally:
+        asyncio.run(container.dispose())
 
 
 def test_opencode_auth_probe_parses_config_not_only_auth_list(

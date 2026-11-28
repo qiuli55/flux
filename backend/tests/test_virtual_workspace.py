@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -32,6 +33,24 @@ from tests.conftest import python_script
 
 ORIGINAL = "def login(user):\n    return False\n"
 PROPOSED = "def login(user):\n    return check_password(user)\n"
+
+#: 本文件手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_EXTRA_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_extra_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _EXTRA_CONTAINERS:
+            asyncio.run(_EXTRA_CONTAINERS.pop().dispose())
+
+
+def _extra_container(settings) -> Container:
+    container = Container(settings)
+    _EXTRA_CONTAINERS.append(container)
+    return container
 
 
 def _propose(container: Container, *, file_path: str = "auth/login.py", **kwargs: object):
@@ -162,7 +181,7 @@ def test_apply_failure_records_test_output(apply_settings, db_schema: None, work
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8")
     settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
-    container = Container(settings)
+    container = _extra_container(settings)
     proposal = _propose(container)
 
     with pytest.raises(ApplyFailedError):
@@ -231,7 +250,7 @@ def test_apply_many_failure_marks_all_failed_and_restores_files(
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nprint('E   assert 1 == 2')\nsys.exit(1)\n", encoding="utf-8")
     settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
-    container = Container(settings)
+    container = _extra_container(settings)
     first = _propose(container, file_path="a.py")
     second = _propose(container, file_path="b.py")
 
@@ -378,7 +397,7 @@ def _expire_now(container: Container, change_id: object) -> None:
 
 
 def test_proposal_gets_deadline_from_ttl(settings, db_schema: None) -> None:
-    container = Container(settings.model_copy(update={"proposal_ttl_seconds": 60}))
+    container = _extra_container(settings.model_copy(update={"proposal_ttl_seconds": 60}))
     proposal = _propose(container)
     assert proposal.expires_at is not None
     # 库里读出来仍带截止时间（持久化，不是只存在内存）
@@ -387,7 +406,7 @@ def test_proposal_gets_deadline_from_ttl(settings, db_schema: None) -> None:
 
 
 def test_ttl_zero_disables_expiry(settings, db_schema: None) -> None:
-    container = Container(settings.model_copy(update={"proposal_ttl_seconds": 0}))
+    container = _extra_container(settings.model_copy(update={"proposal_ttl_seconds": 0}))
     assert _propose(container).expires_at is None
 
 

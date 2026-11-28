@@ -11,9 +11,10 @@ Uni 范围（与产品确认过的口径一致）：
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
-from flux.core.context.redact import redact
+from flux.core.context.redact import redact, redact_then_clip
 
 #: 记忆卡总字符上限
 MEMORY_CARD_CHARS = 1200
@@ -89,7 +90,14 @@ def _goal_of(instruction: str, fallback: str) -> str:
     return text or fallback
 
 
-def _confirmation_lines(confirmation: dict[str, Any] | None) -> list[str]:
+def _confirmation_lines(
+    confirmation: dict[str, Any] | None, literals: Sequence[str] = ()
+) -> list[str]:
+    """把需求确认项拼成卡片行；label / value 同样可能复述密钥，先按清单打码。
+
+    确认项原文留在任务 JSON 上（不改已落库原文）；这里只处理**派生给下一轮读的
+    卡片文本**，与 goal / error / 答复同一口径。
+    """
     items = (confirmation or {}).get("items")
     if not isinstance(items, list):
         return []
@@ -97,8 +105,8 @@ def _confirmation_lines(confirmation: dict[str, Any] | None) -> list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        label = str(item.get("label") or "").strip()
-        value = str(item.get("value") or "").strip()
+        label = redact(str(item.get("label") or "").strip(), literals=literals).text
+        value = redact(str(item.get("value") or "").strip(), literals=literals).text
         if label and value:
             lines.append(f"{label}：{value}")
     return lines
@@ -114,8 +122,13 @@ def build_memory_card(
     trace_rows: list[dict[str, Any]] | None = None,
     changes: list[Any] | None = None,
     confirmation: dict[str, Any] | None = None,
+    literals: Sequence[str] = (),
 ) -> str:
-    """拼一张工作记忆卡；没有任何事实时也至少说明轮次与结果。"""
+    """拼一张工作记忆卡；没有任何事实时也至少说明轮次与结果。
+
+    `literals` 是配置的可控脱敏字面量清单（`FLUX_REDACTION_LITERALS`）：默认空清单时
+    只走内置规则（`sk-` / JWT / 熵检测），与既有行为一致；装配层会传入配置清单。
+    """
     rows = list(trace_rows or [])
     change_rows = list(changes or [])
     if confirmation is None:
@@ -130,15 +143,20 @@ def build_memory_card(
     lines = ["## 上一轮工作记忆（平台自动生成，下一轮开工先读）"]
     if run_id:
         lines.append(f"- 轮次：run={run_id}")
-    lines.append(f"- 本轮目标：{_clip(goal, MEMORY_GOAL_CHARS)}")
+    # 目标来自执行指令 / 任务描述，可能夹带密钥：先打码再截断
+    goal_text = redact(goal, literals=literals).text
+    lines.append(f"- 本轮目标：{_clip(goal_text, MEMORY_GOAL_CHARS)}")
     lines.append(f"- 结果：{state or '未知'}")
     finish_reason = str(getattr(run, "finish_reason", "") or "").strip()
     if finish_reason:
-        lines.append(f"- 结束原因：{finish_reason}")
+        # 结束原因也可能夹带密钥 / 配置字面量：卡片给下一轮读，先打码
+        lines.append(f"- 结束原因：{redact(finish_reason, literals=literals).text}")
     error = str(getattr(run, "error", "") or "").strip()
     if error:
-        # 错误里可能夹着密钥/令牌，落指令前统一脱敏
-        lines.append(f"- 失败原因：{redact(error[-MEMORY_ERROR_CHARS:]).text}")
+        # 错误里可能夹着密钥/令牌：先对完整原文打码再取尾部，避免跨边界漏片段
+        lines.append(
+            f"- 失败原因：{redact_then_clip(error, MEMORY_ERROR_CHARS, literals=literals)}"
+        )
 
     paths = _changed_paths(rows, change_rows)
     if paths:
@@ -155,13 +173,15 @@ def build_memory_card(
     if commands or reads:
         lines.append(f"- 过程：执行命令 {commands} 条，读取文件 {reads} 次")
 
-    confirmed = _confirmation_lines(confirmation)
+    confirmed = _confirmation_lines(confirmation, literals)
     if confirmed:
         lines.append("- 已确认需求：" + "；".join(confirmed))
 
     response = (final_response or "").strip()
     if response:
-        tail = _clip(response[-MEMORY_RESPONSE_CHARS:], MEMORY_RESPONSE_CHARS)
+        # 答复同样可能复述密钥：先对完整原文打码，再取尾并归一空白
+        redacted_response = redact(response, literals=literals).text
+        tail = _clip(redacted_response[-MEMORY_RESPONSE_CHARS:], MEMORY_RESPONSE_CHARS)
         lines.append(f"- 上一轮最终答复（尾部）：{tail}")
 
     lines.append("- 下一轮先核对上面的事实与最终答复，不要重做已完成的步骤。")

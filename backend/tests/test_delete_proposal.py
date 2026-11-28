@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,25 @@ def _write(root: Path, relative: str, content: str) -> Path:
 def _passing_command() -> str:
     # 跨平台：Windows 的 cmd.exe 不认 shlex.quote 生成的单引号路径
     return python_command("print('ok')")
+
+
+#: 本文件手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_CREATED_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_created_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _CREATED_CONTAINERS:
+            asyncio.run(_CREATED_CONTAINERS.pop().dispose())
+
+
+def _new_container(settings) -> Container:
+    container = Container(settings)
+    _CREATED_CONTAINERS.append(container)
+    return container
 
 
 def _propose_delete(container: Container, path: str, original: str):
@@ -118,7 +138,7 @@ def test_delete_proposal_diff_and_stats(apply_container: Container, workspace_ro
 def test_delete_proposal_applies(apply_settings, db_schema: None, workspace_root: Path) -> None:
     target = _write(workspace_root, "src/legacy.py", LEGACY)
     settings = apply_settings.model_copy(update={"test_command": _passing_command()})
-    container = Container(settings)
+    container = _new_container(settings)
     change = _propose_delete(container, "src/legacy.py", LEGACY)[0]
 
     applied = asyncio.run(container.workspace.apply(str(change.id)))
@@ -135,7 +155,9 @@ def test_delete_proposal_rollback_restores_file(
 ) -> None:
     """T-DEL-003（依赖 §5）：删除后回滚，文件内容恢复。"""
     target = _write(workspace_root, "src/legacy.py", LEGACY)
-    container = Container(apply_settings.model_copy(update={"test_command": _passing_command()}))
+    container = _new_container(
+        apply_settings.model_copy(update={"test_command": _passing_command()})
+    )
     change = _propose_delete(container, "src/legacy.py", LEGACY)[0]
     asyncio.run(container.workspace.apply(str(change.id)))
     assert not target.exists()
@@ -205,7 +227,9 @@ def _mixed_batch(container: Container):
 def test_mixed_batch_applies_all(apply_settings, db_schema: None, workspace_root: Path) -> None:
     _write(workspace_root, "app/mod.py", ORIGINAL)
     _write(workspace_root, "app/gone.py", LEGACY)
-    container = Container(apply_settings.model_copy(update={"test_command": _passing_command()}))
+    container = _new_container(
+        apply_settings.model_copy(update={"test_command": _passing_command()})
+    )
     changes = _mixed_batch(container)
 
     applied = asyncio.run(container.workspace.apply_many([str(c.id) for c in changes]))
@@ -225,7 +249,7 @@ def test_mixed_batch_failure_rolls_back_all(
     failing = workspace_root / "failing_check.py"
     failing.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
     settings = apply_settings.model_copy(update={"test_command": python_script(failing)})
-    container = Container(settings)
+    container = _new_container(settings)
     changes = _mixed_batch(container)
 
     with pytest.raises(ApplyFailedError):

@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from flux.core.context.projection import redacted_message
 from flux.core.mcp.tools.base import (
     ToolContext,
     ToolSpec,
@@ -179,7 +180,7 @@ async def plan_write(ctx: ToolContext, params: dict[str, Any]) -> dict[str, Any]
         )
     )[0]
     await ctx.container.task_stream.publish(
-        task_id, "assistant_message", {"message": message.to_dict()}
+        task_id, "assistant_message", {"message": redacted_message(ctx.container, message)}
     )
     return {
         "written": True,

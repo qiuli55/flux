@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # 脱敏映射表（context_redactions）的加密密钥（FLUX_CONTEXT_MECHANISM §10.1）。
     # 留空 = 映射不落库（fail-closed）：正文照常打码，只是不可回填。
     redaction_key: str | None = None
+    # 入站脱敏的可控字面量清单（FLUX_REDACTION_LITERALS）：逗号 / 空白 / 换行分隔的精确
+    # 字符串。用于没有 `sk-` 前缀、熵又不够高的短密钥（issue #4）。留空 = 不启用。
+    # 只放需要脱敏的值，不要写真实生产密钥；配置随部署环境注入。
+    redaction_literals: str | None = None
 
     # --- 设计工作室（Luma Studio，独立进程）---
     # 设计稿的持久化与 AI 改组件都由本机 Luma Studio 负责；Flux 只做鉴权代理，
@@ -376,6 +380,12 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def redaction_literal_list(self) -> tuple[str, ...]:
+        """把逗号 / 空白 / 换行分隔的 `redaction_literals` 拆成精确字符串元组。"""
+        raw = (self.redaction_literals or "").strip()
+        return tuple(part for part in re.split(r"[,\s]+", raw) if part)
 
     @property
     def log_dir_path(self) -> Path | None:

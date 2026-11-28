@@ -447,6 +447,8 @@ def test_recovery_api_lists_and_resolves(
     """REST 闭环：列表看到待决策项（含三版本）→ keep 决策 → 待决策清空且文件未被动。"""
     container = Container(apply_settings)
     target, proposal, _ = _prepare_pending_recovery(container, workspace_root)
+    # 准备阶段用完即释放：避免 aiosqlite 连接线程活到事件循环关闭之后
+    asyncio.run(container.dispose())
 
     app = create_app(apply_settings)
     with TestClient(app) as client:

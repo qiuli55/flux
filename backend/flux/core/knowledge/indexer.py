@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,11 +64,15 @@ class KnowledgeIndexer:
         chunk_overlap_tokens: int,
         conversation_window_tokens: int,
         max_messages_per_conversation: int,
+        literals: Sequence[str] = (),
     ) -> None:
         self._session_factory = session_factory
         self._repo = repository
         self._embedder = embedder
         self._brain = brain_repo
+        #: 可控脱敏字面量清单（`FLUX_REDACTION_LITERALS`）：与上下文摄入 / 终端 / 推流同口径，
+        #: 无前缀短密钥在入库前也必须精确命中。默认空清单，行为与只走内置规则一致。
+        self._literals = tuple(literals)
         self._docs_path = docs_path
         self._docs_max_bytes = max(1, docs_max_bytes)
         self._docs_max_files = max(1, docs_max_files)
@@ -148,10 +153,12 @@ class KnowledgeIndexer:
         if not messages:
             return False
 
-        title = _clip(_one_line(task.description if task is not None else ""), _MAX_TITLE_CHARS)
+        # 标题也会入库并可被检索：与正文同口径，先打码再截断
+        raw_title = _one_line(task.description if task is not None else "")
+        title = _clip(redact(raw_title, literals=self._literals).text, _MAX_TITLE_CHARS)
         converted: list[ConversationMessage] = []
         for message in messages:
-            content = redact(message.content or "").text.strip()
+            content = redact(message.content or "", literals=self._literals).text.strip()
             if not content:
                 continue
             converted.append(
@@ -261,7 +268,7 @@ class KnowledgeIndexer:
         size: int,
         modified_at: datetime,
     ) -> bool:
-        cleaned = redact(text).text
+        cleaned = redact(text, literals=self._literals).text
         chunked = chunk_markdown(
             cleaned,
             max_tokens=self._chunk_tokens,
@@ -360,7 +367,7 @@ class KnowledgeIndexer:
         lines = [f"# {name}", ""]
         latest: datetime | None = None
         for entry in entries:
-            content = redact(entry.content or "").text.strip()
+            content = redact(entry.content or "", literals=self._literals).text.strip()
             if not content:
                 continue
             lines.append(f"## {entry.type}")

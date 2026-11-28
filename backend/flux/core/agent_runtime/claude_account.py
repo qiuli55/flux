@@ -21,6 +21,7 @@ import re
 import shutil
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Any
 
 from flux.config import Settings
 from flux.core.agent_runtime.platforms import secure_file
+from flux.core.context.redact import redact
 from flux.errors import ConfigurationError, NotFoundError, ValidationError
 from flux.logging import get_logger
 
@@ -105,9 +107,18 @@ def parse_subscription_token(text: str) -> str:
     return match.group(0) if match else ""
 
 
-def _redact(text: str, limit: int = 400) -> str:
-    """给用户看的失败摘要：去控制序列、抹掉令牌、只留最后几行。"""
-    cleaned = _TOKEN_RE.sub("[已隐藏令牌]", strip_terminal_escapes(text))
+def _display_text(text: str, literals: Sequence[str] = ()) -> str:
+    """把 CLI 原文清洗成可展示文本：先去控制序列，再走统一打码。
+
+    顺序很重要：打码必须作用于**完整原文**，否则先截断会把跨边界的字面量切成
+    片段、精确清单匹配不到。统一规则同时挡住 `sk-ant-oat…`、JWT 与配置字面量。
+    """
+    return redact(strip_terminal_escapes(text), literals=literals).text
+
+
+def _redact(text: str, limit: int = 400, *, literals: Sequence[str] = ()) -> str:
+    """给用户看的失败摘要：去控制序列、统一打码、只留最后几行。"""
+    cleaned = _display_text(text, literals)
     lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     return " | ".join(lines[-4:])[-limit:]
 
@@ -146,6 +157,11 @@ class ClaudeAccountService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._logins: dict[str, _LoginSession] = {}
+
+    @property
+    def _literals(self) -> tuple[str, ...]:
+        """配置的可控脱敏字面量（`FLUX_REDACTION_LITERALS`），与项目其余路径同口径。"""
+        return self._settings.redaction_literal_list
 
     # --- 路径 / 令牌 ---
 
@@ -448,14 +464,14 @@ class ClaudeAccountService:
                 except (OSError, ValidationError) as exc:
                     session.status = "failed"
                     session.message = f"订阅令牌保存失败：{exc}"
-                    session.output = _TOKEN_RE.sub("[已隐藏令牌]", session.output)
+                    session.output = _display_text(session.output, self._literals)
                     session.ready.set()
                     return
                 session.token_captured = True
                 session.status = "success"
                 session.message = ""
                 # 成功输出里可能还带着令牌：不要留在内存/日志的可见文本里。
-                session.output = _TOKEN_RE.sub("[已隐藏令牌]", session.output)
+                session.output = _display_text(session.output, self._literals)
                 session.ready.set()
                 logger.info("claude 订阅登录成功 login=%s", session.login_id)
                 asyncio.create_task(self._stop_after_success(session))
@@ -486,18 +502,21 @@ class ClaudeAccountService:
                 session.token_captured = True
                 session.status = "success"
                 session.message = ""
-                session.output = _TOKEN_RE.sub("[已隐藏令牌]", session.output)
+                session.output = _display_text(session.output, self._literals)
                 logger.info("claude 订阅登录成功 login=%s rc=%s", session.login_id, returncode)
                 return
             except (OSError, ValidationError):
                 pass
         session.status = "failed"
-        session.message = _redact(session.output) or f"claude setup-token 退出码 {returncode}"
+        literals = self._literals
+        session.message = _redact(session.output, literals=literals) or (
+            f"claude setup-token 退出码 {returncode}"
+        )
         logger.warning(
             "claude 订阅登录失败 login=%s rc=%s tail=%s",
             session.login_id,
             returncode,
-            _redact(session.output),
+            _redact(session.output, literals=literals),
         )
 
     async def _enforce_deadline(self, session: _LoginSession) -> None:
@@ -510,9 +529,7 @@ class ClaudeAccountService:
             with contextlib.suppress(ProcessLookupError, OSError):
                 session.process.terminate()
             with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError, OSError):
-                await asyncio.wait_for(
-                    asyncio.to_thread(session.process.wait), timeout=5
-                )
+                await asyncio.wait_for(asyncio.to_thread(session.process.wait), timeout=5)
             with contextlib.suppress(ProcessLookupError, OSError):
                 session.process.kill()
             self._settle(session, -1)

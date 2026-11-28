@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -59,9 +60,24 @@ def _project(tmp: Path) -> Path:
     return root
 
 
+#: 本文件经 `_ctx` 手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_EXTRA_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_extra_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _EXTRA_CONTAINERS:
+            asyncio.run(_EXTRA_CONTAINERS.pop().dispose())
+
+
 def _ctx(settings: Settings) -> ToolContext:
+    container = Container(settings)
+    _EXTRA_CONTAINERS.append(container)
     return ToolContext(
-        container=Container(settings),
+        container=container,
         identity=AgentIdentity(
             agent_id=str(uuid.uuid4()),
             token_id="tok-preview",

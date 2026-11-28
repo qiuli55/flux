@@ -88,6 +88,30 @@ def test_task_attachments_are_recorded_and_reach_instruction(client: TestClient)
     assert first["path"] in instruction and second["path"] in instruction
 
 
+def test_projected_attachment_path_is_real_and_reaches_instruction(client: TestClient) -> None:
+    """GET messages 投影里的附件 path 必须是真实可读路径，且进入 Agent 指令。"""
+    uploaded = _upload(client, "真实路径.txt", "内容".encode())
+    task_id = _create_task(client, "读这个文件", [uploaded["id"]])
+
+    messages = client.get(f"{PREFIX}/tasks/{task_id}/messages").json()["data"]
+    attachment_messages = [item for item in messages if item["kind"] == "attachments"]
+    assert len(attachment_messages) == 1
+    projected = attachment_messages[0]["payload"]["files"][0]
+
+    assert projected["path"] == uploaded["path"]
+    assert Path(projected["path"]).exists()
+    assert Path(projected["path"]).read_text(encoding="utf-8") == "内容"
+
+    instruction = _execution_instruction(
+        SimpleNamespace(id=task_id, description="读这个文件", project_id=None),
+        None,
+        [],
+        attachments=[projected],
+    )
+    assert "## 附件" in instruction
+    assert projected["path"] in instruction
+
+
 def test_message_requires_content_or_attachments(client: TestClient) -> None:
     task_id = _create_task(client, "随便", [])
     response = client.post(f"{PREFIX}/tasks/{task_id}/messages", json={"content": "  "})

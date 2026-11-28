@@ -231,7 +231,14 @@ async def context_steps(ctx: ToolContext, params: dict[str, Any]) -> dict[str, A
         # 密钥路径的历史 step（策略收紧前落库）不回给 Agent；正文摄入时已脱敏，这里再兜底一次
         if step.target_ref and is_secret_path(step.target_ref):
             continue
-        summary = redact(step.result_head or "").text.strip().replace("\n", " ")
+        summary = (
+            redact(
+                step.result_head or "",
+                literals=ctx.container.settings.redaction_literal_list,
+            )
+            .text.strip()
+            .replace("\n", " ")
+        )
         rows.append(
             {
                 "step_id": step.id,

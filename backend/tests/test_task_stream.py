@@ -10,7 +10,7 @@ from flux.core.event.bus import EventBus, Events
 from flux.core.model_gateway.base import ChatMessage, ChatResult, TokenUsage
 from flux.core.model_gateway.providers.deepseek import DeepSeekProvider
 from flux.core.task_engine.assistant import TaskAssistant, visible_reply_prefix
-from flux.core.task_engine.stream import TaskStreamHub, TaskStreamRelay
+from flux.core.task_engine.stream import TaskStreamHub, TaskStreamRelay, _redacted
 from flux.enums import ModelProvider
 
 
@@ -311,6 +311,55 @@ def test_relay_redacts_secrets_in_tool_output() -> None:
 
     data = asyncio.run(scenario())
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz012345" not in data["output"]
+
+
+def test_relay_redacts_configured_literal_in_tool_output() -> None:
+    """配置的字面量（`FLUX_REDACTION_LITERALS`）在推流路径上也要打码（PR #42 遗留）。
+
+    内置规则只认高熵 / 带前缀的密钥；无前缀、低熵的短字面量只能靠 relays 注入的清单
+    精确命中。此前 relay 的 `_redacted()` 不读清单，`detail` / `output` 里的明文会直接
+    进 SSE。值用验收烟雾同款虚构字面量。
+    """
+    literal = "CUSTOM_LITERAL_SMOKE_XYZ"
+
+    async def scenario() -> dict:
+        hub = TaskStreamHub()
+        hub.bind_run("r1", "t1")
+        bus = EventBus()
+        TaskStreamRelay(hub, literals=(literal,)).attach(bus)
+        await bus.publish(
+            Events.DSH_EVENT,
+            {
+                "run_id": "r1",
+                "event_type": "tool_result",
+                "name": "bash",
+                "detail": f"echo {literal}",
+                "output": f"stdout: {literal}",
+                "status": "completed",
+            },
+        )
+        stream = hub.stream("t1")
+        event = await anext(stream)
+        await stream.aclose()
+        assert event is not None
+        return event.data
+
+    data = asyncio.run(scenario())
+    assert literal not in data["detail"]
+    assert literal not in data["output"]
+    assert "[REDACTED:key]" in data["detail"]
+    assert "[REDACTED:key]" in data["output"]
+
+
+def test_redacted_injects_configured_literals() -> None:
+    """`_redacted()` 是纯函数：清单由调用方注入；默认空清单保持既有行为。"""
+    literal = "CUSTOM_LITERAL_SMOKE_XYZ"
+
+    with_literals = _redacted(f"echo {literal}", literals=(literal,))
+    assert literal not in with_literals
+    assert "[REDACTED:key]" in with_literals
+    # 空清单不启用字面量匹配：低熵短串照旧原样保留（内置规则不会误伤）
+    assert literal in _redacted(f"echo {literal}")
 
 
 def test_relay_paces_long_text_before_terminal_event() -> None:

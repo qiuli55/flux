@@ -23,6 +23,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from flux.core.context.projection import (
+    redact_projection,
+    redacted_message,
+    sanitize_assistant_value,
+)
 from flux.core.task_engine.decisions import build_decision
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
@@ -113,6 +118,8 @@ async def raise_approval(
         "kind": kind,
         "meta": {**meta, "task_id": str(task_id), "run_id": run_id},
     }
+    # 审批卡正文、decision JSON 与总线投影同源：先消毒本地副本，后续各处复用。
+    record = sanitize_assistant_value(container, record)
     await container.task_repo.raise_decision(task_id, record)
     await container.task_repo.set_status(task_id, TaskStatus.WAITING_FOR_USER_DECISION)
 
@@ -130,17 +137,21 @@ async def raise_approval(
         )
     )[0]
     await container.task_stream.publish(
-        task_id, "assistant_message", {"message": message.to_dict()}
+        task_id, "assistant_message", {"message": redacted_message(container, message)}
     )
+    # 总线载荷是发给订阅者的投影：`meta` 常含完整命令 / 路径，原文只留在库中。
     await container.bus.publish(
         "task.approval_requested",
-        {
-            "task_id": str(task_id),
-            "run_id": run_id,
-            "decision_id": record["id"],
-            "kind": kind,
-            "meta": record["meta"],
-        },
+        redact_projection(
+            container,
+            {
+                "task_id": str(task_id),
+                "run_id": run_id,
+                "decision_id": record["id"],
+                "kind": kind,
+                "meta": record["meta"],
+            },
+        ),
     )
     logger.info(
         "approval.raised task=%s run=%s kind=%s rule=%s decision=%s",
@@ -231,16 +242,20 @@ async def _expire(
         )
     )[0]
     await container.task_stream.publish(
-        task_id, "assistant_message", {"message": message.to_dict()}
+        task_id, "assistant_message", {"message": redacted_message(container, message)}
     )
+    # 与 requested 同一口径：整份总线载荷先打码再发布（当前字段只有标识，仍防后续加文本）。
     await container.bus.publish(
         "task.approval_resolved",
-        {
-            "task_id": str(task_id),
-            "run_id": run_id,
-            "decision_id": decision_id,
-            "result": "timeout",
-        },
+        redact_projection(
+            container,
+            {
+                "task_id": str(task_id),
+                "run_id": run_id,
+                "decision_id": decision_id,
+                "result": "timeout",
+            },
+        ),
     )
     logger.warning("approval.timeout task=%s run=%s decision=%s", task_id, run_id, decision_id)
 

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -17,10 +17,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from flux.core.context.projection import (
+    sanitize_assistant_message_fields,
+    sanitize_assistant_value,
+)
 from flux.enums import (
     DecisionMode,
     DecisionStatus,
     PermissionMode,
+    TaskMessageRole,
     TaskOrigin,
     TaskStatus,
 )
@@ -66,6 +71,36 @@ class TaskRepository:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        #: 消息落库后的上下文摄入钩子（Container 装配 `ContextIngestor`；单测可不装）。
+        #: 入参：task_id、当前 run_id（可能为 None）、刚写入的消息列表。
+        self._message_ingestor: (
+            Callable[[Any, str | None, Sequence[TaskMessage]], Awaitable[None]] | None
+        ) = None
+        #: assistant 正文 / payload 的落库消毒来源（Container 传 Settings；单测可不装）。
+        #: 只去掉未完成密钥前缀并打码 Bearer 令牌，完整字面量仍按既有约定留在库里。
+        self._assistant_sanitizer_source: Any | None = None
+
+    def set_message_ingestor(
+        self,
+        ingestor: Callable[[Any, str | None, Sequence[TaskMessage]], Awaitable[None]] | None,
+    ) -> None:
+        """装配用户/助手消息的上下文摄入钩子（issue #3：产品主循环也要进 step 日志）。"""
+        self._message_ingestor = ingestor
+
+    def set_assistant_sanitizer_source(self, source: Any | None) -> None:
+        """装配 assistant 落库消毒的字面量来源（Container 负责传 Settings）。"""
+        self._assistant_sanitizer_source = source
+
+    def _sanitize_assistant_fields(
+        self, content: str, payload: dict[str, Any] | None
+    ) -> tuple[str, dict[str, Any] | None]:
+        # 未注入来源时也要消毒：内置规则（Bearer / JWT / PEM / `sk-` 等）不依赖
+        # Settings 字面量清单；`projection_literals(None)` 返回 `()`，配置字面量前缀
+        # 在无清单时无法识别属预期，完整字面量仍按既有约定留在库里。
+        return sanitize_assistant_message_fields(self._assistant_sanitizer_source, content, payload)
+
+    def _sanitize_assistant_value(self, value: Any) -> Any:
+        return sanitize_assistant_value(self._assistant_sanitizer_source, value)
 
     async def create(
         self,
@@ -293,7 +328,13 @@ class TaskRepository:
             return task
 
     async def set_confirmation(self, task_id: uuid.UUID, confirmation: dict[str, Any]) -> Task:
-        """写入需求确认（P0-06）。整体覆盖：确认卡的权威副本就是最后一次写入的那份。"""
+        """写入需求确认（P0-06）。整体覆盖：确认卡的权威副本就是最后一次写入的那份。
+
+        assistant 生成的确认项与回复同源，落库前去掉未完成密钥前缀；用户自己提交的
+        确认（actor=user）保持原文。
+        """
+        if confirmation.get("actor") == "assistant":
+            confirmation = self._sanitize_assistant_value(confirmation)
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.confirmation = confirmation
@@ -331,7 +372,12 @@ class TaskRepository:
     # --- 决策点（文档 §5）---
 
     async def raise_decision(self, task_id: uuid.UUID, decision: dict[str, Any]) -> Task:
-        """追加一条决策点记录。读取与写入在同一会话里完成，避免并发下丢记录。"""
+        """追加一条决策点记录。读取与写入在同一会话里完成，避免并发下丢记录。
+
+        决策点由 assistant / Agent 生成，与审批卡 / 决策消息同源：落库前同样去掉
+        未完成密钥前缀（完整字面量仍保持原文，投影层再统一打码）。
+        """
+        decision = self._sanitize_assistant_value(decision)
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.decisions = [*(task.decisions or []), decision]
@@ -390,8 +436,10 @@ class TaskRepository:
         不会出现"只存了用户那句、回复丢了"的半个回合。任务不存在时抛 NotFoundError。
         """
         async with self._session_factory() as session:
-            if await session.get(Task, task_id) is None:
+            task = await session.get(Task, task_id)
+            if task is None:
                 raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            run_id = task.run_id
             last_seq = await session.scalar(
                 select(func.max(TaskMessage.seq)).where(TaskMessage.task_id == task_id)
             )
@@ -399,14 +447,20 @@ class TaskRepository:
             created: list[TaskMessage] = []
             for draft in drafts:
                 seq += 1
+                content = draft.content
+                payload = draft.payload
+                if draft.role == TaskMessageRole.ASSISTANT.value:
+                    # 所有 assistant 落库路径的共同入口：审批卡、决策、DSH 收尾、摘要、
+                    # 计划 / 设计 / 交付 / 产物卡片与微信助手回复都从这里过。
+                    content, payload = self._sanitize_assistant_fields(content, payload)
                 message = TaskMessage(
                     id=uuid.uuid4(),
                     task_id=task_id,
                     seq=seq,
                     role=draft.role,
                     kind=draft.kind,
-                    content=draft.content,
-                    payload=draft.payload,
+                    content=content,
+                    payload=payload,
                 )
                 session.add(message)
                 created.append(message)
@@ -414,7 +468,20 @@ class TaskRepository:
             for message in created:
                 # 同 create()：created_at 来自 server_default，离开会话前取回
                 await session.refresh(message)
-            return created
+        await self._ingest_messages(task_id, run_id, created)
+        return created
+
+    async def _ingest_messages(
+        self, task_id: uuid.UUID, run_id: str | None, messages: Sequence[TaskMessage]
+    ) -> None:
+        """消息已提交后触发摄入；钩子失败只记 warning，绝不影响消息落库结果。"""
+        ingestor = self._message_ingestor
+        if ingestor is None:
+            return
+        try:
+            await ingestor(task_id, run_id, messages)
+        except Exception:  # noqa: BLE001 - 上下文摄入是旁路，不能连坐对话写入
+            logger.warning("消息上下文摄入失败 task=%s", task_id, exc_info=True)
 
     async def list_messages(
         self, task_id: uuid.UUID, *, limit: int = 30, before: int | None = None

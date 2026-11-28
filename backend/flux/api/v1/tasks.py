@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import uuid
@@ -27,6 +28,16 @@ from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.agent_runtime.trace import summarize_trace
 from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
+from flux.core.context.projection import (
+    incomplete_secret_start,
+    redact_projection,
+    redact_text,
+    redacted_message,
+    safe_cut,
+    sanitize_assistant_message_fields,
+    sanitize_assistant_value,
+    task_projection,
+)
 from flux.core.event.bus import Events
 from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
@@ -103,9 +114,74 @@ async def _require_open_task(container: Container, task_uuid: uuid.UUID, task_id
     return task
 
 
-def _task_dict(task: Task) -> dict[str, object]:
-    """任务响应体：M0 冻结的 7 个键 + created_at（任务执行中心展示真实创建时间）。"""
-    return task.to_dict()
+class _StreamingDeltaRedactor:
+    """跨帧 `assistant_delta` 打码：对累计原文打码，只放出已确认安全的前缀。
+
+    单帧调用 `redact` 挡不住被拆到相邻两帧的配置字面量：两半都不构成完整字面量，
+    各自原样通过，客户端按增量拼接后又能看到完整明文。这里以整轮累计原文为输入，
+    每次只放出"不是任何字面量 / 内置规则未完成后缀"的安全前缀，其余暂缓到后续块或
+    本轮结束（``flush``）。
+
+    普通正文（含中文）没有可疑后缀，会照常逐帧流出；只有确实可能拼成密钥的短尾巴
+    会被短暂缓一缓，不会把整段回复攒到最后。
+    """
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+        self._literals = tuple(getattr(container.settings, "redaction_literal_list", ()))
+        self._raw = ""
+        #: 已放出的累计原文长度：下一段只对新增部分打码，避免占位符编号随累计重算抖动。
+        self._released = 0
+
+    def feed(self, chunk: str) -> str:
+        """喂入一帧模型增量，返回本次可以放出的打码后文本（可能为空）。"""
+        if not chunk:
+            return ""
+        self._raw += chunk
+        return self._release(final=False)
+
+    def flush(self, *, abort: bool = False) -> str:
+        """本轮结束：正常完成放出暂缓文本；中途失败只放已确认安全的前缀。
+
+        异常 / 取消时不能按"正常结束"处理：尚未放出的尾串可能只是某个字面量或令牌的
+        前半截（如 ``CUSTOM_LITE``），精确清单命中不了，整段放出就会把前缀残片漏给
+        客户端。这里退到安全切点后直接丢弃剩余尾串——宁可少发一段，也不放未完成密钥。
+
+        正常结束同样不能整段照发：回复如果恰好停在字面量 / 令牌的前半截，精确清单
+        命中不了，flush 就会把残片当正文漏出。但也不能一律按 abort 截断——被暂缓的
+        普通词尾（``hello`` + `` world`` 的 ``world``）是安全正文，仍要完整发出。故
+        ``_final_cut`` 只丢弃确实不完整的密钥形态，其余照常打码后放出。
+        """
+        if abort:
+            return self._abort()
+        return self._release(final=True)
+
+    def _abort(self) -> str:
+        """中途结束：放出安全前缀，丢弃未确认安全的尾串且不再续放。"""
+        cut = safe_cut(self._raw, self._literals)
+        text = ""
+        if cut > self._released:
+            segment = self._raw[self._released : cut]
+            text = redact_text(self._container, segment)
+        # 未完成的前缀留在 `_raw` 里也不能再放：把游标推到末尾，后续 feed 不会补发。
+        self._released = len(self._raw)
+        return text
+
+    def _release(self, *, final: bool) -> str:
+        cut = self._final_cut() if final else safe_cut(self._raw, self._literals)
+        if cut <= self._released:
+            return ""
+        segment = self._raw[self._released : cut]
+        self._released = cut
+        return redact_text(self._container, segment)
+
+    def _final_cut(self) -> int:
+        """正常结束的切点：丢开未完成的密钥尾串，其余跟着打码一起放出。"""
+        suspicious = incomplete_secret_start(self._raw, self._literals)
+        if suspicious is None:
+            return len(self._raw)
+        # 可疑尾串之前仍可能以另一个未完成前缀结尾，继续退到真正的安全切点。
+        return safe_cut(self._raw[:suspicious], self._literals)
 
 
 async def _record_attachments(
@@ -127,7 +203,9 @@ async def _record_attachments(
             ],
         )
     )[0]
-    await container.task_stream.publish(task_uuid, "user_message", {"message": message.to_dict()})
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": redacted_message(container, message)}
+    )
 
 
 def _attachments_brief(files: list[UploadedFile]) -> str:
@@ -227,7 +305,7 @@ async def create_task(
             priority=task.priority,
             agent_id=str(agent_id) if agent_id is not None else None,
         )
-    result = _task_dict(task)
+    result = task_projection(container, task)
     await container.bus.publish(Events.TASK_CREATED, result)
     return ok(result)
 
@@ -265,7 +343,7 @@ async def list_tasks(
     tasks = await container.task_repo.list(
         project_id=project_uuid, status=wanted, origin=origin_filter, limit=limit
     )
-    return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
+    return ok([task_projection(container, t) for t in tasks], metadata={"count": len(tasks)})
 
 
 @router.post("/context-sync")
@@ -280,7 +358,7 @@ async def get_task(
     task_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
     task = await container.task_repo.get(_task_id(task_id))
-    return ok(_task_dict(task))
+    return ok(task_projection(container, task))
 
 
 @router.get("/{task_id}/messages")
@@ -297,7 +375,7 @@ async def list_task_messages(
         _task_id(task_id), limit=limit, before=before
     )
     return ok(
-        [m.to_dict() for m in messages],
+        [redacted_message(container, m) for m in messages],
         metadata={"count": len(messages), "has_more": has_more},
     )
 
@@ -403,13 +481,15 @@ async def create_task_handoff(
             details={"task_id": task_id, "status": task.status},
         )
     messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HANDOFF_MESSAGE_LIMIT)
+    # 交接摘要会把消息原文交给模型并回传；进入摘要前先按配置清单打码，
+    # 避免 task_messages 里的密钥以明文形式穿过 handoff（也不让截断边界漏片段）。
     pairs = [
-        (message.role, message.content)
+        (message.role, redact_text(container, message.content))
         for message in messages
         if message.kind in CONTEXT_MESSAGE_KINDS and message.content.strip()
     ]
     summary = await container.conversation_summarizer.summarize(
-        description=task.description, messages=pairs
+        description=redact_text(container, task.description or ""), messages=pairs
     )
     logger.info(
         "生成对话交接摘要 task=%s 来源消息=%d 截断=%s",
@@ -418,6 +498,8 @@ async def create_task_handoff(
         summary.truncated,
     )
     data = summary.to_dict()
+    # 模型可能原样复述输入：返回前再对摘要做一次统一打码（模型输出也走同一口径）。
+    data["summary"] = redact_text(container, str(data.get("summary") or ""))
     data["from_task_id"] = str(task_uuid)
     return ok(data)
 
@@ -453,7 +535,7 @@ async def create_task_message(
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "user_message", {"message": user_message.to_dict()}
+        task_uuid, "user_message", {"message": redacted_message(container, user_message)}
     )
     await _record_attachments(container, task_uuid, files)
 
@@ -461,10 +543,22 @@ async def create_task_message(
     context = (
         await container.brain.context(task.project_id) if task.project_id is not None else None
     )
+    # 新一轮开始：上一轮的增量状态已由它自己的 flush 清空，这里新建本轮的打码器。
+    stream_redactor = _StreamingDeltaRedactor(container)
     await container.task_stream.publish(task_uuid, "assistant_start", {})
 
+    async def _publish_delta(text: str) -> None:
+        if text:
+            await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
     async def _on_delta(text: str) -> None:
-        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+        # 只放出累计原文里"已确认安全"的增量；被拆开或未完成的密钥片段先留在手里。
+        await _publish_delta(stream_redactor.feed(text))
+
+    async def _flush_delta(*, abort: bool = False) -> None:
+        # 正常结束必须 flush：否则暂缓的安全文本永远发不出去，客户端看到的回复会缺尾巴。
+        # 中途失败只放已确认安全的前缀，未完成的字面量 / 令牌残片直接丢弃。
+        await _publish_delta(stream_redactor.flush(abort=abort))
 
     # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
     # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
@@ -483,9 +577,28 @@ async def create_task_message(
             context=context,
             on_delta=_on_delta,
         )
-    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
-        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
+    except asyncio.CancelledError:
+        # 取消也算中途结束：只放安全前缀，别把未完成的字面量 / 令牌残片当成正文发出去。
+        with suppress(Exception):
+            await _flush_delta(abort=True)
         raise
+    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
+        # 本轮异常结束只放已确认安全的前缀；未完成的前缀残片不能当正文补发。
+        await _flush_delta(abort=True)
+        # 先对完整异常文本打码，再截断：反序会把跨边界的字面量切成片段漏出。
+        await container.task_stream.publish(
+            task_uuid,
+            "assistant_error",
+            {"error": redact_text(container, str(exc))[:500]},
+        )
+        raise
+    # 正常结束：先补发暂缓的增量，再发最终整条消息（最终消息会整体打码）。
+    await _flush_delta()
+    # 落库前与流式 flush 同口径消毒：模型恰好停在字面量 / 令牌前半段时，
+    # 不能把 `CUSTOM_LITE` 这类残片写进 assistant 消息（GET / messages 会原样读到）。
+    stored_reply, stored_payload = sanitize_assistant_message_fields(
+        container, turn.reply, turn.payload()
+    )
     reply = (
         await container.task_repo.add_messages(
             task_uuid,
@@ -494,29 +607,37 @@ async def create_task_message(
                     role=TaskMessageRole.ASSISTANT.value,
                     # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
                     kind="secure_input" if turn.secure_input else "text",
-                    content=turn.reply,
-                    payload=turn.payload(),
+                    content=stored_reply,
+                    payload=stored_payload,
                 )
             ],
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "assistant_message", {"message": reply.to_dict()}
+        task_uuid, "assistant_message", {"message": redacted_message(container, reply)}
     )
 
     if turn.confirmation:
         # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
         # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
+        # 确认项与回复同源：落库 / 响应前同样去掉未完成密钥前缀。
+        confirmation_items = sanitize_assistant_value(container, turn.confirmation)
         task = await container.task_repo.set_confirmation(
             task_uuid,
-            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
+            {"items": confirmation_items, "actor": "assistant", "updated_at": _now_iso()},
         )
 
     if task.status == TaskStatus.PENDING.value:
         # 平台已真实开始处理这条任务：状态从 pending 进入 running（有实际动作才改状态）
         task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
     return ok(
-        {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
+        {
+            "task": task_projection(container, task),
+            "messages": [
+                redacted_message(container, user_message),
+                redacted_message(container, reply),
+            ],
+        },
         metadata={"provider": turn.provider, "model": turn.model},
     )
 
@@ -600,7 +721,9 @@ async def submit_secure_input(
             ],
         )
     )[0]
-    await container.task_stream.publish(task_uuid, "user_message", {"message": stored.to_dict()})
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": redacted_message(container, stored)}
+    )
     logger.info(
         "安全输入已保存 task=%s message=%s key=%s provider=%s",
         task_uuid,
@@ -610,9 +733,9 @@ async def submit_secure_input(
     )
     return ok(
         {
-            "task": _task_dict(task),
+            "task": task_projection(container, task),
             "key": key.to_dict(),
-            "message": stored.to_dict(),
+            "message": redacted_message(container, stored),
         }
     )
 
@@ -705,7 +828,7 @@ async def continue_task(
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "user_message", {"message": user_message.to_dict()}
+        task_uuid, "user_message", {"message": redacted_message(container, user_message)}
     )
     await _record_attachments(container, task_uuid, files)
     followup = content or _attachments_brief(files)
@@ -723,8 +846,8 @@ async def continue_task(
         raise
     return ok(
         {
-            "task": _task_dict(result.task),
-            "messages": [user_message.to_dict()],
+            "task": task_projection(container, result.task),
+            "messages": [redacted_message(container, user_message)],
         }
     )
 
@@ -758,7 +881,9 @@ async def update_confirmation(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "message": message.to_dict()})
+    return ok(
+        {"task": task_projection(container, task), "message": redacted_message(container, message)}
+    )
 
 
 @router.post("/{task_id}/decision-mode")
@@ -771,7 +896,7 @@ async def set_decision_mode(
     task_uuid = _task_id(task_id)
     await _require_open_task(container, task_uuid, task_id)
     task = await container.task_repo.set_decision_mode(task_uuid, payload.mode)
-    return ok(_task_dict(task))
+    return ok(task_projection(container, task))
 
 
 @router.post("/{task_id}/permission-mode")
@@ -792,7 +917,7 @@ async def set_permission_mode(
     task = await container.task_repo.set_permission_mode(task_uuid, payload.mode)
     effective_from = "next_run" if task.status == TaskStatus.RUNNING.value else "next_message"
     result = {
-        **_task_dict(task),
+        **task_projection(container, task),
         "previous_mode": previous,
         "effective_from": effective_from,
     }
@@ -837,7 +962,7 @@ async def switch_task_agent(
         )
     result = await container.agent_switch.switch(task, payload.agent_id)
     body = {
-        **_task_dict(result.task),
+        **task_projection(container, result.task),
         "queued": result.queued,
         "target_agent_id": str(result.target.agent_id),
         "target_agent": result.target.name,
@@ -884,7 +1009,7 @@ async def switch_task_model(
         runtime=runtime, model=payload.model, key_id=payload.key_id
     )
     task = await container.task_repo.set_model(task_uuid, model, key_id)
-    return ok(_task_dict(task))
+    return ok(task_projection(container, task))
 
 
 @router.post("/{task_id}/start")
@@ -916,9 +1041,11 @@ async def start_task(
     result = await container.task_run_service.start(task, payload.confirmation)
     return ok(
         {
-            "task": _task_dict(result.task),
+            "task": task_projection(container, result.task),
             "run": result.run,
-            "message": result.message.to_dict() if result.message is not None else None,
+            "message": (
+                redacted_message(container, result.message) if result.message is not None else None
+            ),
         }
     )
 
@@ -956,6 +1083,8 @@ async def raise_decision(
         recommendation=payload.recommendation,
         mode=mode,
     )
+    # 决策点由 Agent 生成，与决策消息同源：先消毒本地副本，消息 / 响应 / 落库都用它。
+    record = sanitize_assistant_value(container, record)
     task = await container.task_repo.raise_decision(task_uuid, record)
 
     if record["status"] == DecisionStatus.PENDING.value:
@@ -978,7 +1107,13 @@ async def raise_decision(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "decision": record, "message": message.to_dict()})
+    return ok(
+        {
+            "task": task_projection(container, task),
+            "decision": redact_projection(container, record),
+            "message": redacted_message(container, message),
+        }
+    )
 
 
 @router.post("/{task_id}/decisions/choose")
@@ -1043,7 +1178,13 @@ async def choose_decision(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "decision": record, "message": message.to_dict()})
+    return ok(
+        {
+            "task": task_projection(container, task),
+            "decision": redact_projection(container, record),
+            "message": redacted_message(container, message),
+        }
+    )
 
 
 @router.post("/{task_id}/cancel")
@@ -1070,12 +1211,12 @@ async def cancel_task(
             # 取消来晚了：Run 已成功结束（竞态窗口：Run 落终态、任务尚未被桥接收尾）。
             # 任务按 Run 的真实结局收尾，绝不把一次成功的执行改判成失败。
             task = await container.task_repo.set_status(task_uuid, TaskStatus.COMPLETED)
-            return ok(_task_dict(task))
+            return ok(task_projection(container, task))
         if run_status is not None and run_status is not DshRunStatus.CANCELLED:
             task = await container.task_repo.set_status(task_uuid, TaskStatus.FAILED)
-            return ok(_task_dict(task))
+            return ok(task_projection(container, task))
     task = await container.task_repo.set_status(task_uuid, TaskStatus.CANCELLED)
-    return ok(_task_dict(task))
+    return ok(task_projection(container, task))
 
 
 @router.delete("/{task_id}")

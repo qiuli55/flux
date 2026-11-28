@@ -17,6 +17,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
+from flux.core.context.projection import redact_projection
 from flux.core.group.repository import GroupMessageDraft
 from flux.errors import BadRequestError
 from flux.logging import get_logger
@@ -77,8 +78,13 @@ def _group_dict(
     return data
 
 
-def _message_dict(message: ChatGroupMessage) -> dict[str, Any]:
-    return message.to_dict()
+def _message_dict(container: Container, message: ChatGroupMessage) -> dict[str, Any]:
+    """群聊消息的 HTTP 投影：与任务消息同一口径打码，落库对象保持原文。
+
+    `content` 之外，`author_name` 与嵌套 `payload`（工具结果 / 卡片 / 引用片段）同样
+    可能夹带原文，故对整份投影打码，而不是只处理一个字段。
+    """
+    return redact_projection(container, message.to_dict())
 
 
 def _detect_mentions(content: str, members: list[Task]) -> set[uuid.UUID]:
@@ -266,7 +272,12 @@ async def list_messages(
         after_seq=max(0, after_seq),
         limit=max(1, min(limit, 200)),
     )
-    return ok({"messages": [_message_dict(message) for message in messages], "has_more": has_more})
+    return ok(
+        {
+            "messages": [_message_dict(container, message) for message in messages],
+            "has_more": has_more,
+        }
+    )
 
 
 @router.post("/{group_id}/messages")
@@ -306,7 +317,7 @@ async def create_message(
 
     return ok(
         {
-            "message": _message_dict(user_message),
+            "message": _message_dict(container, user_message),
             "epoch_id": str(epoch.id),
             "mentioned": [str(item) for item in mentioned],
         }

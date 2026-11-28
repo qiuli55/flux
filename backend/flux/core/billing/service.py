@@ -297,8 +297,7 @@ class BillingService:
                         "refreshed": False,
                         "rows": 0,
                         "error": (
-                            f"{plan.label} 没有官方额度来源：只按 Flux 本地记账，"
-                            "不显示官方百分比"
+                            f"{plan.label} 没有官方额度来源：只按 Flux 本地记账，不显示官方百分比"
                         ),
                     }
                 )

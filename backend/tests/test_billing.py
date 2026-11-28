@@ -677,11 +677,7 @@ async def test_refresh_picks_up_account_after_codex_login(container: Container, 
     )
     service._sources = {  # noqa: SLF001 - 替身采集器，避免真实网络
         PLAN_CODEX: _FakeSource(
-            [
-                SnapshotRow(
-                    plan_key=PLAN_CODEX, window_key="rolling_5h", percent=12.5
-                )
-            ],
+            [SnapshotRow(plan_key=PLAN_CODEX, window_key="rolling_5h", percent=12.5)],
             meta={"plan_type": "plus"},
         )
     }

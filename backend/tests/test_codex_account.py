@@ -244,6 +244,7 @@ def test_codex_config_for_chatgpt_keeps_mcp_block_and_no_provider(
     assert "model_provider" not in config
     assert "env_key" not in config
 
+
 # --- 账号 API 脱敏 ---
 
 
@@ -279,9 +280,7 @@ def test_api_status_and_logout_never_return_tokens(client) -> None:
     assert "secret-refresh-token" not in logout.text
 
 
-def test_api_login_poll_never_return_tokens(
-    client, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_api_login_poll_never_return_tokens(client, monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_start(self: CodexAccountService) -> dict[str, object]:
         return {
             "login_id": "codex-login",
@@ -316,4 +315,3 @@ def test_api_login_poll_never_return_tokens(
     assert state.status_code == 200
     assert state.json()["data"]["status"] == "pending"
     assert "secret" not in state.text
-

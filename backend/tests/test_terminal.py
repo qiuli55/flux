@@ -15,22 +15,39 @@ import shlex
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
 from flux.container import Container
 from flux.core.agent_runtime import platforms
+from flux.core.context.catalog import catalog_line, render_catalog
+from flux.core.context.spine import evidence_line
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools.base import ToolContext
 from flux.core.mcp.tools.terminal_tools import terminal_execute
 from flux.enums import (
     Capability,
+    StepKind,
     TerminalEventKind,
     TerminalSessionKind,
     TerminalSessionStatus,
     TerminalSource,
 )
 from flux.errors import ConflictError, NotFoundError, ValidationError
+from tests.test_context_redact import _JWT
+
+#: 本文件手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_EXTRA_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_extra_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _EXTRA_CONTAINERS:
+            asyncio.run(_EXTRA_CONTAINERS.pop().dispose())
 
 
 def _py(code: str) -> str:
@@ -74,6 +91,191 @@ async def test_run_command_records_output_and_exit_code(apply_container: Contain
     assert TerminalEventKind.COMMAND_STARTED.value in kinds
     assert TerminalEventKind.OUTPUT.value in kinds
     assert any("flux-terminal" in (item.chunk or "") for item in events)
+
+
+async def test_terminal_events_are_redacted_before_storage(
+    apply_container: Container,
+) -> None:
+    """命令与输出落库前必须打码（§10.1）：密钥 / 连接串密码都不能以明文进 terminal_events。
+
+    用带前缀的 key 与 `user:pass@host` 两种现有规则覆盖（P2-2 回归）。值全部虚构。
+    """
+    session = await apply_container.terminal.create_session()
+    key = "sk-TEST_SECRET_12345abcdefghijklmnop"
+    dsn = "postgres://user:TEST_SECRET_12345@db.internal:5432/app"
+
+    await apply_container.terminal.run_command(session.id, _py(f"print({key!r})"))
+    await apply_container.terminal.run_command(session.id, _py(f"print({dsn!r})"))
+
+    events = await apply_container.terminal.list_events(session.id)
+    stored = "\n".join(f"{event.command or ''}\n{event.chunk or ''}" for event in events)
+
+    assert "[REDACTED:key]" in stored
+    assert "[REDACTED:cred]" in stored
+    # 原文既不在 command 列，也不在 chunk 列（终端历史整行搜不到）
+    assert key not in stored
+    assert "TEST_SECRET_12345" not in stored
+    assert "user:TEST_SECRET_12345" not in stored
+
+
+async def test_terminal_command_target_ref_is_redacted_before_context_ingest(
+    apply_container: Container,
+) -> None:
+    """命令写入 `context_steps.target_ref` 前必须打码（§10.1，PR #42 P1）。
+
+    目录行（`catalog_line` / `_fold_line`）与事实脊柱（`evidence_line`）都会把
+    `target_ref` 投影给 agent；若原样写入命令行，密钥就能绕过「明文不进 head/blob」的
+    契约进入库和模型上下文。用例走真实 `run_command`，再从落库 step 校验。值全部虚构。
+    """
+    session = await apply_container.terminal.create_session()
+    key = "sk-TEST_SECRET_12345abcdefghijklmnop"
+    dsn = "postgres://user:TEST_SECRET_12345@db.internal:5432/app"
+    # 用 echo 让密钥出现在命令开头：目录行会截断到 60 字符，这样占位符也能被验证到。
+    key_command = f"echo {key}"
+    dsn_command = f"echo {dsn}"
+
+    # key 命令跑两次：两次 target_ref 相同 → 目录行折叠走 `_fold_line` 分支。
+    await apply_container.terminal.run_command(session.id, key_command)
+    await apply_container.terminal.run_command(session.id, key_command)
+    await apply_container.terminal.run_command(session.id, dsn_command)
+
+    # 无绑定 Run 时归属键是会话 id（见 `_run_locked` 的 run_id 取值）。
+    steps = await apply_container.context_steps.list_by_run(str(session.id))
+    command_steps = [step for step in steps if step.kind == StepKind.COMMAND.value]
+    assert len(command_steps) == 3
+    key_step, dsn_step = command_steps[0], command_steps[-1]
+
+    # 1) 落库 step 的 target_ref：没有明文，且带着脱敏占位符。
+    assert key_step.target_ref is not None
+    assert key not in key_step.target_ref
+    assert "TEST_SECRET_12345" not in key_step.target_ref
+    assert "[REDACTED:key]" in key_step.target_ref
+
+    assert dsn_step.target_ref is not None
+    assert "TEST_SECRET_12345" not in dsn_step.target_ref
+    assert "user:TEST_SECRET_12345" not in dsn_step.target_ref
+    assert "[REDACTED:cred]" in dsn_step.target_ref
+
+    # 2) 目录行（含折叠行）投影不含明文。
+    line = catalog_line(key_step)
+    assert key not in line
+    assert "TEST_SECRET_12345" not in line
+    assert "[REDACTED:key]" in line
+
+    folded = render_catalog(command_steps)
+    assert "×2" in folded  # 确认真的走了 `_fold_line`
+    assert key not in folded
+    assert "TEST_SECRET_12345" not in folded
+    assert "[REDACTED:key]" in folded
+
+    # 3) 事实脊柱行不含明文（key 走命令目标分支；dsn 走 URL 分支）。
+    key_spine = evidence_line(key_step)
+    assert key_spine is not None
+    assert key not in key_spine
+    assert "[REDACTED:key]" in key_spine
+
+    dsn_spine = evidence_line(dsn_step)
+    assert dsn_spine is not None
+    assert "TEST_SECRET_12345" not in dsn_spine
+    assert "user:TEST_SECRET_12345" not in dsn_spine
+    assert "[REDACTED:cred]" in dsn_spine
+
+
+async def test_terminal_command_custom_literal_is_redacted_on_all_projections(
+    apply_settings, db_schema: None
+) -> None:
+    """配置的字面量（`FLUX_REDACTION_LITERALS`）必须在终端路径上同样打码（PR #42 遗留）。
+
+    终端原先只走裸 `redact(...)`，不带清单，于是无前缀、低熵的短密钥在 `target_ref` /
+    目录行 / 事实脊柱里仍是明文。用 `Container` 注入带清单的 `Settings`，走真实
+    `run_command`，逐投影校验。值用验收烟雾同款虚构字面量。
+    """
+    literal = "CUSTOM_LITERAL_SMOKE_XYZ"
+    container = Container(apply_settings.model_copy(update={"redaction_literals": literal}))
+    _EXTRA_CONTAINERS.append(container)
+    session = await container.terminal.create_session()
+    command = f"echo {literal}"
+
+    # 跑两次：两次 target_ref 相同 → 目录行折叠走 `_fold_line` 分支。
+    await container.terminal.run_command(session.id, command)
+    await container.terminal.run_command(session.id, command)
+
+    steps = await container.context_steps.list_by_run(str(session.id))
+    command_steps = [step for step in steps if step.kind == StepKind.COMMAND.value]
+    assert len(command_steps) == 2
+
+    # 1) 落库 step 的 target_ref：无明文，且带脱敏占位符。
+    for step in command_steps:
+        assert step.target_ref is not None
+        assert literal not in step.target_ref
+        assert "[REDACTED:key]" in step.target_ref
+
+    # 2) 目录行（含折叠行）投影不含明文。
+    for step in command_steps:
+        line = catalog_line(step)
+        assert literal not in line
+        assert "[REDACTED:key]" in line
+    folded = render_catalog(command_steps)
+    assert "×2" in folded
+    assert literal not in folded
+    assert "[REDACTED:key]" in folded
+
+    # 3) 事实脊柱行不含明文。
+    for step in command_steps:
+        spine = evidence_line(step)
+        assert spine is not None
+        assert literal not in spine
+        assert "[REDACTED:key]" in spine
+
+    # 4) terminal_events（_emit 的 command/chunk 路径）同样打码。
+    events = await container.terminal.list_events(session.id)
+    stored = "\n".join(f"{event.command or ''}\n{event.chunk or ''}" for event in events)
+    assert literal not in stored
+    assert "[REDACTED:key]" in stored
+
+
+async def test_terminal_command_jwt_is_redacted_on_all_projections(
+    apply_container: Container,
+) -> None:
+    """裸 JWT 在终端路径上必须打成 `[REDACTED:token]`（PR #42 遗留的覆盖缺口）。
+
+    运行时 `redact()` 已会处理无 `Bearer` 前缀的 JWT，但终端回归此前只锁定了 `sk-`
+    密钥与 DSN 密码。这里走真实 `run_command`，确认明文不出现在 `target_ref` / 目录行 /
+    折叠目录 / 事实脊柱，且占位符出现。JWT 为纯虚构值（与 `test_context_redact` 同款）。
+    """
+    session = await apply_container.terminal.create_session()
+    command = f"echo {_JWT}"
+
+    # 跑两次：两次 target_ref 相同 → 目录行折叠走 `_fold_line` 分支。
+    await apply_container.terminal.run_command(session.id, command)
+    await apply_container.terminal.run_command(session.id, command)
+
+    steps = await apply_container.context_steps.list_by_run(str(session.id))
+    command_steps = [step for step in steps if step.kind == StepKind.COMMAND.value]
+    assert len(command_steps) == 2
+
+    for step in command_steps:
+        assert step.target_ref is not None
+        assert _JWT not in step.target_ref
+        assert "[REDACTED:token]" in step.target_ref
+        line = catalog_line(step)
+        assert _JWT not in line
+        assert "[REDACTED:token]" in line
+        spine = evidence_line(step)
+        assert spine is not None
+        assert _JWT not in spine
+        assert "[REDACTED:token]" in spine
+
+    folded = render_catalog(command_steps)
+    assert "×2" in folded
+    assert _JWT not in folded
+    assert "[REDACTED:token]" in folded
+
+    # 4) terminal_events（_emit 的 command/chunk 路径）同样打码。
+    events = await apply_container.terminal.list_events(session.id)
+    stored = "\n".join(f"{event.command or ''}\n{event.chunk or ''}" for event in events)
+    assert _JWT not in stored
+    assert "[REDACTED:token]" in stored
 
 
 async def test_run_command_reports_failure_exit_code(apply_container: Container) -> None:
