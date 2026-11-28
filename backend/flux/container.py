@@ -400,6 +400,7 @@ class Container:
             trace=self.run_trace,
             trace_repo=self.run_trace_repo,
             memory=self.task_memory,
+            literals=self.settings.redaction_literal_list,
         )
         self.task_runs.attach(self.bus)
         # 上下文闭环：提案 applied 后刷新项目 Brain 快照（同项目节流，失败不阻塞 Apply）
@@ -573,6 +574,7 @@ class Container:
             chunk_overlap_tokens=self.settings.knowledge_chunk_overlap_tokens,
             conversation_window_tokens=self.settings.knowledge_conversation_window_tokens,
             max_messages_per_conversation=self.settings.knowledge_max_messages_per_conversation,
+            literals=self.settings.redaction_literal_list,
         )
         self.knowledge = KnowledgeRetriever(
             repository=self.knowledge_repo,

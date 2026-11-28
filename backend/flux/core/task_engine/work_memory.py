@@ -11,6 +11,7 @@ Uni 范围（与产品确认过的口径一致）：
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from flux.core.context.redact import redact
@@ -114,8 +115,13 @@ def build_memory_card(
     trace_rows: list[dict[str, Any]] | None = None,
     changes: list[Any] | None = None,
     confirmation: dict[str, Any] | None = None,
+    literals: Sequence[str] = (),
 ) -> str:
-    """拼一张工作记忆卡；没有任何事实时也至少说明轮次与结果。"""
+    """拼一张工作记忆卡；没有任何事实时也至少说明轮次与结果。
+
+    `literals` 是配置的可控脱敏字面量清单（`FLUX_REDACTION_LITERALS`）：默认空清单时
+    只走内置规则（`sk-` / JWT / 熵检测），与既有行为一致；装配层会传入配置清单。
+    """
     rows = list(trace_rows or [])
     change_rows = list(changes or [])
     if confirmation is None:
@@ -138,7 +144,7 @@ def build_memory_card(
     error = str(getattr(run, "error", "") or "").strip()
     if error:
         # 错误里可能夹着密钥/令牌，落指令前统一脱敏
-        lines.append(f"- 失败原因：{redact(error[-MEMORY_ERROR_CHARS:]).text}")
+        lines.append(f"- 失败原因：{redact(error[-MEMORY_ERROR_CHARS:], literals=literals).text}")
 
     paths = _changed_paths(rows, change_rows)
     if paths:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, is_terminal, utcnow
@@ -115,8 +115,12 @@ class TaskRunBridge:
         trace: Any = None,
         trace_repo: Any = None,
         memory: Any = None,
+        literals: Sequence[str] = (),
     ) -> None:
         self._tasks = tasks
+        #: 可控脱敏字面量清单（`FLUX_REDACTION_LITERALS`）：工作记忆卡 / 项目 Brain 沉淀
+        #: 都是长期落库，与上下文摄入 / 终端 / 推流同口径。默认空清单保持旧单测行为。
+        self._literals = tuple(literals)
         # 对账要拿 Run 的权威状态；纯事件转发（单测）可以不装配
         self._runs = runs
         # 任务收尾自动沉淀（上下文闭环）：装配了 Brain 才写 Project 层，
@@ -372,6 +376,7 @@ class TaskRunBridge:
                 trace_rows=trace_rows,
                 changes=changes,
                 confirmation=getattr(task, "confirmation", None),
+                literals=self._literals,
             )
             await self._memory.add(task.id, run_id, card)
             logger.info(
@@ -564,7 +569,8 @@ class TaskRunBridge:
         error = body.get("error")
         if error:
             # 沉淀是长期记忆：错误里可能夹着密钥/令牌，落库前必须脱敏
-            lines.append(f"- 错误：{redact(str(error)[-SEDIMENT_ERROR_CHARS:]).text}")
+            error_text = redact(str(error)[-SEDIMENT_ERROR_CHARS:], literals=self._literals).text
+            lines.append(f"- 错误：{error_text}")
         if self._workspace is not None:
             changes = await self._workspace.list(task_id=task.id)
             if changes:

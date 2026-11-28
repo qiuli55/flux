@@ -227,7 +227,11 @@ async def _recent_runs_entry(container: Container, task_id: uuid.UUID) -> dict[s
         error = (run.error or "").strip()
         if error:
             # Run 的错误可能带出模型输出里的密钥；进上下文前统一过脱敏
-            lines.append(f"  错误：{redact(error[-RUN_ERROR_CONTEXT_CHARS:]).text}")
+            error_text = redact(
+                error[-RUN_ERROR_CONTEXT_CHARS:],
+                literals=container.settings.redaction_literal_list,
+            ).text
+            lines.append(f"  错误：{error_text}")
     return _entry(
         kind="runs",
         title=f"最近 Run（{len(finished)} 条）",

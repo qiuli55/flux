@@ -78,6 +78,8 @@ async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
     Plan 模式在 MCP 白名单层已被拒绝，走不到这里。拒绝/超时/取消都抛错，命令不执行。
     """
     mode = normalize_mode(ctx.identity.permission_mode)
+    # 与上下文摄入 / 终端 / 推流同口径：配置的可控字面量也要在审批展示与日志里打码
+    literals = ctx.container.settings.redaction_literal_list
     report = classify_command(command)
     if mode == PermissionMode.UNATTENDED.value:
         # 免审核（无人值守）：任何等级都不落审批卡；保留日志供事后审计
@@ -86,7 +88,7 @@ async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
             mode,
             report.rule,
             report.level,
-            redact(command).text[:200],
+            redact(command, literals=literals).text[:200],
         )
         return
     if report.level == LEVEL_PROTECTED:
@@ -106,7 +108,7 @@ async def _approve_if_needed(ctx: ToolContext, command: str) -> None:
             f"该命令需要用户审批（{report.reason}），但当前调用没有关联的 Run，无法发起审批"
         )
 
-    display_command = redact(command).text
+    display_command = redact(command, literals=literals).text
     detail = f"{report.reason}\n\n命令：\n{display_command}"
     record = await raise_approval(
         ctx.container,
