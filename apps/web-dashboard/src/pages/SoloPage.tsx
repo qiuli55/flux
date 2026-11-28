@@ -1362,6 +1362,28 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     void loadAssistants();
   }, [loadAssistants]);
 
+  /** 打开某个助理自己的常驻对话（项目助理对话不在普通任务列表里，需要单独取回）。 */
+  const openAssistantConversation = useCallback(
+    async (id: string) => {
+      setQuote(null);
+      setMScreen("task");
+      const existing = tasks.find((item) => item.id === id);
+      if (existing) {
+        setSubtaskTask(null);
+        setTaskId(id);
+        return;
+      }
+      try {
+        const fetched = await api.getTask(id);
+        setSubtaskTask(fetched);
+        setTaskId(id);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+    },
+    [tasks],
+  );
+
   /** 切换助理：回到它自己的对话；临时子任务不在切换器里。 */
   const selectAssistant = (id: string) => {
     setActiveAssistantId(id);
@@ -1373,10 +1395,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       toast("这个助理还没有常驻对话，先新建一条对话");
       return;
     }
-    setSubtaskTask(null);
-    setTaskId(entry.conversation_task_id);
-    setQuote(null);
-    setMScreen("task");
+    void openAssistantConversation(entry.conversation_task_id);
   };
 
   /**
@@ -1410,9 +1429,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
       await loadAssistants();
       setActiveAssistantId(created.id);
       if (created.conversation_task_id) {
-        setSubtaskTask(null);
-        setTaskId(created.conversation_task_id);
-        setMScreen("task");
+        await openAssistantConversation(created.conversation_task_id);
       }
     } catch (error) {
       toast(errorMessage(error), "error");
