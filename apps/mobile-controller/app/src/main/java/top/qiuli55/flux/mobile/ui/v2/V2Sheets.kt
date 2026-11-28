@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Security
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.AccountSession
+import top.qiuli55.flux.mobile.notify.NotificationStatus
 
 // ================================================================== 设置
 
@@ -86,10 +88,14 @@ fun SettingsSheet(
     decisionAlerts: Boolean,
     taskAlerts: Boolean,
     strict: Boolean,
+    notificationStatus: NotificationStatus = NotificationStatus(),
+    notificationProblem: String? = null,
+    notificationError: String? = null,
     onHaptics: (Boolean) -> Unit,
     onReduceMotion: (Boolean) -> Unit,
     onDecisionAlerts: (Boolean) -> Unit,
     onTaskAlerts: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit = {},
     onStrict: (Boolean) -> Unit,
     onOpenDevices: () -> Unit,
     onOpenTerminals: () -> Unit,
@@ -137,7 +143,7 @@ fun SettingsSheet(
                 ToggleRow(
                     icon = Icons.Outlined.Notifications,
                     title = "决策提醒",
-                    description = "新决策到达时弹出顶部提示",
+                    description = "任务需要你确认时发系统通知，点开回到对应对话",
                     checked = decisionAlerts,
                     onChange = onDecisionAlerts,
                 )
@@ -145,10 +151,91 @@ fun SettingsSheet(
                 ToggleRow(
                     icon = Icons.Outlined.Verified,
                     title = "任务完成提醒",
-                    description = "队列中的任务执行完成时提示",
+                    description = "任务完成、执行失败或被取消时发系统通知",
                     checked = taskAlerts,
                     onChange = onTaskAlerts,
                 )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            WhiteCard(Modifier.fillMaxWidth()) {
+                if (notificationProblem != null) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            V2IconTile(Icons.Outlined.NotificationsOff)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Label(
+                                    when {
+                                        !notificationStatus.permissionGranted -> "通知权限未开启"
+                                        !notificationStatus.appNotificationsEnabled -> "Flux 通知已关闭"
+                                        else -> "提醒渠道已关闭"
+                                    },
+                                    15f,
+                                    V2Colors.ink(.92f),
+                                    FontWeight.Medium,
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Label(notificationProblem, 11.5f, V2Colors.ink(.40f))
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onOpenNotificationSettings)
+                                .background(V2Colors.ink(.05f))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Label(
+                                "去系统设置开启",
+                                13f,
+                                V2Colors.ink(.92f),
+                                weight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                Icons.Outlined.ChevronRight,
+                                contentDescription = null,
+                                tint = V2Colors.ink(.38f),
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                    ThinDivider(V2Colors.ink(.05f))
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        V2IconTile(Icons.Outlined.Info)
+                        Spacer(Modifier.width(12.dp))
+                        Label("提醒说明", 15f, V2Colors.ink(.92f), weight = FontWeight.Medium)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Label(
+                        "提醒通过本机系统通知发出。Flux 没有云推送：应用被系统彻底划掉后，" +
+                            "需要重新打开 Flux 才会继续提醒。",
+                        11.5f,
+                        V2Colors.ink(.40f),
+                    )
+                    if (notificationProblem != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Label(
+                            "系统通知设置未就绪，开关只是记住了你的选择；按上面的引导打开后即可收到提醒。",
+                            11.5f,
+                            V2Colors.ink(.40f),
+                        )
+                    }
+                    if (notificationError != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Label(
+                            "最近一次发送失败：$notificationError",
+                            11.5f,
+                            V2Colors.rose,
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(12.dp))

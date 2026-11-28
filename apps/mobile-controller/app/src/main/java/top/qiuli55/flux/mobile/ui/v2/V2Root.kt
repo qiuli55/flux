@@ -1,8 +1,16 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -60,13 +68,28 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.BuildConfig
+import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
+import top.qiuli55.flux.mobile.data.NotificationPrefs
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
+import top.qiuli55.flux.mobile.notify.AlertKind
+import top.qiuli55.flux.mobile.notify.AppVisibility
+import top.qiuli55.flux.mobile.notify.FluxNotificationCenter
+import top.qiuli55.flux.mobile.notify.NotificationChannels
+import top.qiuli55.flux.mobile.notify.NotificationStatus
+import top.qiuli55.flux.mobile.notify.OpenTaskBus
+import top.qiuli55.flux.mobile.notify.OpenTaskReason
+import top.qiuli55.flux.mobile.notify.PendingOpenTask
+import top.qiuli55.flux.mobile.notify.TaskAlertService
+import top.qiuli55.flux.mobile.notify.notificationProblem
+import top.qiuli55.flux.mobile.notify.readNotificationStatus
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
@@ -215,12 +238,95 @@ fun FluxV2Root() {
     var deleteConversationId by remember { mutableStateOf<String?>(null) }
     var deleteConversationError by remember { mutableStateOf<String?>(null) }
 
-    var haptics by remember { mutableStateOf(true) }
-    var reduceMotion by remember { mutableStateOf(false) }
-    var decisionAlerts by remember { mutableStateOf(true) }
-    var taskAlerts by remember { mutableStateOf(false) }
+    // 本机提醒与动效偏好：落到 DataStore，进程被杀再打开仍然保留。
+    var notifPrefs by remember { mutableStateOf(NotificationPrefs()) }
+    var notifPrefsReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        notifPrefs = FluxEnv.settings.notificationPrefs.first()
+        notifPrefsReady = true
+    }
+    LaunchedEffect(notifPrefs, notifPrefsReady) {
+        if (notifPrefsReady) FluxEnv.settings.saveNotificationPrefs(notifPrefs)
+    }
     var strict by remember { mutableStateOf(false) }
-    SideEffect { hapticsController.enabled = haptics }
+    SideEffect { hapticsController.enabled = notifPrefs.haptics }
+
+    // 通知权限 / 渠道状态：设置页据此说明「为什么现在收不到提醒」。
+    // API 33+ 先按「未授权」起步，等真实检查回来再决定是否启动前台服务，
+    // 避免无权限时短暂启动一个看不见的通知服务。
+    var notificationStatus by remember {
+        mutableStateOf(
+            NotificationStatus(
+                permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
+            ),
+        )
+    }
+    fun refreshNotificationStatus() {
+        NotificationChannels.ensure(context)
+        notificationStatus = readNotificationStatus(context)
+    }
+    LaunchedEffect(Unit) { refreshNotificationStatus() }
+    val notificationError by FluxNotificationCenter.lastError.collectAsState()
+
+    fun openNotificationSettings() {
+        val appIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val fallback = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(appIntent) }
+            .recoverCatching { context.startActivity(fallback) }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        refreshNotificationStatus()
+        if (!granted) {
+            Toast.makeText(
+                context,
+                "系统通知权限未开启，提醒暂时不会出现。可在设置里点「去系统设置开启」。",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    fun requestNotificationPermissionIfNeeded() {
+        refreshNotificationStatus()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        val problem = notificationProblem(
+            notificationStatus,
+            notifPrefs.decisionAlerts,
+            notifPrefs.taskAlerts,
+        )
+        if (problem != null) Toast.makeText(context, problem, Toast.LENGTH_LONG).show()
+    }
+
+    fun updateAlerts(decision: Boolean? = null, task: Boolean? = null) {
+        val wasEnabled = notifPrefs.decisionAlerts || notifPrefs.taskAlerts
+        notifPrefs = notifPrefs.copy(
+            decisionAlerts = decision ?: notifPrefs.decisionAlerts,
+            taskAlerts = task ?: notifPrefs.taskAlerts,
+        )
+        val nowEnabled = notifPrefs.decisionAlerts || notifPrefs.taskAlerts
+        // 打开开关时立即检查权限 / 渠道，不能假装已经能提醒。
+        if (nowEnabled && (!wasEnabled || decision == true || task == true)) {
+            requestNotificationPermissionIfNeeded()
+        } else {
+            refreshNotificationStatus()
+        }
+    }
 
     // 退回登录 / 设备页时清掉上一轮的页面状态
     LaunchedEffect(app.boot) {
@@ -272,11 +378,14 @@ fun FluxV2Root() {
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     vm.setForeground(true)
+                    AppVisibility.foreground = true
+                    refreshNotificationStatus()
                     vm.refresh(quiet = true)
                     UpdateCenter.onForeground()
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     vm.setForeground(false)
+                    AppVisibility.foreground = false
                     UpdateCenter.onBackground()
                 }
                 else -> Unit
@@ -535,6 +644,83 @@ fun FluxV2Root() {
                 chatSeed = seed
             }
             ShareLanding.HOLD -> Unit
+        }
+    }
+
+    // 记录用户正在看哪条对话：提醒服务在「前台 + 正看这条对话」时不打扰。
+    LaunchedEffect(route) {
+        AppVisibility.viewedTaskId = (route as? V2Route.TaskChat)?.taskId
+    }
+
+    // 通知点击回跳：登录墙 / 选设备期间先排队，主界面就绪后再跳。
+    var pendingOpenTask by remember { mutableStateOf<PendingOpenTask?>(null) }
+    LaunchedEffect(Unit) {
+        OpenTaskBus.pending.collect { queued ->
+            val next = queued.lastOrNull() ?: return@collect
+            OpenTaskBus.consume(queued.map { it.id }.toSet())
+            pendingOpenTask = next
+        }
+    }
+    LaunchedEffect(app.boot, pendingOpenTask) {
+        val request = pendingOpenTask ?: return@LaunchedEffect
+        if (app.boot != V2Boot.READY) return@LaunchedEffect
+        pendingOpenTask = null
+        // 用户是从通知点进来的：关掉当前盖在页面上的弹层 / 面板，确保真的回到目标页。
+        settingsOpen = false
+        keyVaultOpen = false
+        memoryOpen = false
+        billingOpen = false
+        customConnectorOpen = false
+        githubSheetOpen = false
+        connectorDetail = null
+        newChatOpen = false
+        agentPickerOpen = false
+        manualConnectOpen = false
+        deleteConversationId = null
+        deleteConversationError = null
+        designExitOpen = false
+        when (request.reason) {
+            // 决策：进能直接处理审批的那条对话。
+            OpenTaskReason.DECISION -> {
+                chatOrigin = V2Route.Home
+                route = V2Route.TaskChat(request.taskId)
+            }
+            // 完成：进任务详情看结果 / 失败原因。
+            OpenTaskReason.FINISHED -> {
+                taskOrigin = V2Route.Home
+                route = V2Route.TaskDetail(request.taskId)
+            }
+        }
+        vm.refresh(quiet = true)
+    }
+
+    // 提醒开着且有进行中的任务时，用前台服务把监听保住（离开聊天也能收到）。
+    // 任务全部结束后由服务自己退出，避免常驻一条无意义的「正在关注」。
+    val watchableTaskCount = app.tasks.count { !it.status.toV2TaskStatus().isFinished }
+    LaunchedEffect(
+        app.boot,
+        notifPrefs.decisionAlerts,
+        notifPrefs.taskAlerts,
+        watchableTaskCount,
+        notificationStatus.ready,
+    ) {
+        val alertsEnabled = notifPrefs.decisionAlerts || notifPrefs.taskAlerts
+        when {
+            // 退出登录 / 权限被关 / 两种提醒都关：立刻停掉后台监听。
+            !alertsEnabled || !notificationStatus.ready || app.boot != V2Boot.READY ->
+                TaskAlertService.stop(context)
+            watchableTaskCount > 0 -> TaskAlertService.start(context)
+        }
+    }
+    // 关掉开关立即停止该类提醒；已发出的同类通知也一并取消。
+    LaunchedEffect(notifPrefs.decisionAlerts) {
+        if (!notifPrefs.decisionAlerts) {
+            FluxNotificationCenter.cancelKind(context, AlertKind.DECISION)
+        }
+    }
+    LaunchedEffect(notifPrefs.taskAlerts) {
+        if (!notifPrefs.taskAlerts) {
+            FluxNotificationCenter.cancelKind(context, AlertKind.FINISHED)
         }
     }
 
@@ -1106,7 +1292,7 @@ fun FluxV2Root() {
                 CompositionLocalProvider(
                     LocalSheetMaxWidth provides if (tablet) 560.dp else null,
                     LocalV2Haptics provides hapticsController,
-                    LocalReduceMotion provides reduceMotion,
+                    LocalReduceMotion provides notifPrefs.reduceMotion,
                 ) {
                     if (tablet) {
                         Row(Modifier.fillMaxSize().then(insets)) {
@@ -1220,15 +1406,23 @@ fun FluxV2Root() {
                             account = app.account,
                             deviceName = app.deviceLabel,
                             deviceCount = if (app.account != null) app.devices.size else 1,
-                            haptics = haptics,
-                            reduceMotion = reduceMotion,
-                            decisionAlerts = decisionAlerts,
-                            taskAlerts = taskAlerts,
+                            haptics = notifPrefs.haptics,
+                            reduceMotion = notifPrefs.reduceMotion,
+                            decisionAlerts = notifPrefs.decisionAlerts,
+                            taskAlerts = notifPrefs.taskAlerts,
                             strict = strict,
-                            onHaptics = { haptics = it },
-                            onReduceMotion = { reduceMotion = it },
-                            onDecisionAlerts = { decisionAlerts = it },
-                            onTaskAlerts = { taskAlerts = it },
+                            notificationStatus = notificationStatus,
+                            notificationProblem = notificationProblem(
+                                notificationStatus,
+                                notifPrefs.decisionAlerts,
+                                notifPrefs.taskAlerts,
+                            ),
+                            notificationError = notificationError,
+                            onHaptics = { notifPrefs = notifPrefs.copy(haptics = it) },
+                            onReduceMotion = { notifPrefs = notifPrefs.copy(reduceMotion = it) },
+                            onDecisionAlerts = { updateAlerts(decision = it) },
+                            onTaskAlerts = { updateAlerts(task = it) },
+                            onOpenNotificationSettings = { openNotificationSettings() },
                             onStrict = { strict = it },
                             onOpenDevices = {
                                 settingsOpen = false

@@ -8,6 +8,11 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 交互触感：轻点 / 成功 / 驳回 / 失败四级反馈，受设置开关控制 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 决策 / 任务完成提醒（Android 13+ 需运行时申请） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 用前台服务在用户离开聊天后继续关注进行中的任务（无 FCM，只能本机监听） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".FluxApp"
@@ -88,6 +93,13 @@
                 <data android:scheme="flux" android:host="github-link" />
             </intent-filter>
         </activity>
+
+        <!-- 应用级任务提醒：轮询 /tasks，发现等待决策或任务结束时发系统通知。
+             只有还有进行中的任务时才启动，任务全部结束后自行停止。 -->
+        <service
+            android:name=".notify.TaskAlertService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- 更新包通过 FileProvider 交给系统安装器，不暴露应用私有目录的其他文件 -->
         <provider
