@@ -121,9 +121,7 @@ async def _ensure_public_host(url: str) -> None:
     host = (parts.hostname or "").strip()
     port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(
-            host, port, type=socket.SOCK_STREAM
-        )
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise ExtractFetchError("找不到目标网站，已改为保存链接与标题") from exc
     for info in infos:
@@ -192,9 +190,7 @@ async def fetch_page_html(url: str) -> str:
                     async for chunk in response.aiter_bytes():
                         buffer.extend(chunk)
                         if len(buffer) > MAX_FETCH_BYTES:
-                            raise ExtractFetchError(
-                                "网页超过服务端抓取上限，已改为保存链接与标题"
-                            )
+                            raise ExtractFetchError("网页超过服务端抓取上限，已改为保存链接与标题")
                     return _decode_html(bytes(buffer), content_type)
             except httpx.TimeoutException as exc:
                 raise ExtractFetchError("抓取网页超时，已改为保存链接与标题") from exc
@@ -307,9 +303,7 @@ def _node_text(node: _Node | str) -> str:
         return node
     if node.tag in _SKIP_TAGS:
         return ""
-    return " ".join(
-        part for part in (_node_text(child) for child in node.children) if part
-    )
+    return " ".join(part for part in (_node_text(child) for child in node.children) if part)
 
 
 def _clean_text(value: str, *, preserve_ws: bool = False) -> str:
@@ -378,9 +372,7 @@ def _candidate_score(node: _Node) -> float:
     if text_len < 60:
         return 0.0
     link_len = sum(
-        len(_clean_text(_node_text(child)))
-        for child in _iter_nodes(node)
-        if child.tag == "a"
+        len(_clean_text(_node_text(child))) for child in _iter_nodes(node) if child.tag == "a"
     )
     paragraphs = sum(1 for child in _iter_nodes(node) if child.tag == "p")
     headings = sum(
@@ -408,9 +400,10 @@ def _select_content(root: _Node) -> _Node | None:
             body = node
         if node.tag in _SKIP_TAGS:
             continue
-        if node.tag in {"article", "main", "section", "div", "td"} or node.attrs.get(
-            "role"
-        ) == "main":
+        if (
+            node.tag in {"article", "main", "section", "div", "td"}
+            or node.attrs.get("role") == "main"
+        ):
             score = _candidate_score(node)
             if score > 0:
                 candidates.append((score, node))
@@ -445,9 +438,7 @@ def _first_tag_text(root: _Node, tag: str) -> str | None:
     return None
 
 
-def _resolve_title(
-    root: _Node, url: str, provided: str | None, fallback: str = "网页提取"
-) -> str:
+def _resolve_title(root: _Node, url: str, provided: str | None, fallback: str = "网页提取") -> str:
     for candidate in (
         _first_tag_text(root, "title"),
         _meta_content(root, "og:title", "twitter:title"),
@@ -744,14 +735,14 @@ def _fallback_content(
             lines.extend([f"> {reason}", ""])
         content = "\n".join(lines).strip() + "\n"
     else:
-        reason_html = f"<p class=\"flux-note\">{html_lib.escape(reason)}</p>" if reason else ""
+        reason_html = f'<p class="flux-note">{html_lib.escape(reason)}</p>' if reason else ""
         content = _page_shell(
             title=title,
             url=url,
             body=(
                 f"<p>{html_lib.escape(excerpt)}</p>"
                 f"{reason_html}"
-                f"<p><a href=\"{html_lib.escape(url, quote=True)}\">打开原始网页</a></p>"
+                f'<p><a href="{html_lib.escape(url, quote=True)}">打开原始网页</a></p>'
             ),
         )
     return ExtractedPage(
@@ -881,7 +872,7 @@ def extract_page(
     fragment = _SafeHtmlRenderer(url).render(content)
     body = fragment
     if note:
-        body = f"{body}\n<p class=\"flux-note\">{html_lib.escape(note)}</p>"
+        body = f'{body}\n<p class="flux-note">{html_lib.escape(note)}</p>'
     return ExtractedPage(
         title=resolved_title,
         excerpt=excerpt,

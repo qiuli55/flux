@@ -492,7 +492,7 @@ def test_extract_page_is_single_file_and_strips_scripts(artifacts_client) -> Non
     content = data["artifact"]["content"]
     assert content.startswith("<!doctype html>")
     assert "<title>可维护的提取器</title>" in content
-    assert "alert(\"x\")" not in content
+    assert 'alert("x")' not in content
     assert "onclick" not in content
     assert "https://example.com/page" in content
 
