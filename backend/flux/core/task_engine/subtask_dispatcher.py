@@ -111,11 +111,13 @@ class SubtaskDispatcher:
             parent_task_id=parent.id,
         )
 
-        headline = note or (
-            "已按你的要求更换，原任务已停止，新任务已派出。"
-            if replace
-            else "已交给子任务处理，你可以继续跟我说。"
-        )
+        if note is None and replace:
+            label = self._selection_label(
+                agent_id if agent_id is not None else parent.agent_id,
+                model if model is not None else parent.model,
+            )
+            note = f"已按你的要求更换为 {label}，原任务已停止，新任务已派出。"
+        headline = note or "已交给子任务处理，你可以继续跟我说。"
         drafts = [
             MessageDraft(
                 role=TaskMessageRole.ASSISTANT.value,
@@ -197,6 +199,20 @@ class SubtaskDispatcher:
             ],
         )
         return [updated]
+
+    def _selection_label(self, agent_id: uuid.UUID | None, model: str | None) -> str:
+        """给用户看的选择说明：Agent 名（认不出时用 id 前缀）+ 模型。"""
+        parts: list[str] = []
+        if agent_id is not None:
+            try:
+                parts.append(str(self._container.agents.get(str(agent_id)).spec.name))
+            except Exception:  # noqa: BLE001 - 注册表里没有就退回 id 前缀，不阻塞调度
+                parts.append(f"Agent {str(agent_id)[:8]}")
+        else:
+            parts.append("内置执行器")
+        if model:
+            parts.append(f"模型 {model}")
+        return " · ".join(parts)
 
     # --- 后台启动 ---
 
