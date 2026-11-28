@@ -218,7 +218,10 @@ fun V2ProjectAssistantScreen(
                                 }
                                 ActionChip(
                                     "接着干",
-                                    enabled = !busy && item.bucket != "running",
+                                    // 仍在进行中 / 可能已停住的对话先别叠第二轮，等这一轮收尾
+                                    enabled = !busy &&
+                                        item.bucket != "running" &&
+                                        item.bucket != "possibly_stalled",
                                 ) {
                                     continueTarget = item
                                     continueText = ""

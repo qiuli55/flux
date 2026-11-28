@@ -2462,10 +2462,14 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                       <button
                         type="button"
                         className="btn btn-xs"
-                        disabled={assistantActionBusy !== null || item.bucket === "running"}
+                        disabled={
+                          assistantActionBusy !== null ||
+                          item.bucket === "running" ||
+                          item.bucket === "possibly_stalled"
+                        }
                         title={
-                          item.bucket === "running"
-                            ? "这段对话还在进行中，等这一轮结束后再接着干"
+                          item.bucket === "running" || item.bucket === "possibly_stalled"
+                            ? "这段对话还在进行中或可能已停住，等这一轮收尾后再接着干"
                             : "确认后向原对话发送新任务并继续执行"
                         }
                         onClick={() => void continueAssistantConversation(item.task_id)}
