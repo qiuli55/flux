@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -134,6 +135,106 @@ def _redact_projection(container: Container, value: Any) -> Any:
 def _redacted_message(container: Container, message: Any) -> dict[str, Any]:
     """消息投影（副本）：推流 / HTTP 响应统一走这里，落库对象保持原文。"""
     return _redact_projection(container, message.to_dict())
+
+
+#: 跨帧暂缓：仍在拼内置密钥规则的尾串字符（base64 / url-safe / JWT / 凭证 / 熵检测）。
+#: 这些字符组成的尾部一旦被拆到下一帧，单帧正则就认不出完整密钥。
+_STREAM_PENDING_TAIL_RE = re.compile(r"[A-Za-z0-9_\-+/=.@:%]+$")
+#: Bearer 之后"仍在拼令牌"的形态：空白 + 令牌字符一直延续到本轮累计原文末尾。
+_STREAM_BEARER_TAIL_RE = re.compile(r"\s*[A-Za-z0-9._\-+/=]*")
+#: PEM 起止标记：`-----BEGIN ` 之后没等到 `-----END` 之前都不能当已闭合。
+_PEM_BEGIN = "-----BEGIN "
+_PEM_END = "-----END "
+
+
+def _pending_suffix_length(raw: str, literals: tuple[str, ...]) -> int:
+    """返回 ``raw`` 末尾必须暂缓、不能放出的字符数（0 = 整段都可安全放出）。
+
+    暂缓两类内容：
+
+    1. 可能仍在拼某个配置字面量的后缀——字面量可含空格等任意字符，只能按前缀精确比对；
+    2. 可能仍在拼内置密钥规则的尾串——`sk-` / JWT / `Bearer` / 熵检测 / `user:pass@host` /
+       未闭合 PEM。它们的字符都属于同一段"令牌串"，暂缓整段尾串即可。
+
+    只要这两类未完成的后缀留在手里，已放出的可见文本就始终不会包含某个密钥/字面量的前半截。
+    """
+    hold = 0
+    tail = _STREAM_PENDING_TAIL_RE.search(raw)
+    if tail is not None:
+        hold = len(raw) - tail.start()
+
+    # `Bearer` 令牌的字符类不含空格，靠上面的尾串规则捕不到它前面的 `Bearer `。
+    bearer = raw.rfind("Bearer")
+    if bearer != -1 and _STREAM_BEARER_TAIL_RE.fullmatch(raw[bearer + len("Bearer") :]):
+        hold = max(hold, len(raw) - bearer)
+
+    # 未闭合的 PEM 私钥/证书块：从 `-----BEGIN ` 一直暂缓到出现 `-----END`（或本轮结束）。
+    begin = raw.rfind(_PEM_BEGIN)
+    if begin != -1 and raw.find(_PEM_END, begin) == -1:
+        hold = max(hold, len(raw) - begin)
+
+    # 配置字面量只认"未完成前缀"：完整字面量交给 redact 整体替换，不需要暂缓。
+    for literal in literals:
+        limit = min(len(literal) - 1, len(raw))
+        for size in range(limit, hold, -1):
+            if raw.endswith(literal[:size]):
+                hold = size
+                break
+    return hold
+
+
+def _safe_cut(raw: str, literals: tuple[str, ...]) -> int:
+    """在 ``raw`` 上找一个可安全放出的切点：切点之前不含任何未完成的密钥片段。
+
+    先按尾部暂缓量退一次；退完的位置可能正好落在另一个字面量/令牌串中间（例如切点
+    落在一个配置字面量内部），于是对缩小的前缀再算一次，直到前缀本身也以安全边界结尾。
+    """
+    cut = len(raw)
+    while cut > 0:
+        hold = _pending_suffix_length(raw[:cut], literals)
+        if hold <= 0:
+            break
+        cut -= hold
+    return max(0, cut)
+
+
+class _StreamingDeltaRedactor:
+    """跨帧 `assistant_delta` 打码：对累计原文打码，只放出已确认安全的前缀。
+
+    单帧调用 `redact` 挡不住被拆到相邻两帧的配置字面量：两半都不构成完整字面量，
+    各自原样通过，客户端按增量拼接后又能看到完整明文。这里以整轮累计原文为输入，
+    每次只放出"不是任何字面量 / 内置规则未完成后缀"的安全前缀，其余暂缓到后续块或
+    本轮结束（``flush``）。
+
+    普通正文（含中文）没有可疑后缀，会照常逐帧流出；只有确实可能拼成密钥的短尾巴
+    会被短暂缓一缓，不会把整段回复攒到最后。
+    """
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+        self._literals = tuple(getattr(container.settings, "redaction_literal_list", ()))
+        self._raw = ""
+        #: 已放出的累计原文长度：下一段只对新增部分打码，避免占位符编号随累计重算抖动。
+        self._released = 0
+
+    def feed(self, chunk: str) -> str:
+        """喂入一帧模型增量，返回本次可以放出的打码后文本（可能为空）。"""
+        if not chunk:
+            return ""
+        self._raw += chunk
+        return self._release(final=False)
+
+    def flush(self) -> str:
+        """本轮结束：把仍暂缓的安全文本按打码结果一次性放完。"""
+        return self._release(final=True)
+
+    def _release(self, *, final: bool) -> str:
+        cut = len(self._raw) if final else _safe_cut(self._raw, self._literals)
+        if cut <= self._released:
+            return ""
+        segment = self._raw[self._released : cut]
+        self._released = cut
+        return _redact_text(self._container, segment)
 
 
 async def _record_attachments(
@@ -327,7 +428,7 @@ async def list_task_messages(
         _task_id(task_id), limit=limit, before=before
     )
     return ok(
-        [m.to_dict() for m in messages],
+        [_redacted_message(container, m) for m in messages],
         metadata={"count": len(messages), "has_more": has_more},
     )
 
@@ -495,12 +596,21 @@ async def create_task_message(
     context = (
         await container.brain.context(task.project_id) if task.project_id is not None else None
     )
+    # 新一轮开始：上一轮的增量状态已由它自己的 flush 清空，这里新建本轮的打码器。
+    stream_redactor = _StreamingDeltaRedactor(container)
     await container.task_stream.publish(task_uuid, "assistant_start", {})
 
+    async def _publish_delta(text: str) -> None:
+        if text:
+            await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
     async def _on_delta(text: str) -> None:
-        await container.task_stream.publish(
-            task_uuid, "assistant_delta", {"text": _redact_text(container, text)}
-        )
+        # 只放出累计原文里"已确认安全"的增量；被拆开或未完成的密钥片段先留在手里。
+        await _publish_delta(stream_redactor.feed(text))
+
+    async def _flush_delta() -> None:
+        # 本轮结束时必须 flush：否则暂缓的安全文本永远发不出去，客户端看到的回复会缺尾巴。
+        await _publish_delta(stream_redactor.flush())
 
     # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
     # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
@@ -520,6 +630,8 @@ async def create_task_message(
             on_delta=_on_delta,
         )
     except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
+        # 本轮异常结束也要 flush：已经把前面暂缓的安全文本发完，客户端才不会缺一段。
+        await _flush_delta()
         # 先对完整异常文本打码，再截断：反序会把跨边界的字面量切成片段漏出。
         await container.task_stream.publish(
             task_uuid,
@@ -527,6 +639,8 @@ async def create_task_message(
             {"error": _redact_text(container, str(exc))[:500]},
         )
         raise
+    # 正常结束：先补发暂缓的增量，再发最终整条消息（最终消息会整体打码）。
+    await _flush_delta()
     reply = (
         await container.task_repo.add_messages(
             task_uuid,
@@ -807,7 +921,7 @@ async def update_confirmation(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "message": message.to_dict()})
+    return ok({"task": _task_dict(task), "message": _redacted_message(container, message)})
 
 
 @router.post("/{task_id}/decision-mode")
@@ -967,7 +1081,9 @@ async def start_task(
         {
             "task": _task_dict(result.task),
             "run": result.run,
-            "message": result.message.to_dict() if result.message is not None else None,
+            "message": (
+                _redacted_message(container, result.message) if result.message is not None else None
+            ),
         }
     )
 
@@ -1027,7 +1143,13 @@ async def raise_decision(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "decision": record, "message": message.to_dict()})
+    return ok(
+        {
+            "task": _task_dict(task),
+            "decision": _redact_projection(container, record),
+            "message": _redacted_message(container, message),
+        }
+    )
 
 
 @router.post("/{task_id}/decisions/choose")
@@ -1092,7 +1214,13 @@ async def choose_decision(
             ],
         )
     )[0]
-    return ok({"task": _task_dict(task), "decision": record, "message": message.to_dict()})
+    return ok(
+        {
+            "task": _task_dict(task),
+            "decision": _redact_projection(container, record),
+            "message": _redacted_message(container, message),
+        }
+    )
 
 
 @router.post("/{task_id}/cancel")

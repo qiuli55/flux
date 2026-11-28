@@ -464,6 +464,139 @@ def test_task_assistant_error_event_redacts_configured_literal(
         assert PLACEHOLDER in error.data["error"]
 
 
+# --- 第五批：GET 消息列表 / 同类 HTTP 投影打码 ---
+
+
+def test_task_messages_list_http_projection_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """GET /tasks/{id}/messages 是 HTTP 投影：响应不含明文，落库对象仍是原文。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "修复登录"}).json()["data"]
+        content = f"我的口令是 {LITERAL}"
+        posted = client.post(f"/api/v1/tasks/{created['id']}/messages", json={"content": content})
+        assert posted.status_code == 200, posted.text
+
+        listed = client.get(f"/api/v1/tasks/{created['id']}/messages")
+        assert listed.status_code == 200, listed.text
+        body = json.dumps(listed.json(), ensure_ascii=False)
+        assert LITERAL not in body
+        assert PLACEHOLDER in body
+
+        async def _stored_contents() -> list[str]:
+            messages, _ = await container.task_repo.list_messages(
+                uuid.UUID(created["id"]), limit=50
+            )
+            return [message.content for message in messages]
+
+        # 存储语义未变：拦截只发生在 HTTP 投影上。
+        assert content in asyncio.run(_stored_contents())
+
+
+def test_task_confirmation_response_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """PUT /confirmation 的响应同样是 HTTP 消息投影，不能把原文带出去。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        created = client.post("/api/v1/tasks", json={"description": "修复登录"}).json()["data"]
+        items = [
+            {"label": label, "value": f"结论 {LITERAL}" if label == "目标" else "待确认"}
+            for label in ("目标", "功能范围", "技术方案", "修改范围", "风险", "需人工审核的环节")
+        ]
+        response = client.put(f"/api/v1/tasks/{created['id']}/confirmation", json={"items": items})
+        assert response.status_code == 200, response.text
+        # 只校验本批修复的消息投影；task.confirmation 仍是任务对象的结构化存储视图。
+        message = response.json()["data"]["message"]
+        body = json.dumps(message, ensure_ascii=False)
+        assert LITERAL not in body
+        assert PLACEHOLDER in body
+
+
+# --- 第五批：assistant_delta 跨帧片段 ---
+
+
+def _drive_streamed_reply(
+    literal_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[str],
+) -> tuple[list[str], list[dict[str, object]], dict[str, object]]:
+    """经真实 POST 路径驱动一轮流式回复，返回 (增量帧文本, 全部事件, POST 响应体)。"""
+    from flux.core.task_engine.assistant import AssistantTurn, TaskAssistant
+
+    reply = "".join(chunks)
+
+    async def fake_respond(self: TaskAssistant, *, on_delta: object = None, **_kwargs: object):
+        assert callable(on_delta)
+        for chunk in chunks:
+            await on_delta(chunk)  # type: ignore[misc]
+        return AssistantTurn(reply=reply, provider="fake", model="fake-model")
+
+    monkeypatch.setattr(TaskAssistant, "respond", fake_respond)
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "修复登录"}).json()["data"]
+        response = client.post(f"/api/v1/tasks/{created['id']}/messages", json={"content": "hi"})
+        assert response.status_code == 200, response.text
+        events = [event.to_dict() for event in container.task_stream.poll(created["id"])]
+    deltas = [
+        str(event["data"].get("text") or "")
+        for event in events
+        if event["type"] == "assistant_delta"
+    ]
+    return deltas, events, response.json()
+
+
+def test_task_stream_delta_redacts_literal_split_across_frames(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """字面量被拆到相邻两帧时，任一帧与拼接结果都不得出现完整明文或截断片段。"""
+    head, tail = LITERAL[:11], LITERAL[11:]
+    chunks = ["好的，口令是 ", head, tail, "，请妥善保存。"]
+    deltas, events, body = _drive_streamed_reply(literal_settings, monkeypatch, chunks)
+
+    # 跨帧片段：被切开的前后两半、以及历史探针用过的中段。
+    fragments = (head, tail, LITERAL[8:])
+    for frame in deltas:
+        assert LITERAL not in frame
+        for fragment in fragments:
+            assert fragment not in frame
+    joined = "".join(deltas)
+    assert LITERAL not in joined
+    for fragment in fragments:
+        assert fragment not in joined
+    assert PLACEHOLDER in joined
+
+    # 最终 assistant_message / HTTP 响应投影仍整体打码。
+    for payload in (json.dumps(events, ensure_ascii=False), json.dumps(body, ensure_ascii=False)):
+        assert LITERAL not in payload
+        assert PLACEHOLDER in payload
+
+
+def test_task_stream_delta_keeps_streaming_plain_reply(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """对照：普通短句不该被攒成一整段，仍按原帧逐段流出。"""
+    chunks = ["这是第一段。", "这是第二段。", "这是第三段。"]
+    deltas, _events, _body = _drive_streamed_reply(literal_settings, monkeypatch, chunks)
+    assert deltas == chunks
+
+
+def test_group_message_projection_redacts_configured_literal(
+    literal_settings: Settings,
+) -> None:
+    """群聊消息 HTTP 投影与任务消息同口径打码（路由已下线，直接验证投影函数）。"""
+    from flux.api.v1.groups import _message_dict
+
+    message = SimpleNamespace(to_dict=lambda: {"content": f"口令 {LITERAL}", "kind": "text"})
+    data = _message_dict(SimpleNamespace(settings=literal_settings), message)
+    assert LITERAL not in data["content"]
+    assert PLACEHOLDER in data["content"]
+
+
 # --- 第四批：先打码再截断（字面量跨边界） ---
 
 
