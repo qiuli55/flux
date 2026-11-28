@@ -42,7 +42,7 @@ from flux.cloud.session import (
     save_session,
 )
 from flux.config import Settings
-from flux.errors import AuthenticationError
+from flux.errors import AuthenticationError, PermissionDeniedError
 
 router = APIRouter(prefix="/cloud", tags=["cloud"])
 
@@ -145,12 +145,35 @@ def _remember_server_session(settings: Settings, session: CloudSession) -> None:
         )
 
 
-def _client_user(settings: Settings, claims: dict[str, object]) -> dict[str, str]:
-    """客户端自己的用户展示信息；username 只在该 sub 就是本机主人时才回填。"""
+#: 账号云可能用来携带展示名的常见 claim；只用于回填**当前客户端自己**的用户名。
+_USERNAME_CLAIMS = ("username", "name", "preferred_username")
+
+
+def _claims_username(claims: dict[str, object]) -> str:
+    """从 JWT claims 里取展示名；没有就返回空串（不猜、不查服务器单例）。"""
+    for key in _USERNAME_CLAIMS:
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _client_user(
+    settings: Settings, claims: dict[str, object], *, username: str = ""
+) -> dict[str, str]:
+    """客户端自己的用户展示信息。
+
+    username 的来源优先级：本机主人文件（仅当 sub 就是主人）→ 本次会话返回值
+    （`CloudSession.username`，允许名单用户靠它才有展示名）→ JWT claims。
+    绝不把服务器单例里的主人 username 回填给别的 sub——那会把主人身份泄露出去。
+    """
     sub = str(claims.get("sub") or "").strip()
     owner = load_owner(settings.cloud_owner_path)
-    username = owner.username if owner is not None and owner.user_id == sub else ""
-    return {"id": sub, "username": username}
+    if owner is not None and owner.user_id == sub:
+        name = owner.username
+    else:
+        name = (username or "").strip() or _claims_username(claims)
+    return {"id": sub, "username": name}
 
 
 def _configured(settings: Settings) -> bool:
@@ -213,7 +236,7 @@ async def cloud_session(
             sub = str((claims or {}).get("sub") or "")
             if claims is not None and is_cloud_user_allowed(settings, sub):
                 authenticated = True
-                user = _client_user(settings, claims)
+                user = _client_user(settings, claims, username=refreshed.username)
 
     if refreshed is not None:
         _set_auth_cookies(response, request, refreshed)
@@ -239,6 +262,11 @@ async def cloud_exchange(
     # 只有本机主人（回环直连 / 有效 FLUX_AUTH_TOKEN）能写服务器单例与绑定主人。
     if is_local_owner_request(settings, request):
         _remember_server_session(settings, session)
+    elif not is_cloud_user_allowed(settings, session.user_id):
+        # 验签通过但用户不属于本实例：不能假装登录成功。
+        # 不种 cookie、不写服务器单例，返回可读错误让前端直接展示——否则前端会
+        # 因为随后 GET /session 仍是未登录而把用户送回登录页，形成循环跳转。
+        raise PermissionDeniedError(_not_allowed_message(settings))
 
     _set_auth_cookies(response, request, session)
     return ok(_token_payload(session))
@@ -269,24 +297,64 @@ async def cloud_refresh(
 
     if is_local_owner_request(settings, request):
         _remember_server_session(settings, session)
+    elif not is_cloud_user_allowed(settings, session.user_id):
+        # 与 exchange 对称：续期回来的用户也必须属于本实例，否则不种登录 cookie。
+        raise PermissionDeniedError(_not_allowed_message(settings))
 
     _set_auth_cookies(response, request, session)
     return ok(_token_payload(session))
 
 
-@router.post("/logout", summary="退出当前客户端；本机主人同时清除服务器会话")
+@router.post("/logout", summary="退出当前客户端（只清本客户端 cookie，不解绑本机）")
 async def cloud_logout(
+    request: Request,
+    response: Response,
+    settings: Settings = Depends(get_settings_dep),  # noqa: ARG001 - 保留依赖以复用配置注入
+) -> dict[str, object]:
+    """只清**这个浏览器 / 客户端**的登录 cookie。
+
+    即使用户是同机直连的本机主人，也不在这里清服务器单例或解绑主人——那会影响
+    其它设备与后台同步。解除本机绑定是独立且需要显式确认的操作（`POST /cloud/unbind`）。
+    """
+    if not same_origin_request(request):
+        raise AuthenticationError("跨站请求被拒绝")
+
+    _clear_auth_cookies(response, request)
+    return ok({"authenticated": False})
+
+
+@router.post("/unbind", summary="解除本机账号云绑定（清除服务器会话，需本机主人鉴权）")
+async def cloud_unbind(
     request: Request,
     response: Response,
     settings: Settings = Depends(get_settings_dep),
 ) -> dict[str, object]:
+    """清除服务器单例会话并解绑本机主人。
+
+    这是会波及其它设备与后台同步的高影响操作，因此仍由本机主人鉴权把关：
+    回环直连（无转发头）或有效 `FLUX_AUTH_TOKEN`。未鉴权的公网请求不能解绑。
+    """
     if not same_origin_request(request):
         raise AuthenticationError("跨站请求被拒绝")
 
-    # 未鉴权的公网请求只能清自己的 cookie，不能清服务器单例 / 解绑主人。
-    if is_local_owner_request(settings, request):
-        clear_session(settings.cloud_session_path)
-        clear_owner(settings.cloud_owner_path)
+    if not is_local_owner_request(settings, request):
+        raise AuthenticationError("只有本机主人可以解除本机绑定")
 
+    clear_session(settings.cloud_session_path)
+    clear_owner(settings.cloud_owner_path)
     _clear_auth_cookies(response, request)
-    return ok({"authenticated": False})
+    return ok({"bound": False})
+
+
+def _not_allowed_message(settings: Settings) -> str:
+    """账号验签通过但不属于本实例时的可展示错误（前端会原样显示）。"""
+    if settings.cloud_allowed_user_ids:
+        return (
+            "当前账号不是本实例允许的用户。请让运维把该账号加入 FLUX_CLOUD_ALLOWED_USERS，"
+            "或在本机完成主人绑定后重试。"
+        )
+    return (
+        "当前账号不是本实例允许的用户：本实例还没有绑定主人。"
+        "请先在本机（回环直连或带 FLUX_AUTH_TOKEN）完成一次登录绑定主人，"
+        "或由运维配置 FLUX_CLOUD_ALLOWED_USERS 后再试。"
+    )

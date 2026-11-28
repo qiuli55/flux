@@ -4,7 +4,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 
-import { logoutCloudSession } from "../api/auth";
+import { logoutCloudSession, unbindLocalOwner } from "../api/auth";
 import { API_BASE, api, ApiError } from "../api/client";
 import { toast } from "../app/toast";
 import { KeyVaultPanel } from "../components/KeyVaultPanel";
@@ -47,6 +47,7 @@ export function SettingsPage() {
   const [tab, setTab] = useState<Tab>("appearance");
   const [root, setRoot] = useState<string>("—");
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmUnbind, setConfirmUnbind] = useState(false);
   const prefs = usePrefs();
 
   useEffect(() => {
@@ -119,7 +120,7 @@ export function SettingsPage() {
                 <div className="fx-info">
                   <div className="fx-t">退出账号云登录</div>
                   <div className="fx-d">
-                    调用后端清除 HttpOnly 登录 cookie；未配置账号云时无副作用。
+                    只清除当前浏览器的 HttpOnly 登录 cookie；不会解绑本机，也不影响其它设备与后台同步。
                   </div>
                 </div>
                 <div className="fx-ctl">
@@ -129,6 +130,20 @@ export function SettingsPage() {
                     }}
                   >
                     退出登录
+                  </Button>
+                </div>
+              </div>
+              <div className="fx-set-row">
+                <div className="fx-info">
+                  <div className="fx-t">解除本机绑定</div>
+                  <div className="fx-d">
+                    清除本机服务器会话并解绑账号云主人。会影响其它设备的云令牌与后台日志 / 记忆 / 同步，
+                    之后需在本机重新登录才能恢复。仅本机主人可操作。
+                  </div>
+                </div>
+                <div className="fx-ctl">
+                  <Button variant="danger" onClick={() => setConfirmUnbind(true)}>
+                    解除绑定
                   </Button>
                 </div>
               </div>
@@ -171,6 +186,38 @@ export function SettingsPage() {
       >
         <p style={{ margin: 0, color: "var(--fx-text-2)", fontSize: 13 }}>
           将清除本机保存的界面偏好设置（不影响任务、项目或任何后端数据）。
+        </p>
+      </Modal>
+
+      <Modal
+        open={confirmUnbind}
+        title="解除本机绑定"
+        onClose={() => setConfirmUnbind(false)}
+        footer={
+          <>
+            <Button onClick={() => setConfirmUnbind(false)}>取消</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setConfirmUnbind(false);
+                void unbindLocalOwner()
+                  .then(() => {
+                    toast("已解除本机绑定");
+                    window.location.reload();
+                  })
+                  .catch((error: unknown) => {
+                    toast(error instanceof Error ? error.message : "解除本机绑定失败");
+                  });
+              }}
+            >
+              确认解除
+            </Button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, color: "var(--fx-text-2)", fontSize: 13, lineHeight: 1.6 }}>
+          这会清除本机保存的账号云服务器会话并解绑本机主人，导致其它设备的云令牌失效、
+          后台日志 / 记忆 / 账单同步失去服务器会话。仅在你确认要停止本机使用该账号时操作。
         </p>
       </Modal>
     </>

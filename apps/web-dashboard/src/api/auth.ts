@@ -22,8 +22,14 @@ export interface CloudUser {
   username: string;
 }
 
-/** 启动引导的三种结局。 */
-export type AuthBootstrap = "authenticated" | "login-required" | "no-cloud";
+/**
+ * 启动引导的结局：
+ * - authenticated：已登录；
+ * - no-cloud：后端没配账号云，放行；
+ * - login-required：未登录且需要登录，已跳账号云登录页；
+ * - error：兑换登录码失败或账号不属于本实例，留在原地展示错误，不跳登录页。
+ */
+export type AuthBootstrap = "authenticated" | "login-required" | "no-cloud" | "error";
 
 interface CloudSessionInfo {
   authenticated: boolean;
@@ -40,6 +46,13 @@ interface Envelope {
 
 /** 仅内存中的当前用户展示信息（不是令牌，也不落 localStorage）。 */
 let currentUser: CloudUser | null = null;
+
+/** 登录引导失败时保留给 UI 展示的中文错误（不跳登录页，避免无提示循环）。 */
+let bootstrapError: string | null = null;
+
+export function getBootstrapError(): string | null {
+  return bootstrapError;
+}
 
 function str(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -137,7 +150,7 @@ export function refreshAuth(): Promise<CloudUser | null> {
   return refreshInFlight;
 }
 
-/** 退出登录：必须走后端以便清除 HttpOnly cookie。 */
+/** 退出登录：只清当前客户端的 HttpOnly cookie，不影响其它设备或本机绑定。 */
 export async function logoutCloudSession(): Promise<void> {
   try {
     await cloudFetch("/cloud/logout", { method: "POST" });
@@ -148,16 +161,43 @@ export async function logoutCloudSession(): Promise<void> {
   }
 }
 
+/**
+ * 解除本机账号云绑定（清除服务器单例会话 + 主人绑定）。
+ *
+ * 会影响**其它设备**与后台日志 / 记忆 / 账单同步，调用前必须由 UI 二次确认。
+ * 后端只允许本机主人（回环直连或有效 FLUX_AUTH_TOKEN）执行。
+ */
+export async function unbindLocalOwner(): Promise<void> {
+  const response = await cloudFetch("/cloud/unbind", { method: "POST" });
+  const envelope = await readEnvelope(response);
+  if (!response.ok || !envelope || envelope.success === false) {
+    throw new Error(envelope?.message || `解除本机绑定失败（HTTP ${response.status}）`);
+  }
+  currentUser = null;
+}
+
 async function runBootstrap(): Promise<AuthBootstrap> {
+  bootstrapError = null;
   const url = new URL(window.location.href);
   const code = url.searchParams.get("code");
+  let exchanged = false;
   if (code) {
     try {
       await postCloud("/cloud/exchange", { code });
-    } catch {
+      exchanged = true;
+    } catch (error) {
+      // 一次性 code 已被消费；把后端的中文错误留给 AuthGate 展示。
+      // 不要清完就跳登录页——那会让"账号不属于本实例"变成无提示的循环跳转。
       clearAuth();
+      bootstrapError =
+        error instanceof Error && error.message
+          ? error.message
+          : "登录失败：当前账号无法登录本实例。";
+      // 登录码是一次性的：留在地址栏既没用，又会被刷新重复兑换（第二次必然失败）。
+      url.searchParams.delete("code");
+      window.history.replaceState(null, "", url.toString());
+      return "error";
     }
-    // 登录码是一次性的：留在地址栏既没用，又会被刷新重复兑换（第二次必然失败）。
     url.searchParams.delete("code");
     window.history.replaceState(null, "", url.toString());
   }
@@ -168,6 +208,11 @@ async function runBootstrap(): Promise<AuthBootstrap> {
   clearAuth();
   // 后端没配账号云（本地开发 / 只用 FLUX_AUTH_TOKEN 的场景）：不拦截。
   if (!session?.configured) return "no-cloud";
+  if (exchanged) {
+    // 兑换返回成功却仍不是本实例用户：展示错误而不是再次送去登录页，避免循环。
+    bootstrapError = "登录成功但当前账号仍无权访问本实例，请让运维检查允许名单或本机绑定。";
+    return "error";
+  }
   window.location.replace(session.loginUrl || buildLoginUrl(window.location.href));
   return "login-required";
 }

@@ -16,6 +16,7 @@ from flux.api.internal_tap import router as llm_tap_router
 from flux.api.v1 import api_v1_router, ide, supervisor_webhook, terminal
 from flux.api.v1 import cloud as cloud_api
 from flux.cloud.owner import load_owner
+from flux.cloud.session import load_session
 from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
 from flux.container import Container
@@ -28,11 +29,44 @@ from flux.version import VERSION
 logger = get_logger(__name__)
 
 
+def _warn_legacy_session_without_owner(settings: Settings) -> None:
+    """遗留的 `cloud.json` 会话**不会**被自动升为本机主人，只提示需要重新鉴权绑定。
+
+    历史事实：#41 修复**之前**，未鉴权的公网 `/cloud/exchange` 等就能把任意账号写进
+    服务器单例 `~/.flux/cloud.json`。因此从旧版本升级时，这份残留会话不能证明写它的
+    就是本机主人；若在启动期直接 `save_owner`，等于把当时写进该文件的账号（可能是
+    攻击者）升成持久本机主人。绑定只应发生在本机主人鉴权之后（回环直连或有效
+    `FLUX_AUTH_TOKEN`，见 `flux.api.v1.cloud._remember_server_session`）。
+
+    这里只做告警，不写任何文件，也不把残留会话当作合法主人。
+    """
+    if load_owner(settings.cloud_owner_path) is not None:
+        return
+    if settings.cloud_allowed_user_ids:
+        # 已配置允许名单：合法用户有明确的授权来源，残留会话无需处理。
+        return
+    session = load_session(settings.cloud_session_path)
+    if session is None:
+        return
+    user_id = (session.user_id or "").strip()
+    if not user_id:
+        return
+    logger.warning(
+        "发现遗留账号云会话（%s，user_id=%s），但本机尚未绑定主人：不会自动把该"
+        "会话升为本机主人。请在本机回环（或带 FLUX_AUTH_TOKEN）重新登录完成绑定，"
+        "或配置 FLUX_CLOUD_ALLOWED_USERS。",
+        settings.cloud_session_path,
+        user_id,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     # 启动闸门：server / 非回环监听下空 FLUX_AUTH_TOKEN 直接拒绝启动（P1-1）。
     validate_auth_configuration(app_settings)
     configure_logging(app_settings.log_level, app_settings.log_dir_path)
+    # 升级提示：遗留 cloud.json 会话不会被自动升为本机主人；绑定只在本机主人鉴权后进行。
+    _warn_legacy_session_without_owner(app_settings)
     container = Container(app_settings)
     log_upload_task: asyncio.Task[None] | None = None
     memory_sync_task: asyncio.Task[None] | None = None
@@ -131,7 +165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 在配置 FLUX_CLOUD_ALLOWED_USERS 或完成本机绑定之前，云令牌不能授权 /api/v1。
         logger.warning(
             "已配置 FLUX_CLOUD_SECRET_KEY，但既没有 FLUX_CLOUD_ALLOWED_USERS，"
-            "也还没有绑定本机主人（%s）：云令牌在完成其一之前不能授权 /api/v1",
+            "也还没有绑定本机主人（%s）：云令牌在完成其一之前不能授权 /api/v1。"
+            "公网官方 Web 无法自行完成首次绑定——请先在本机回环（或带 FLUX_AUTH_TOKEN）"
+            "登录一次绑定主人，或配置 FLUX_CLOUD_ALLOWED_USERS。",
             app_settings.cloud_owner_path,
         )
     app = FastAPI(

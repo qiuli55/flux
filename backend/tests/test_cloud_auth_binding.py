@@ -54,6 +54,7 @@ def make_token(
     issuer: str | None = None,
     audience: str | None = None,
     alg: str = "HS256",
+    username: str | None = None,
 ) -> str:
     """构造一枚 HS256 JWT（标准库，不引入 PyJWT）。"""
     now = int(time.time())
@@ -66,6 +67,8 @@ def make_token(
         payload["iss"] = issuer
     if audience is not None:
         payload["aud"] = audience
+    if username is not None:
+        payload["username"] = username
     header = {"alg": alg, "typ": "JWT"}
     signing_input = ".".join(
         _b64(json.dumps(part, separators=(",", ":"), sort_keys=True).encode())
@@ -217,13 +220,13 @@ def _mock_refresh(monkeypatch: pytest.MonkeyPatch, session: CloudSession) -> Non
     monkeypatch.setattr(CloudClient, "refresh", fake_refresh)
 
 
-def test_public_exchange_only_sets_client_cookies(
+def test_public_exchange_allowed_user_only_sets_client_cookies(
     settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """公网（非回环、无本机令牌）兑换登录码：只回自己的 cookie，不写服务器单例。"""
+    """公网（非回环、无本机令牌）兑换：允许名单用户只回自己的 cookie，不写服务器单例。"""
     configured = _cloud_settings(settings)
     app = create_app(configured)
-    _mock_exchange(monkeypatch, _session_for("attacker", "Mallory"))
+    _mock_exchange(monkeypatch, _session_for("allowed-user", "Allowed"))
     with TestClient(app, **PUBLIC_CLIENT) as test_client:
         response = test_client.post("/api/v1/cloud/exchange", json={"code": "code-12345678"})
         assert response.status_code == 200, response.text
@@ -231,6 +234,42 @@ def test_public_exchange_only_sets_client_cookies(
         assert "flux_auth_token" in response.headers.get("set-cookie", "")
         assert not configured.cloud_session_path.exists()
         assert not configured.cloud_owner_path.exists()
+
+
+def test_public_exchange_outside_instance_is_rejected_without_cookie(
+    settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """验签通过但用户不属于本实例：403 + 中文说明，且不种登录 cookie。"""
+    configured = _cloud_settings(settings)
+    app = create_app(configured)
+    _mock_exchange(monkeypatch, _session_for("attacker", "Mallory"))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.post("/api/v1/cloud/exchange", json={"code": "code-12345678"})
+        assert response.status_code == 403, response.text
+        payload = response.json()
+        assert payload["code"] == "permission_denied"
+        assert "不是本实例允许的用户" in payload["message"]
+        assert "FLUX_CLOUD_ALLOWED_USERS" in payload["message"]
+        # 关键：不能"假装登录成功"给浏览器种下可登录 cookie。
+        assert "flux_auth_token=" not in response.headers.get("set-cookie", "")
+        assert not configured.cloud_session_path.exists()
+        assert not configured.cloud_owner_path.exists()
+
+
+def test_public_exchange_without_owner_or_allowlist_is_rejected(
+    settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """既没允许名单也没绑定主人：公网官方 Web 兑换必须失败并提示先绑定主人。"""
+    configured = _cloud_settings(settings, cloud_allowed_users="")
+    app = create_app(configured)
+    _mock_exchange(monkeypatch, _session_for("any-user", "Anyone"))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.post("/api/v1/cloud/exchange", json={"code": "code-12345678"})
+        assert response.status_code == 403, response.text
+        payload = response.json()
+        assert payload["code"] == "permission_denied"
+        assert "还没有绑定主人" in payload["message"]
+        assert "flux_auth_token=" not in response.headers.get("set-cookie", "")
 
 
 def test_loopback_exchange_binds_server_owner(
@@ -254,7 +293,7 @@ def test_forwarded_loopback_exchange_does_not_bind_server_owner(
     """回环来源但带转发头 = 经代理的公网请求，不能借"看起来像本机"写服务器单例。"""
     configured = _cloud_settings(settings)
     app = create_app(configured)
-    _mock_exchange(monkeypatch, _session_for("attacker", "Mallory"))
+    _mock_exchange(monkeypatch, _session_for("allowed-user", "Allowed"))
     with TestClient(app, **LOOPBACK_CLIENT) as test_client:
         response = test_client.post(
             "/api/v1/cloud/exchange",
@@ -262,6 +301,7 @@ def test_forwarded_loopback_exchange_does_not_bind_server_owner(
             headers={"X-Forwarded-For": "203.0.113.9"},
         )
         assert response.status_code == 200, response.text
+        assert "flux_auth_token" in response.headers.get("set-cookie", "")
         assert not configured.cloud_session_path.exists()
         assert not configured.cloud_owner_path.exists()
 
@@ -299,7 +339,8 @@ def test_public_logout_cannot_clear_server_session(settings: Settings, db_schema
         assert "flux_auth_token" in response.headers.get("set-cookie", "")
 
 
-def test_loopback_logout_clears_server_session(settings: Settings, db_schema: None) -> None:
+def test_loopback_logout_only_clears_client_cookie(settings: Settings, db_schema: None) -> None:
+    """同机直连的普通「退出登录」只清 cookie：服务器会话与主人绑定必须保留。"""
     configured = _cloud_settings(settings)
     save_session(configured.cloud_session_path, _session_for("allowed-user"))
     save_owner(configured.cloud_owner_path, CloudOwner(user_id="allowed-user", username="Owner"))
@@ -307,6 +348,52 @@ def test_loopback_logout_clears_server_session(settings: Settings, db_schema: No
     with TestClient(app, **LOOPBACK_CLIENT) as test_client:
         response = test_client.post("/api/v1/cloud/logout")
         assert response.status_code == 200
+        assert "flux_auth_token" in response.headers.get("set-cookie", "")
+        # 关键行为变更：不再因为"是本机主人"就解绑整台机器。
+        assert configured.cloud_session_path.exists()
+        owner = load_owner(configured.cloud_owner_path)
+        assert owner is not None and owner.user_id == "allowed-user"
+
+
+def test_loopback_unbind_clears_server_session_and_owner(
+    settings: Settings, db_schema: None
+) -> None:
+    """专用解绑端点：本机主人调用才清除服务器单例并解绑主人。"""
+    configured = _cloud_settings(settings)
+    save_session(configured.cloud_session_path, _session_for("allowed-user"))
+    save_owner(configured.cloud_owner_path, CloudOwner(user_id="allowed-user", username="Owner"))
+    app = create_app(configured)
+    with TestClient(app, **LOOPBACK_CLIENT) as test_client:
+        response = test_client.post("/api/v1/cloud/unbind")
+        assert response.status_code == 200, response.text
+        assert not configured.cloud_session_path.exists()
+        assert not configured.cloud_owner_path.exists()
+
+
+def test_public_unbind_cannot_clear_server_session(settings: Settings, db_schema: None) -> None:
+    """未鉴权的公网请求调用解绑端点：401，且服务器会话 / 主人绑定保持原样。"""
+    configured = _cloud_settings(settings)
+    save_session(configured.cloud_session_path, _session_for("allowed-user"))
+    save_owner(configured.cloud_owner_path, CloudOwner(user_id="allowed-user", username="Owner"))
+    app = create_app(configured)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.post("/api/v1/cloud/unbind")
+        assert response.status_code == 401, response.text
+        assert response.json()["code"] == "unauthenticated"
+        assert configured.cloud_session_path.exists()
+        owner = load_owner(configured.cloud_owner_path)
+        assert owner is not None and owner.user_id == "allowed-user"
+
+
+def test_public_unbind_with_local_token_succeeds(settings: Settings, db_schema: None) -> None:
+    """非回环但带有效 FLUX_AUTH_TOKEN，同样视为本机主人，可以解绑。"""
+    configured = _cloud_settings(settings)
+    save_session(configured.cloud_session_path, _session_for("allowed-user"))
+    save_owner(configured.cloud_owner_path, CloudOwner(user_id="allowed-user", username="Owner"))
+    app = create_app(configured)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.post("/api/v1/cloud/unbind", headers=_auth(LOCAL_TOKEN))
+        assert response.status_code == 200, response.text
         assert not configured.cloud_session_path.exists()
         assert not configured.cloud_owner_path.exists()
 
@@ -363,6 +450,113 @@ def test_public_refresh_uses_cookie_without_writing_server_session(
         assert "flux_auth_token" in response.headers.get("set-cookie", "")
         assert not configured.cloud_session_path.exists()
         assert not configured.cloud_owner_path.exists()
+
+
+def test_public_refresh_outside_instance_is_rejected_without_cookie(
+    settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """续期回来的用户不属于本实例：与 exchange 对称，403 且不种登录 cookie。"""
+    configured = _cloud_settings(settings)
+    app = create_app(configured)
+    _mock_refresh(monkeypatch, _session_for("attacker", "Mallory"))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        test_client.cookies.set(
+            "flux_refresh_token", "unit-test-refresh-token-value", path="/api/v1/cloud"
+        )
+        response = test_client.post("/api/v1/cloud/refresh")
+        assert response.status_code == 403, response.text
+        assert response.json()["code"] == "permission_denied"
+        assert "flux_auth_token=" not in response.headers.get("set-cookie", "")
+        assert not configured.cloud_session_path.exists()
+
+
+def test_session_uses_username_claim_for_allowed_user(settings: Settings, db_schema: None) -> None:
+    """允许名单用户没有主人文件可查时，用 JWT 里的 username claim 回填展示名。"""
+    configured = _cloud_settings(settings)
+    save_owner(
+        configured.cloud_owner_path,
+        CloudOwner(user_id="owner-user", username="ServerOwner"),
+    )
+    app = create_app(configured)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.get(
+            "/api/v1/cloud/session",
+            headers=_auth(make_token(sub="allowed-user", username="AllowedName")),
+        )
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert payload["authenticated"] is True
+        assert payload["user"] == {"id": "allowed-user", "username": "AllowedName"}
+        # 不能把服务器单例里的主人 username 泄露给别的用户。
+        assert "ServerOwner" not in response.text
+
+
+def test_refresh_response_reports_session_username(
+    settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """允许名单用户的展示名也可来自 CloudSession.username（账号云返回值）。"""
+    configured = _cloud_settings(settings)
+    app = create_app(configured)
+    _mock_refresh(monkeypatch, _session_for("allowed-user", "AllowedName"))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        test_client.cookies.set(
+            "flux_refresh_token", "unit-test-refresh-token-value", path="/api/v1/cloud"
+        )
+        response = test_client.post("/api/v1/cloud/refresh")
+        assert response.status_code == 200, response.text
+        user = response.json()["data"]["user"]
+        assert user == {"id": "allowed-user", "username": "AllowedName"}
+
+
+# ---------------------------------------------------------------------------
+# P1：升级时**不得**把遗留 cloud.json 会话自动升为本机主人
+# ---------------------------------------------------------------------------
+#
+# 历史事实：#41 修复**之前**，未鉴权的公网 `/cloud/exchange` 等就能把任意账号写进
+# 服务器单例 `~/.flux/cloud.json`。因此从旧版本升级时，这份残留会话不能证明它属于
+# 本机主人；启动期自动 `save_owner` 会把当时写进该文件的账号（可能是攻击者）升成
+# 持久主人。绑定只应发生在本机主人鉴权之后（回环直连或有效 FLUX_AUTH_TOKEN）。
+
+
+def test_create_app_does_not_promote_legacy_session_to_owner(
+    settings: Settings, db_schema: None
+) -> None:
+    """启动时存在遗留会话、尚无主人文件：不得写主人文件，也不能因此放行。"""
+    configured = _cloud_settings(settings, cloud_allowed_users="")
+    save_session(configured.cloud_session_path, _session_for("legacy-user", "Legacy"))
+    assert load_owner(configured.cloud_owner_path) is None
+
+    app = create_app(configured)
+
+    # 关键：启动期不写主人文件；残留会话仍留在磁盘上，但它不构成授权。
+    assert load_owner(configured.cloud_owner_path) is None
+    assert configured.cloud_session_path.exists()
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.get(HEALTH, headers=_auth(make_token(sub="legacy-user")))
+        assert response.status_code == 401
+
+
+def test_create_app_does_not_override_existing_owner(settings: Settings, db_schema: None) -> None:
+    """已有合法主人时，遗留会话不参与启动流程，不会被升主或覆盖。"""
+    configured = _cloud_settings(settings)
+    save_session(configured.cloud_session_path, _session_for("legacy-user", "Legacy"))
+    save_owner(
+        configured.cloud_owner_path,
+        CloudOwner(user_id="owner-user", username="Owner"),
+    )
+    create_app(configured)
+    owner = load_owner(configured.cloud_owner_path)
+    assert owner is not None and owner.user_id == "owner-user"
+
+
+def test_create_app_does_not_bind_session_without_user_id(
+    settings: Settings, db_schema: None
+) -> None:
+    """遗留会话没有 user_id 时不产生空绑定（fail-closed）。"""
+    configured = _cloud_settings(settings, cloud_allowed_users="")
+    save_session(configured.cloud_session_path, _session_for("", ""))
+    create_app(configured)
+    assert load_owner(configured.cloud_owner_path) is None
 
 
 # ---------------------------------------------------------------------------

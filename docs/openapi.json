@@ -4062,7 +4062,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "退出当前客户端；本机主人同时清除服务器会话",
+        "summary": "退出当前客户端（只清本客户端 cookie，不解绑本机）",
         "tags": [
           "cloud"
         ]
@@ -4137,6 +4137,30 @@
           }
         },
         "summary": "查询当前客户端的账号云登录状态与登录入口",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/api/v1/cloud/unbind": {
+      "post": {
+        "description": "清除服务器单例会话并解绑本机主人。\n\n这是会波及其它设备与后台同步的高影响操作，因此仍由本机主人鉴权把关：\n回环直连（无转发头）或有效 `FLUX_AUTH_TOKEN`。未鉴权的公网请求不能解绑。",
+        "operationId": "cloud_unbind_api_v1_cloud_unbind_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cloud Unbind Api V1 Cloud Unbind Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "解除本机账号云绑定（清除服务器会话，需本机主人鉴权）",
         "tags": [
           "cloud"
         ]
