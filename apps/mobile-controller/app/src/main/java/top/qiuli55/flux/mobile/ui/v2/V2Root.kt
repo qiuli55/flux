@@ -60,13 +60,19 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.qiuli55.flux.mobile.R
 import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
+import top.qiuli55.flux.mobile.data.IncomingShare
 import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
+import top.qiuli55.flux.mobile.data.ShareIntakeRecovery
+import top.qiuli55.flux.mobile.data.SharedIntakeStorage
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
@@ -171,7 +177,12 @@ fun FluxV2Root() {
     var chatSeed by remember { mutableStateOf<ComposerSeed?>(null) }
     var taskSeed by remember { mutableStateOf<Pair<String, ComposerSeed>?>(null) }
     var shareQueue by remember { mutableStateOf(ShareIntakeState()) }
+    // 首页等页面有未发送草稿时，分享先问用户「并入 / 新开」；取消则继续暂存。
+    var draftConflictShare by remember { mutableStateOf<IncomingShare?>(null) }
+    var heldConflictShare by remember { mutableStateOf<IncomingShare?>(null) }
     val context = LocalContext.current
+    // 与 MainActivity 共用同一个落盘清单：内容真正进入输入栏后才删除记录。
+    val shareStore = remember(context) { SharedIntakeStorage.of(context) }
     // 全局触感控制器：设置里的开关只改 enabled，不重建振动器
     val hapticsController = remember(context) { createV2Haptics(context) }
 
@@ -230,6 +241,9 @@ fun FluxV2Root() {
             chatMessages.clear()
             draftAttachments.clear()
             draftAttachmentError = null
+            // 退回登录墙 / 选设备时收起确认弹窗，分享继续暂存（磁盘记录不删）。
+            draftConflictShare?.let { heldConflictShare = it }
+            draftConflictShare = null
         } else {
             UpdateCenter.onForeground()
         }
@@ -365,6 +379,16 @@ fun FluxV2Root() {
             Log.w(FLUX_UX_LOG_TAG, "send ignored: no active chat")
             return
         }
+        // Plan 模式与「+」按钮规则一致：不允许把附件发出去。
+        if (current.permissionMode == "plan" && draftAttachmentDrafts.isNotEmpty()) {
+            Toast.makeText(
+                context,
+                "Plan 模式不支持附件，请先移除附件或切换到普通模式",
+                Toast.LENGTH_SHORT,
+            ).show()
+            Log.i(FLUX_UX_LOG_TAG, "send ignored: plan mode with attachments")
+            return
+        }
         // 失败 / 上传中的草稿不能跳过：先让用户重试或移除。
         val blocker = attachmentSendBlocker(draftAttachmentDrafts)
         if (blocker != null) {
@@ -482,7 +506,8 @@ fun FluxV2Root() {
         route = V2Route.Chat
     }
 
-    // 系统分享：先收进本地队列。登录墙 / 选设备期间只暂存，进入主界面后一条一条落地。
+    // 系统分享：先收进本地队列。登录墙 / 选设备期间只暂存（磁盘记录此时不会被删除），
+    // 进入主界面后一条一条落地。
     LaunchedEffect(Unit) {
         ShareIntakeBus.pending.collect { pending ->
             if (pending.isEmpty()) return@collect
@@ -490,8 +515,99 @@ fun FluxV2Root() {
             shareQueue = shareQueue.receive(pending.map { it.share })
         }
     }
-    // 落地规则：正在看的任务 → 该任务；新对话草稿 → 当前草稿；其它页面 → 新开对话。
+
+    // 只有内容真正进入输入栏（或已提示拒绝原因）后才删除磁盘记录。
+    fun acknowledgeShare(recordId: String?) {
+        if (recordId == null) return
+        rootScope.launch {
+            withContext(Dispatchers.IO) { ShareIntakeRecovery.acknowledge(shareStore, recordId) }
+        }
+    }
+
+    fun createShareChat(seed: ComposerSeed) {
+        val chatDevice = if (device == ALL_DEVICES) {
+            V2Registry.devices.firstOrNull()?.name ?: "本机"
+        } else {
+            device
+        }
+        createChat(agentsForDevice(chatDevice).first())
+        chatSeed = seed
+    }
+
+    /**
+     * 把一条分享按 [landing] 交给当前页面；返回 false 表示这一轮没有消费（继续排队）。
+     *
+     * 这里只负责把内容投给页面（seed），磁盘记录要等页面 onSeedApplied 才删除：
+     * 登录墙 / 选设备、确认弹窗、路由切换途中进程被杀，回来都还能恢复出这条分享。
+     */
+    fun applyShare(landing: ShareLanding, share: IncomingShare): Boolean {
+        val notice = share.errors.takeIf { it.isNotEmpty() }?.joinToString("；")
+        if (share.text.isBlank() && share.attachments.isEmpty()) {
+            // 全部附件都读不到：只提示原因，不为一条空内容新开对话。
+            if (notice != null) Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            acknowledgeShare(share.recordId)
+            return true
+        }
+        val seed = ComposerSeed(
+            token = seedCounter.incrementAndGet(),
+            text = share.text,
+            attachmentUris = share.attachments.map { it.uri },
+            notice = notice,
+            shareRecordId = share.recordId,
+        )
+        when (landing) {
+            ShareLanding.CURRENT_TASK -> {
+                val taskId = (route as? V2Route.TaskChat)?.taskId ?: return false
+                taskSeed = taskId to seed
+            }
+            ShareLanding.CURRENT_DRAFT -> {
+                if (chat == null) {
+                    // 计算落地规则后路由/草稿状态变了：退回新开，避免 seed 无处可落。
+                    createShareChat(seed)
+                } else {
+                    chatSeed = seed
+                    route = V2Route.Chat
+                }
+            }
+            ShareLanding.NEW_CHAT -> createShareChat(seed)
+            ShareLanding.HOLD, ShareLanding.ASK_DRAFT_CONFLICT -> return false
+        }
+        return true
+    }
+
+    /** 用户在「并入草稿 / 新开对话」之间做了选择。 */
+    fun resolveDraftConflict(merge: Boolean) {
+        val share = draftConflictShare ?: return
+        draftConflictShare = null
+        shareQueue = ShareIntakeState(pending = shareQueue.pending.filterNot { it === share })
+        val landing = if (merge) ShareLanding.CURRENT_DRAFT else ShareLanding.NEW_CHAT
+        if (!applyShare(landing, share)) {
+            shareQueue = ShareIntakeState(pending = listOf(share) + shareQueue.pending)
+        }
+    }
+
+    /** 关闭弹窗：分享继续暂存（内存 + 磁盘都保留），换页时再尝试落地。 */
+    fun holdDraftConflict() {
+        val share = draftConflictShare ?: return
+        draftConflictShare = null
+        shareQueue = ShareIntakeState(pending = shareQueue.pending.filterNot { it === share })
+        heldConflictShare = share
+        Toast.makeText(context, "分享已暂存", Toast.LENGTH_SHORT).show()
+    }
+
+    // 用户取消过「并入/新开」后，换页时把暂存的分享重新放回队首再判断一次。
+    LaunchedEffect(route) {
+        val held = heldConflictShare ?: return@LaunchedEffect
+        heldConflictShare = null
+        if (shareQueue.pending.none { it === held }) {
+            shareQueue = ShareIntakeState(pending = listOf(held) + shareQueue.pending)
+        }
+    }
+
+    // 落地规则：正在看的任务 → 该任务；新对话草稿 → 当前草稿；其它页面 → 新开对话；
+    // 其它页面但已有未发送草稿 → 先问用户。
     LaunchedEffect(app.boot, shareQueue, route) {
+        if (app.boot != V2Boot.READY) return@LaunchedEffect
         // 上一份分享还没被当前页面消费时先不动队列，避免连续分享时后一份覆盖前一份的文字。
         val activeSeed = when (val current = route) {
             is V2Route.TaskChat -> taskSeed?.takeIf { it.first == current.taskId }?.second
@@ -499,43 +615,21 @@ fun FluxV2Root() {
             else -> null
         }
         if (activeSeed != null) return@LaunchedEffect
-        val (nextQueue, share) = shareQueue.nextIfReady(app.boot == V2Boot.READY)
-        if (share == null) return@LaunchedEffect
+        if (draftConflictShare != null) return@LaunchedEffect
+        val share = shareQueue.pending.firstOrNull() ?: return@LaunchedEffect
         val landing = resolveShareLanding(
             route = route,
             bootReady = true,
             hasDraftChat = chat != null,
+            hasUnsentDraft = hasUnsentDraft(chat, chatMessages, draftAttachmentDrafts.size),
         )
-        shareQueue = nextQueue
-        val notice = share.errors.takeIf { it.isNotEmpty() }?.joinToString("；")
-        if (share.text.isBlank() && share.attachments.isEmpty()) {
-            // 全部附件都读不到：只提示原因，不为一条空内容新开对话。
-            if (notice != null) Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+        if (landing == ShareLanding.HOLD) return@LaunchedEffect
+        if (landing == ShareLanding.ASK_DRAFT_CONFLICT) {
+            draftConflictShare = share
             return@LaunchedEffect
         }
-        val seed = ComposerSeed(
-            token = seedCounter.incrementAndGet(),
-            text = share.text,
-            attachmentUris = share.attachments.map { it.uri },
-            notice = notice,
-        )
-        when (landing) {
-            ShareLanding.CURRENT_TASK -> {
-                val taskId = (route as? V2Route.TaskChat)?.taskId ?: return@LaunchedEffect
-                taskSeed = taskId to seed
-            }
-            ShareLanding.CURRENT_DRAFT -> chatSeed = seed
-            ShareLanding.NEW_CHAT -> {
-                val chatDevice = if (device == ALL_DEVICES) {
-                    V2Registry.devices.firstOrNull()?.name ?: "本机"
-                } else {
-                    device
-                }
-                createChat(agentsForDevice(chatDevice).first())
-                chatSeed = seed
-            }
-            ShareLanding.HOLD -> Unit
-        }
+        if (!applyShare(landing, share)) return@LaunchedEffect
+        shareQueue = ShareIntakeState(pending = shareQueue.pending.filterNot { it === share })
     }
 
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
@@ -951,7 +1045,11 @@ fun FluxV2Root() {
                                     onRetryAttachment = { draftAttachments.retry(it) },
                                     seed = chatSeed,
                                     onSeedApplied = { token ->
-                                        if (chatSeed?.token == token) chatSeed = null
+                                        val applied = chatSeed
+                                        if (applied?.token == token) {
+                                            chatSeed = null
+                                            acknowledgeShare(applied.shareRecordId)
+                                        }
                                     },
                                     designOptions = designState.designs,
                                     designsLoading = designState.loading,
@@ -1052,7 +1150,11 @@ fun FluxV2Root() {
                             // 系统分享落到当前正在看的这段对话
                             seed = taskSeed?.takeIf { it.first == current.taskId }?.second,
                             onSeedApplied = { token ->
-                                if (taskSeed?.second?.token == token) taskSeed = null
+                                val applied = taskSeed
+                                if (applied?.second?.token == token) {
+                                    taskSeed = null
+                                    acknowledgeShare(applied.second.shareRecordId)
+                                }
                             },
                         )
 
@@ -1467,6 +1569,21 @@ fun FluxV2Root() {
                     manualConnectOpen = false
                     vm.onManualConnected()
                 },
+            )
+        }
+
+        // 首页等页面已有未发送草稿：分享不能静默把它冲掉，先让用户选并入还是新开。
+        draftConflictShare?.let {
+            FluxConfirmDialog(
+                title = "有未发送的草稿",
+                message = "把这次分享并入当前草稿，还是新开一段对话？新开对话会丢弃当前草稿。",
+                confirmLabel = "并入草稿",
+                dismissLabel = "取消",
+                destructive = false,
+                alternateLabel = "新开对话",
+                onConfirm = { resolveDraftConflict(merge = true) },
+                onAlternate = { resolveDraftConflict(merge = false) },
+                onDismiss = { holdDraftConflict() },
             )
         }
     }
