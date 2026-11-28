@@ -25,7 +25,6 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,8 +40,8 @@ import androidx.compose.ui.unit.sp
 /**
  * 「我的」一级页面：账号卡 + 三组管理入口。
  *
- * 管理类功能（设备、终端、密钥、额度、记忆、偏好、更新）全部收在这一页，
- * 「对话」页只保留对话本身。
+ * 管理类功能（设备、密钥、额度、记忆、偏好、更新）全部收在这一页，
+ * 「对话」页只保留对话本身。手机主路径不再提供新建 / 交互式终端。
  */
 @Composable
 fun V2ProfileScreen(
@@ -58,7 +57,6 @@ fun V2ProfileScreen(
     onOpenDevices: () -> Unit,
     onOpenConnectors: () -> Unit,
     onOpenSubscriptions: () -> Unit,
-    onOpenTerminals: () -> Unit,
     onOpenKeys: () -> Unit,
     onOpenBilling: () -> Unit,
     onOpenMemories: () -> Unit,
@@ -94,12 +92,6 @@ fun V2ProfileScreen(
                 title = "连接器",
                 onClick = onOpenConnectors,
                 value = if (connectorCount > 0) "$connectorCount 个" else "未连接",
-                showDivider = true,
-            )
-            V2SettingRow(
-                icon = Icons.Outlined.Terminal,
-                title = "终端会话",
-                onClick = onOpenTerminals,
             )
         }
 

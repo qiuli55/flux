@@ -850,8 +850,8 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             _state.value = _state.value.withSendStarted()
             try {
                 val api = api()
-                // 已结束的对话：新消息走续跑，重开任务并起新一轮 Agent Run；
-                // 进行中的对话：仍走追加消息由助手回话。
+                // 已结束的对话走续跑、进行中的对话走追加消息——这只是 API 形状；
+                // 本轮由服务端助手 / 整理 / 电脑 Agent 中的哪条路，由服务端按 start=auto 决定。
                 val outcome = if (current.task?.isFinished == true) {
                     api.continueTask(taskId, content, attachmentIds)
                 } else {

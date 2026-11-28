@@ -143,3 +143,56 @@ def test_more_than_five_attachments_rejected(client: TestClient) -> None:
         f"{PREFIX}/tasks", json={"description": "六个", "attachment_ids": ids + [extra]}
     )
     assert response.status_code == 422  # pydantic 的 max_length 先拦下
+
+
+def test_auto_create_organizes_an_image_into_a_document(client: TestClient) -> None:
+    """分享 / 相册的图片 + 「整理成文档」：走服务端整理，不启动电脑 Agent。"""
+    image = _upload(client, "照片.png", b"\x89PNG\r\n\x1a\nfake-bytes", mime="image/png")
+    response = client.post(
+        f"{PREFIX}/tasks",
+        json={
+            "description": "整理成文档",
+            "attachment_ids": [image["id"]],
+            "start": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["turn_route"] == "organize_document"
+    assert data["status"] == "pending"
+    assert data["artifact"]["type"] == "doc"
+    assert [m["kind"] for m in data["messages"]][-1] == "artifact_card"
+    assert any("未使用视觉模型" in m["content"] for m in data["messages"])
+
+    listed = client.get(f"{PREFIX}/artifacts").json()["data"]
+    assert any(item["id"] == data["artifact"]["id"] for item in listed)
+
+
+def test_auto_create_organizes_an_image_into_a_page(client: TestClient) -> None:
+    image = _upload(client, "海报.png", b"\x89PNG\r\n\x1a\nfake-bytes", mime="image/png")
+    response = client.post(
+        f"{PREFIX}/tasks",
+        json={
+            "description": "整理成页面",
+            "attachment_ids": [image["id"]],
+            "start": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["turn_route"] == "organize_page"
+    assert data["artifact"]["type"] == "page"
+
+
+def test_organize_with_attachment_does_not_start_an_agent(client: TestClient) -> None:
+    """整理路线完全走 flux-server，电脑 Agent 没有被调用。"""
+    image = _upload(client, "图.png", b"\x89PNG\r\n\x1a\nx", mime="image/png")
+    task = _create_task(client, "整理成文档", [image["id"]])
+    replied = client.post(
+        f"{PREFIX}/tasks/{task}/messages",
+        json={"content": "整理成文档", "attachment_ids": [image["id"]], "start": "auto"},
+    )
+    assert replied.status_code == 200, replied.text
+    data = replied.json()["data"]
+    assert data["turn_route"] == "organize_document"
+    assert data["task"]["run_id"] is None

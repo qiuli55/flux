@@ -971,6 +971,27 @@ fun V2ChatScreen(
                         modifier = Modifier.padding(start = 18.dp, top = 4.dp),
                     )
                 }
+                // 已有可发送附件时给两个明确动作：交给服务端整理成文档 / 页面。
+                // 不新增底栏、不改工具条第二行；只在附件草稿上方多一行。
+                val readyForOrganize = attachmentDrafts.any {
+                    it.status == AttachmentDraftStatus.READY
+                }
+                if (readyForOrganize && attachmentBlocker == null && !locked && !sending) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OrganizeActionChip("整理成文档") {
+                            onSend(organizeAttachmentPrompt("doc", input))
+                        }
+                        OrganizeActionChip("整理成页面") {
+                            onSend(organizeAttachmentPrompt("page", input))
+                        }
+                    }
+                }
             }
             Spacer(Modifier.height(6.dp))
         }
@@ -2159,9 +2180,8 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Label(card.name, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 1)
-                val subtitle = listOf(card.project, card.description)
-                    .filter { it.isNotBlank() }
-                    .joinToString(" · ")
+                // 先把「这是设计稿、点开进画布」说清楚，再放项目与描述。
+                val subtitle = designCardSubtitle(card.project, card.description)
                 if (subtitle.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Label(subtitle, 9f, V2Colors.ink(.42f), maxLines = 1)
@@ -2175,7 +2195,7 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label("点开预览", 9f, V2Colors.actionInk, FontWeight.SemiBold)
+                Label("进画布", 9f, V2Colors.actionInk, FontWeight.SemiBold)
             }
         }
         Spacer(Modifier.height(9.dp))
@@ -2189,7 +2209,7 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Label(
-                "${card.screenCount} 画板 · ${card.layerCount} 图层",
+                "${card.screenCount} 画板 · ${card.layerCount} 图层 · 点开进画布",
                 9f,
                 V2Colors.ink(.52f),
                 mono = true,
@@ -2201,14 +2221,15 @@ private fun DesignCardMessage(card: V2DesignCard, time: String, onClick: () -> U
 }
 
 /**
- * Artifact 卡片：Agent 通过 artifact.publish 把页面 / 文档发布进对话。
+ * Artifact 卡片：Agent 通过 artifact.publish 把可交互页面 / 文档发布进对话。
  *
- * 正文内容留在产物详情里，卡片只展示类型、标题、摘要与「已发布」状态；
- * 点开进入 ArtifactDetail。产物默认私有，所以这里也不出现任何分享链接。
+ * 正文内容留在创作详情里，卡片只展示类型、标题、摘要与「可交互 / 可阅读」状态；
+ * 点开进入 ArtifactDetail。创作默认私有，所以这里也不出现任何分享链接。
  */
 @Composable
 private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () -> Unit) {
     val doc = card.type == "doc"
+    val kind = artifactKindUi(card.type)
     Column(
         Modifier
             .fillMaxWidth()
@@ -2237,9 +2258,8 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
             Column(Modifier.weight(1f)) {
                 Label(card.title, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 1)
                 Spacer(Modifier.height(2.dp))
-                val kind = if (doc) "文档" else "页面"
                 val version = if (card.version > 0) " · v${card.version}" else ""
-                Label("$kind$version", 9f, V2Colors.ink(.42f), maxLines = 1)
+                Label("${kind.label}$version", 9f, V2Colors.ink(.42f), maxLines = 1)
             }
             Spacer(Modifier.width(8.dp))
             Row(
@@ -2249,7 +2269,8 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label("已发布", 9f, V2Colors.accent, FontWeight.SemiBold)
+                // 角标直接回答「能不能点 / 能不能读」，不做含糊的「已发布」。
+                Label(artifactCardBadge(card.type), 9f, V2Colors.accent, FontWeight.SemiBold)
             }
         }
         val subtitle = card.summary.ifBlank { card.description }
@@ -2259,9 +2280,16 @@ private fun ArtifactCardMessage(card: V2ArtifactCard, time: String, onClick: () 
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Label("产物默认私有，仅你可见", 8.5f, V2Colors.ink(.30f), mono = true)
-            Spacer(Modifier.weight(1f))
-            Label("点开查看 · $time", 8.5f, V2Colors.ink(.26f), mono = true)
+            Label(
+                kind.description,
+                8.5f,
+                V2Colors.ink(.30f),
+                mono = true,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Label("${kind.openHint} · $time", 8.5f, V2Colors.ink(.26f), mono = true)
         }
     }
 }
@@ -2334,6 +2362,29 @@ internal fun formatRunDuration(durationMs: Long?): String {
 }
 
 // ------------------------------------------------------------------ 附件
+
+/** 附件草稿上方的整理动作：交给服务端整理成文档 / 页面。 */
+@Composable
+private fun OrganizeActionChip(text: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(V2Colors.surface(.72f))
+            .border(1.dp, V2Colors.ink(.10f), RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.AutoAwesome,
+            contentDescription = null,
+            tint = V2Colors.cyan700,
+            modifier = Modifier.size(13.dp),
+        )
+        Spacer(Modifier.width(5.dp))
+        Label(text, 10.5f, V2Colors.ink(.72f), FontWeight.Medium)
+    }
+}
 
 /** 共用的「+」按钮：点开选择附件来源（相机 / 图片 / 文件 / 设计稿）。 */
 @Composable

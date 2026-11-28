@@ -87,15 +87,6 @@ fun TerminalListScreen(
                 ),
             )
         },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { if (!state.creating) viewModel.createSession(onOpenSession) },
-                containerColor = FluxColors.accent,
-                contentColor = FluxColors.text,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text(if (state.creating) "创建中…" else "新建会话") },
-            )
-        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -104,7 +95,7 @@ fun TerminalListScreen(
                 .padding(horizontal = 16.dp),
         ) {
             Text(
-                text = "终端命令在服务端的工作区里执行。这里能看实时输出，也能停止正在跑的命令。",
+                text = "手机只读查看电脑上已有的终端会话；电脑离线时不可用。手机不再新建或操作终端。",
                 style = MaterialTheme.typography.bodySmall,
                 color = FluxColors.text3,
             )
@@ -116,7 +107,7 @@ fun TerminalListScreen(
                 Spacer(Modifier.height(14.dp))
                 LoadingRow("正在读取会话…")
             } else if (state.sessions.isEmpty()) {
-                EmptyHint("还没有终端会话。点右下角「新建会话」开一个。")
+                EmptyHint("还没有终端会话。请先在电脑上打开会话；手机只读查看。")
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -216,46 +207,11 @@ fun TerminalScreen(viewModel: TerminalViewModel, onBack: () -> Unit) {
                 state.streamError?.let {
                     Text(text = it, style = MaterialTheme.typography.bodySmall, color = FluxColors.orange)
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = state.command,
-                        onValueChange = viewModel::onCommandChange,
-                        placeholder = { Text("命令（在工作区里执行）", style = MaterialTheme.typography.bodySmall) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = { viewModel.runCommand() }),
-                        colors = fluxFieldColors(),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace),
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = viewModel::runCommand, enabled = !state.running && state.command.isNotBlank()) {
-                        Icon(
-                            Icons.Default.Send,
-                            contentDescription = "执行",
-                            tint = if (!state.running && state.command.isNotBlank()) FluxColors.accent else FluxColors.text3,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { viewModel.stop(force = false) },
-                        enabled = state.session?.status == "active",
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Stop") }
-                    Button(
-                        onClick = { viewModel.stop(force = true) },
-                        enabled = state.session?.status == "active",
-                        modifier = Modifier.weight(1f),
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = FluxColors.red.copy(alpha = 0.18f),
-                            contentColor = FluxColors.red,
-                        ),
-                    ) { Text("Force Stop") }
-                }
+                Text(
+                    text = "只读：手机不再执行命令或停止会话。需要操作请在电脑上打开 Flux。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = FluxColors.text3,
+                )
             }
         },
     ) { padding ->
@@ -266,7 +222,7 @@ fun TerminalScreen(viewModel: TerminalViewModel, onBack: () -> Unit) {
             }
             if (state.lines.isEmpty()) {
                 Box(Modifier.padding(16.dp)) {
-                    EmptyHint("这里还没有输出。在下面输入一条命令（例如 `pwd`），输出会实时出现。")
+                    EmptyHint("这里还没有输出。手机只读查看已有会话；电脑离线时不可用。")
                 }
                 return@Column
             }
