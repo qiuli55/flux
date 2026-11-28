@@ -548,16 +548,20 @@
       "CloudRefreshIn": {
         "properties": {
           "refresh_token": {
-            "description": "账号云下发的 refresh token",
-            "maxLength": 2048,
-            "minLength": 8,
-            "title": "Refresh Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "账号云下发的 refresh token；不传则从 HttpOnly cookie 读取",
+            "title": "Refresh Token"
           }
         },
-        "required": [
-          "refresh_token"
-        ],
         "title": "CloudRefreshIn",
         "type": "object"
       },
@@ -4058,7 +4062,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "清除本机保存的账号云会话",
+        "summary": "退出当前客户端；本机主人同时清除服务器会话",
         "tags": [
           "cloud"
         ]
@@ -4071,11 +4075,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CloudRefreshIn"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CloudRefreshIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -4101,7 +4112,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "用 refresh token 续期本机账号云会话",
+        "summary": "用 refresh token 续期当前客户端的账号云会话",
         "tags": [
           "cloud"
         ]
@@ -4109,6 +4120,7 @@
     },
     "/api/v1/cloud/session": {
       "get": {
+        "description": "只反映**发起请求的这个客户端**的登录态。\n\n不读服务器单例里的用户（否则陌生人会拿到本机主人 username），也不拿单例去续期。\n客户端 access token（Authorization 头或 HttpOnly cookie）过期时，用客户端自己的\nrefresh cookie 续一次——续期结果仍只回给该客户端；只有本机主人鉴权通过时才顺带\n更新服务器单例。",
         "operationId": "cloud_session_api_v1_cloud_session_get",
         "responses": {
           "200": {
@@ -4124,7 +4136,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "查询本机账号云登录状态与登录入口",
+        "summary": "查询当前客户端的账号云登录状态与登录入口",
         "tags": [
           "cloud"
         ]

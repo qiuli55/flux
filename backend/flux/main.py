@@ -10,23 +10,28 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
-from flux.api.auth import require_rest_auth
+from flux.api.auth import require_rest_auth, validate_auth_configuration
 from flux.api.errors import register_exception_handlers
 from flux.api.internal_tap import router as llm_tap_router
 from flux.api.v1 import api_v1_router, ide, supervisor_webhook, terminal
 from flux.api.v1 import cloud as cloud_api
+from flux.cloud.owner import load_owner
 from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
 from flux.container import Container
 from flux.core.agent_runtime.llm_stream_tap import llm_stream_tap
 from flux.core.agent_runtime.reaper import ExternalAgentReaper
 from flux.core.mcp.server import router as mcp_router
-from flux.logging import configure_logging
+from flux.logging import configure_logging, get_logger
 from flux.version import VERSION
+
+logger = get_logger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
+    # 启动闸门：server / 非回环监听下空 FLUX_AUTH_TOKEN 直接拒绝启动（P1-1）。
+    validate_auth_configuration(app_settings)
     configure_logging(app_settings.log_level, app_settings.log_dir_path)
     container = Container(app_settings)
     log_upload_task: asyncio.Task[None] | None = None
@@ -114,13 +119,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 内部旁路的上游连接池随应用一起关闭
         await llm_stream_tap.aclose()
 
+    # 生产（env=server）关闭 /docs、/openapi.json：它们会暴露完整内部接口面，
+    # 而公网 /mobile/ 反代只需要 /api/v1。local/test 保留，方便开发自测。
+    server_mode = (app_settings.env or "").strip().lower() == "server"
+    if (
+        (app_settings.cloud_secret_key or "").strip()
+        and not app_settings.cloud_allowed_user_ids
+        and load_owner(app_settings.cloud_owner_path) is None
+    ):
+        # 不阻断启动：本机首次绑定需要在没有主人的状态下完成。但要明确告诉运维，
+        # 在配置 FLUX_CLOUD_ALLOWED_USERS 或完成本机绑定之前，云令牌不能授权 /api/v1。
+        logger.warning(
+            "已配置 FLUX_CLOUD_SECRET_KEY，但既没有 FLUX_CLOUD_ALLOWED_USERS，"
+            "也还没有绑定本机主人（%s）：云令牌在完成其一之前不能授权 /api/v1",
+            app_settings.cloud_owner_path,
+        )
     app = FastAPI(
         title=app_settings.app_name,
         version=VERSION,
         description="Flux 后端 API（主规格 §12）",
         lifespan=lifespan,
-        docs_url="/docs",
+        docs_url=None if server_mode else "/docs",
         redoc_url=None,
+        openapi_url=None if server_mode else "/openapi.json",
     )
     app.state.container = container
     register_exception_handlers(app)

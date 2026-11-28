@@ -25,6 +25,9 @@ async def create_upload(
     mime: str = Query(default="", max_length=200, description="客户端给的 MIME，可留空"),
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """收一个附件：返回 upload_id 与给 Agent 读的绝对路径。"""
+    """收一个附件：只返回 upload_id / 安全文件名 / size / mime。
+
+    服务端绝对路径仅供 Agent 内部读取，不能下发给客户端（泄露部署目录结构）。
+    """
     uploaded = await save_upload(container.settings, name=name, mime=mime, chunks=request.stream())
-    return ok(uploaded.to_dict())
+    return ok(uploaded.to_public_dict())

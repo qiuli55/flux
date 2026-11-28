@@ -7,13 +7,17 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+from flux.config import Settings
 from flux.core.agent_runtime.llm_stream_tap import (
     LlmStreamTap,
     deltas_from_payload,
     is_agent_request,
     tap_base_url,
 )
+from flux.core.agent_runtime.llm_stream_tap import llm_stream_tap as global_tap
+from flux.main import create_app
 
 
 class _RecordingBus:
@@ -130,3 +134,59 @@ async def test_relay_does_not_emit_for_helper_requests() -> None:
         assert not tap.has_streamed(token)
     finally:
         tap.unregister(token)
+
+
+# --- P1-3：内部旁路端点只给同机直连，公网一律 404 ---------------------------
+
+
+class _NoopBus:
+    async def publish(self, _event: str, _payload: dict[str, Any]) -> None:
+        return None
+
+
+def _tap_token() -> str:
+    return global_tap.register(
+        run_id="tap-security-test",
+        upstream="http://127.0.0.1:1",  # 不可达：仅用于证明"已进入原逻辑"
+        bus=_NoopBus(),  # type: ignore[arg-type]
+    )
+
+
+def test_internal_tap_is_404_from_public_client(client: TestClient) -> None:
+    """路径 token 正确，但来源不是同机直连：必须当不存在。"""
+    token = _tap_token()
+    try:
+        response = client.post(f"/internal/llm-tap/{token}/chat/completions", json={})
+        assert response.status_code == 404
+    finally:
+        global_tap.unregister(token)
+
+
+def test_internal_tap_is_404_with_forwarded_headers(settings: Settings, db_schema: None) -> None:
+    """回环来源但带转发头 = 经代理进来的公网请求，同样 404。"""
+    app = create_app(settings)
+    token = _tap_token()
+    try:
+        with TestClient(app, client=("127.0.0.1", 41234)) as loopback_client:
+            response = loopback_client.post(
+                f"/internal/llm-tap/{token}/chat/completions",
+                json={},
+                headers={"X-Forwarded-For": "203.0.113.9"},
+            )
+            assert response.status_code == 404
+    finally:
+        global_tap.unregister(token)
+
+
+def test_internal_tap_enters_original_logic_from_loopback(
+    settings: Settings, db_schema: None
+) -> None:
+    """同机直连 + token 正确：放行到原逻辑（上游不可达 => 502，而非 404）。"""
+    app = create_app(settings)
+    token = _tap_token()
+    try:
+        with TestClient(app, client=("127.0.0.1", 41234)) as loopback_client:
+            response = loopback_client.post(f"/internal/llm-tap/{token}/chat/completions", json={})
+            assert response.status_code == 502
+    finally:
+        global_tap.unregister(token)

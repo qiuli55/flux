@@ -52,8 +52,50 @@ def _auth(token: str) -> dict[str, str]:
 
 
 def test_without_token_configuration_everything_is_open(client: TestClient) -> None:
-    """未配置 FLUX_AUTH_TOKEN：本地开发 / 桌面端零配置（回归保护）。"""
+    """env=test 且监听回环时的零配置：本地开发 / 桌面端仍免令牌（回归保护）。
+
+    这条**只**适用于 "env 不是 server 且监听回环"；server / 非回环部署在启动期
+    就会被 `validate_auth_configuration` 拒绝（见下方用例），不能把它当成
+    "生产也可以不配令牌" 的借口。
+    """
     assert client.get("/api/v1/health").status_code == 200
+
+
+def test_server_env_without_token_refuses_to_start(settings: Settings) -> None:
+    """env=server 且 FLUX_AUTH_TOKEN 为空：create_app() 必须直接拒绝启动（P1-1）。"""
+    server_settings = settings.model_copy(update={"env": "server", "auth_token": None})
+    with pytest.raises(RuntimeError, match="FLUX_AUTH_TOKEN"):
+        create_app(server_settings)
+
+
+def test_non_loopback_listen_without_token_refuses_to_start(settings: Settings) -> None:
+    """监听 0.0.0.0 也按公网处理：空令牌同样不能启动（P1-1）。"""
+    public_settings = settings.model_copy(
+        update={"env": "local", "host": "0.0.0.0", "auth_token": None}
+    )
+    with pytest.raises(RuntimeError, match="FLUX_AUTH_TOKEN"):
+        create_app(public_settings)
+
+
+def test_test_env_without_token_still_starts(settings: Settings, db_schema: None) -> None:
+    """env=test + 回环监听仍允许空令牌，保证本地开发与现有测试可用。"""
+    app = create_app(settings.model_copy(update={"env": "test", "auth_token": None}))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        assert test_client.get("/api/v1/health").status_code == 200
+
+
+def test_request_time_does_not_fail_open_without_token(
+    settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """即使绕过启动闸门，请求期也不能因为"没配令牌"就放行（P1-1 兜底）。"""
+    import flux.main as main
+
+    monkeypatch.setattr(main, "validate_auth_configuration", lambda _settings: None)
+    app = main.create_app(settings.model_copy(update={"env": "server", "auth_token": None}))
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        response = test_client.get("/api/v1/health")
+        assert response.status_code == 401
+        assert response.json()["code"] == "unauthenticated"
 
 
 def test_health_requires_token_when_configured(secured_client: TestClient) -> None:
@@ -145,6 +187,19 @@ def test_docs_stay_public(secured_client: TestClient) -> None:
     """/docs 与 /openapi.json 在 /api/v1 之外：不泄密但也不该被令牌挡住（要留 Authorize 按钮）。"""
     assert secured_client.get("/openapi.json").status_code == 200
     assert secured_client.get("/docs").status_code == 200
+
+
+def test_docs_are_closed_in_server_mode(settings: Settings, db_schema: None) -> None:
+    """env=server 关闭 /docs 与 /openapi.json：公网 /mobile/ 只该暴露 /api/v1（P1-3）。"""
+    server_settings = settings.model_copy(
+        update={"env": "server", "auth_token": TOKEN, "host": "127.0.0.1"}
+    )
+    app = create_app(server_settings)
+    with TestClient(app, **PUBLIC_CLIENT) as test_client:
+        assert test_client.get("/docs").status_code == 404
+        assert test_client.get("/openapi.json").status_code == 404
+        # /api/v1 本身仍然可用（带令牌）。
+        assert test_client.get("/api/v1/health", headers=_auth(TOKEN)).status_code == 200
 
 
 def test_openapi_declares_bearer_scheme(secured_client: TestClient) -> None:

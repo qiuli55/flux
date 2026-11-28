@@ -6,14 +6,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from flux.core.agent_runtime.runtimes.service import _execution_instruction
-from flux.core.attachment_store import ATTACHMENT_MAX_BYTES
+from flux.core.agent_runtime.runtimes.service import (
+    _execution_instruction,
+    _latest_attachments,
+)
+from flux.core.attachment_store import ATTACHMENT_MAX_BYTES, resolve_upload
 
 PREFIX = "/api/v1"
 
@@ -42,11 +46,12 @@ def test_upload_roundtrip_writes_file(client: TestClient) -> None:
     data = _upload(client, "测试 报告.txt", "附件正文".encode())
     assert data["name"].endswith(".txt")
     assert data["size"] == len("附件正文".encode())
-    assert data["id"] in data["path"]
+    # 公开响应不能带服务器绝对路径（安全审查 P2-8）；路径由服务端按 id 还原。
+    assert "path" not in data
 
-    from pathlib import Path
-
-    assert Path(data["path"]).read_text(encoding="utf-8") == "附件正文"
+    resolved = resolve_upload(client.app.state.container.settings, data["id"])
+    assert resolved is not None
+    assert Path(resolved.path).read_text(encoding="utf-8") == "附件正文"
 
 
 def test_upload_rejects_empty_body(client: TestClient) -> None:
@@ -76,16 +81,26 @@ def test_task_attachments_are_recorded_and_reach_instruction(client: TestClient)
     assert len(attachment_messages) == 1
     files = attachment_messages[0]["payload"]["files"]
     assert [item["name"] for item in files] == ["a.txt", "b.txt"]
+    # 落库 / 下发的公开 payload 同样不含绝对路径。
+    assert all("path" not in item for item in files)
 
-    # Agent 指令：附件以绝对路径出现，模型可以直接读
+    # Agent 指令：服务端按 upload_id 还原真实路径后再交给模型。
+    container = client.app.state.container
+    enriched = asyncio.run(_latest_attachments(container, uuid.UUID(task_id)))
+    assert {item["name"] for item in enriched} == {"a.txt", "b.txt"}
+    assert all(item.get("path") for item in enriched)
+    first_path = resolve_upload(container.settings, first["id"])
+    second_path = resolve_upload(container.settings, second["id"])
+    assert first_path is not None and second_path is not None
+
     instruction = _execution_instruction(
         SimpleNamespace(id=task_id, description="看看这两个文件", project_id=None),
         None,
         [],
-        attachments=files,
+        attachments=enriched,
     )
     assert "## 附件" in instruction
-    assert first["path"] in instruction and second["path"] in instruction
+    assert first_path.path in instruction and second_path.path in instruction
 
 
 def test_message_requires_content_or_attachments(client: TestClient) -> None:

@@ -94,6 +94,11 @@ def settings(tmp_path) -> Settings:
         uploads_dir=str(tmp_path / "uploads"),
         cloud_secret_key=None,
         cloud_login_required=False,
+        # 账号云会话与"本机绑定主人"都必须落临时目录：测试绝不能读写开发机的
+        # ~/.flux/cloud.json 与 ~/.flux/cloud-owner.json（否则用例互相污染，
+        # 还可能把开发机真实账号绑成测试主人）。
+        cloud_session_file=str(tmp_path / "cloud.json"),
+        cloud_owner_file=str(tmp_path / "cloud-owner.json"),
     )
 
 

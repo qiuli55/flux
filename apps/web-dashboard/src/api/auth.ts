@@ -1,91 +1,109 @@
 /**
- * 浏览器侧的 Flux 云账号会话。
+ * 浏览器侧的 Flux 云账号会话（HttpOnly cookie）。
  *
- * 账号的权威全在账号云（B 机 `flux.qiuli55.top`），Flux 本体只做本地验签：
- * - 登录回跳带回一次性 `code`，本机换回 access / refresh token；
- * - access token（默认 30 分钟）存 localStorage，`api/client.ts` 每次请求带上
- *   `Authorization: Bearer`；
- * - 过期由 `refreshAuth()` 续期一次；续不动就清空本地会话并回登录页。
+ * 账号的权威全在账号云（B 机 `flux.qiuli55.top`），Flux 本体只做本地验签。
+ * 安全审查 P1-2 之后，浏览器**不再接触令牌**：
+ * - 登录回跳带回一次性 `code`，`POST /cloud/exchange` 由后端用 Set-Cookie 下发
+ *   HttpOnly 的 `flux_auth_token` / `flux_refresh_token`；页面脚本读不到，也不会
+ *   再往 localStorage 或 `document.cookie` 里写令牌；
+ * - 之后所有对 Flux 后端的请求都带 `credentials: "include"`，浏览器自动附带 cookie；
+ * - 登录态以 `GET /cloud/session`（带 cookie）为准，而不是看本地存储；
+ * - access token 过期时 `POST /cloud/refresh` 只靠 HttpOnly refresh cookie 续期；
+ * - 退出登录必须 `POST /cloud/logout`，由后端清除 cookie。
+ *
+ * 内存里只保留用户展示信息（id / username），刷新页面后重新向 `/cloud/session` 要。
  */
 import { API_BASE, CLOUD_BASE_URL } from "./base";
 
-/** localStorage 键名。 */
-const STORAGE_KEY = "flux.cloud.session";
+/** 到期前的兜底值不再需要：有效期由后端 cookie 的 Max-Age 决定。 */
 
-/** 到期前多久就当作过期（毫秒），给时钟漂移留一点余量。 */
-const EXPIRY_SKEW_MS = 30_000;
-
-/** 后端没给 `expires_in` 时的兜底（秒）。 */
-const DEFAULT_EXPIRES_IN = 1800;
-
-export interface CloudAuth {
-  accessToken: string;
-  refreshToken: string;
-  /** 绝对到期时间（epoch 毫秒）。 */
-  expiresAt: number;
-  user: { id: string; username: string } | null;
+export interface CloudUser {
+  id: string;
+  username: string;
 }
 
 /** 启动引导的三种结局。 */
 export type AuthBootstrap = "authenticated" | "login-required" | "no-cloud";
 
+interface CloudSessionInfo {
+  authenticated: boolean;
+  configured: boolean;
+  user: CloudUser | null;
+  loginUrl: string;
+}
+
+interface Envelope {
+  success?: boolean;
+  message?: string;
+  data?: unknown;
+}
+
+/** 仅内存中的当前用户展示信息（不是令牌，也不落 localStorage）。 */
+let currentUser: CloudUser | null = null;
+
 function str(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function toAuth(data: unknown): CloudAuth | null {
-  if (typeof data !== "object" || data === null) return null;
-  const record = data as Record<string, unknown>;
-  const accessToken = str(record.access_token);
-  const refreshToken = str(record.refresh_token);
-  if (!accessToken || !refreshToken) return null;
-  const expiresIn = typeof record.expires_in === "number" ? record.expires_in : DEFAULT_EXPIRES_IN;
-  const raw = typeof record.user === "object" && record.user !== null ? record.user : null;
-  const rawUser = raw as Record<string, unknown> | null;
-  return {
-    accessToken,
-    refreshToken,
-    expiresAt: Date.now() + expiresIn * 1000,
-    user: rawUser ? { id: str(rawUser.id), username: str(rawUser.username) } : null,
-  };
+function toUser(value: unknown): CloudUser | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const id = str(record.id);
+  if (!id) return null;
+  return { id, username: str(record.username) };
 }
 
-export function getAuth(): CloudAuth | null {
-  if (typeof window === "undefined") return null;
+/** 统一的 Flux 后端请求：同源 / 反代下由浏览器自动带上后端下发的 HttpOnly cookie。 */
+function cloudFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, { credentials: "include", ...init });
+}
+
+async function readEnvelope(response: Response): Promise<Envelope | null> {
+  return (await response.json().catch(() => null)) as Envelope | null;
+}
+
+async function postCloud(path: string, body?: unknown): Promise<Record<string, unknown>> {
+  const response = await cloudFetch(path, {
+    method: "POST",
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const envelope = await readEnvelope(response);
+  if (!response.ok || !envelope || envelope.success === false) {
+    throw new Error(envelope?.message || `登录请求失败（HTTP ${response.status}）`);
+  }
+  return (envelope.data ?? {}) as Record<string, unknown>;
+}
+
+/** 登录态只问后端（cookie 在浏览器里，JS 看不到）。 */
+async function fetchCloudSession(): Promise<CloudSessionInfo | null> {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    return stored ? toAuth(JSON.parse(stored) as unknown) : null;
+    const response = await cloudFetch("/cloud/session");
+    const envelope = await readEnvelope(response);
+    if (!response.ok || !envelope || envelope.success === false) return null;
+    const data = (envelope.data ?? {}) as Record<string, unknown>;
+    const authenticated = data.authenticated === true;
+    const user = authenticated ? toUser(data.user) : null;
+    currentUser = user;
+    return {
+      authenticated,
+      configured: Boolean(data.configured),
+      user,
+      loginUrl: str(data.login_url) || buildLoginUrl(window.location.href),
+    };
   } catch {
     return null;
   }
 }
 
-export function setAuth(auth: CloudAuth): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
-  } catch {
-    // 隐私模式等写不进去：本次会话照常可用，只是刷新页面要重新登录。
-  }
+/** 当前内存中的用户展示信息；仅用于 UI，不代表登录态（登录态以 cookie 为准）。 */
+export function getAuth(): CloudUser | null {
+  return currentUser;
 }
 
+/** 清空内存里的用户展示信息（不触碰服务端 cookie）。 */
 export function clearAuth(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // 忽略：清理失败最多是被动过期的令牌多留一会儿。
-  }
-}
-
-/** 当前 access token（不校验有效期：让后端判定，401 再走续期）。 */
-export function getAccessToken(): string | null {
-  return getAuth()?.accessToken ?? null;
-}
-
-/** 令牌是否还在有效期内（含余量）。 */
-export function isAuthValid(auth: CloudAuth | null): boolean {
-  return auth !== null && Date.now() < auth.expiresAt - EXPIRY_SKEW_MS;
+  currentUser = null;
 }
 
 /** 拼账号云登录页地址；`next` 是登录完成后要回到的完整地址。 */
@@ -94,43 +112,23 @@ export function buildLoginUrl(next: string): string {
   return next ? `${login}?next=${encodeURIComponent(next)}` : login;
 }
 
-async function postCloud(path: string, body: unknown): Promise<CloudAuth> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new Error("无法连接 Flux 后端，登录状态暂不可用");
-  }
-  const envelope = (await response.json().catch(() => null)) as {
-    success?: boolean;
-    message?: string;
-    data?: unknown;
-  } | null;
-  if (!response.ok || !envelope || envelope.success === false) {
-    throw new Error(envelope?.message || `登录请求失败（HTTP ${response.status}）`);
-  }
-  const auth = toAuth(envelope.data);
-  if (!auth) throw new Error("账号云返回的令牌无法解析");
-  setAuth(auth);
-  return auth;
-}
+let refreshInFlight: Promise<CloudUser | null> | null = null;
 
-let refreshInFlight: Promise<CloudAuth | null> | null = null;
-
-/** 用 refresh token 续期；失败即清空本地会话并返回 null。并发调用只发一次请求。 */
-export function refreshAuth(): Promise<CloudAuth | null> {
+/**
+ * 用 HttpOnly refresh cookie 续期；失败即清空内存用户并返回 null。
+ * 并发 401 只发一次请求（登录码 / refresh token 都是一次性凭据）。
+ */
+export function refreshAuth(): Promise<CloudUser | null> {
   if (refreshInFlight) return refreshInFlight;
-  const current = getAuth();
-  if (!current) return Promise.resolve(null);
   refreshInFlight = (async () => {
     try {
-      return await postCloud("/cloud/refresh", { refresh_token: current.refreshToken });
+      // 不传 refresh_token：后端从 HttpOnly cookie 读取，Web 端不再把令牌放进 JS。
+      const data = await postCloud("/cloud/refresh");
+      const user = toUser(data.user);
+      currentUser = user;
+      return user;
     } catch {
-      clearAuth();
+      currentUser = null;
       return null;
     } finally {
       refreshInFlight = null;
@@ -139,14 +137,14 @@ export function refreshAuth(): Promise<CloudAuth | null> {
   return refreshInFlight;
 }
 
-async function cloudConfigured(): Promise<boolean> {
+/** 退出登录：必须走后端以便清除 HttpOnly cookie。 */
+export async function logoutCloudSession(): Promise<void> {
   try {
-    const response = await fetch(`${API_BASE}/cloud/session`);
-    if (!response.ok) return false;
-    const envelope = (await response.json()) as { data?: { configured?: boolean } } | null;
-    return Boolean(envelope?.data?.configured);
+    await cloudFetch("/cloud/logout", { method: "POST" });
   } catch {
-    return false;
+    // 后端不可达时本地仍清掉展示信息；cookie 会在过期后自然失效。
+  } finally {
+    currentUser = null;
   }
 }
 
@@ -159,15 +157,18 @@ async function runBootstrap(): Promise<AuthBootstrap> {
     } catch {
       clearAuth();
     }
-    // 登录码是一次性的：留在地址栏既没用，又会被刷新重复兑换（第二次必然 401）。
+    // 登录码是一次性的：留在地址栏既没用，又会被刷新重复兑换（第二次必然失败）。
     url.searchParams.delete("code");
     window.history.replaceState(null, "", url.toString());
   }
-  if (isAuthValid(getAuth())) return "authenticated";
+
+  // 以带 cookie 的 /cloud/session 为准：cookie 已登录时，localStorage 为空也不误跳登录页。
+  const session = await fetchCloudSession();
+  if (session?.authenticated) return "authenticated";
   clearAuth();
   // 后端没配账号云（本地开发 / 只用 FLUX_AUTH_TOKEN 的场景）：不拦截。
-  if (!(await cloudConfigured())) return "no-cloud";
-  window.location.replace(buildLoginUrl(window.location.href));
+  if (!session?.configured) return "no-cloud";
+  window.location.replace(session.loginUrl || buildLoginUrl(window.location.href));
   return "login-required";
 }
 
@@ -177,7 +178,7 @@ let bootstrapInFlight: Promise<AuthBootstrap> | null = null;
  * 启动引导：消化回跳登录码 → 判定登录态 → 必要时跳登录页。
  *
  * 结果被缓存，所以 React StrictMode 的"挂载两次"也只会真正执行一次——
- * 登录码只能用一次，重复兑换必 401。
+ * 登录码只能用一次，重复兑换必失败。
  */
 export function bootstrapAuth(): Promise<AuthBootstrap> {
   if (!bootstrapInFlight) bootstrapInFlight = runBootstrap();

@@ -122,7 +122,8 @@ async def _record_attachments(
                     role=TaskMessageRole.USER.value,
                     kind="attachments",
                     content="、".join(item.name for item in files),
-                    payload={"files": [item.to_dict() for item in files]},
+                    # 对外消息只存公开字段；Agent 指令按 id 在服务端还原绝对路径。
+                    payload={"files": [item.to_public_dict() for item in files]},
                 )
             ],
         )

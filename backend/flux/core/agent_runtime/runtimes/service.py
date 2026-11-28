@@ -20,6 +20,7 @@ from flux.core.agent_runtime.runtimes.base import (
 )
 from flux.core.agent_runtime.runtimes.cli import build_cli_runtime
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
+from flux.core.attachment_store import resolve_upload
 from flux.core.context.budget import history_message_limit
 from flux.core.permissions.modes import normalize_mode
 from flux.core.task_engine.assistant import validate_confirmation_items
@@ -256,7 +257,18 @@ async def _latest_attachments(container: Container, task_uuid: uuid.UUID) -> lis
     """
     message = await container.task_repo.latest_message(task_uuid, kind="attachments")
     files = (message.payload or {}).get("files") if message is not None else None
-    return [item for item in files if isinstance(item, dict)] if isinstance(files, list) else []
+    if not isinstance(files, list):
+        return []
+    # 下发给客户端 / 落库的 payload 只有公开字段（不含绝对路径）；Agent 指令需要真实
+    # 路径时在这里按 upload_id 从服务端还原。已被清理的附件保持原样（没有 path）。
+    enriched: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        upload_id = str(item.get("id") or "")
+        resolved = resolve_upload(container.settings, upload_id) if upload_id else None
+        enriched.append({**item, "path": resolved.path} if resolved is not None else item)
+    return enriched
 
 
 async def _has_session(
@@ -497,10 +509,15 @@ def _execution_instruction(
     if trace:
         # 最近几轮的真实对话：用户改了什么要求、助手承诺过什么，避免只记住最初任务
         lines += ["", trace.strip()]
-    if attachments:
+    attachment_lines = [
+        f"- {item.get('path')}（{item.get('name')}）"
+        for item in attachments or []
+        if item.get("path")
+    ]
+    if attachment_lines:
         # 用户从手机附上的文件：路径是服务端真实落盘位置，直接用原生读文件/终端看
         lines += ["", "## 附件（用户随本轮消息上传，可直接按路径读取）"]
-        lines += [f"- {item.get('path')}（{item.get('name')}）" for item in attachments]
+        lines += attachment_lines
     if has_items:
         lines += ["", "## 需求确认（用户已确认，以此为准）"]
         lines += [f"- {item['label']}：{item['value']}" for item in items]

@@ -1089,3 +1089,31 @@ async def test_context_steps_lists_the_current_run_and_refuses_foreign_runs(
     )
     assert denied["result"]["isError"] is True
     assert "本 Agent" in denied["result"]["content"][0]["text"]
+
+
+def test_query_parameter_token_is_rejected_by_default(mcp_client: TestClient) -> None:
+    """P2-4：查询参数里的令牌会进访问日志，默认不认。"""
+    token = issue_token(mcp_client)
+    response = mcp_client.post(
+        f"/mcp?token={token}",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    assert response.status_code == 401
+
+
+def test_query_parameter_token_only_works_when_explicitly_enabled(
+    mcp_client: TestClient,
+) -> None:
+    """受控客户端可显式打开 FLUX_MCP_ALLOW_QUERY_TOKEN；打开后才接受查询参数令牌。"""
+    token = issue_token(mcp_client)
+    settings = mcp_client.app.state.container.settings
+    settings.mcp_allow_query_token = True
+    try:
+        response = mcp_client.post(
+            f"/mcp?token={token}",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["tools"]
+    finally:
+        settings.mcp_allow_query_token = False
