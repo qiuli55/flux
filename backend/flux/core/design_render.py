@@ -26,7 +26,6 @@ from .design_compile import (
     default_fill_color,
     default_radius,
     normalize_type,
-    shadow_layers,
     text_style,
 )
 from .design_tokens import (
@@ -435,7 +434,12 @@ def _text_span(block: Any) -> str:
 
 
 def _text_shadow_css(block: dict[str, Any]) -> list[str]:
-    """发光/投影 → 固定环叠加的 text-shadow，三端用同一套环参数。"""
+    """发光/投影 → 真实高斯 text-shadow。
+
+    每个效果只输出**一段**带 `blur` 半径的阴影，由浏览器做高斯模糊；不再拆成固定
+    环叠加。顺序保持「投影在下、发光在上」：CSS 的 text-shadow 列表先列在上层，
+    因此发光先写、投影后写，与手机 / 桌面的绘制顺序一致。
+    """
     parts: list[str] = []
     for key, is_glow in (("glow", True), ("shadow", False)):
         effect = block.get(key)
@@ -444,20 +448,15 @@ def _text_shadow_css(block: dict[str, Any]) -> list[str]:
         color = effect.get("color")
         base_alpha = _num(color.get("alpha"), 1.0) if isinstance(color, dict) else 1.0
         intensity = _num(effect.get("intensity"), 1.0)
-        dx = _num(effect.get("dx"), 0.0)
-        dy = _num(effect.get("dy"), 0.0)
-        blur = _num(effect.get("blur"), 0.0)
-        rings = effect.get("rings") or [[1.0, 1.0]]
-        for radius, ring_alpha in rings:
-            alpha = _clamp(base_alpha * intensity * float(ring_alpha), 0.0, 1.0)
-            if alpha <= 0.004:
-                continue
-            ox = 0.0 if is_glow else dx
-            oy = 0.0 if is_glow else dy
-            parts.append(
-                f"{_num_str(ox)}px {_num_str(oy)}px {_px(blur * float(radius))} "
-                f"{_rgba_css(color, alpha)}"
-            )
+        alpha = _clamp(base_alpha * intensity, 0.0, 1.0)
+        if alpha <= 0.004:
+            continue
+        dx = 0.0 if is_glow else _num(effect.get("dx"), 0.0)
+        dy = 0.0 if is_glow else _num(effect.get("dy"), 0.0)
+        blur = max(_num(effect.get("blur"), 0.0), 0.0)
+        parts.append(
+            f"{_num_str(dx)}px {_num_str(dy)}px {_px(blur)} {_rgba_css(color, alpha)}"
+        )
     return parts
 
 
@@ -584,35 +583,31 @@ def _stroke_css(stroke: Any) -> str | None:
 
 
 def _shadow_css(shadow: Any, *, inset: bool = False) -> str | None:
-    """IRShadow → CSS box-shadow。
+    """IRShadow → 真实高斯 CSS box-shadow。
 
-    blur>0 时按 N=10 环近似展开成多段（小 spread 在前 = 在上层），
-    与手机 / 桌面同一套公式；blur=0 保持单段，输出与历史基准图一致。
+    直接输出 `dx dy blur color`，由浏览器做高斯模糊；不再用多层 spread 环近似。
+    `blur=0` 就是硬阴影（偏移实心副本），与历史行为一致。IR 没有 spread 字段，
+    因此不输出第五个长度。
     """
     if not isinstance(shadow, dict):
         return None
-    layers = shadow_layers(shadow)
-    if not layers:
-        return None
     color = shadow.get("color")
+    if not isinstance(color, dict):
+        return None
+    alpha = _num(color.get("alpha"), 1.0)
+    if alpha <= 0.004:
+        return None
 
     def length(value: float) -> str:
         # CSS 允许 0 不带单位；统一成 0 让输出更紧凑，也和历史基准图一致。
         return "0" if abs(value) < 0.0001 else _px(value)
 
-    parts: list[str] = []
-    for layer in reversed(layers):
-        chunk = ["inset"] if inset or layer.get("inset") is True else []
-        chunk.append(length(_num(layer.get("dx"), 0.0)))
-        chunk.append(length(_num(layer.get("dy"), 0.0)))
-        # blur 恒为 0：模糊完全由多层 spread 的叠加模拟。
-        chunk.append("0")
-        spread = _num(layer.get("spread"), 0.0)
-        if abs(spread) > 0.0001:
-            chunk.append(_px(spread))
-        chunk.append(_rgba_css(color, _num(layer.get("alpha"), 0.0)))
-        parts.append(" ".join(chunk))
-    return "box-shadow:" + ",".join(parts)
+    chunk = ["inset"] if inset or shadow.get("inset") is True else []
+    chunk.append(length(_num(shadow.get("dx"), 0.0)))
+    chunk.append(length(_num(shadow.get("dy"), 0.0)))
+    chunk.append(length(max(_num(shadow.get("blur"), 0.0), 0.0)))
+    chunk.append(_rgba_css(color, alpha))
+    return "box-shadow:" + " ".join(chunk)
 
 
 def _default_radius(ntype: str, w: float, h: float) -> float:

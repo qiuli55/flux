@@ -402,10 +402,23 @@ def test_text_effects() -> None:
         "text",
     )
     assert style["stroke"] == {"width": 2.0, "color": {"hex": "#ffffff"}, "align": "outside"}
-    assert style["glow"]["rings"] == [[0.35, 0.55], [0.7, 0.35], [1.0, 0.18]]
+    # 文字效果只带真实模糊参数，不再携带「环」；渲染端各自做高斯模糊。
+    assert "rings" not in style["glow"]
+    assert style["glow"]["blur"] == 6.0
     assert style["glow"]["color"] == {"hex": "#22d3ee"}
     assert style["shadow"]["dx"] == 1.0
+    assert style["shadow"]["blur"] == 4.0
     assert style["shadow"]["intensity"] == 0.5
+
+
+def test_blur_sigma_scales() -> None:
+    """阴影 blur 半径是标准差的两倍；节点 filter blur 的参数就是标准差。"""
+    assert comp.shadow_sigma(10.0) == 5.0
+    assert comp.shadow_sigma(-3.0) == 0.0
+    assert comp.layer_sigma(6.0) == 6.0
+    assert comp.layer_sigma(-1.0) == 0.0
+    assert comp.SHADOW_BLUR_SIGMA_SCALE == 0.5
+    assert comp.LAYER_BLUR_SIGMA_SCALE == 1.0
 
 
 def test_auto_fit_and_max_lines_clamp() -> None:

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using Avalonia;
 using Flux.Desktop.Models;
 using Flux.Desktop.Services;
+using Flux.Desktop.Views;
 
 namespace Flux.Desktop.Tests;
 
@@ -27,6 +29,8 @@ internal static class Program
         CheckTotals();
         CheckDesignOps();
         CheckDesignAiPlanner();
+        CheckDesignCanvasInteract();
+        CheckDesignRenderMath();
         CheckBrowserProxy();
 
         if (_failed == 0)
@@ -205,6 +209,29 @@ internal static class Program
             .AsObject()["children"]!.AsArray()[0]!.AsObject();
         True("快照只展开两层", level2["children"] is null);
 
+        // 画布手势写回：只改几何，不改其它字段
+        var frameDesign = (JsonObject)JsonNode.Parse("""
+        {
+          "screens": [
+            { "id": "s1", "w": 390, "h": 844, "nodes": [
+              { "id": "n1", "type": "card", "name": "卡片", "x": 10, "y": 20, "w": 300, "h": 120, "fill": "#FFF", "rotation": 30 },
+              { "id": "n2", "type": "text", "x": 0, "y": 0, "w": 100, "h": 20, "text": "留住" }
+            ]}
+          ]
+        }
+        """)!;
+        True("能按 id 取节点", DesignOps.GetNode(frameDesign, "n1") is not null);
+        True("写回几何成功", DesignOps.SetNodeFrame(frameDesign, "n1", 40, 50, 260, 90, 0));
+        var frameNode = DesignOps.GetNode(frameDesign, "n1")!;
+        Equal("写回 x", "40", frameNode["x"]!.ToJsonString());
+        Equal("写回 w", "260", frameNode["w"]!.ToJsonString());
+        True("0° 不保留 rotation", frameNode["rotation"] is null);
+        Equal("写回不动填充", "#FFF", frameNode["fill"]!.GetValue<string>());
+        True("写回旋转", DesignOps.SetNodeFrame(frameDesign, "n2", 1, 2, 3, 4, 105));
+        Equal("旋转归一", "105", DesignOps.GetNode(frameDesign, "n2")!["rotation"]!.ToJsonString());
+        Equal("按 id 删除", 1, DesignOps.RemoveNodes(frameDesign, new[] { "n2" }));
+        True("删除后取不到", DesignOps.GetNode(frameDesign, "n2") is null);
+
         // 无可用修改与画板越界的报错文案
         Equal("空补丁无修改", 0, DesignOps.ApplyOps(design, 0, new JsonArray(), out var emptyError));
         Equal("空补丁报错", "AI 给的修改无法应用", emptyError);
@@ -289,6 +316,167 @@ internal static class Program
         Equal("AI 无效目标应用数", 0, missing.Applied);
         True("AI 无效目标无变更", !missing.HasChanges);
         True("AI 无效目标回滚为源", missing.Preview["screens"]![0]!["nodes"]!.AsArray().Count == 2);
+    }
+
+    /// <summary>桌面画布纯几何：与手机 DesignInteractTest 同一组行为。</summary>
+    private static void CheckDesignCanvasInteract()
+    {
+        // 相机：屏幕 ↔ 设计坐标往返，缩放绕锚点
+        var camera = new DesignCanvasInteract.DesignCamera(1000, 800, 390, 844, 1, 0, 0);
+        var screen = new Point(712, 345);
+        var design = camera.ToDesign(screen);
+        Near("相机往返 x", screen.X, camera.ToScreen(design).X);
+        Near("相机往返 y", screen.Y, camera.ToScreen(design).Y);
+        var anchor = new Point(700, 300);
+        var before = camera.ToDesign(anchor);
+        var zoomed = camera.ZoomAround(anchor, 2);
+        Near("缩放锚点 x", before.X, zoomed.ToDesign(anchor).X);
+        Near("缩放锚点 y", before.Y, zoomed.ToDesign(anchor).Y);
+        Near("缩放倍数", 2, zoomed.Zoom);
+        Near("缩放上限", DesignCanvasInteract.MaxZoom, camera.ZoomAround(new Point(0, 0), 99).Zoom);
+        Near("缩放下限", DesignCanvasInteract.MinZoom, camera.ZoomAround(new Point(0, 0), .01).Zoom);
+
+        // 命中：椭圆、旋转细条、裁剪容器外的子节点
+        DesignNode Node(string id, string type, double x, double y, double w, double h,
+            double rotation = 0, List<DesignNode>? children = null) => new()
+        {
+            Id = id, Type = type, X = x, Y = y, W = w, H = h, Rotation = rotation, Children = children,
+        };
+
+        var oval = DesignCanvasInteract.Flatten(new[] { Node("oval", "circle", 0, 0, 100, 50) });
+        True("椭圆角落不命中", DesignCanvasInteract.HitTest(oval, new Point(2, 2)) is null);
+        True("椭圆中心命中", DesignCanvasInteract.HitTest(oval, new Point(50, 25)) is not null);
+
+        var thin = DesignCanvasInteract.Flatten(new[] { Node("thin", "rect", 0, 40, 200, 4, rotation: 90) });
+        True("旋转细条中心命中", DesignCanvasInteract.HitTest(thin, new Point(100, 10)) is not null);
+        True("旋转细条外部不命中", DesignCanvasInteract.HitTest(thin, new Point(10, 100)) is null);
+
+        var clipped = DesignCanvasInteract.Flatten(new[]
+        {
+            Node("clip", "button", 0, 0, 100, 100, children: new List<DesignNode>
+            {
+                Node("child", "text", 150, 10, 50, 20),
+            }),
+        });
+        True("裁剪容器外子节点不命中", DesignCanvasInteract.HitTest(clipped, new Point(160, 15)) is null);
+        True("裁剪容器内命中父级", DesignCanvasInteract.HitTest(clipped, new Point(50, 50))?.Id == "clip");
+
+        // 移动吸附：多条参考线 + 空隙吸附 + 两侧等距
+        var multi = DesignCanvasInteract.SnapMove(
+            new Rect(0, 0, 100, 50),
+            new[] { new Rect(4, 100, 50, 50), new Rect(104, 0, 100, 50) },
+            8);
+        Near("多参考线位移", 4, multi.Dx);
+        Equal("多参考线集合", "4,54,104", string.Join(",", multi.Vertical.Select(v => v.ToString("0"))));
+
+        var gap = DesignCanvasInteract.SnapMove(
+            new Rect(190, 0, 50, 50),
+            new[] { new Rect(0, 0, 50, 50), new Rect(100, 0, 50, 50) },
+            12);
+        Near("空隙吸附位移", 10, gap.Dx);
+        Equal("空隙参考线数量", 1, gap.Gaps.Count);
+        Near("空隙起点", 150, gap.Gaps[0].Start.X);
+        Near("空隙终点", 200, gap.Gaps[0].End.X);
+
+        var equal = DesignCanvasInteract.SnapMove(
+            new Rect(110, 0, 50, 50),
+            new[] { new Rect(0, 0, 50, 50), new Rect(200, 0, 50, 50) },
+            12);
+        Near("等距吸附位移", -10, equal.Dx);
+        Equal("等距参考线数量", 2, equal.Gaps.Count);
+
+        // 缩放手柄吸附
+        var resized = DesignCanvasInteract.SnapResize(
+            new DesignCanvasInteract.Frame(0, 0, 100, 50),
+            0,
+            DesignCanvasInteract.Handle.BottomRight,
+            new[] { new Rect(0, 56, 100, 44) },
+            8);
+        Near("手柄吸附高度", 56, resized.Frame.H);
+        Equal("手柄吸附参考线", "56", string.Join(",", resized.Horizontal.Select(v => v.ToString("0"))));
+
+        // 等比缩放 + 旋转后对角钉住
+        var locked = DesignCanvasInteract.ResizeFrame(
+            new DesignCanvasInteract.Frame(0, 0, 100, 50),
+            0,
+            DesignCanvasInteract.Handle.BottomRight,
+            new Point(200, 200),
+            lockAspect: true);
+        Near("等比宽高比", 2, locked.W / locked.H);
+        Near("等比原点 x", 0, locked.X);
+        var rotated = DesignCanvasInteract.ResizeFrame(
+            new DesignCanvasInteract.Frame(0, 0, 100, 50),
+            90,
+            DesignCanvasInteract.Handle.BottomRight,
+            DesignCanvasInteract.RotatePoint(new Point(100, 50), new Point(50, 25), 90),
+            lockAspect: true);
+        Near("旋转等比宽", 100, rotated.W);
+        Near("旋转等比高", 50, rotated.H);
+
+        // 旋转吸附
+        Near("旋转吸附 45", 45, DesignCanvasInteract.SnapRotation(43));
+        Near("旋转不吸附 52", 52, DesignCanvasInteract.SnapRotation(52));
+        Near("旋转吸附 90", 90, DesignCanvasInteract.SnapRotation(87));
+        Near("Shift 强制 15°", 105, DesignCanvasInteract.ConstrainRotation(100, 15));
+
+        // 拖动阈值 / 手柄热区
+        True("小位移不算拖动", !DesignCanvasInteract.DragExceeded(new Point(10, 10), new Point(12, 12), 8));
+        True("超过阈值算拖动", DesignCanvasInteract.DragExceeded(new Point(10, 10), new Point(20, 10), 8));
+        Near("大节点手柄半径", 22, DesignCanvasInteract.HandleRadius(22, new DesignCanvasInteract.Frame(0, 0, 200, 200)));
+        True("小节点手柄半径收窄",
+            DesignCanvasInteract.HandleRadius(22, new DesignCanvasInteract.Frame(0, 0, 20, 20)) < 22);
+
+        // 框选
+        var marquee = DesignCanvasInteract.Flatten(new[]
+        {
+            Node("a", "text", 0, 0, 50, 50),
+            Node("b", "text", 100, 100, 50, 50),
+            Node("decor", "decor", 0, 0, 50, 50),
+        });
+        var selected = DesignCanvasInteract.MarqueeSelection(marquee, new Rect(-10, -10, 70, 70));
+        Equal("框选只选可见图层", "a", string.Join(",", selected.OrderBy(id => id)));
+    }
+
+    /// <summary>渲染数值：模糊半径、像素吸附、盒式模糊，与手机 DesignSpecTest 同一组口径。</summary>
+    private static void CheckDesignRenderMath()
+    {
+        Near("阴影 σ = blur/2", 5, DesignRenderMath.ShadowSigma(10));
+        Near("图层 σ = blur", 10, DesignRenderMath.LayerSigma(10));
+        Near("阴影 3σ 留边", 31, DesignRenderMath.BlurPadding(20));
+        Near("图层 3σ 留边", 31, DesignRenderMath.LayerBlurPadding(10));
+        True("整数缩放才吸附", DesignRenderMath.IsPixelScale(2));
+        True("非整数缩放不吸附", !DesignRenderMath.IsPixelScale(2.02));
+        Near("像素吸附", Math.Round(10.4 * 3) / 3, DesignRenderMath.SnapToPixel(10.4, 3));
+
+        var radii = DesignRenderMath.BoxBlurRadii(6);
+        Equal("盒式模糊三遍", 3, radii.Length);
+        True("盒宽为奇数", radii.All(value => value >= 1 && value % 2 == 1));
+        var variance = radii.Sum(value => (value * value - 1) / 12.0);
+        True("总方差接近 σ²", Math.Abs(variance - 36) <= 12);
+
+        var flat = Enumerable.Repeat(unchecked((int)0x80402010), 31 * 9).ToArray();
+        DesignRenderMath.BlurArgb(flat, 31, 9, 3);
+        True("纯色模糊后仍是纯色", flat.All(value => value == unchecked((int)0x80402010)));
+
+        var edge = Enumerable.Range(0, 31 * 9)
+            .Select(index => index % 31 < 15 ? -1 : 0)
+            .ToArray();
+        DesignRenderMath.BlurArgb(edge, 31, 9, 3);
+        var row = 4 * 31;
+        True("边缘出现中间值", (edge[row + 15] >> 24 & 0xFF) is > 0 and < 255);
+        Equal("远离边缘保持实色", 255, edge[row] >> 24 & 0xFF);
+        Equal("远离边缘保持透明", 0, edge[row + 30] >> 24 & 0xFF);
+    }
+
+    private static void Near(string name, double expected, double actual, double epsilon = .01)
+    {
+        if (Math.Abs(expected - actual) <= epsilon)
+        {
+            return;
+        }
+
+        _failed++;
+        Console.Error.WriteLine($"[FAIL] {name}: expected={expected} actual={actual}");
     }
 
     private static void CheckBrowserProxy()

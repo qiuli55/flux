@@ -1,46 +1,82 @@
 package top.qiuli55.flux.mobile.ui.v2.design
 
+import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Canvas as ComposeCanvas
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.drawText
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** 画板 / 节点绘制：所有「设计稿长什么样」的规则都收在这里。 */
 object DesignPainter {
 
     /**
-     * 设备投影 `0 26px 60px rgba(0,0,0,.55)`，用系统阴影层实现，比叠十几层圆角便宜。
+     * 离屏模糊位图缓存。
      *
-     * 颜色必须是**不透明**的：硬件加速画布上给完全透明的绘制加阴影层不会出图，
-     * 这里用白色画出圆角矩形，阴影留在外圈，随后 [drawScreen] 会用画板底色把白底盖掉。
+     * 阴影 / 文字效果按「形状 + blur + 颜色」缓存：拖动画布（相机变化）时几何不变，
+     * 每帧只是把同一张位图按新相机贴上去，不会反复做模糊。位图在**设计坐标系**
+     * 生成，缩放交给 GPU 双线性采样；阴影本身是低频信号，放大不会出现硬边。
      */
-    private val deviceShadowPaint = android.graphics.Paint().apply {
-        color = android.graphics.Color.WHITE
-        isAntiAlias = true
-        setShadowLayer(
-            DesignSpec.DEVICE_SHADOW_BLUR,
-            0f,
-            DesignSpec.DEVICE_SHADOW_DY,
-            android.graphics.Color.argb(DesignSpec.DEVICE_SHADOW_ALPHA, 0, 0, 0),
-        )
-    }
+    private data class ShadowKey(
+        val w: Int,
+        val h: Int,
+        val corners: Int,
+        val ellipse: Boolean,
+        val blur: Int,
+        val color: Color,
+    )
+
+    private data class InsetKey(
+        val w: Int,
+        val h: Int,
+        val corners: Int,
+        val ellipse: Boolean,
+        val dx: Int,
+        val dy: Int,
+        val blur: Int,
+        val color: Color,
+    )
+
+    private data class TextFxKey(
+        val layout: Int,
+        val width: Int,
+        val height: Int,
+        val blur: Int,
+        val color: Color,
+    )
+
+    private val shadowCache = LinkedHashMap<ShadowKey, ImageBitmap>(32, .75f, true)
+    private val insetCache = LinkedHashMap<InsetKey, ImageBitmap>(16, .75f, true)
+    private val textFxCache = LinkedHashMap<TextFxKey, ImageBitmap>(32, .75f, true)
 
     /** 渐变网格点缓存：尺寸不变时复用同一批点，避免每帧重建几万个 Offset。 */
     private var gridKey: Long = Long.MIN_VALUE
@@ -53,6 +89,8 @@ object DesignPainter {
         bg: Color,
         device: Boolean = true,
         radius: Float = DesignSpec.DEVICE_RADIUS,
+        /** 当前相机 / 预览的「设计单位 → 设备像素」比例，用于整数倍缩放时的像素吸附。 */
+        pixelScale: Float = 1f,
     ) {
         if (device) drawDeviceShadow(width, height, radius)
         if (device) {
@@ -61,35 +99,44 @@ object DesignPainter {
             }
             clipPath(path) {
                 drawRect(bg, size = Size(width, height))
-                drawResolvedNodes(nodes)
+                drawResolvedNodes(nodes, pixelScale)
             }
         } else {
             drawRect(bg, size = Size(width, height))
-            drawResolvedNodes(nodes)
+            drawResolvedNodes(nodes, pixelScale)
         }
     }
 
+    /**
+     * 设备外框投影 `0 26px 60px rgba(0,0,0,.55)`：一次性离屏高斯模糊。
+     *
+     * 不再用「扩张圆角矩形」叠层，边缘没有一圈圈的台阶；与网页 CSS box-shadow
+     * 和桌面 Skia BoxShadow 的模糊半径口径一致（σ = blur / 2）。
+     */
     fun DrawScope.drawDeviceShadow(width: Float, height: Float, radius: Float) {
-        drawIntoCanvas { canvas ->
-            canvas.nativeCanvas.drawRoundRect(
-                0f,
-                0f,
-                width,
-                height,
-                radius,
-                radius,
-                deviceShadowPaint,
-            )
-        }
+        val color = Color.Black.copy(alpha = DesignSpec.DEVICE_SHADOW_ALPHA / 255f)
+        val image = cachedOuterShadow(
+            width = width,
+            height = height,
+            corners = DesignSpec.Corners(radius, radius, radius, radius),
+            ellipse = false,
+            blur = DesignSpec.DEVICE_SHADOW_BLUR,
+            color = color,
+        ) ?: return
+        val pad = DesignSpec.blurPadding(DesignSpec.DEVICE_SHADOW_BLUR)
+        drawImage(
+            image = image,
+            topLeft = Offset(-pad, -pad + DesignSpec.DEVICE_SHADOW_DY),
+        )
     }
 
-    fun DrawScope.drawResolvedNodes(nodes: List<ResolvedNode>) {
+    fun DrawScope.drawResolvedNodes(nodes: List<ResolvedNode>, pixelScale: Float = 1f) {
         nodes.forEach { node ->
             if (node.rotation == 0f) {
-                drawNodeWithChildren(node)
+                drawNodeWithChildren(node, pixelScale)
             } else {
                 rotate(node.rotation, pivot = node.center) {
-                    drawNodeWithChildren(node)
+                    drawNodeWithChildren(node, pixelScale)
                 }
             }
         }
@@ -98,16 +145,27 @@ object DesignPainter {
     /**
      * 画节点自身再画子层。`text/button/pill/input/nav` 在网页里是 `overflow:hidden`，
      * 子层必须裁剪到父框圆角内；`card` 是 `overflow:visible`，子层可以溢出。
+     *
+     * `blur > 0` 的节点走「整棵子树离屏 + 像素高斯」：这是真正的图层模糊，
+     * 而不是给边缘描一圈虚化。
      */
-    private fun DrawScope.drawNodeWithChildren(node: ResolvedNode) {
-        paintNode(node)
+    private fun DrawScope.drawNodeWithChildren(
+        node: ResolvedNode,
+        pixelScale: Float,
+        skipOwnBlur: Boolean = false,
+    ) {
+        if (node.blur > .0001f && !skipOwnBlur) {
+            drawBlurredSubtree(node, pixelScale)
+            return
+        }
+        paintNode(node, pixelScale)
         if (node.children.isEmpty()) return
         if (node.clip) {
             clipPath(shapePath(node, node.x, node.y, node.right, node.bottom, 0f)) {
-                drawResolvedNodes(node.children)
+                drawResolvedNodes(node.children, pixelScale)
             }
         } else {
-            drawResolvedNodes(node.children)
+            drawResolvedNodes(node.children, pixelScale)
         }
     }
 
@@ -146,9 +204,9 @@ object DesignPainter {
         return points
     }
 
-    private fun DrawScope.paintNode(node: ResolvedNode) {
+    private fun DrawScope.paintNode(node: ResolvedNode, pixelScale: Float) {
         // 对齐 CSS 合成顺序：外阴影 → 底色/控件 → 内阴影 → 描边 → 文字。
-        node.shadowRings.forEach { drawShadowRing(node, it) }
+        node.shadows.forEach { drawShadow(node, it, pixelScale) }
 
         when (node.type) {
             "slider" -> drawSlider(node)
@@ -176,7 +234,7 @@ object DesignPainter {
         }
 
         // CSS 的 inset box-shadow 画在背景之上、内容之下。
-        if (node.insetShadowRings.isNotEmpty()) drawInsetShadows(node)
+        if (node.insetShadows.isNotEmpty()) drawInsetShadows(node, pixelScale)
 
         node.stroke?.let { drawNodeStroke(node, it) }
 
@@ -185,16 +243,13 @@ object DesignPainter {
         } else {
             val layout = node.textLayout ?: return
             clipRect(node.x, node.y, node.right, node.bottom) {
-                drawTextNode(node, layout)
+                drawTextNode(node, layout, pixelScale)
             }
         }
     }
 
     /**
      * 节点外形路径：椭圆直接 addOval，其余用 [DesignSpec.Corners] 的四角圆角。
-     *
-     * [radiusDelta] 给阴影环用：外扩 [spread] 时圆角同样加 [spread]，与 CSS 的
-     * `border-radius + spread` 一致；内缩时传负值。
      */
     private fun shapePath(
         node: ResolvedNode,
@@ -231,47 +286,299 @@ object DesignPainter {
         return path
     }
 
-    /** 外阴影环：环已按「大 spread 在下、小 spread 在上」排好序。 */
-    private fun DrawScope.drawShadowRing(node: ResolvedNode, ring: DesignSpec.ShadowRing) {
-        val spread = ring.spread
-        val left = node.x - spread + ring.dx
-        val top = node.y - spread + ring.dy
-        val right = node.right + spread + ring.dx
-        val bottom = node.bottom + spread + ring.dy
-        val color = ring.color.copy(alpha = ring.color.alpha * node.alpha)
-        if (node.ellipse) {
-            drawOval(color = color, topLeft = Offset(left, top), size = Size(right - left, bottom - top))
-        } else {
-            drawPath(shapePath(node, left, top, right, bottom, spread), color = color)
+    // ------------------------------------------------------------ 阴影（真实模糊）
+
+    private fun DrawScope.drawShadow(
+        node: ResolvedNode,
+        spec: DesignSpec.ShadowSpec,
+        pixelScale: Float,
+    ) {
+        val color = spec.color.copy(alpha = spec.color.alpha * node.alpha)
+        if (color.alpha <= .002f) return
+        if (spec.blur <= .0001f) {
+            // blur=0：CSS 硬阴影，直接画偏移实心形状，避免位图采样把边缘磨虚。
+            val left = node.x + spec.dx
+            val top = node.y + spec.dy
+            if (node.ellipse) {
+                drawOval(
+                    color = color,
+                    topLeft = Offset(left, top),
+                    size = Size(node.w, node.h),
+                )
+            } else {
+                drawPath(
+                    path = shapePath(node, left, top, left + node.w, top + node.h, 0f),
+                    color = color,
+                )
+            }
+            return
+        }
+        val image = cachedOuterShadow(
+            width = node.w,
+            height = node.h,
+            corners = node.corners,
+            ellipse = node.ellipse,
+            blur = spec.blur,
+            color = spec.color,
+        ) ?: return
+        val pad = DesignSpec.blurPadding(spec.blur)
+        val x = DesignSpec.snapToPixel(node.x + spec.dx - pad, pixelScale)
+        val y = DesignSpec.snapToPixel(node.y + spec.dy - pad, pixelScale)
+        drawImage(image = image, topLeft = Offset(x, y), alpha = node.alpha)
+    }
+
+    /**
+     * 内阴影：外框减去「同尺寸、偏移 (dx, dy)」的洞，模糊后裁剪在盒内。
+     * blur=0 时就是硬边内投影。
+     */
+    private fun DrawScope.drawInsetShadows(node: ResolvedNode, pixelScale: Float) {
+        node.insetShadows.forEach { spec ->
+            if (spec.blur <= .0001f) {
+                val outer = shapePath(node, node.x, node.y, node.right, node.bottom, 0f)
+                clipPath(outer) {
+                    val hole = shapePath(
+                        node,
+                        node.x + spec.dx,
+                        node.y + spec.dy,
+                        node.right + spec.dx,
+                        node.bottom + spec.dy,
+                        0f,
+                    )
+                    val color = spec.color.copy(alpha = spec.color.alpha * node.alpha)
+                    val ring = Path().apply { op(outer, hole, androidx.compose.ui.graphics.PathOperation.Difference) }
+                    drawPath(ring, color = color)
+                }
+                return@forEach
+            }
+            val image = cachedInsetShadow(node, spec) ?: return@forEach
+            val x = DesignSpec.snapToPixel(node.x, pixelScale)
+            val y = DesignSpec.snapToPixel(node.y, pixelScale)
+            drawImage(image = image, topLeft = Offset(x, y), alpha = node.alpha)
         }
     }
 
     /**
-     * 内阴影：外框减去「内缩 spread 并偏移 (dx, dy)」的洞，得到一圈贴边的阴影。
-     * blur 已由 [DesignSpec.insetShadowRings] 拆成多层 spread，逐层叠加即高斯近似。
+     * 外阴影离屏位图：形状画进透明 bitmap，再用平台 `BlurMaskFilter` 做真实高斯。
+     * 位图四周按 3σ 留边，模糊不会被画布边缘截断。
      */
-    private fun DrawScope.drawInsetShadows(node: ResolvedNode) {
-        val outer = shapePath(node, node.x, node.y, node.right, node.bottom, 0f)
-        clipPath(outer) {
-            node.insetShadowRings.forEach { ring ->
-                val inset = ring.spread
-                val hole = shapePath(
-                    node,
-                    node.x + inset + ring.dx,
-                    node.y + inset + ring.dy,
-                    node.right - inset + ring.dx,
-                    node.bottom - inset + ring.dy,
-                    -inset,
-                )
-                val color = ring.color.copy(alpha = ring.color.alpha * node.alpha)
-                if (hole.isEmpty) {
-                    drawPath(outer, color = color)
-                } else {
-                    val ringPath = Path().apply { op(outer, hole, PathOperation.Difference) }
-                    drawPath(ringPath, color = color)
-                }
+    private fun cachedOuterShadow(
+        width: Float,
+        height: Float,
+        corners: DesignSpec.Corners,
+        ellipse: Boolean,
+        blur: Float,
+        color: Color,
+    ): ImageBitmap? {
+        if (width <= 0f || height <= 0f || color.alpha <= .002f) return null
+        val key = ShadowKey(
+            w = q(width),
+            h = q(height),
+            corners = cornersKey(corners),
+            ellipse = ellipse,
+            blur = q(blur),
+            color = color,
+        )
+        shadowCache[key]?.let { return it }
+        val pad = ceil(DesignSpec.blurPadding(blur))
+        val wPx = (width + pad * 2f).roundToInt().coerceAtLeast(1)
+        val hPx = (height + pad * 2f).roundToInt().coerceAtLeast(1)
+        val image = ImageBitmap(wPx, hPx)
+        val canvas = android.graphics.Canvas(image.asAndroidBitmap())
+        canvas.translate(pad, pad)
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            this.color = color.toArgb()
+            if (blur > .0001f) {
+                maskFilter = BlurMaskFilter(DesignSpec.blurMaskRadius(blur), BlurMaskFilter.Blur.NORMAL)
             }
         }
+        canvas.drawPath(androidShapePath(ellipse, corners, 0f, 0f, width, height), paint)
+        if (shadowCache.size > 96) shadowCache.clear()
+        shadowCache[key] = image
+        return image
+    }
+
+    private fun cachedInsetShadow(node: ResolvedNode, spec: DesignSpec.ShadowSpec): ImageBitmap? {
+        if (node.w <= 0f || node.h <= 0f || spec.color.alpha <= .002f) return null
+        val key = InsetKey(
+            w = q(node.w),
+            h = q(node.h),
+            corners = cornersKey(node.corners),
+            ellipse = node.ellipse,
+            dx = q(spec.dx),
+            dy = q(spec.dy),
+            blur = q(spec.blur),
+            color = spec.color,
+        )
+        insetCache[key]?.let { return it }
+        val wPx = ceil(node.w).toInt().coerceAtLeast(1)
+        val hPx = ceil(node.h).toInt().coerceAtLeast(1)
+        val image = ImageBitmap(wPx, hPx)
+        val canvas = android.graphics.Canvas(image.asAndroidBitmap())
+        val outer = androidShapePath(node.ellipse, node.corners, 0f, 0f, node.w, node.h)
+        val hole = androidShapePath(
+            node.ellipse,
+            node.corners,
+            spec.dx,
+            spec.dy,
+            node.w + spec.dx,
+            node.h + spec.dy,
+        )
+        val ring = android.graphics.Path().apply {
+            addRect(-wPx.toFloat(), -hPx.toFloat(), wPx * 2f, hPx * 2f, android.graphics.Path.Direction.CW)
+            op(hole, android.graphics.Path.Op.DIFFERENCE)
+        }
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            color = spec.color.toArgb()
+            if (spec.blur > .0001f) {
+                maskFilter = BlurMaskFilter(
+                    DesignSpec.blurMaskRadius(spec.blur),
+                    BlurMaskFilter.Blur.NORMAL,
+                )
+            }
+        }
+        canvas.save()
+        canvas.clipPath(outer)
+        canvas.drawPath(ring, paint)
+        canvas.restore()
+        if (insetCache.size > 48) insetCache.clear()
+        insetCache[key] = image
+        return image
+    }
+
+    private fun androidShapePath(
+        ellipse: Boolean,
+        corners: DesignSpec.Corners,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+    ): android.graphics.Path {
+        val path = android.graphics.Path()
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0f || h <= 0f) return path
+        if (ellipse) {
+            path.addOval(left, top, right, bottom, android.graphics.Path.Direction.CW)
+            return path
+        }
+        val limit = min(w, h) / 2f
+        fun corner(value: Float) = value.coerceIn(0f, limit)
+        val radii = floatArrayOf(
+            corner(corners.tl), corner(corners.tl),
+            corner(corners.tr), corner(corners.tr),
+            corner(corners.br), corner(corners.br),
+            corner(corners.bl), corner(corners.bl),
+        )
+        path.addRoundRect(left, top, right, bottom, radii, android.graphics.Path.Direction.CW)
+        return path
+    }
+
+    // ------------------------------------------------------------ 图层模糊
+
+    /**
+     * 节点级 `filter: blur()`：把节点 + 子层整棵子树画进离屏位图，再做 3 遍盒式
+     * 模糊（近似高斯）。`BlurMaskFilter` 只模糊 alpha，不能用于彩色图层。
+     */
+    private fun DrawScope.drawBlurredSubtree(node: ResolvedNode, pixelScale: Float) {
+        val sigma = DesignSpec.layerSigma(node.blur)
+        if (sigma <= .01f) {
+            drawNodeWithChildren(node, pixelScale, skipOwnBlur = true)
+            return
+        }
+        val pad = DesignSpec.layerBlurPadding(node.blur)
+        // 离屏位图是「未旋转」的：根节点的旋转由外层 rotate 施加，
+        // 因此这里不能把根节点的包围盒先转一次；子节点的旋转则要烘进位图。
+        val bounds = subtreeBounds(node, includeOwnRotation = false)
+        val left = floor(bounds.left - pad)
+        val top = floor(bounds.top - pad)
+        val right = ceil(bounds.right + pad)
+        val bottom = ceil(bounds.bottom + pad)
+        val wPx = (right - left).toInt().coerceAtLeast(1)
+        val hPx = (bottom - top).toInt().coerceAtLeast(1)
+        // 防止异常大的隐藏图层把内存打爆；超过 8MP 时退化为不模糊。
+        if (wPx.toLong() * hPx.toLong() > 8_000_000L) {
+            drawNodeWithChildren(node, pixelScale, skipOwnBlur = true)
+            return
+        }
+        val image = ImageBitmap(wPx, hPx)
+        val drawScope = CanvasDrawScope()
+        drawScope.draw(
+            this,
+            layoutDirection,
+            ComposeCanvas(image),
+            Size(wPx.toFloat(), hPx.toFloat()),
+        ) {
+            translate(-left, -top) {
+                drawNodeWithChildren(node, 1f, skipOwnBlur = true)
+            }
+        }
+        val bitmap = image.asAndroidBitmap()
+        val pixels = IntArray(wPx * hPx)
+        bitmap.getPixels(pixels, 0, wPx, 0, 0, wPx, hPx)
+        DesignSpec.boxBlurArgb(pixels, wPx, hPx, sigma)
+        bitmap.setPixels(pixels, 0, wPx, 0, 0, wPx, hPx)
+        drawImage(image = image, topLeft = Offset(left, top))
+    }
+
+    /** 子树绘制范围：节点框 + 阴影/文字效果外扩 + 所有子层。 */
+    private fun subtreeBounds(node: ResolvedNode, includeOwnRotation: Boolean = true): Rect {
+        var left = node.x
+        var top = node.y
+        var right = node.right
+        var bottom = node.bottom
+        node.shadows.forEach { spec ->
+            val pad = DesignSpec.blurPadding(spec.blur)
+            left = min(left, node.x + spec.dx - pad)
+            top = min(top, node.y + spec.dy - pad)
+            right = max(right, node.right + spec.dx + pad)
+            bottom = max(bottom, node.bottom + spec.dy + pad)
+        }
+        node.textEffects.forEach { effect ->
+            val pad = DesignSpec.blurPadding(effect.blur)
+            left = min(left, node.textOrigin.x + effect.dx - pad)
+            top = min(top, node.textOrigin.y + effect.dy - pad)
+            right = max(right, node.textOrigin.x + effect.dx + pad)
+            bottom = max(bottom, node.textOrigin.y + effect.dy + pad)
+        }
+        node.children.forEach { child ->
+            val childBounds = subtreeBounds(child)
+            left = min(left, childBounds.left)
+            top = min(top, childBounds.top)
+            right = max(right, childBounds.right)
+            bottom = max(bottom, childBounds.bottom)
+        }
+        val bounds = Rect(left, top, right, bottom)
+        if (!includeOwnRotation || abs(node.rotation) <= .01f) return bounds
+        // 子层旋转后可能超出未旋转包围盒；取旋转后四角的 AABB（保守但正确）。
+        return rotateBounds(bounds, node.center.x, node.center.y, node.rotation)
+    }
+
+    private fun rotateBounds(bounds: Rect, cx: Float, cy: Float, degrees: Float): Rect {
+        val radians = degrees * PI.toFloat() / 180f
+        val cos = cos(radians)
+        val sin = sin(radians)
+        var left = Float.MAX_VALUE
+        var top = Float.MAX_VALUE
+        var right = -Float.MAX_VALUE
+        var bottom = -Float.MAX_VALUE
+        listOf(
+            Offset(bounds.left, bounds.top),
+            Offset(bounds.right, bounds.top),
+            Offset(bounds.right, bounds.bottom),
+            Offset(bounds.left, bounds.bottom),
+        ).forEach { point ->
+            val dx = point.x - cx
+            val dy = point.y - cy
+            val x = cx + dx * cos - dy * sin
+            val y = cy + dx * sin + dy * cos
+            left = min(left, x)
+            top = min(top, y)
+            right = max(right, x)
+            bottom = max(bottom, y)
+        }
+        return Rect(left, top, right, bottom)
     }
 
     /**
@@ -356,29 +663,23 @@ object DesignPainter {
     }
 
     /**
-     * 文字绘制顺序对齐网页的合成结果：投影环 → 发光环 → 描边 → 填充。
+     * 文字绘制顺序对齐网页的合成结果：投影（真实模糊）→ 发光（真实模糊）→
+     * 描边 → 填充。
      *
-     * 环与描边都用「字形轮廓描边」近似：居中描边的外半圈就是网页高斯模糊的外缘，
-     * 因此描边宽度取外扩距离的两倍；blur=0 时退化成同形偏移副本（CSS 硬阴影）。
+     * 模糊走字形轮廓的离屏高斯。整数倍缩放时文字原点吸附到像素网格，
+     * 避免半像素发虚；任意缩放时保留亚像素定位，防止平移抖动。
      */
-    private fun DrawScope.drawTextNode(node: ResolvedNode, layout: TextLayoutResult) {
+    private fun DrawScope.drawTextNode(
+        node: ResolvedNode,
+        layout: TextLayoutResult,
+        pixelScale: Float,
+    ) {
         val alpha = node.alpha * node.placeholderAlpha
-        val origin = node.textOrigin
-        node.textRings.forEach { ring ->
-            val at = origin + Offset(ring.dx, ring.dy)
-            val spread = ring.spread * 2f
-            if (spread <= 0f) {
-                drawText(layout, color = ring.color, topLeft = at, alpha = alpha)
-            } else {
-                drawText(
-                    layout,
-                    color = ring.color,
-                    topLeft = at,
-                    alpha = alpha,
-                    drawStyle = Stroke(width = spread),
-                )
-            }
-        }
+        val origin = Offset(
+            DesignSpec.snapToPixel(node.textOrigin.x, pixelScale),
+            DesignSpec.snapToPixel(node.textOrigin.y, pixelScale),
+        )
+        drawTextEffects(node, origin, alpha)
         node.textStroke?.let { stroke ->
             drawText(
                 layout,
@@ -389,6 +690,65 @@ object DesignPainter {
             )
         }
         drawText(layout, topLeft = origin, alpha = alpha)
+    }
+
+    private fun DrawScope.drawTextEffects(node: ResolvedNode, origin: Offset, alpha: Float) {
+        if (node.textEffects.isEmpty()) return
+        val path = node.textPath ?: return
+        node.textEffects.forEach { effect ->
+            val color = effect.color
+            if (color.alpha <= .002f) return@forEach
+            if (effect.blur <= .0001f) {
+                translate(origin.x + effect.dx, origin.y + effect.dy) {
+                    drawPath(path = path, color = color, alpha = alpha)
+                }
+                return@forEach
+            }
+            val image = cachedTextEffect(node, effect) ?: return@forEach
+            val pad = DesignSpec.blurPadding(effect.blur)
+            val bounds = path.getBounds()
+            drawImage(
+                image = image,
+                topLeft = Offset(
+                    origin.x + effect.dx + bounds.left - pad,
+                    origin.y + effect.dy + bounds.top - pad,
+                ),
+                alpha = alpha,
+            )
+        }
+    }
+
+    private fun cachedTextEffect(node: ResolvedNode, effect: DesignSpec.TextEffect): ImageBitmap? {
+        val layout = node.textLayout ?: return null
+        val path = node.textPath ?: return null
+        val bounds = path.getBounds()
+        if (bounds.width <= 0f || bounds.height <= 0f || effect.color.alpha <= .002f) return null
+        val key = TextFxKey(
+            layout = System.identityHashCode(layout),
+            width = q(bounds.width),
+            height = q(bounds.height),
+            blur = q(effect.blur),
+            color = effect.color,
+        )
+        textFxCache[key]?.let { return it }
+        val pad = ceil(DesignSpec.blurPadding(effect.blur))
+        val wPx = (bounds.width + pad * 2f).roundToInt().coerceAtLeast(1)
+        val hPx = (bounds.height + pad * 2f).roundToInt().coerceAtLeast(1)
+        val image = ImageBitmap(wPx, hPx)
+        val canvas = android.graphics.Canvas(image.asAndroidBitmap())
+        canvas.translate(pad - bounds.left, pad - bounds.top)
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            color = effect.color.toArgb()
+            maskFilter = BlurMaskFilter(
+                DesignSpec.blurMaskRadius(effect.blur),
+                BlurMaskFilter.Blur.NORMAL,
+            )
+        }
+        canvas.drawPath(path.asAndroidPath(), paint)
+        if (textFxCache.size > 64) textFxCache.clear()
+        textFxCache[key] = image
+        return image
     }
 
     private fun DrawScope.drawNavCells(node: ResolvedNode) {
@@ -492,4 +852,9 @@ object DesignPainter {
             center = Offset(knobCenterX, node.y + node.h / 2f),
         )
     }
+
+    private fun cornersKey(corners: DesignSpec.Corners): Int =
+        (q(corners.tl) * 31 + q(corners.tr)) * 31 * 31 + q(corners.br) * 31 + q(corners.bl)
+
+    private fun q(value: Float): Int = (value * 10f).roundToInt()
 }

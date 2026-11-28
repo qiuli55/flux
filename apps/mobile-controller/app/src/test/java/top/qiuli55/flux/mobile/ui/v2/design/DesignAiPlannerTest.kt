@@ -184,6 +184,43 @@ class DesignAiPlannerTest {
     }
 
     @Test
+    fun `plan exposes one intermediate document per applied op`() {
+        val plan = DesignAiPlanner.plan(
+            document(),
+            0,
+            setOf("title"),
+            listOf(setTitle, addNode),
+        )
+        assertEquals(2, plan.changes.size)
+        assertEquals(2, plan.steps.size)
+
+        // 第一步只改了标题，新按钮还没出现
+        val first = plan.steps[0].screens[0].nodes
+        assertEquals("新标题", first.first { it.id == "title" }.text)
+        assertNull(first.firstOrNull { it.id == "new" })
+
+        // 第二步才加入新按钮，且最终稿就是最后一步
+        val second = plan.steps[1].screens[0].nodes
+        assertTrue(second.any { it.id == "new" })
+        assertEquals(
+            plan.preview.screens[0].nodes.map { it.id },
+            second.map { it.id },
+        )
+    }
+
+    @Test
+    fun `failed op does not add an intermediate step`() {
+        val plan = DesignAiPlanner.plan(
+            document(),
+            0,
+            setOf("title"),
+            listOf(setTitle, DesignAiOp(op = "remove", target = "missing")),
+        )
+        assertEquals(1, plan.steps.size)
+        assertEquals(1, plan.unapplied)
+    }
+
+    @Test
     fun `removed node frame comes from before snapshot`() {
         val plan = DesignAiPlanner.plan(
             document(),

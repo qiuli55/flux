@@ -160,6 +160,7 @@ def test_geometry_matches_spec(spec: dict[str, Any]) -> None:
 
     # 开关 / 滑杆
     switch = render._node_html({"type": "switch", "w": 50, "h": 30})
+
     assert f"--knob:{30 - 2 * geo['switchKnobInset']}px" in switch
     slider = render._node_html({"type": "slider", "w": 200, "h": 30, "value": 0.5})
     assert f"height:{geo['sliderTrackHeight']}px" in css
@@ -342,3 +343,53 @@ def test_capture_html_drops_demo_frame_and_picks_screen() -> None:
     assert 'data-id="b"' in picked
 
     assert render.render_capture_html(design, screen="missing") is None
+
+
+# ------------------------------------------------------------------ 真实模糊
+
+
+def test_node_shadow_uses_real_blur() -> None:
+    """box-shadow 直接带 blur 半径，不再展开成多层 spread 环。"""
+    html = render._node_html(
+        {
+            "type": "card",
+            "w": 100,
+            "h": 60,
+            "shadow": {"dx": 0, "dy": 6, "blur": 18, "color": "rgba(0,0,0,.4)"},
+        }
+    )
+    assert "box-shadow:0 6px 18px rgba(0,0,0,0.400)" in html
+
+
+def test_inset_shadow_uses_real_blur() -> None:
+    html = render._node_html(
+        {
+            "type": "card",
+            "w": 100,
+            "h": 60,
+            "insetShadow": {"dx": 0, "dy": 2, "blur": 8, "color": "#000000"},
+        }
+    )
+    assert "box-shadow:inset 0 2px 8px rgba(0,0,0,1.000)" in html
+
+
+def test_text_effects_use_real_blur() -> None:
+    """text-shadow 每个效果只输出一段带 blur 的阴影；发光在上、投影在下。"""
+    html = render._node_html(
+        {
+            "type": "text",
+            "w": 100,
+            "h": 40,
+            "text": "特效",
+            "textGlow": {"color": "#22D3EE", "blur": 6},
+            "textShadow": {"color": "#000000", "dx": 1, "dy": 2, "blur": 4, "intensity": 0.5},
+        }
+    )
+    assert "text-shadow:" in html
+    assert "0px 0px 6px rgba(34,211,238,1.000)" in html
+    assert "1px 2px 4px rgba(0,0,0,0.500)" in html
+    # 发光先写（在 CSS 列表上层），投影后写；两者都只出现一次。
+    glow_at = html.index("0px 0px 6px")
+    shadow_at = html.index("1px 2px 4px")
+    assert glow_at < shadow_at
+    assert html.count("6px rgba(34,211,238,1.000)") == 1

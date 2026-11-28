@@ -37,7 +37,7 @@ from .design_tokens import (
     with_alpha,
 )
 
-IR_VERSION = 2
+IR_VERSION = 3
 
 #: 文字默认值（与 doc/design-spec.json typography 一致）。
 DEFAULT_FONT_SIZE = 13.0
@@ -71,13 +71,12 @@ CLIP_TYPES = ("text", "button", "pill", "input", "nav", "badge", "chip", "avatar
 #: 默认文字居中（不跟随 align）的类型。
 CENTER_TEXT_TYPES = ("button", "pill", "nav", "badge", "chip", "avatar")
 
-#: 渐变字 / 描边字 / 发光 / 投影的模糊环数量：三端按同一套环参数叠加，
-#: 避免各自用不同的高斯实现导致视觉不一致。
-FX_RINGS = (
-    (0.35, 0.55),
-    (0.7, 0.35),
-    (1.0, 0.18),
-)
+#: CSS 模糊半径 → 高斯标准差。box-shadow / text-shadow 的 blur 半径按规范是
+#: 标准差的两倍；三端都用这个口径，原生端才能和浏览器看起来一致。
+SHADOW_BLUR_SIGMA_SCALE = 0.5
+
+#: 节点级 `filter: blur()` 的参数**就是**标准差（与 box-shadow 不同）。
+LAYER_BLUR_SIGMA_SCALE = 1.0
 
 _GRADIENT_RE = re.compile(r"^(linear|radial)-gradient\((.*)\)$", re.IGNORECASE)
 _ANGLE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(deg|turn|rad)?$", re.IGNORECASE)
@@ -95,6 +94,16 @@ _DIRECTION_ANGLES = {
 
 
 # ------------------------------------------------------------------ 基础语义
+
+
+def shadow_sigma(blur: float) -> float:
+    """阴影/文字效果的 CSS blur 半径 → 高斯标准差（渲染端做真实模糊用）。"""
+    return max(float(blur), 0.0) * SHADOW_BLUR_SIGMA_SCALE
+
+
+def layer_sigma(blur: float) -> float:
+    """节点级 `filter: blur()` 半径 → 高斯标准差（CSS filter 的参数即标准差）。"""
+    return max(float(blur), 0.0) * LAYER_BLUR_SIGMA_SCALE
 
 
 def flag(raw: Any) -> bool:
@@ -413,14 +422,19 @@ def compile_shadow(raw: Any, fallback_alpha: float = DEFAULT_SHADOW_ALPHA) -> di
     }
 
 
-#: 阴影模糊的环近似层数（三端共用）。
+#: 阴影模糊的降级环层数。
+#:
+#: 默认渲染路径是**真实高斯模糊**：网页直接输出 `box-shadow` 的 blur 半径，
+#: 手机用 `BlurMaskFilter`、桌面用 Skia `BoxShadow` / 像素高斯。这里的环列表只给
+#: 「完全没有模糊能力的旧渲染环境」做降级，不再进入正常输出。
 SHADOW_RINGS = 10
 
 
 def shadow_layers(shadow: dict[str, Any]) -> list[dict[str, Any]]:
-    """IRShadow → 环近似层列表，**大 spread 在前（在下层）**。
+    """IRShadow → 环近似层列表（**仅降级后备**），大 spread 在前（在下层）。
 
-    blur=0 退化为单段 spread=0（与历史基准图一致）。透明度合计 ≈ color.alpha。
+    正常路径请直接用 IRShadow 的 `dx / dy / blur / color` 做真实模糊；
+    这个函数只在渲染端没有高斯模糊能力时才会被调用。blur=0 退化为单段 spread=0。
     """
     color = shadow.get("color") if isinstance(shadow.get("color"), dict) else {}
     base_alpha = num(color.get("alpha"), 1.0)
@@ -498,7 +512,6 @@ def _compile_fx(raw: Any) -> dict[str, Any] | None:
         "blur": round(max(num(raw.get("blur"), num(raw.get("radius"), 0.0)), 0.0), 3),
         "intensity": round(clamp(num(raw.get("intensity"), 1.0), 0.0, 1.0), 3),
         "color": color,
-        "rings": [[round(radius, 3), round(alpha, 3)] for radius, alpha in FX_RINGS],
     }
 
 
@@ -764,7 +777,8 @@ __all__ = [
     "IR_VERSION",
     "CENTER_TEXT_TYPES",
     "CLIP_TYPES",
-    "FX_RINGS",
+    "LAYER_BLUR_SIGMA_SCALE",
+    "SHADOW_BLUR_SIGMA_SCALE",
     "compile_design",
     "compile_fill",
     "compile_node",
@@ -778,10 +792,12 @@ __all__ = [
     "flag",
     "font_family",
     "iter_nodes",
+    "layer_sigma",
     "normalize_type",
     "parse_gradient",
     "radius_of",
     "shadow_layers",
+    "shadow_sigma",
     "SHADOW_RINGS",
     "text_style",
 ]

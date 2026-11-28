@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "note": "设计稿渲染契约。手机端 DesignSpec.kt、后端 design_render.py、桌面端 DesignCanvas.cs 三处必须与此文件一致。version 2 随 0.9.0 发布：新增文字效果、节点渐变/阴影、分边描边与单值圆角等约定，旧字段语义不变。",
+  "version": 3,
+  "note": "设计稿渲染契约。手机端 DesignSpec.kt、后端 design_render.py、桌面端 DesignCanvas.cs 三处必须与此文件一致。version 3：阴影/文字效果/节点 blur 统一为真实高斯模糊（阴影 σ = blur/2，filter blur σ = blur），环叠加仅保留为无模糊能力环境的降级后备。",
   "colors": {
     "accent": "#0891B2",
     "ink": "#0F172A",
@@ -61,21 +61,20 @@
     "autoFit": "autoFit=true 时先按基准字号单行量宽，放不下则按 0.5 递减，最低 60%；结果为单行 + 省略号，maxLines 忽略"
   },
   "textEffects": {
-    "rings": [[0.35, 0.55], [0.7, 0.35], [1.0, 0.18]],
-    "spread": "环外扩距离 = blur × 半径倍率；居中描边线宽 = 外扩 × 2",
-    "alpha": "color.alpha × intensity × 环透明度；结果 <= 0.004 的环跳过",
-    "blurZero": "blur=0 退化为同形偏移实心副本（网页硬阴影）",
+    "blur": "真实高斯模糊：blur 是 CSS text-shadow 半径，σ = blur / 2",
+    "alpha": "有效透明度 = color.alpha × intensity；结果 <= 0.004 整段跳过",
+    "blurZero": "blur=0 退化为同形偏移实心副本（硬阴影）",
     "blurFallback": "blur 缺省时回退成 radius（发光习惯写 radius）",
     "offset": "发光忽略 dx/dy，投影才用 dx/dy",
-    "order": "底层→顶层：投影环（大→小）→ 发光环（大→小）→ 描边 → 填充，对应 CSS text-shadow「先列在上层」",
+    "order": "底层→顶层：投影 → 发光 → 描边 → 填充，对应 CSS text-shadow「先列在上层」",
     "strokeWidth": "align=inside 用原宽；其余（outside 为缺省）宽度翻倍，与 -webkit-text-stroke 居中描边对齐",
     "discard": "颜色解析失败的整段效果丢弃",
     "textFill": "textFill 支持任意角度的 linear-gradient（按节点包围盒的 90deg 方向向量换算起止点）与 radial-gradient（circle at x y）；三端共用同一套 angle/center，不再只认竖向",
-    "desktopLimit": "FormattedText 无 letterSpacing，带字距的文字环按无字距字形近似",
+    "desktopLimit": "FormattedText 无 letterSpacing，带字距的文字轮廓按无字距字形近似",
     "mobileLimit": "渐变字在节点 alpha<1 时 Compose 可能走逐 run 慢路径，渐变按行重复"
   },
   "nodeEffects": {
-    "note": "节点级圆角 / 描边 / 阴影 / 模糊。三端必须按本节同一套近似方式绘制。",
+    "note": "节点级圆角 / 描边 / 阴影 / 模糊。三端必须按本节同一套参数与模糊口径（σ = blur / 2）绘制。",
     "radius": {
       "shape": { "tl": 0, "tr": 0, "br": 0, "bl": 0 },
       "input": ["number", "[tl,tr,br,bl]", "{tl,tr,br,bl} 或 {topLeft,topRight,bottomRight,bottomLeft}"],
@@ -87,15 +86,14 @@
       "sides": "sides 非空且至少一边为 true → 只画这些边（单边描边）；否则四边全画"
     },
     "shadow": {
-      "ringCount": 10,
-      "spread": "spread_i = blur × i / N，i = 1..N（含两端）",
-      "alpha": "alpha_i = color.alpha × 3 / N × (1 − i/N)²；总透明度≈color.alpha",
-      "order": "大 spread 在下、小 spread 在上；网页 box-shadow 列表按「小 spread 在前（在上层）」书写",
-      "blurZero": "blur=0 退化为单段 spread=0 的真实阴影，输出与历史基准图完全一致",
-      "inset": "inset 时环在盒内绘制；网页用 inset 段，手机/桌面用 EvenOdd 环形区域",
-      "overflow": "模糊溢出节点边界的部分不裁剪（网页 .t-card overflow:visible）"
+      "blur": "真实高斯模糊：blur 是 CSS box-shadow 半径，σ = blur / 2",
+      "blurZero": "blur=0 退化为偏移实心硬阴影",
+      "order": "外阴影在底色下、内阴影在底色上、内容下",
+      "inset": "inset 阴影画在盒内并裁剪到外形；网页用 inset box-shadow，手机/桌面用环形几何 + 真实模糊",
+      "overflow": "模糊溢出节点边界的部分不裁剪（网页 .t-card overflow:visible）",
+      "fallback": "SHADOW_RINGS / shadow_layers() 只保留为无模糊能力环境的降级后备，正常路径不得使用"
     },
-    "blur": "节点级 blur 仅网页支持（filter:blur）；手机/桌面保留 IR 原值但忽略绘制，属于已知限制",
+    "blur": "节点级 filter:blur() 三端都支持：网页 filter、手机/桌面离屏 + 3 遍盒式高斯（σ = blur）",
     "gradient": "节点 fill 的 linear/radial 与色标 offset 三端都按 design-ir.json 的 IRFill 规则绘制；不支持 conic"
   },
   "screen": {

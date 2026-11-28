@@ -28,6 +28,7 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.ui.FluxViewModel
 import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlan
 import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlanner
+import top.qiuli55.flux.mobile.ui.v2.design.DesignSpec
 
 data class DesignStudioState(
     val designs: List<DesignSummary> = emptyList(),
@@ -146,6 +147,11 @@ class DesignStudioViewModel : FluxViewModel() {
 
         /** 同一字段的连续输入（打字、拖滑杆）合并成一次撤销，避免每帧压栈。 */
         const val EDIT_COALESCE_MS = 1200L
+
+        /** 与 DesignSpec.normalizeFamily / 后端字体枚举一致的字族白名单。 */
+        val DESIGN_FONT_FAMILIES = setOf(
+            "system", "noto-sans-sc", "noto-serif-sc", "inter", "mono",
+        )
     }
 
     private val _state = MutableStateFlow(DesignStudioState())
@@ -164,6 +170,11 @@ class DesignStudioViewModel : FluxViewModel() {
     private var previewJob: Job? = null
     private var revisionsJob: Job? = null
     private var revertJob: Job? = null
+
+    /** 分步应用 AI 修改前的画板与撤销栈；取消时原样回退，不留半套补丁。 */
+    private var applySnapshot: DesignDocument? = null
+    private var applyUndo: List<DesignDocument> = emptyList()
+    private var applyRedo: List<DesignDocument> = emptyList()
 
     // ------------------------------------------------------------ 列表
 
@@ -318,6 +329,7 @@ class DesignStudioViewModel : FluxViewModel() {
                 )
                 baseline = document
                 lastEditKey = null
+                applySnapshot = null
                 _state.value = _state.value.copy(
                     openingId = null,
                     document = document,
@@ -348,6 +360,7 @@ class DesignStudioViewModel : FluxViewModel() {
         revertJob?.cancel()
         baseline = null
         lastEditKey = null
+        applySnapshot = null
         _state.value = _state.value.copy(
             document = null,
             screenIndex = 0,
@@ -514,6 +527,90 @@ class DesignStudioViewModel : FluxViewModel() {
                 null
             },
         )
+    }
+
+    // ---- 精确编辑：行高 / 字距 / 字族 / 行数，以及投影的模糊、偏移、颜色 ----
+
+    fun setNodeLineHeight(ratio: Float) = editSelected("lineHeight") {
+        it.copy(lineHeight = ratio.coerceIn(.8f, 3f))
+    }
+
+    fun setNodeLetterSpacing(value: Float) = editSelected("letterSpacing") {
+        it.copy(letterSpacing = value.coerceIn(-10f, 40f))
+    }
+
+    fun setNodeFontFamily(family: String?) = editSelected("fontFamily") {
+        it.copy(fontFamily = family?.takeIf { value -> value in DESIGN_FONT_FAMILIES })
+    }
+
+    fun setNodeMaxLines(lines: Int) = editSelected("maxLines") {
+        it.copy(maxLines = lines.coerceIn(1, DesignSpec.TEXT_LINES_LIMIT))
+    }
+
+    fun setNodeAutoFit(enabled: Boolean) = editSelected("autoFit") {
+        it.copy(autoFit = enabled)
+    }
+
+    fun setNodeShadowBlur(blur: Float) = editSelected("shadowBlur") {
+        val base = it.shadow ?: DesignShadow(dx = 0f, dy = 6f, blur = 18f, color = "#14000000")
+        it.copy(shadow = base.copy(blur = blur.coerceIn(0f, 80f)))
+    }
+
+    fun setNodeShadowOffsetY(dy: Float) = editSelected("shadowOffsetY") {
+        val base = it.shadow ?: DesignShadow(dx = 0f, dy = 6f, blur = 18f, color = "#14000000")
+        it.copy(shadow = base.copy(dy = dy.coerceIn(-40f, 80f)))
+    }
+
+    fun setNodeShadowColor(color: String?) = editSelected("shadowColor") {
+        val clean = color?.trim()?.takeIf { value -> value.isNotEmpty() && !value.equals("none", true) }
+        val base = it.shadow ?: DesignShadow(dx = 0f, dy = 6f, blur = 18f)
+        it.copy(shadow = base.copy(color = clean))
+    }
+
+    // ---- 位置与尺寸：数字输入直接落到 X / Y / W / H ----
+
+    fun setNodeX(value: Float) {
+        val current = _state.value
+        val node = current.selectedNode ?: return
+        val screenW = current.screen?.w ?: return
+        editSelected("x") {
+            it.copy(x = value.coerceIn(0f, (screenW - node.w).coerceAtLeast(0f)))
+        }
+    }
+
+    fun setNodeY(value: Float) {
+        val current = _state.value
+        val node = current.selectedNode ?: return
+        val screenH = current.screen?.h ?: return
+        editSelected("y") {
+            it.copy(y = value.coerceIn(0f, (screenH - node.h).coerceAtLeast(0f)))
+        }
+    }
+
+    fun setNodeWidth(value: Float) {
+        val current = _state.value
+        val node = current.selectedNode ?: return
+        val screenW = current.screen?.w ?: return
+        editSelected("w") {
+            val w = value.coerceIn(4f, screenW)
+            it.copy(w = w, x = it.x.coerceIn(0f, (screenW - w).coerceAtLeast(0f)))
+        }
+    }
+
+    fun setNodeHeight(value: Float) {
+        val current = _state.value
+        val node = current.selectedNode ?: return
+        val screenH = current.screen?.h ?: return
+        editSelected("h") {
+            val h = value.coerceIn(4f, screenH)
+            it.copy(h = h, y = it.y.coerceIn(0f, (screenH - h).coerceAtLeast(0f)))
+        }
+    }
+
+    fun setNodeRotationDegrees(value: Float) = editSelected("rotation") {
+        var next = ((value % 360f) + 360f) % 360f
+        if (next > 180f) next -= 360f
+        it.copy(rotation = next)
     }
 
     // ------------------------------------------------------------ 画布拖拽
@@ -925,55 +1022,89 @@ class DesignStudioViewModel : FluxViewModel() {
     }
 
     /**
-     * 分步应用预览稿：每项高亮停留约 140ms，全部走完才一次性提交文档，
-     * 期间取消不会留下半套补丁。
+     * 分步应用预览稿：每一步先把画布演进到该条 op 的结果，短暂停留后继续；
+     * 起始时只压一次撤销栈。中途取消会整体回退到应用前，不留半套补丁。
      */
     fun applyAiPlan() {
         val plan = _state.value.aiPlan ?: return
         if (applyJob?.isActive == true) return
+        val before = _state.value.document ?: return
+        val steps = plan.steps.ifEmpty { listOf(plan.preview) }
+        applySnapshot = before
+        applyUndo = _state.value.undoStack
+        applyRedo = _state.value.redoStack
+        lastEditKey = null
+        val base = _state.value.historyAfter(before)
         applyJob = viewModelScope.launch {
-            val changes = plan.changes
-            changes.indices.forEach { index ->
+            _state.value = base
+            try {
+                steps.forEachIndexed { index, step ->
+                    _state.value = _state.value.copy(
+                        document = step,
+                        dirty = true,
+                        aiApplyingIndex = index,
+                        aiPhase = "正在应用第 ${index + 1}/${steps.size} 项：" +
+                            (plan.changes.getOrNull(index)?.title ?: ""),
+                    )
+                    delay(140)
+                }
                 _state.value = _state.value.copy(
-                    aiApplyingIndex = index,
-                    aiPhase = "正在应用第 ${index + 1}/${changes.size} 项：" +
-                        changes[index].title,
+                    document = plan.preview,
+                    dirty = true,
+                    aiPlan = null,
+                    aiApplyingIndex = -1,
+                    aiPhase = null,
+                    aiReply = plan.reply.ifBlank { "已按你的要求调整画布" },
+                    notice = "AI 已应用 ${plan.applied} 项修改，记得保存",
                 )
-                delay(140)
+            } finally {
+                // 正常走完才清空快照；被取消时留给 cancelAi / discardAiPlan 回退。
+                if (isActive) applySnapshot = null
             }
-            if (!isActive) return@launch
-            val latest = _state.value
-            val baseDoc = latest.document ?: return@launch
-            lastEditKey = null
-            _state.value = latest.historyAfter(baseDoc).copy(
-                document = plan.preview,
-                dirty = true,
-                aiPlan = null,
-                aiApplyingIndex = -1,
-                aiPhase = null,
-                aiReply = plan.reply.ifBlank { "已按你的要求调整画布" },
-                notice = "AI 已应用 ${plan.applied} 项修改，记得保存",
-            )
         }
+    }
+
+    /** 把分步应用中的画板恢复到应用前，并还原撤销 / 重做栈。 */
+    private fun rollbackAppliedPlan() {
+        val snapshot = applySnapshot ?: return
+        applySnapshot = null
+        _state.value = _state.value.copy(
+            document = snapshot,
+            undoStack = applyUndo,
+            redoStack = applyRedo,
+            dirty = snapshot !== baseline,
+            aiApplyingIndex = -1,
+            aiPhase = null,
+        )
     }
 
     /** 取消请求或丢弃预览稿：画布始终停在请求前，不产生任何修改。 */
     fun cancelAi() {
         val applying = applyJob?.isActive == true
+        val hadPlan = _state.value.aiPlan != null
         askJob?.cancel()
         applyJob?.cancel()
+        val rolledBack = applySnapshot != null
+        rollbackAppliedPlan()
         _state.value = _state.value.copy(
             asking = false,
             aiPhase = null,
             aiPlan = null,
             aiApplyingIndex = -1,
-            notice = if (applying || _state.value.aiPlan != null) "已取消这次 AI 修改" else null,
+            notice = if (rolledBack) {
+                "已取消这次 AI 修改，画布已回退"
+            } else if (applying || hadPlan) {
+                "已取消这次 AI 修改"
+            } else {
+                null
+            },
         )
     }
 
     /** 只丢弃预览稿，保留回复与提示（例如用户想换个说法再问）。 */
     fun discardAiPlan() {
         applyJob?.cancel()
+        rollbackAppliedPlan()
         _state.value = _state.value.copy(
             aiPlan = null,
             aiApplyingIndex = -1,
