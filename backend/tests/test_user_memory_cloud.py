@@ -183,16 +183,17 @@ def test_cloud_sync_push_and_pull(container: Container, tmp_path: Path) -> None:
 
 
 def test_memory_settings_api(container: Container) -> None:
-    client = TestClient(create_app(container.settings))
-    headers = {"Authorization": f"Bearer {issue_token(client)}"}
-    got = client.get("/api/v1/memory/settings", headers=headers)
-    assert got.status_code == 200
-    assert got.json()["data"]["auto_capture"] is True
-    assert got.json()["data"]["cloud_ready"] is False  # 测试环境显式关闭账号云
+    # 用 with 触发 lifespan：退出时 dispose 应用自己的容器，避免 aiosqlite 线程泄漏
+    with TestClient(create_app(container.settings)) as client:
+        headers = {"Authorization": f"Bearer {issue_token(client)}"}
+        got = client.get("/api/v1/memory/settings", headers=headers)
+        assert got.status_code == 200
+        assert got.json()["data"]["auto_capture"] is True
+        assert got.json()["data"]["cloud_ready"] is False  # 测试环境显式关闭账号云
 
-    put = client.put("/api/v1/memory/settings", json={"auto_capture": False}, headers=headers)
-    assert put.status_code == 200
-    assert (
-        client.get("/api/v1/memory/settings", headers=headers).json()["data"]["auto_capture"]
-        is False
-    )
+        put = client.put("/api/v1/memory/settings", json={"auto_capture": False}, headers=headers)
+        assert put.status_code == 200
+        assert (
+            client.get("/api/v1/memory/settings", headers=headers).json()["data"]["auto_capture"]
+            is False
+        )
