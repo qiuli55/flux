@@ -80,6 +80,61 @@ class CapabilityImportService:
     async def list(self, kind: CapabilityKind | None = None) -> list[ImportedCapability]:
         return await self._repository.list(kind)
 
+    async def enabled_skills(self) -> list[ImportedCapability]:
+        """当前启用中的技能：只读注册表，源目录离线也照样能列出。
+
+        运行时按这份清单把技能说明拼进执行指令；停用的技能不会自动出现。
+        """
+        records = await self._repository.list(CapabilityKind.SKILL)
+        return [record for record in records if record.enabled]
+
+    async def set_enabled(
+        self, kind: CapabilityKind, name: str, *, enabled: bool
+    ) -> ImportedCapability:
+        """启用 / 停用一条已导入能力（目前只对技能有运行时含义）。"""
+        record = await self._repository.get(kind, name)
+        if record is None:
+            raise NotFoundError(
+                f"能力不在注册表中：{kind.value}/{name}",
+                details={"kind": kind.value, "name": name},
+            )
+        if record.enabled == enabled:
+            return record
+        updated = await self._repository.set_enabled(record, enabled=enabled)
+        await self._publish(
+            Events.CAPABILITY_ENABLED if enabled else Events.CAPABILITY_DISABLED, updated
+        )
+        return updated
+
+    async def remove(self, kind: CapabilityKind, name: str) -> dict[str, object]:
+        """从注册表移除一条能力。
+
+        只删 Flux 自己的导入记录，不删除用户磁盘上的源目录 / 原始能力包。
+        """
+        record = await self._repository.get(kind, name)
+        if record is None:
+            raise NotFoundError(
+                f"能力不在注册表中：{kind.value}/{name}",
+                details={"kind": kind.value, "name": name},
+            )
+        await self._repository.delete(record)
+        if self._bus is not None:
+            await self._bus.publish(
+                Events.CAPABILITY_REMOVED,
+                {"kind": record.kind, "name": record.name, "source": record.source},
+            )
+        return {"removed": True, "kind": record.kind, "name": record.name}
+
+    async def resolve_skill(self, identifier: str) -> ImportedCapability | None:
+        """按 id（优先）或 name 找一条技能记录；用户指定时允许显式选用已停用技能。"""
+        value = (identifier or "").strip()
+        if not value:
+            return None
+        record = await self._repository.get_by_id(value)
+        if record is not None and record.kind == CapabilityKind.SKILL.value:
+            return record
+        return await self._repository.get(CapabilityKind.SKILL, value)
+
     async def import_capability(
         self,
         kind: CapabilityKind,

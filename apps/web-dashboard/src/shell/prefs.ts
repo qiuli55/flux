@@ -5,10 +5,12 @@
  */
 import { useSyncExternalStore } from "react";
 
-export interface Prefs { wide: boolean; statusbar: boolean; reduceMotion: boolean }
+import type { PasteMode } from "../utils/pastePolicy";
+
+export interface Prefs { wide: boolean; statusbar: boolean; reduceMotion: boolean; pasteMode: PasteMode }
 
 const KEY = "flux.fx.prefs";
-const DEFAULTS: Prefs = { wide: false, statusbar: true, reduceMotion: false };
+const DEFAULTS: Prefs = { wide: false, statusbar: true, reduceMotion: false, pasteMode: "file" };
 
 function read(): Prefs {
   try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<Prefs>) }; }

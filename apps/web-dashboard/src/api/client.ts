@@ -20,6 +20,7 @@ import type {
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
   ImportedCapability, Installation, Project, ReadyData, RecoveryItem, ScanOutcome, SearchHit,
+  UploadedAttachment,
   SupervisorAssessResult, SupervisorDispatchOutcome, SupervisorDispatchThreadResult,
   SupervisorOverview, SupervisorPlanResult, SupervisorProcessResult, SupervisorProjectOverview,
   SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
@@ -191,6 +192,10 @@ export const api = {
   connectInstallation: (body: { agent?: string; all?: boolean }) => getData<Installation | Installation[]>("POST", "/installations/connect", body),
   removeInstallation: (name: string) => getData<{ agent: string; removed: boolean }>("DELETE", `/installations/${name}`),
   listCapabilities: (kind?: CapabilityKind) => getData<ImportedCapability[]>("GET", `/capabilities${query({ kind })}`),
+  setCapabilityEnabled: (kind: string, name: string, enabled: boolean) =>
+    getData<ImportedCapability>("PATCH", `/capabilities/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, { enabled }),
+  deleteCapability: (kind: string, name: string) =>
+    getData<{ removed: boolean; kind: string; name: string }>("DELETE", `/capabilities/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`),
   scanCapabilities: () => getData<CapabilityScanReport>("POST", "/capabilities/scan"),
   importCapability: (body: { kind: string; name: string; decision?: "keep" | "replace" }) =>
     getData<CapabilityImportOutcome>("POST", "/capabilities/import", body),
@@ -222,14 +227,46 @@ export const api = {
     avatar_color?: string;
     /** false = 只建空 bot，不立刻调度执行；建 bot 必须传 false */
     start?: boolean;
+    /** 首条消息的附件（先 POST /uploads 换 id） */
+    attachment_ids?: string[];
+    /** 本次指定使用的技能 / 连接器；缺省 = 自动使用 */
+    specified_skill_ids?: string[];
+    specified_connector_ids?: string[];
   }) => getData<Task>("POST", "/tasks", body),
   getTask: (taskId: string) => getData<Task>("GET", `/tasks/${taskId}`),
   async listTaskMessages(taskId: string, options?: { limit?: number; before?: number }): Promise<TaskMessagePage> {
     const envelope = await request<TaskMessage[]>("GET", `/tasks/${taskId}/messages${query({ limit: options?.limit?.toString(), before: options?.before?.toString() })}`);
     return { items: envelope.data, hasMore: Boolean(envelope.metadata?.has_more) };
   },
-  sendTaskMessage: (taskId: string, content: string) =>
-    getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  sendTaskMessage: (
+    taskId: string,
+    content: string,
+    options?: { attachmentIds?: string[]; specifiedSkillIds?: string[]; specifiedConnectorIds?: string[] },
+  ) =>
+    getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, {
+      content,
+      ...(options?.attachmentIds?.length ? { attachment_ids: options.attachmentIds } : {}),
+      ...(options?.specifiedSkillIds?.length ? { specified_skill_ids: options.specifiedSkillIds } : {}),
+      ...(options?.specifiedConnectorIds?.length ? { specified_connector_ids: options.specifiedConnectorIds } : {}),
+    }),
+  /** 粘贴大文本转成的附件：裸请求体 + query 传文件名，与手机走同一个 /uploads。 */
+  async uploadTextAttachment(name: string, text: string): Promise<UploadedAttachment> {
+    const path = `/uploads${query({ name, mime: "text/plain" })}`;
+    const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
+    const token = getAccessToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (typeof window !== "undefined" && (window as Window & { fluxDesktop?: { isDesktop?: boolean } }).fluxDesktop?.isDesktop) {
+      headers["X-Flux-Desktop"] = "1";
+    }
+    const response = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body: text });
+    let envelope: Envelope<UploadedAttachment> | null = null;
+    try { envelope = (await response.json()) as Envelope<UploadedAttachment>; }
+    catch { throw new ApiError(`附件上传失败（HTTP ${response.status}）`, "bad_response", response.status); }
+    if (!response.ok || envelope.success === false) {
+      throw new ApiError(envelope.message || `附件上传失败（HTTP ${response.status}）`, envelope.code || "upload_failed", response.status, envelope.data);
+    }
+    return envelope.data;
+  },
   startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
     getData<TaskStartOutcome>(
       "POST",

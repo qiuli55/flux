@@ -141,6 +141,35 @@ def _attachments_brief(files: list[UploadedFile]) -> str:
     )
 
 
+def _specification_payload(
+    skill_ids: list[str], connector_ids: list[str]
+) -> dict[str, list[str]] | None:
+    """把「本次指定」收成可暂存的形状；两边都空时返回 None（= 不指定）。"""
+    skills = [item.strip() for item in skill_ids if item.strip()]
+    connectors = [item.strip() for item in connector_ids if item.strip()]
+    if not skills and not connectors:
+        return None
+    return {"skills": skills, "connectors": connectors}
+
+
+def _specification_ids(raw: Any) -> tuple[list[str], list[str]]:
+    if not isinstance(raw, dict):
+        return [], []
+    skills = [str(item) for item in raw.get("skills") or [] if str(item).strip()]
+    connectors = [str(item) for item in raw.get("connectors") or [] if str(item).strip()]
+    return skills, connectors
+
+
+def _specification_prompt(skill_ids: list[str], connector_ids: list[str]) -> str:
+    """助手对话的本轮提示：只描述用户指定了什么，不改变自动使用。"""
+    parts: list[str] = []
+    if skill_ids:
+        parts.append("技能：" + "、".join(skill_ids))
+    if connector_ids:
+        parts.append("连接器：" + "、".join(connector_ids))
+    return f"（本轮用户指定优先使用：{'；'.join(parts)}）" if parts else ""
+
+
 def _parse_uuid(value: str, *, field: str) -> uuid.UUID:
     """请求体里的标识串必须是合法 UUID，否则按 400 拒绝。"""
     try:
@@ -194,6 +223,9 @@ async def create_task(
         bot_name=payload.bot_name,
         avatar_shape=avatar_shape,
         avatar_color=avatar_color,
+        pending_specified_capabilities=_specification_payload(
+            payload.specified_skill_ids, payload.specified_connector_ids
+        ),
     )
     # 从旧对话接手：摘要落成一条 kind=summary 的助手消息。它同时进入助手历史
     # 与 Agent 执行指令（TaskRunService._latest_summary），新对话因此不是"从零开始"，
@@ -475,6 +507,11 @@ async def create_task_message(
     prompt_text = content or _attachments_brief(files)
     if files and content:
         prompt_text = content + "\n\n" + _attachments_brief(files)
+    specification = _specification_prompt(
+        payload.specified_skill_ids, payload.specified_connector_ids
+    )
+    if specification:
+        prompt_text = (prompt_text + "\n\n" + specification).strip()
     try:
         turn = await container.assistant.respond(
             description=task.description,
@@ -714,7 +751,12 @@ async def continue_task(
     await _record_attachments(container, task_uuid, files)
     followup = content or _attachments_brief(files)
     try:
-        result = await container.task_run_service.start(task, followup=followup)
+        result = await container.task_run_service.start(
+            task,
+            followup=followup,
+            specified_skill_ids=payload.specified_skill_ids,
+            specified_connector_ids=payload.specified_connector_ids,
+        )
     except Exception:
         # 起不来时退回原终态：用户消息保留，修好 runtime 后可以直接重试，
         # 不留下一个没有 Run 支撑的 running 僵尸。
@@ -917,7 +959,18 @@ async def start_task(
             details={"task_id": task_id},
         )
 
-    result = await container.task_run_service.start(task, payload.confirmation)
+    pending_skills, pending_connectors = _specification_ids(
+        task.pending_specified_capabilities
+    )
+    result = await container.task_run_service.start(
+        task,
+        payload.confirmation,
+        specified_skill_ids=payload.specified_skill_ids or pending_skills,
+        specified_connector_ids=payload.specified_connector_ids or pending_connectors,
+    )
+    if task.pending_specified_capabilities:
+        # 本次指定已随这一轮指令下发；清掉暂存，避免下一轮被误当成长期锁定。
+        await container.task_repo.set_pending_specification(task_uuid, None)
     return ok(
         {
             "task": _task_dict(result.task),

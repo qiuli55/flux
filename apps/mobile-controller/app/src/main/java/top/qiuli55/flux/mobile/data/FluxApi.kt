@@ -96,6 +96,9 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
+        /** 本次发送指定使用的技能 / 连接器 id；空 = 不指定，仍可自动使用。 */
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -110,6 +113,7 @@ class FluxApi(
             }
             put("origin", origin)
             putAttachmentIds(attachmentIds)
+            putSpecified(specifiedSkillIds, specifiedConnectorIds)
         }
         return post("api/v1/tasks", body)
     }
@@ -139,12 +143,11 @@ class FluxApi(
         taskId: String,
         content: String,
         attachmentIds: List<String> = emptyList(),
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
     ): TaskReplyOutcome = post(
         "api/v1/tasks/$taskId/messages",
-        buildJsonObject {
-            put("content", content)
-            putAttachmentIds(attachmentIds)
-        },
+        taskMessageBody(content, attachmentIds, specifiedSkillIds, specifiedConnectorIds),
     )
 
     /** 终态对话续跑：新消息作为新一轮 Agent 指令，历史消息保留。 */
@@ -152,12 +155,11 @@ class FluxApi(
         taskId: String,
         content: String,
         attachmentIds: List<String> = emptyList(),
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
     ): TaskReplyOutcome = post(
         "api/v1/tasks/$taskId/continue",
-        buildJsonObject {
-            put("content", content)
-            putAttachmentIds(attachmentIds)
-        },
+        taskMessageBody(content, attachmentIds, specifiedSkillIds, specifiedConnectorIds),
     )
 
     /** 安全输入卡片：把密钥交给本机密钥库；明文只在这一个请求里出现，响应只回掩码。 */
@@ -213,11 +215,17 @@ class FluxApi(
         }
     }
 
-    suspend fun startTask(taskId: String, confirmation: List<ConfirmationItem>? = null): TaskStartOutcome {
+    suspend fun startTask(
+        taskId: String,
+        confirmation: List<ConfirmationItem>? = null,
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
+    ): TaskStartOutcome {
         val body = buildJsonObject {
             if (!confirmation.isNullOrEmpty()) {
                 put("confirmation", json.encodeToJsonElement(ListSerializer(ConfirmationItem.serializer()), confirmation))
             }
+            putSpecified(specifiedSkillIds, specifiedConnectorIds)
         }
         return post("api/v1/tasks/$taskId/start", body)
     }
@@ -686,6 +694,41 @@ class FluxApi(
 
     suspend fun listMcpConnectors(): McpConnectorList = get("api/v1/mcp-connectors")
 
+    /** 已导入技能（与桌面 / Web 共用 imported_capabilities 注册表）。 */
+    suspend fun listCapabilities(kind: String = "skill"): List<ImportedCapability> =
+        get("api/v1/capabilities?kind=$kind")
+
+    /** 扫描本机默认来源目录；需要后端所在电脑在线。 */
+    suspend fun scanCapabilities(): CapabilityScanReport =
+        post("api/v1/capabilities/scan", buildJsonObject {})
+
+    /** 导入一个扫描候选；冲突时带 keep / replace 决策。 */
+    suspend fun importCapability(
+        kind: String,
+        name: String,
+        decision: String? = null,
+    ): CapabilityImportOutcome = post(
+        "api/v1/capabilities/import",
+        buildJsonObject {
+            put("kind", kind)
+            put("name", name)
+            if (!decision.isNullOrBlank()) put("decision", decision)
+        },
+    )
+
+    suspend fun setCapabilityEnabled(
+        kind: String,
+        name: String,
+        enabled: Boolean,
+    ): ImportedCapability = patch(
+        "api/v1/capabilities/$kind/${pathSegment(name)}",
+        buildJsonObject { put("enabled", enabled) },
+    )
+
+    /** 只从注册表移除；不删除电脑上的原始技能目录。 */
+    suspend fun deleteCapability(kind: String, name: String): JsonElement =
+        delete("api/v1/capabilities/$kind/${pathSegment(name)}")
+
     /** 新增自定义 MCP 服务器；后端探测通过才保存，失败会抛出带原因的 FluxApiException。 */
     suspend fun addMcpConnector(name: String, url: String): McpConnector =
         post(
@@ -847,8 +890,30 @@ class FluxApi(
         }
     }
 
+    /** 路径段编码：技能名可能含空格 / 中文，直接拼进 URL 会 404。 */
+    private fun pathSegment(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+
     private fun idsBody(ids: List<String>): JsonObject = buildJsonObject {
         put("change_ids", json.encodeToJsonElement(ListSerializer(String.serializer()), ids))
+    }
+
+    /** 本次指定技能 / 连接器：为空时不下发，证明「不指定」不会变成「一律不用」。 */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putSpecified(
+        skillIds: List<String>,
+        connectorIds: List<String>,
+    ) {
+        val skills = skillIds.filter { it.isNotBlank() }
+        val connectors = connectorIds.filter { it.isNotBlank() }
+        if (skills.isNotEmpty()) {
+            put("specified_skill_ids", json.encodeToJsonElement(ListSerializer(String.serializer()), skills))
+        }
+        if (connectors.isNotEmpty()) {
+            put(
+                "specified_connector_ids",
+                json.encodeToJsonElement(ListSerializer(String.serializer()), connectors),
+            )
+        }
     }
 
     /** 附件 id 列表：为空时不下发，避免给老版本后端多余字段。 */
@@ -978,4 +1043,32 @@ private fun validationDetail(element: JsonElement): String? {
         ?.joinToString(".")
         .orEmpty()
     return if (location.isBlank()) message else "$location：$message"
+}
+
+
+/**
+ * 任务消息请求体（纯函数，便于单测）：content / 附件 / 本次指定。
+ *
+ * 三个列表都为空时只下发 content，不出现空数组字段——「没指定」= 保持后端原有
+ * 自动使用行为，而不是「这次一律不用」。
+ */
+internal fun taskMessageBody(
+    content: String,
+    attachmentIds: List<String> = emptyList(),
+    specifiedSkillIds: List<String> = emptyList(),
+    specifiedConnectorIds: List<String> = emptyList(),
+): JsonObject = buildJsonObject {
+    put("content", content)
+    val attachments = attachmentIds.filter { it.isNotBlank() }.take(UploadedAttachment.MAX_FILES)
+    if (attachments.isNotEmpty()) putJsonArray("attachment_ids") {
+        attachments.forEach { add(JsonPrimitive(it)) }
+    }
+    val skills = specifiedSkillIds.filter { it.isNotBlank() }
+    if (skills.isNotEmpty()) putJsonArray("specified_skill_ids") {
+        skills.forEach { add(JsonPrimitive(it)) }
+    }
+    val connectors = specifiedConnectorIds.filter { it.isNotBlank() }
+    if (connectors.isNotEmpty()) putJsonArray("specified_connector_ids") {
+        connectors.forEach { add(JsonPrimitive(it)) }
+    }
 }

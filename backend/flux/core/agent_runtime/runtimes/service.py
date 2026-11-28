@@ -20,6 +20,12 @@ from flux.core.agent_runtime.runtimes.base import (
 )
 from flux.core.agent_runtime.runtimes.cli import build_cli_runtime
 from flux.core.agent_runtime.runtimes.dsh_runtime import DshRuntime
+from flux.core.capability_import.selection import (
+    ConnectorBrief,
+    SkillBrief,
+    capability_instruction_sections,
+    connector_brief,
+)
 from flux.core.context.budget import history_message_limit
 from flux.core.permissions.modes import normalize_mode
 from flux.core.task_engine.assistant import validate_confirmation_items
@@ -70,6 +76,8 @@ class TaskRunService:
         confirmation_request: Any = None,
         *,
         followup: str | None = None,
+        specified_skill_ids: list[str] | None = None,
+        specified_connector_ids: list[str] | None = None,
     ) -> RunStartResult:
         container = self._container
         task_uuid = task.id
@@ -97,6 +105,11 @@ class TaskRunService:
         messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
         memory = await _latest_memory(container, task_uuid)
         user_memory = await _user_memory_instruction(container)
+        capability_sections = await _capability_sections(
+            container,
+            specified_skill_ids or [],
+            specified_connector_ids or [],
+        )
         instruction = _execution_instruction(
             task,
             None if followup else confirmation,
@@ -109,6 +122,7 @@ class TaskRunService:
             memory=memory,
             user_memory=user_memory,
             resumed=resumed,
+            capability_sections=capability_sections,
         )
         # 额度闸门：默认只告警（FLUX_BILLING_ENFORCE=false）；开启拦截且已超额时在这里拒单。
         # 此刻还没预登记 run_id，抛错不需要回滚任务状态。
@@ -163,6 +177,12 @@ class TaskRunService:
             messages, _ = await container.task_repo.list_messages(task.id, limit=_HISTORY_LIMIT)
             memory = await _latest_memory(container, task.id)
             user_memory = await _user_memory_instruction(container)
+            pending = task.pending_specified_capabilities or {}
+            capability_sections = await _capability_sections(
+                container,
+                _id_list(pending.get("skills")),
+                _id_list(pending.get("connectors")),
+            )
             runtime_id = _runtime_of(self._agent(task))
             resumed = await _has_session(container, task.id, runtime_id, task.agent_id)
             return _execution_instruction(
@@ -177,6 +197,7 @@ class TaskRunService:
                 memory=memory,
                 user_memory=user_memory,
                 resumed=resumed,
+                capability_sections=capability_sections,
             )
         except Exception:  # noqa: BLE001 - 预览失败不影响对话本身
             logger.warning("预演执行指令失败 task=%s", task.id, exc_info=True)
@@ -421,6 +442,7 @@ def _execution_instruction(
     memory: str = "",
     user_memory: str = "",
     resumed: bool = False,
+    capability_sections: list[str] | None = None,
 ) -> str:
     """拼出交给 Agent 的执行指令。
 
@@ -494,6 +516,9 @@ def _execution_instruction(
     if user_memory:
         # 账号级长期记忆：稳定的个人偏好/禁忌，跨设备跨项目都适用
         lines += ["", user_memory.strip()]
+    if capability_sections:
+        # 已启用技能 + 本轮指定项：空列表时整段省略，不占指令篇幅
+        lines += capability_sections
     if trace:
         # 最近几轮的真实对话：用户改了什么要求、助手承诺过什么，避免只记住最初任务
         lines += ["", trace.strip()]
@@ -520,6 +545,71 @@ def _execution_instruction(
         "一次读多个文件；确定行号后再用 workspace.read 精读，减少往返。",
     ]
     return "\n".join(lines)
+
+
+def _id_list(raw: Any) -> list[str]:
+    """把 JSON 里的字符串列表清洗成非空 id；其它形状一律当作空。"""
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+async def _capability_sections(
+    container: Any,
+    specified_skill_ids: list[str],
+    specified_connector_ids: list[str],
+) -> list[str]:
+    """已启用技能 + 本轮指定技能/连接器 → 执行指令里的能力段落。
+
+    取数失败只让对应段落缺失，绝不让 Run 起不来：能力注册表是增强项，
+    连接器存储损坏也不应阻断已有对话。
+    """
+    auto_skills: list[SkillBrief] = []
+    specified_skills: list[SkillBrief] = []
+    service = getattr(container, "capability_import", None)
+    if service is not None:
+        try:
+            auto_skills = [
+                SkillBrief.from_record(record) for record in await service.enabled_skills()
+            ]
+        except Exception:  # noqa: BLE001 - 注册表读失败不阻断 Run
+            logger.warning("已启用技能读取失败，本轮不自动下发", exc_info=True)
+        for identifier in specified_skill_ids:
+            try:
+                record = await service.resolve_skill(identifier)
+            except Exception:  # noqa: BLE001
+                logger.warning("指定技能解析失败 id=%s", identifier, exc_info=True)
+                record = None
+            if record is not None:
+                specified_skills.append(SkillBrief.from_record(record))
+
+    specified_connectors: list[ConnectorBrief] = []
+    if specified_connector_ids:
+        items: list[dict[str, Any]] = []
+        mcp = getattr(container, "mcp_connectors", None)
+        if mcp is not None:
+            try:
+                github = getattr(container, "github", None)
+                status = github.status() if github is not None else None
+                items = list(mcp.list_all(status).get("items") or [])
+            except Exception:  # noqa: BLE001 - 连接器目录不可读时按不可用处理
+                logger.warning("连接器目录读取失败，指定项按不可用处理", exc_info=True)
+                items = []
+        by_id = {str(item.get("id") or ""): item for item in items}
+        for identifier in specified_connector_ids:
+            item = by_id.get(identifier)
+            if item is None:
+                specified_connectors.append(
+                    ConnectorBrief(name=identifier, status="unknown", available=False)
+                )
+            else:
+                specified_connectors.append(connector_brief(item))
+
+    return capability_instruction_sections(
+        auto_skills=auto_skills,
+        specified_skills=specified_skills,
+        specified_connectors=specified_connectors,
+    )
 
 
 def _now_iso() -> str:

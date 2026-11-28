@@ -15,7 +15,7 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.enums import CapabilityKind
-from flux.schemas.api import CapabilityImportRequest
+from flux.schemas.api import CapabilityImportRequest, CapabilityUpdateRequest
 
 router = APIRouter(prefix="/capabilities", tags=["capabilities"])
 
@@ -52,3 +52,29 @@ async def import_capability(
         payload.kind, payload.name, decision=payload.decision
     )
     return ok(outcome.to_dict(), metadata={"outcome": outcome.outcome})
+
+
+@router.patch("/{kind}/{name}")
+async def update_capability(
+    kind: CapabilityKind,
+    name: str,
+    payload: CapabilityUpdateRequest,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """启用 / 停用一条已导入能力（数据与桌面、Web 共用同一张注册表）。"""
+    record = await container.capability_import.set_enabled(kind, name, enabled=payload.enabled)
+    return ok(record.to_dict(), metadata={"enabled": record.enabled})
+
+
+@router.delete("/{kind}/{name}")
+async def delete_capability(
+    kind: CapabilityKind,
+    name: str,
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """从注册表移除一条能力；不删除用户磁盘上的源目录。"""
+    result = await container.capability_import.remove(kind, name)
+    return ok(result, metadata={"removed": True})
+
+
+__all__ = ["router"]

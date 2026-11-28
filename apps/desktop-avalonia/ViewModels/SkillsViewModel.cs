@@ -21,7 +21,12 @@ public sealed record SkillCardView(
     string Kind,
     IBrush Tone,
     Geometry Icon,
-    string UpdatedText);
+    string UpdatedText,
+    bool Enabled,
+    string EnabledText,
+    bool CanToggle,
+    ICommand Toggle,
+    ICommand Remove);
 
 /// <summary>扫描来源行（web 端扫描结果里的 sources）。</summary>
 public sealed record ScanSourceView(string Status, string Path, string CountText, IBrush Tone);
@@ -210,6 +215,39 @@ public sealed partial class SkillsViewModel : ViewModelBase
     [RelayCommand]
     private void CloseReport() => IsReportOpen = false;
 
+    /// <summary>启用 / 停用：数据落在共用的 imported_capabilities 上。</summary>
+    private async Task ToggleAsync(ImportedCapability cap)
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+
+        var result = await api.SetCapabilityEnabledAsync(cap.Kind, cap.Name, !cap.Enabled)
+            .ConfigureAwait(true);
+        StatusText = result?.Data is not null
+            ? (result.Data.Enabled ? $"已启用「{cap.Name}」" : $"已停用「{cap.Name}」")
+            : "更新失败：后端未响应 /capabilities";
+        await RefreshAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>只移除注册表记录；不删除电脑上的原始技能目录。</summary>
+    private async Task RemoveAsync(ImportedCapability cap)
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+
+        var result = await api.DeleteCapabilityAsync(cap.Kind, cap.Name).ConfigureAwait(true);
+        StatusText = result?.Data is not null
+            ? $"已移除「{cap.Name}」（不会删除电脑上的源目录）"
+            : "移除失败：后端未响应 /capabilities";
+        await RefreshAsync().ConfigureAwait(true);
+    }
+
     private async Task ImportAsync(CapabilityCandidate candidate)
     {
         var api = _api();
@@ -246,7 +284,12 @@ public sealed partial class SkillsViewModel : ViewModelBase
                 cap.Kind,
                 tone,
                 IconPaths.GetGeometry(icon),
-                ShortDate(cap.UpdatedAt)));
+                ShortDate(cap.UpdatedAt),
+                cap.Enabled,
+                cap.Enabled ? "已启用" : "已停用",
+                cap.Kind == "skill",
+                new RelayCommand(() => _ = ToggleAsync(cap)),
+                new RelayCommand(() => _ = RemoveAsync(cap))));
         }
 
         HasCards = Cards.Count > 0;

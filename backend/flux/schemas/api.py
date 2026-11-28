@@ -52,6 +52,12 @@ class AgentTokenIssueRequest(BaseModel):
     label: str = Field(default="", max_length=128)
 
 
+class CapabilityUpdateRequest(BaseModel):
+    """启用 / 停用一条已导入能力（目前只有技能会影响运行时自动使用）。"""
+
+    enabled: bool
+
+
 class TaskCreateRequest(BaseModel):
     description: str = Field(min_length=1)
     project_id: str | None = None
@@ -71,6 +77,10 @@ class TaskCreateRequest(BaseModel):
     summary_from: str | None = Field(default=None, max_length=64)
     # 随首条消息一起发来的附件（先 POST /uploads 换 id，再在发送时带上）
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    # 本次发送指定使用的技能 / 连接器（id 列表；空 = 不指定，仍可自动使用）。
+    # 只影响这一轮执行指令，不写进任务长期配置。
+    specified_skill_ids: list[str] = Field(default_factory=list, max_length=20)
+    specified_connector_ids: list[str] = Field(default_factory=list, max_length=20)
     # 对话来源（2026-11-03）：助理页建的任务传 assistant，首页普通对话保持默认 chat。
     origin: TaskOrigin = TaskOrigin.CHAT
     # Bot 档案（2026-11-04）：每条对话都是一个 bot，历史群聊里用名称 + 头像区分。
@@ -92,6 +102,9 @@ class TaskMessageCreateRequest(BaseModel):
 
     content: str = Field(default="", max_length=8000)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    # 本次发送指定使用的技能 / 连接器（空 = 不指定，自动使用行为保持不变）。
+    specified_skill_ids: list[str] = Field(default_factory=list, max_length=20)
+    specified_connector_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class SecureInputRequest(BaseModel):
@@ -205,6 +218,9 @@ class TaskStartRequest(BaseModel):
     """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。"""
 
     confirmation: list[ConfirmationItem] | None = None
+    # 本次执行指定使用的技能 / 连接器（空 = 沿用建任务时暂存的那份，再空即自动使用）。
+    specified_skill_ids: list[str] = Field(default_factory=list, max_length=20)
+    specified_connector_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class ChangeIdsRequest(BaseModel):

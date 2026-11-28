@@ -42,6 +42,27 @@ internal object V2ComposerTags {
     fun attachmentThumb(localId: String) = "v2_composer_attachment_thumb_$localId"
     /** 失败草稿的重试入口。 */
     fun attachmentRetry(localId: String) = "v2_composer_attachment_retry_$localId"
+    /** 粘贴生成的文本附件：在输入框中显示。 */
+    fun attachmentReveal(localId: String) = "v2_composer_attachment_reveal_$localId"
+
+    /** 「+」底部面板与其中的入口。 */
+    const val PICK_SHEET = "v2_composer_pick_sheet"
+    const val PICK_CAMERA = "v2_composer_pick_camera"
+    const val PICK_IMAGE = "v2_composer_pick_image"
+    const val PICK_FILE = "v2_composer_pick_file"
+    const val PICK_DESIGN = "v2_composer_pick_design"
+    const val PICK_SKILLS = "v2_composer_pick_skills"
+    const val PICK_CONNECTORS = "v2_composer_pick_connectors"
+
+    /** 技能 / 连接器选择面板。 */
+    const val SKILL_SHEET = "v2_composer_skill_sheet"
+    const val CONNECTOR_SHEET = "v2_composer_connector_sheet"
+    fun skillRow(name: String) = "v2_composer_skill_row_$name"
+    fun connectorRow(id: String) = "v2_composer_connector_row_$id"
+
+    /** 输入区上方的「本次指定」芯片。 */
+    fun specifiedChip(kind: String, id: String) = "v2_composer_specified_${kind}_$id"
+    fun specifiedRemove(kind: String, id: String) = "v2_composer_specified_remove_${kind}_$id"
 }
 
 /** 交互类修复统一使用的日志 tag。 */

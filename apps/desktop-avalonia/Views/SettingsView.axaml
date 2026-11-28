@@ -96,6 +96,21 @@
                                     <v:FluxSwitch Grid.Column="1" VerticalAlignment="Center"
                                                   IsOn="{Binding ReduceMotion, Mode=TwoWay}" />
                                 </Grid>
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="粘贴长文本" FontSize="12" FontWeight="SemiBold" />
+                                        <TextBlock Text="一次粘贴达到 1 万字且含换行时，默认直接作为文本文件附件。" FontSize="11"
+                                                   Margin="0,3,0,0" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                                VerticalAlignment="Center">
+                                        <RadioButton GroupName="PasteMode" Content="始终作为文件"
+                                                     IsChecked="{Binding PasteAsFile, Mode=TwoWay}" />
+                                        <RadioButton GroupName="PasteMode" Content="始终直接粘贴"
+                                                     IsChecked="{Binding PasteAsText, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Grid>
                             </StackPanel>
                         </StackPanel>
                     </Border>

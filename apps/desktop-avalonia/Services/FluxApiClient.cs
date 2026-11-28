@@ -118,6 +118,29 @@ public sealed class FluxApiClient : IDisposable
         CancellationToken ct = default)
         => PostAsync<CapabilityImportResult>("/api/v1/capabilities/import", new { kind, name }, ct);
 
+    /// <summary>启用 / 停用已导入能力（目前只有技能影响运行时自动使用）。</summary>
+    public Task<ApiEnvelope<ImportedCapability>?> SetCapabilityEnabledAsync(
+        string kind,
+        string name,
+        bool enabled,
+        CancellationToken ct = default)
+        => SendJsonAsync<ImportedCapability>(
+            HttpMethod.Patch,
+            $"/api/v1/capabilities/{Uri.EscapeDataString(kind)}/{Uri.EscapeDataString(name)}",
+            new { enabled },
+            ct);
+
+    /// <summary>只从注册表移除，不删除用户磁盘上的源目录。</summary>
+    public Task<ApiEnvelope<CapabilityRemoveResult>?> DeleteCapabilityAsync(
+        string kind,
+        string name,
+        CancellationToken ct = default)
+        => SendJsonAsync<CapabilityRemoveResult>(
+            HttpMethod.Delete,
+            $"/api/v1/capabilities/{Uri.EscapeDataString(kind)}/{Uri.EscapeDataString(name)}",
+            null,
+            ct);
+
     public Task<ApiEnvelope<List<Project>>?> ListProjectsAsync(CancellationToken ct = default)
         => GetAsync<List<Project>>("/api/v1/projects", ct);
 
@@ -331,11 +354,36 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<TaskMessageResult>?> CreateTaskMessageAsync(
         string taskId,
         string content,
+        IReadOnlyList<string>? attachmentIds = null,
         CancellationToken ct = default)
         => PostAsync<TaskMessageResult>(
             $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages",
-            new { content },
+            attachmentIds is { Count: > 0 }
+                ? new { content, attachment_ids = attachmentIds }
+                : new { content },
             ct);
+
+    /// <summary>粘贴大文本转成的附件：裸请求体 + query 文件名，与手机 / Web 同一个 /uploads。</summary>
+    public async Task<UploadedAttachment?> UploadTextAttachmentAsync(
+        string name,
+        string text,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var path = $"/api/v1/uploads?name={Uri.EscapeDataString(name)}&mime=text%2Fplain";
+            using var content = new StringContent(text, Encoding.UTF8, "text/plain");
+            using var res = await _http.PostAsync(path, content, ct).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var envelope = FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<UploadedAttachment>>(body, JsonOptions));
+            return envelope?.Success == true ? envelope.Data : null;
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"POST {name} upload -> {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
 
     public Task<ApiEnvelope<TaskConfirmationResult>?> UpdateConfirmationAsync(
         string taskId,
@@ -787,6 +835,33 @@ public sealed class FluxApiClient : IDisposable
         catch (Exception ex)
         {
             DebugLog($"POST {path} -> {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>PATCH / DELETE 等非 POST 写操作共用的 JSON 请求。</summary>
+    private async Task<ApiEnvelope<T>?> SendJsonAsync<T>(
+        HttpMethod method,
+        string path,
+        object? payload,
+        CancellationToken ct,
+        JsonSerializerOptions? options = null)
+    {
+        var json = options ?? JsonOptions;
+        try
+        {
+            using var request = new HttpRequestMessage(method, path);
+            if (payload is not null)
+            {
+                request.Content = JsonContent.Create(payload, options: json);
+            }
+            using var res = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return FailAsNull(JsonSerializer.Deserialize<ApiEnvelope<T>>(body, json));
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"{method} {path} -> {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }

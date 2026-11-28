@@ -212,6 +212,11 @@ public partial class SoloViewModel : ViewModelBase
 
     public ObservableCollection<DecisionOptionRow> DecisionOptions { get; } = new();
 
+    /// <summary>粘贴大文本转成的附件（只随下一条消息发出）。</summary>
+    public ObservableCollection<PastedAttachmentRow> PastedAttachments { get; } = new();
+
+    public bool HasPastedAttachments => PastedAttachments.Count > 0;
+
     public ObservableCollection<ChangeRow> Changes { get; } = new();
 
     public ObservableCollection<AgentTurnRow> AgentTurns { get; } = new();
@@ -317,6 +322,55 @@ public partial class SoloViewModel : ViewModelBase
         await LoadTaskAsync(row.Id);
     }
 
+    /// <summary>粘贴大文本：直接上传成文本附件，不弹「文件还是文本」的询问。</summary>
+    public async Task AttachPastedTextAsync(string text)
+    {
+        var api = Api();
+        if (api is null)
+        {
+            return;
+        }
+        if (PastedAttachments.Count >= 5)
+        {
+            ConfirmationHint = "一条消息最多带 5 个附件，无法把这段文字转成文件。";
+            return;
+        }
+        var uploaded = await api.UploadTextAttachmentAsync(SoloRules.PasteFileName(text), text)
+            .ConfigureAwait(true);
+        if (uploaded is null)
+        {
+            ConfirmationHint = "附件上传失败，请检查后端是否在线。";
+            return;
+        }
+        PastedAttachments.Add(new PastedAttachmentRow(uploaded.Id, uploaded.Name, text));
+        OnPropertyChanged(nameof(HasPastedAttachments));
+        ConfirmationHint = $"已把这段文字作为文件附件：{uploaded.Name}";
+    }
+
+    [RelayCommand]
+    private void RemovePastedAttachment(PastedAttachmentRow? row)
+    {
+        if (row is null) return;
+        PastedAttachments.Remove(row);
+        OnPropertyChanged(nameof(HasPastedAttachments));
+    }
+
+    /// <summary>改回输入框：超过正文上限时给明确原因，保留附件。</summary>
+    [RelayCommand]
+    private void RevealPastedAttachment(PastedAttachmentRow? row)
+    {
+        if (row is null) return;
+        var (text, error) = SoloRules.RevealPastedText(Draft, row.Text);
+        if (error is not null)
+        {
+            ConfirmationHint = error;
+            return;
+        }
+        Draft = text ?? "";
+        PastedAttachments.Remove(row);
+        OnPropertyChanged(nameof(HasPastedAttachments));
+    }
+
     [RelayCommand]
     private async Task SendAsync()
     {
@@ -327,12 +381,14 @@ public partial class SoloViewModel : ViewModelBase
         }
 
         var content = Draft.Trim();
-        if (content.Length == 0)
+        if (content.Length == 0 && PastedAttachments.Count == 0)
         {
             ConfirmationHint = "请输入内容后再发送。";
             return;
         }
 
+        var attachmentIds = PastedAttachments.Select(item => item.Id).ToList();
+        var description = content.Length == 0 ? "请查看我附上的文件" : content;
         IsSending = true;
         Draft = "";
         try
@@ -342,7 +398,7 @@ public partial class SoloViewModel : ViewModelBase
             {
                 // 从「上下文快满 → 新建并带摘要」接手：只带摘要，不搬旧消息
                 var created = (await api.CreateTaskAsync(
-                    content,
+                    description,
                     null,
                     null,
                     "auto",
@@ -365,7 +421,7 @@ public partial class SoloViewModel : ViewModelBase
                 throw new InvalidOperationException("任务已结束，请新建任务后继续。");
             }
 
-            var result = (await api.CreateTaskMessageAsync(taskId, content))?.Data;
+            var result = (await api.CreateTaskMessageAsync(taskId, content, attachmentIds))?.Data;
             if (result is null)
             {
                 throw new InvalidOperationException("发送消息没有返回数据");
@@ -373,6 +429,8 @@ public partial class SoloViewModel : ViewModelBase
 
             ApplyTask(result.Task);
             AppendMessages(result.Messages);
+            PastedAttachments.Clear();
+            OnPropertyChanged(nameof(HasPastedAttachments));
             ConfirmationHint = $"已落库 · {result.Messages.Length} 条消息";
             await RefreshTaskListAsync(api);
             await RefreshContextUsageAsync(api, taskId);

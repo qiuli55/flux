@@ -22,7 +22,15 @@ const KIND_META: Record<string, { label: string; icon: string; tone: "brand" | "
 const metaOf = (kind: string) => KIND_META[kind] ?? { label: kind, icon: "package", tone: "blue" as const };
 
 /* ---------------- 已导入卡片 ---------------- */
-function CapCard({ cap }: { cap: ImportedCapability }) {
+function CapCard({
+  cap,
+  onToggle,
+  onRemove,
+}: {
+  cap: ImportedCapability;
+  onToggle: (cap: ImportedCapability) => void;
+  onRemove: (cap: ImportedCapability) => void;
+}) {
   const meta = metaOf(cap.kind);
   return (
     <Card pad hover>
@@ -36,8 +44,19 @@ function CapCard({ cap }: { cap: ImportedCapability }) {
       <div className="fx-mc-desc fx-ellipsis" title={cap.source}>{cap.source}</div>
       <div className="fx-mc-foot">
         <Badge tone={meta.tone}>{cap.kind}</Badge>
+        {cap.kind === "skill" ? (
+          <Badge tone={cap.enabled ? "green" : "default"}>{cap.enabled ? "已启用" : "已停用"}</Badge>
+        ) : null}
         <span className="fx-dim" style={{ fontSize: 11, marginLeft: "auto" }}>{cap.updated_at ? new Date(cap.updated_at).toLocaleDateString() : "—"}</span>
       </div>
+      {cap.kind === "skill" ? (
+        <div className="fx-row fx-gap-2" style={{ marginTop: 10 }}>
+          <Button size="sm" variant="subtle" onClick={() => onToggle(cap)}>
+            {cap.enabled ? "停用" : "启用"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onRemove(cap)}>移除</Button>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -68,6 +87,8 @@ export function SkillsPage() {
   const [report, setReport] = useState<CapabilityScanReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [removeTarget, setRemoveTarget] = useState<ImportedCapability | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,6 +113,27 @@ export function SkillsPage() {
       await load();
     } catch (e) { toast(e instanceof ApiError ? e.message : "导入失败", "error"); }
   }, [load]);
+
+  const toggle = useCallback(async (cap: ImportedCapability) => {
+    try {
+      const updated = await api.setCapabilityEnabled(cap.kind, cap.name, !cap.enabled);
+      setCaps((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      toast(updated.enabled ? `已启用「${updated.name}」` : `已停用「${updated.name}」`);
+    } catch (e) { toast(e instanceof ApiError ? e.message : "更新失败", "error"); }
+  }, []);
+
+  const remove = useCallback(async () => {
+    const target = removeTarget;
+    if (!target) return;
+    setRemoving(true);
+    try {
+      await api.deleteCapability(target.kind, target.name);
+      setCaps((prev) => prev.filter((item) => item.id !== target.id));
+      toast(`已移除「${target.name}」（不会删除电脑上的源目录）`);
+      setRemoveTarget(null);
+    } catch (e) { toast(e instanceof ApiError ? e.message : "移除失败", "error"); }
+    finally { setRemoving(false); }
+  }, [removeTarget]);
 
   const shown = useMemo(() => (filter === "all" ? caps : caps.filter((c) => c.kind === filter)), [caps, filter]);
 
@@ -118,7 +160,9 @@ export function SkillsPage() {
 
       {shown.length === 0 && !loading ? <Empty icon="puzzle" title="暂无已导入能力" desc="点击「扫描导入」从本机来源目录发现能力" /> : (
         <div className="fx-grid fx-auto">
-          {shown.map((c) => <CapCard key={c.id} cap={c} />)}
+          {shown.map((c) => (
+            <CapCard key={c.id} cap={c} onToggle={(cap) => void toggle(cap)} onRemove={setRemoveTarget} />
+          ))}
         </div>
       )}
 
@@ -150,6 +194,22 @@ export function SkillsPage() {
             )}
           </>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={removeTarget !== null}
+        title="移除技能"
+        onClose={() => { if (!removing) setRemoveTarget(null); }}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRemoveTarget(null)} disabled={removing}>取消</Button>
+            <Button variant="danger" onClick={() => void remove()} busy={removing}>移除</Button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, color: "var(--fx-text-2)", fontSize: 13 }}>
+          从技能注册表移除「{removeTarget?.name}」？这不会删除电脑上的原始技能目录。
+        </p>
       </Modal>
     </>
   );

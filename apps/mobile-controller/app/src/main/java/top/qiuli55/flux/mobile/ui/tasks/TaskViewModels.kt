@@ -415,6 +415,17 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         attachmentController.add(uris, resolver)
     }
 
+    /** 大文本粘贴转成的文本附件：与图片 / 文件共用同一条上传通道。 */
+    fun attachPastedText(name: String, text: String) {
+        attachmentController.addText(name, text) {
+            api().uploadAttachment(
+                name = name,
+                mime = "text/plain",
+                size = text.toByteArray(Charsets.UTF_8).size.toLong(),
+            ) { ByteArrayInputStream(text.toByteArray(Charsets.UTF_8)) }
+        }
+    }
+
     /** 设计稿当附件：先导出 SVG，再走同一条上传通道，不落地临时文件。 */
     fun attachDesign(designId: String, name: String) {
         attachmentController.addDesign(name) {
@@ -830,7 +841,10 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         runCatching { event.data[key]?.jsonPrimitive?.contentOrNull.orEmpty() }
             .getOrDefault("")
 
-    fun send() {
+    fun send(
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
+    ) {
         val current = _state.value
         val content = current.draft.trim()
         if (current.sending || current.busyAction != null) return
@@ -853,9 +867,21 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
                 // 已结束的对话：新消息走续跑，重开任务并起新一轮 Agent Run；
                 // 进行中的对话：仍走追加消息由助手回话。
                 val outcome = if (current.task?.isFinished == true) {
-                    api.continueTask(taskId, content, attachmentIds)
+                    api.continueTask(
+                        taskId,
+                        content,
+                        attachmentIds,
+                        specifiedSkillIds = specifiedSkillIds,
+                        specifiedConnectorIds = specifiedConnectorIds,
+                    )
                 } else {
-                    api.sendMessage(taskId, content, attachmentIds)
+                    api.sendMessage(
+                        taskId,
+                        content,
+                        attachmentIds,
+                        specifiedSkillIds = specifiedSkillIds,
+                        specifiedConnectorIds = specifiedConnectorIds,
+                    )
                 }
                 // 发送成功：清空附件；失败时保留，用户可以直接重试
                 attachmentController.clear()

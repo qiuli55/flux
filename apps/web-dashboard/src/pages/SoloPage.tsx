@@ -21,6 +21,7 @@ import type {
   Task,
   TaskMessage,
   TaskStatus,
+  UploadedAttachment,
 } from "../api/types";
 import { openCommandPalette } from "../app/commands";
 import { parseUnifiedDiff } from "../app/diff";
@@ -33,6 +34,13 @@ import { CreateBotDialog } from "../components/group/CreateBotDialog";
 import { SoloSidePanel } from "../components/side/SoloSidePanel";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
 import { BUILTIN_ROLES, ROLE_LABELS, STATE_LABELS, toCreateRequest } from "../data/team";
+import { usePrefs } from "../shell/prefs";
+import {
+  isImagePaste,
+  isLargePaste,
+  pastedFileName,
+  revealPastedText,
+} from "../utils/pastePolicy";
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   pending: "待执行",
@@ -454,7 +462,11 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [createBotOpen, setCreateBotOpen] = useState(false);
   const [createBotSeed, setCreateBotSeed] = useState("");
   /** 在空对话里直接发需求时，先建 bot，建完再把这条补发出去 */
-  const pendingSendRef = useRef<{ content: string; payload: string } | null>(null);
+  const pendingSendRef = useRef<{
+    content: string;
+    payload: string;
+    attachmentIds: string[];
+  } | null>(null);
 
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -471,6 +483,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const prefs = usePrefs();
+  /** 粘贴大文本转成的附件：发送时只带 id，text 用于「改回输入框」。 */
+  const [pastedAttachments, setPastedAttachments] = useState<
+    Array<UploadedAttachment & { text: string }>
+  >([]);
+  const [pasteBusy, setPasteBusy] = useState(false);
   const [quote, setQuote] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<"auto" | "manual">(() =>
     window.localStorage.getItem("flux.solo.strategy") === "manual" ? "manual" : "auto",
@@ -787,6 +805,44 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
 
   // --- 操作 ---
 
+  /** 粘贴大文本：达到阈值且有换行时直接上传成附件，不弹询问。 */
+  const handlePaste = useCallback(
+    async (event: { clipboardData: DataTransfer; preventDefault: () => void }) => {
+      const text = event.clipboardData.getData("text/plain");
+      if (isImagePaste(event.clipboardData.items)) return;
+      if (!isLargePaste(text, prefs.pasteMode)) return;
+      event.preventDefault();
+      if (pastedAttachments.length >= 5) {
+        toast("一条消息最多带 5 个附件，无法把这段文字转成文件", "error");
+        return;
+      }
+      setPasteBusy(true);
+      try {
+        const uploaded = await api.uploadTextAttachment(pastedFileName(text), text);
+        setPastedAttachments((prev) => [...prev, { ...uploaded, text }]);
+        toast("已把这段文字作为文件附件");
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "附件上传失败", "error");
+      } finally {
+        setPasteBusy(false);
+      }
+    },
+    [pastedAttachments.length, prefs.pasteMode],
+  );
+
+  const revealAttachment = useCallback(
+    (attachment: UploadedAttachment & { text: string }) => {
+      const result = revealPastedText(draft, attachment.text);
+      if (result.error) {
+        toast(result.error, "error");
+        return;
+      }
+      setDraft(result.text ?? "");
+      setPastedAttachments((prev) => prev.filter((item) => item.id !== attachment.id));
+    },
+    [draft],
+  );
+
   const send = useCallback(async () => {
     const content = draft.trim();
     if (!content) {
@@ -796,9 +852,14 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     if (sending) return;
     const target = taskId ?? "";
     const payload = quote ? `${QUOTE_PREFIX}「${quote}」\n\n${content}` : content;
+    const attachmentIds = pastedAttachments.map((item) => item.id);
+    if (pasteBusy) {
+      toast("附件还在上传，请稍候再发送");
+      return;
+    }
     if (!target) {
       // 还没有对话：先让用户给这个新 bot 起名、挑头像，创建成功后自动补发这条消息
-      pendingSendRef.current = { content, payload };
+      pendingSendRef.current = { content, payload, attachmentIds };
       setCreateBotSeed(botNameSeed(content));
       setCreateBotOpen(true);
       setDraft("");
@@ -807,7 +868,8 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     setSending(true);
     setDraft("");
     try {
-      const outcome = await api.sendTaskMessage(target, payload);
+      const outcome = await api.sendTaskMessage(target, payload, { attachmentIds });
+      setPastedAttachments([]);
       setMessages((prev) => [...prev, ...outcome.messages]);
       setTasks((prev) => prev.map((item) => (item.id === target ? outcome.task : item)));
       setQuote(null);
@@ -818,7 +880,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [draft, quote, sending, taskId]);
+  }, [draft, quote, sending, taskId, pastedAttachments, pasteBusy]);
 
   const runReview = useCallback(
     async (approved: boolean) => {
@@ -1351,7 +1413,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     }
     setSending(true);
     try {
-      const outcome = await api.sendTaskMessage(created.id, pending.payload);
+      const outcome = await api.sendTaskMessage(created.id, pending.payload, {
+        attachmentIds: pending.attachmentIds,
+      });
+      setPastedAttachments([]);
       setTasks((prev) => prev.map((item) => (item.id === created.id ? outcome.task : item)));
       const page = await api.listTaskMessages(created.id, { limit: 30 });
       setMessages(page.items);
@@ -2326,11 +2391,40 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 </div>
               </div>
             ) : null}
+            {pastedAttachments.length > 0 ? (
+              <div className="compose-attachments" style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 2px 6px" }}>
+                {pastedAttachments.map((attachment) => (
+                  <span key={attachment.id} className="chip chip-dim" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span className="fx-ellipsis" style={{ maxWidth: 180 }} title={attachment.name}>
+                      {attachment.name}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => revealAttachment(attachment)}
+                    >
+                      显示
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      aria-label={`移除附件 ${attachment.name}`}
+                      onClick={() =>
+                        setPastedAttachments((prev) => prev.filter((item) => item.id !== attachment.id))
+                      }
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <input
               ref={inputRef}
               value={draft}
               placeholder="有新的需求或补充说明吗？可以继续告诉我…"
               onChange={(event) => setDraft(event.target.value)}
+              onPaste={(event) => void handlePaste(event)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void send();
               }}

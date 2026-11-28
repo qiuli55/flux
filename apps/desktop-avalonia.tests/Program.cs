@@ -27,6 +27,7 @@ internal static class Program
         CheckTotals();
         CheckDesignOps();
         CheckBrowserProxy();
+        CheckPastePolicy();
 
         if (_failed == 0)
         {
@@ -36,6 +37,23 @@ internal static class Program
 
         Console.Error.WriteLine($"desktop-selftest: {_failed} check(s) failed");
         return 1;
+    }
+
+    private static void CheckPastePolicy()
+    {
+        var multiline = new string('x', SoloRules.LargePasteThreshold - 1) + "\n";
+        True("9999 字不转文件", !SoloRules.IsLargePaste(new string('x', 9_999), "file"));
+        True("10000 字单行（超长链接）不转", !SoloRules.IsLargePaste(new string('x', 10_000), "file"));
+        True("10000 字含换行转文件", SoloRules.IsLargePaste(multiline, "file"));
+        True("始终直接粘贴不转", !SoloRules.IsLargePaste(multiline, "text"));
+        Equal("安全文件名", "周报：本周进展.txt", SoloRules.PasteFileName("周报：本周进展\n正文"));
+        Equal("空内容文件名", "粘贴.txt", SoloRules.PasteFileName("\n \n"));
+        var (text, error) = SoloRules.RevealPastedText("问题", "正文");
+        Equal("改回输入框", "问题\n\n正文", text);
+        True("超上限有中文原因", SoloRules
+            .RevealPastedText(new string('x', SoloRules.ComposerTextMax), "y").Error
+            ?.Contains("字上限") == true);
+        True("错误时不给文本", error is null);
     }
 
     private static void CheckFlowStep()

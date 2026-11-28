@@ -57,6 +57,9 @@ public sealed record TaskMessage(
 /// <summary>POST /tasks/{id}/messages 的 data。</summary>
 public sealed record TaskMessageResult(TaskDetail Task, TaskMessage[] Messages);
 
+/// <summary>粘贴大文本转成的文本附件：发送时只带 Id，Text 用于「改回输入框」。</summary>
+public sealed record PastedAttachmentRow(string Id, string Name, string Text);
+
 /// <summary>PUT /tasks/{id}/confirmation 的 data。</summary>
 public sealed record TaskConfirmationResult(TaskDetail Task, TaskMessage Message);
 

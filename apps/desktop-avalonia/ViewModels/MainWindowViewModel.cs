@@ -129,6 +129,10 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     private string _browserProxyUrl = "";
 
+    /// <summary>粘贴长文本：file = 始终作为文件（默认），text = 始终直接粘贴。</summary>
+    [ObservableProperty]
+    private string _pasteMode = "file";
+
     [ObservableProperty]
     private bool _isPaletteOpen;
 
@@ -150,6 +154,7 @@ public partial class MainWindowViewModel : ViewModelBase
         _isReduceMotion = prefs.ReduceMotion;
         _browserProxyMode = prefs.ProxyMode;
         _browserProxyUrl = prefs.ProxyUrl;
+        _pasteMode = prefs.PasteMode;
 
         Account = new AccountViewModel
         {
@@ -501,6 +506,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
     partial void OnBrowserProxyUrlChanged(string value) => SavePrefs();
 
+    partial void OnPasteModeChanged(string value) => SavePrefs();
+
     /// <summary>把界面偏好恢复默认（设置页的「重置」用）。</summary>
     [RelayCommand]
     public void ResetPrefs()
@@ -510,6 +517,7 @@ public partial class MainWindowViewModel : ViewModelBase
         IsReduceMotion = UiPrefs.Defaults.ReduceMotion;
         BrowserProxyMode = UiPrefs.Defaults.ProxyMode;
         BrowserProxyUrl = UiPrefs.Defaults.ProxyUrl;
+        PasteMode = UiPrefs.Defaults.PasteMode;
     }
 
     private void SavePrefs() =>
@@ -517,6 +525,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             ProxyMode = BrowserProxyMode,
             ProxyUrl = BrowserProxyUrl,
+            PasteMode = PasteMode,
         });
 
     [RelayCommand]

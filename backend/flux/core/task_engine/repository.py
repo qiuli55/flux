@@ -83,6 +83,7 @@ class TaskRepository:
         bot_name: str | None = None,
         avatar_shape: str = "circle",
         avatar_color: str = "violet",
+        pending_specified_capabilities: dict[str, Any] | None = None,
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
@@ -113,6 +114,7 @@ class TaskRepository:
                 bot_name=(bot_name or "").strip()[:64] or None,
                 avatar_shape=avatar_shape,
                 avatar_color=avatar_color,
+                pending_specified_capabilities=pending_specified_capabilities,
             )
             session.add(task)
             await self._commit(session)
@@ -297,6 +299,16 @@ class TaskRepository:
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.confirmation = confirmation
+            await self._commit(session)
+            return task
+
+    async def set_pending_specification(
+        self, task_id: uuid.UUID, specification: dict[str, Any] | None
+    ) -> Task:
+        """暂存 / 清空「本次指定技能或连接器」；消费一次即清空，不做长期锁定。"""
+        async with self._session_factory() as session:
+            task = await self._require(session, task_id)
+            task.pending_specified_capabilities = specification
             await self._commit(session)
             return task
 

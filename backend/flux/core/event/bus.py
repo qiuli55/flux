@@ -69,6 +69,10 @@ class Events:
     #: 重复导入判定为 unchanged / keep 时不发事件（没有发生变化就不该有"已变更"信号）。
     CAPABILITY_IMPORTED = "capability.imported"
     CAPABILITY_REPLACED = "capability.replaced"
+    #: 启用 / 停用 / 从注册表移除（2026-11-28）：都是本地注册表事件，不触发扫描。
+    CAPABILITY_ENABLED = "capability.enabled"
+    CAPABILITY_DISABLED = "capability.disabled"
+    CAPABILITY_REMOVED = "capability.removed"
 
 
 class EventBus:

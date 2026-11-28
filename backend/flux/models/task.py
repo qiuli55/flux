@@ -75,6 +75,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     avatar_color: Mapped[str] = mapped_column(
         String(32), nullable=False, default="violet", server_default="violet"
     )
+    # 建任务时暂存的「本次指定技能 / 连接器」：结构 {"skills": [...], "connectors": [...]}。
+    # 只在首次 /start 时消费一次并清空；它不是任务级长期锁定。
+    pending_specified_capabilities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def pending_decision(self) -> dict | None:
         """当前正等用户选择的那条决策点记录；没有则返回 None。"""

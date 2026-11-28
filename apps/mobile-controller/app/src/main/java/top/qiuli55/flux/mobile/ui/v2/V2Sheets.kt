@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Info
@@ -86,11 +87,13 @@ fun SettingsSheet(
     decisionAlerts: Boolean,
     taskAlerts: Boolean,
     strict: Boolean,
+    pasteMode: PasteTextMode = PasteTextMode.DEFAULT,
     onHaptics: (Boolean) -> Unit,
     onReduceMotion: (Boolean) -> Unit,
     onDecisionAlerts: (Boolean) -> Unit,
     onTaskAlerts: (Boolean) -> Unit,
     onStrict: (Boolean) -> Unit,
+    onPasteMode: (PasteTextMode) -> Unit = {},
     onOpenDevices: () -> Unit,
     onOpenTerminals: () -> Unit,
     onOpenKeyVault: () -> Unit,
@@ -187,6 +190,41 @@ fun SettingsSheet(
                     ) {
                         StrengthOption("标准 · 0.8 秒", !strict, Modifier.weight(1f)) { onStrict(false) }
                         StrengthOption("严格 · 1.6 秒", strict, Modifier.weight(1f)) { onStrict(true) }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            WhiteCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        V2IconTile(Icons.Outlined.ContentPaste)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Label("粘贴长文本", 15f, V2Colors.ink(.92f), FontWeight.Medium)
+                            Label(
+                                "一次粘贴达到 1 万字且含换行时，默认直接作为文件附件",
+                                11f,
+                                V2Colors.ink(.38f),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(V2Colors.ink(.05f))
+                            .border(1.dp, V2Colors.ink(.07f), RoundedCornerShape(12.dp))
+                            .padding(4.dp),
+                    ) {
+                        PasteTextMode.entries.forEach { mode ->
+                            StrengthOption(
+                                mode.label,
+                                pasteMode == mode,
+                                Modifier.weight(1f).testTag("v2_paste_mode_${mode.storageValue}"),
+                            ) { onPasteMode(mode) }
+                        }
                     }
                 }
             }
