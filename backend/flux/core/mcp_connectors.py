@@ -74,6 +74,26 @@ _BUILTIN_CONNECTORS: tuple[dict[str, Any], ...] = (
         "action": "antigravity",
     },
     {
+        "id": "feishu",
+        "name": "飞书",
+        "kind": "builtin",
+        "description": "在飞书单聊里和 Flux 主助理对话，并接收任务通知",
+        "available": True,
+        "status": _STATUS_DISCONNECTED,
+        "featured": False,
+        "action": "feishu",
+    },
+    {
+        "id": "wechat",
+        "name": "个人微信",
+        "kind": "builtin",
+        "description": "通过官方微信 ClawBot 在微信里和 Flux 主助理单聊",
+        "available": True,
+        "status": _STATUS_DISCONNECTED,
+        "featured": False,
+        "action": "wechat",
+    },
+    {
         "id": "figma",
         "name": "Figma",
         "kind": "builtin",
@@ -326,22 +346,29 @@ class McpConnectorService:
         *,
         cursor_status: dict[str, Any] | None = None,
         antigravity_status: dict[str, Any] | None = None,
+        im_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """返回内置目录 + 自定义连接器。
 
         GitHub 状态来自现有 GitHub 服务；Cursor / Antigravity 的状态来自各自的
-        官方 CLI 账号服务（只读是否已登录，不含任何令牌）。
+        官方 CLI 账号服务（只读是否已登录，不含任何令牌）。飞书 / 个人微信由
+        `ImConnectorService` 提供同形状的条目（也不含 token / QR 原值）。
         """
         agent_status = {
             "cursor": cursor_status,
             "antigravity": antigravity_status,
         }
+        overrides = {str(item.get("id")): item for item in (im_items or []) if item.get("id")}
         items: list[dict[str, Any]] = []
         for builtin in _BUILTIN_CONNECTORS:
             if builtin["id"] == "github":
                 items.append(_github_item(github_status))
             elif builtin["id"] in agent_status:
                 items.append(_agent_account_item(builtin, agent_status[builtin["id"]]))
+            elif builtin["id"] in overrides:
+                item = dict(builtin)
+                item.update(overrides[builtin["id"]])
+                items.append(item)
             else:
                 items.append(dict(builtin))
         items.extend(item.public() for item in self._load())

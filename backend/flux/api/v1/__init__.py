@@ -19,6 +19,7 @@ from flux.api.v1 import (
     github,
     health,
     ide,
+    im_connectors,
     installations,
     keys,
     mcp_connectors,
@@ -60,6 +61,7 @@ api_v1_router.include_router(claude_account.router)
 api_v1_router.include_router(cursor_account.router)
 api_v1_router.include_router(antigravity_account.router)
 api_v1_router.include_router(mcp_connectors.router)
+api_v1_router.include_router(im_connectors.router)
 api_v1_router.include_router(supervisor.router)
 
 __all__ = ["api_v1_router"]

@@ -5,10 +5,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
 import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.AgentCliAccountStatus
 import top.qiuli55.flux.mobile.data.AgentSpec
+import top.qiuli55.flux.mobile.data.ImConnectorOverview
 import top.qiuli55.flux.mobile.data.McpConnector
+import top.qiuli55.flux.mobile.data.WechatLoginSession
 
 /** 连接器页的可测逻辑：分区、搜索、表单校验、探测失败展示、GitHub 入口迁移。 */
 class V2ConnectorLogicTest {
@@ -209,6 +212,59 @@ class V2ConnectorLogicTest {
             listOf("builtin", "codex", "cursor", "antigravity"),
             agents.visibleForReadyRuntimes(setOf("cursor", "antigravity")).map { it.id },
         )
+    }
+
+    @Test
+    fun `feishu and wechat entries are named and never pretend to be connected`() {
+        assertEquals("连接飞书", imConnectorConnectLabel("feishu"))
+        assertEquals("连接个人微信", imConnectorConnectLabel("wechat"))
+        assertEquals("飞书", imConnectorTitle("feishu"))
+        assertEquals("个人微信", imConnectorTitle("wechat"))
+
+        assertEquals("连接飞书", connectorActionLabel(item("feishu", "disconnected")))
+        assertEquals("连接个人微信", connectorActionLabel(item("wechat", "disconnected")))
+        assertEquals("重新连接", connectorActionLabel(item("feishu", "needs_reauth")))
+        assertEquals("已连接 · 飞书单聊", connectorSubtitle(item("feishu", "connected")))
+        assertEquals("已连接 · 微信 ClawBot", connectorSubtitle(item("wechat", "connected")))
+        assertTrue(
+            connectorSubtitle(item("wechat", "needs_reauth", error = "登录已过期（-14）"))
+                .contains("重新扫码"),
+        )
+    }
+
+    @Test
+    fun `im status deserializes without any credential fields`() {
+        val raw = """
+            {
+              "feishu": {"id":"feishu","configured":true,"running":true,
+                "bound":false,"waiting_for_message":true,"message":"长连接已启动",
+                "capabilities":{"chat":true,"notifications":false,"group":false}},
+              "wechat": {"id":"wechat","connected":false,"needs_reauth":true,
+                "error":"登录已过期（-14），请重新扫码连接微信。",
+                "pending_login":{"login_id":"l1","state":"need_verifycode",
+                  "needs_verify_code":true,"qrcode_matrix":["101","010"],
+                  "backup_url":"https://weixin.example/qr"},
+                "capabilities":{"chat":true,"notifications":true,"group":false}}
+            }
+        """.trimIndent()
+        val overview = Json { ignoreUnknownKeys = true }.decodeFromString<ImConnectorOverview>(raw)
+        assertTrue(overview.feishu.waitingForMessage)
+        assertFalse(overview.feishu.bound)
+        assertTrue(overview.wechat.needsReauth)
+        assertTrue(overview.wechat.pendingLogin?.needsVerifyCode == true)
+        assertEquals(2, overview.wechat.pendingLogin?.qrcodeMatrix?.size)
+        assertTrue(overview.wechat.pendingLogin?.isActive == true)
+        assertFalse(overview.wechat.pendingLogin?.isConfirmed == true)
+    }
+
+    @Test
+    fun `wechat login states distinguish active confirmed and failed`() {
+        assertTrue(WechatLoginSession(state = "pending").isActive)
+        assertTrue(WechatLoginSession(state = "scaned").isPending)
+        assertTrue(WechatLoginSession(state = "need_verifycode").isActive)
+        assertTrue(WechatLoginSession(state = "confirmed").isConfirmed)
+        assertFalse(WechatLoginSession(state = "confirmed").isActive)
+        assertTrue(WechatLoginSession(state = "failed").isFailed)
     }
 
     @Test

@@ -89,6 +89,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 不派活。没有事件进入就永远空转等待，不产生任何副作用。
         if app_settings.supervisor_worker_enabled:
             await container.supervisor_worker.start()
+        # 连接器 IM：飞书官方长连接 / 个人微信官方 iLink 长轮询都跑在本常驻进程里，
+        # 电脑关机也不会断。未配置 App 凭据或未扫码绑定时是空操作，不发网络请求。
+        await container.im_connectors.start()
         # 知识库后台索引：对话 / docs / 项目记忆增量入库，供助理 assistant.search 检索。
         # 默认每 5 分钟一轮；测试与本地零配置可用 knowledge_enabled / worker 开关关掉。
         if app_settings.knowledge_enabled and app_settings.knowledge_worker_enabled:
@@ -107,6 +110,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             agent_reaper_task.cancel()
         # 先停助理 worker，再 dispose 容器：避免停库后仍有判断在写 outbox。
         await container.supervisor_worker.stop()
+        # IM 长连接 / 长轮询会写 task_messages，必须在 dispose 引擎前停掉。
+        await container.im_connectors.stop()
         # 知识库索引同样先停：索引事务不能在引擎 dispose 之后还在写。
         await container.knowledge_worker.stop()
         # Container.dispose() owns service shutdown ordering, including Human PTY.

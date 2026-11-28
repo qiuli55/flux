@@ -143,6 +143,37 @@ public sealed class FluxApiClient : IDisposable
         CancellationToken ct = default)
         => PostAsync<AgentCliLogoutResult>($"/api/v1/{kind}-account/logout", new { }, ct);
 
+    public Task<ApiEnvelope<ImConnectorOverview>?> ImConnectorsAsync(CancellationToken ct = default)
+        => GetAsync<ImConnectorOverview>("/api/v1/im-connectors", ct);
+
+    public Task<ApiEnvelope<ImConnectorStatus>?> ConnectFeishuAsync(CancellationToken ct = default)
+        => PostAsync<ImConnectorStatus>("/api/v1/im-connectors/feishu/connect", new { }, ct);
+
+    public Task<ApiEnvelope<ImConnectorStatus>?> DisconnectFeishuAsync(CancellationToken ct = default)
+        => PostAsync<ImConnectorStatus>("/api/v1/im-connectors/feishu/disconnect", new { }, ct);
+
+    public Task<ApiEnvelope<WechatLoginSession>?> ConnectWechatAsync(CancellationToken ct = default)
+        => PostAsync<WechatLoginSession>("/api/v1/im-connectors/wechat/connect", new { }, ct);
+
+    public Task<ApiEnvelope<WechatLoginSession>?> WechatLoginStatusAsync(
+        string loginId,
+        CancellationToken ct = default)
+        => GetAsync<WechatLoginSession>(
+            $"/api/v1/im-connectors/wechat/login/{Uri.EscapeDataString(loginId)}",
+            ct);
+
+    public Task<ApiEnvelope<WechatLoginSession>?> SubmitWechatCodeAsync(
+        string loginId,
+        string code,
+        CancellationToken ct = default)
+        => PostAsync<WechatLoginSession>(
+            $"/api/v1/im-connectors/wechat/login/{Uri.EscapeDataString(loginId)}/verify-code",
+            new { code },
+            ct);
+
+    public Task<ApiEnvelope<ImConnectorStatus>?> DisconnectWechatAsync(CancellationToken ct = default)
+        => PostAsync<ImConnectorStatus>("/api/v1/im-connectors/wechat/disconnect", new { }, ct);
+
     public Task<ApiEnvelope<List<ImportedCapability>>?> ListCapabilitiesAsync(CancellationToken ct = default)
         => GetAsync<List<ImportedCapability>>("/api/v1/capabilities", ct);
 

@@ -743,6 +743,33 @@ class FluxApi(
     suspend fun deleteMcpConnector(connectorId: String): JsonElement =
         delete("api/v1/mcp-connectors/${Uri.encode(connectorId)}")
 
+    // ---------------------------------------------------------- 连接器 · 飞书 / 个人微信
+
+    /** 飞书单聊与个人微信的连接状态（不含任何 token / 原始二维码值）。 */
+    suspend fun imConnectors(): ImConnectorOverview = get("api/v1/im-connectors")
+
+    suspend fun connectFeishu(): ImConnectorStatus =
+        post("api/v1/im-connectors/feishu/connect", buildJsonObject {})
+
+    suspend fun disconnectFeishu(): ImConnectorStatus =
+        post("api/v1/im-connectors/feishu/disconnect", buildJsonObject {})
+
+    /** 请常驻服务端向官方 iLink 申请绑定二维码。 */
+    suspend fun connectWechat(): WechatLoginSession =
+        post("api/v1/im-connectors/wechat/connect", buildJsonObject {})
+
+    suspend fun wechatLoginStatus(loginId: String): WechatLoginSession =
+        get("api/v1/im-connectors/wechat/login/${Uri.encode(loginId)}")
+
+    suspend fun submitWechatCode(loginId: String, code: String): WechatLoginSession =
+        post(
+            "api/v1/im-connectors/wechat/login/${Uri.encode(loginId)}/verify-code",
+            buildJsonObject { put("code", code) },
+        )
+
+    suspend fun disconnectWechat(): ImConnectorStatus =
+        post("api/v1/im-connectors/wechat/disconnect", buildJsonObject {})
+
     // ---------------------------------------------------------- GitHub 账号（仓库读写）
 
     suspend fun githubAccount(): GitHubAccountStatus = get("api/v1/github/status")

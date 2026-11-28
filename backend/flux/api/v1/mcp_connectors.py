@@ -24,6 +24,7 @@ async def list_connectors(container: Container = Depends(get_container)) -> dict
             container.github.status(),
             cursor_status=container.cursor_account.status(),
             antigravity_status=container.antigravity_account.status(),
+            im_items=container.im_connectors.connector_items(),
         )
     )
 

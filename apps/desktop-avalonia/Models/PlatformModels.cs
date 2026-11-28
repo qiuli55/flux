@@ -29,6 +29,44 @@ public sealed record McpConnector(
 
 public sealed record McpConnectorList(McpConnector[] Items);
 
+/// <summary>连接器 · 飞书单聊 / 个人微信（官方微信 ClawBot）的能力说明。</summary>
+public sealed record ImConnectorCapabilities(
+    bool Chat,
+    bool Notifications,
+    bool Group,
+    string? ProactiveWindowNote);
+
+/// <summary>IM 连接器状态；后端不返回任何 token / context_token / 原始二维码值。</summary>
+public sealed record ImConnectorStatus(
+    string Id,
+    bool Enabled,
+    bool Configured,
+    bool Connected,
+    bool Running,
+    bool Bound,
+    bool WaitingForMessage,
+    bool NeedsReauth,
+    bool HasContextToken,
+    int PendingNotices,
+    WechatLoginSession? PendingLogin,
+    string? Error,
+    string Message,
+    ImConnectorCapabilities Capabilities);
+
+public sealed record ImConnectorOverview(ImConnectorStatus Feishu, ImConnectorStatus Wechat);
+
+/// <summary>个人微信扫码绑定会话；matrix 是 0/1 行，桌面端用半块字符绘制。</summary>
+public sealed record WechatLoginSession(
+    string LoginId,
+    string State,
+    string Message,
+    string QrcodeImage,
+    string[] QrcodeMatrix,
+    string? BackupUrl,
+    long ExpiresAt,
+    bool NeedsVerifyCode,
+    string? Error);
+
 /// <summary>Cursor / Antigravity 官方 CLI 登录态；后端不返回任何令牌。</summary>
 public sealed record AgentCliAccountStatus(
     bool LoggedIn,

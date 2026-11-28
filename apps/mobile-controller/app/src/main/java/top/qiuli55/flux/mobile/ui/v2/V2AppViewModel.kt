@@ -35,9 +35,11 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
+import top.qiuli55.flux.mobile.data.ImConnectorOverview
 import top.qiuli55.flux.mobile.data.Installation
 import top.qiuli55.flux.mobile.data.KeyProbeResult
 import top.qiuli55.flux.mobile.data.McpConnector
+import top.qiuli55.flux.mobile.data.WechatLoginSession
 import top.qiuli55.flux.mobile.data.Task
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.data.UserMemoryEntry
@@ -110,6 +112,12 @@ data class V2AppState(
     val connectors: List<McpConnector> = emptyList(),
     val connectorsLoading: Boolean = false,
     val connectorsError: String? = null,
+    /** 连接器 · 飞书单聊 / 个人微信（官方微信 ClawBot）。 */
+    val imConnectors: ImConnectorOverview? = null,
+    val imConnectorsLoading: Boolean = false,
+    val imConnectorsError: String? = null,
+    val wechatLogin: WechatLoginSession? = null,
+    val imConnecting: Boolean = false,
     /** 套餐额度（成本中心）；进首页时加载，失败不影响任务主流程。 */
     val billing: BillingOverview? = null,
     /** 官方 API 价目表；与额度一起加载，失败只是不展示。 */
@@ -145,6 +153,8 @@ class V2AppViewModel : FluxViewModel() {
     private var codexLoginJob: Job? = null
     private var claudeLoginJob: Job? = null
     private var connectorsJob: Job? = null
+    private var imConnectorsJob: Job? = null
+    private var wechatLoginJob: Job? = null
     private var cursorLoginJob: Job? = null
     private var antigravityLoginJob: Job? = null
     private var billingJob: Job? = null
@@ -1176,6 +1186,171 @@ class V2AppViewModel : FluxViewModel() {
                 onResult(null)
             } catch (e: Exception) {
                 onResult(readable(e))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 连接器 · 飞书 / 个人微信
+
+    /** 读取飞书单聊与个人微信状态；有进行中的扫码会话就继续轮询。 */
+    fun loadImConnectors(quiet: Boolean = false) {
+        if (quiet && imConnectorsJob?.isActive == true) return
+        imConnectorsJob?.cancel()
+        imConnectorsJob = viewModelScope.launch {
+            if (!quiet) _state.value = _state.value.copy(imConnectorsLoading = true)
+            try {
+                val overview = api().imConnectors()
+                val pending = overview.wechat.pendingLogin
+                    ?: _state.value.wechatLogin?.takeIf { it.isActive }
+                _state.value = _state.value.copy(
+                    imConnectors = overview,
+                    imConnectorsLoading = false,
+                    imConnectorsError = null,
+                    wechatLogin = pending,
+                )
+                if (pending != null && pending.isActive) {
+                    pollWechatLogin(pending.loginId)
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    imConnectorsLoading = false,
+                    imConnectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    fun connectFeishu() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(imConnecting = true, imConnectorsError = null)
+            try {
+                val status = api().connectFeishu()
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectors = _state.value.imConnectors?.copy(feishu = status),
+                    notice = "飞书长连接已启动，请在飞书里给机器人发第一条单聊消息",
+                )
+                loadImConnectors(quiet = true)
+                loadConnectors(quiet = true)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    fun disconnectFeishu() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(imConnecting = true)
+            try {
+                val status = api().disconnectFeishu()
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectors = _state.value.imConnectors?.copy(feishu = status),
+                    notice = "已断开飞书单聊",
+                )
+                loadImConnectors(quiet = true)
+                loadConnectors(quiet = true)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    /** 由常驻后端向官方 iLink 申请二维码；手机只负责展示与提示。 */
+    fun startWechatLogin() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(imConnecting = true, imConnectorsError = null)
+            try {
+                val session = api().connectWechat()
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    wechatLogin = session,
+                    notice = "二维码已生成，请用微信扫码绑定",
+                )
+                pollWechatLogin(session.loginId)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    fun submitWechatCode(loginId: String, code: String, onResult: (String?) -> Unit = {}) {
+        if (code.isBlank()) {
+            onResult("请输入手机微信显示的数字")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val session = api().submitWechatCode(loginId, code.trim())
+                _state.value = _state.value.copy(wechatLogin = session)
+                if (session.isActive) pollWechatLogin(session.loginId)
+                onResult(null)
+            } catch (e: Exception) {
+                val message = readable(e)
+                _state.value = _state.value.copy(imConnectorsError = message)
+                onResult(message)
+            }
+        }
+    }
+
+    fun disconnectWechat() {
+        wechatLoginJob?.cancel()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(imConnecting = true)
+            try {
+                val status = api().disconnectWechat()
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    wechatLogin = null,
+                    imConnectors = _state.value.imConnectors?.copy(wechat = status),
+                    notice = "已断开个人微信",
+                )
+                loadImConnectors(quiet = true)
+                loadConnectors(quiet = true)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    imConnecting = false,
+                    imConnectorsError = readable(e),
+                )
+            }
+        }
+    }
+
+    private fun pollWechatLogin(loginId: String) {
+        wechatLoginJob?.cancel()
+        wechatLoginJob = viewModelScope.launch {
+            repeat(160) {
+                delay(2000)
+                val current = _state.value.wechatLogin ?: return@launch
+                if (current.loginId != loginId || !current.isActive) return@launch
+                val next = runCatching { api().wechatLoginStatus(loginId) }.getOrNull()
+                    ?: return@launch
+                _state.value = _state.value.copy(wechatLogin = next)
+                when {
+                    next.isConfirmed -> {
+                        loadImConnectors(quiet = true)
+                        loadConnectors(quiet = true)
+                        _state.value = _state.value.copy(
+                            notice = "个人微信已连接；请先在微信 ClawBot 会话里发一句话",
+                        )
+                        return@launch
+                    }
+                    next.isFailed -> {
+                        _state.value = _state.value.copy(
+                            imConnectorsError = next.message.ifBlank { "微信绑定失败，请重新扫码" },
+                        )
+                        return@launch
+                    }
+                }
             }
         }
     }

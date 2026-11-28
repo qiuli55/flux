@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,6 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -57,7 +61,9 @@ import top.qiuli55.flux.mobile.data.AgentCliAccountStatus
 import top.qiuli55.flux.mobile.data.AgentCliLoginSession
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
+import top.qiuli55.flux.mobile.data.ImConnectorStatus
 import top.qiuli55.flux.mobile.data.McpConnector
+import top.qiuli55.flux.mobile.data.WechatLoginSession
 import java.net.URI
 
 // ---------------------------------------------------------------- 可测逻辑
@@ -88,7 +94,12 @@ internal fun connectorSections(items: List<McpConnector>, query: String): Connec
     return ConnectorSections(needs, connected, featured)
 }
 
-internal fun connectorSubtitle(item: McpConnector): String = when (item.status) {
+internal fun connectorSubtitle(item: McpConnector): String = when {
+    item.id in IM_CONNECTOR_IDS -> imConnectorSubtitle(item)
+    else -> connectorSubtitleByStatus(item)
+}
+
+private fun connectorSubtitleByStatus(item: McpConnector): String = when (item.status) {
     "connected" -> when {
         !item.account.isNullOrBlank() -> "@${item.account} · 已连接"
         item.kind == "custom" && item.tools.isNotEmpty() -> "已连接 · ${item.tools.size} 个工具"
@@ -101,9 +112,29 @@ internal fun connectorSubtitle(item: McpConnector): String = when (item.status) 
     else -> item.description.takeIf { it.isNotBlank() } ?: "未连接"
 }
 
+/** 连接器里新增的 IM 入口：飞书单聊 / 个人微信（官方微信 ClawBot）。 */
+internal val IM_CONNECTOR_IDS = setOf("feishu", "wechat")
+
 /** 入口文案必须点名官方产品：Cursor / 谷歌 / Antigravity。 */
 internal fun agentConnectorConnectLabel(kind: String): String =
     if (kind == "cursor") "连接 Cursor" else "连接谷歌 / Antigravity"
+
+internal fun imConnectorConnectLabel(kind: String): String =
+    if (kind == "feishu") "连接飞书" else "连接个人微信"
+
+internal fun imConnectorTitle(kind: String): String =
+    if (kind == "feishu") "飞书" else "个人微信"
+
+/** IM 连接器卡片副标题：状态来自连接器列表，不暴露任何凭据。 */
+internal fun imConnectorSubtitle(item: McpConnector): String = when (item.status) {
+    "connected" -> if (item.id == "feishu") "已连接 · 飞书单聊" else "已连接 · 微信 ClawBot"
+    "needs_reauth" -> {
+        val reason = item.error?.takeIf { it.isNotBlank() } ?: "登录已过期"
+        if ("扫码" in reason) reason else "$reason，请重新扫码"
+    }
+    "error" -> item.error?.takeIf { it.isNotBlank() } ?: "连接异常，需要处理"
+    else -> if (item.id == "feishu") "在飞书单聊里和 Flux 对话" else "通过官方微信 ClawBot 单聊"
+}
 
 internal fun agentConnectorTitle(kind: String): String =
     if (kind == "cursor") "Cursor" else "谷歌 / Antigravity"
@@ -128,6 +159,8 @@ internal fun connectorActionLabel(item: McpConnector): String? = when (item.stat
     "needs_reauth", "error" -> "重新连接"
     "disconnected" -> if (item.id in AGENT_CONNECTOR_RUNTIMES) {
         agentConnectorConnectLabel(item.id)
+    } else if (item.id in IM_CONNECTOR_IDS) {
+        imConnectorConnectLabel(item.id)
     } else {
         "连接"
     }
@@ -186,6 +219,7 @@ fun ConnectorsScreen(
     onGitHub: () -> Unit,
     onReconnect: (McpConnector) -> Unit,
     onOpenCustom: (McpConnector) -> Unit,
+    onOpenIm: (McpConnector) -> Unit,
     onDismissMessages: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -279,6 +313,7 @@ fun ConnectorsScreen(
                         onItemClick = { item ->
                             when {
                                 item.kind == "custom" -> onOpenCustom(item)
+                                item.id in IM_CONNECTOR_IDS -> onOpenIm(item)
                                 item.id == "github" && item.status == "connected" -> onGitHub()
                                 else -> onReconnect(item)
                             }
@@ -292,7 +327,8 @@ fun ConnectorsScreen(
                     ConnectorCard(
                         items = sections.featured,
                         onItemClick = { item ->
-                            if (item.available) onReconnect(item)
+                            if (!item.available) return@ConnectorCard
+                            if (item.id in IM_CONNECTOR_IDS) onOpenIm(item) else onReconnect(item)
                         },
                     )
                 }
@@ -1075,3 +1111,395 @@ fun AgentConnectorSheet(
 
 //: 供测试锁定「GitHub 已从设置弹层迁到连接器页」。
 internal val CONNECTOR_SCREEN_TITLE = "连接器"
+
+@Composable
+fun ImConnectorSheet(
+    kind: String,
+    status: ImConnectorStatus?,
+    login: WechatLoginSession?,
+    loading: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onConnectFeishu: () -> Unit,
+    onDisconnectFeishu: () -> Unit,
+    onStartWechat: () -> Unit,
+    onSubmitWechatCode: (loginId: String, code: String, onResult: (String?) -> Unit) -> Unit,
+    onDisconnectWechat: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
+    var confirmDisconnect by remember { mutableStateOf(false) }
+    var code by remember(kind, login?.loginId) { mutableStateOf("") }
+    var codeError by remember(kind, login?.loginId) { mutableStateOf<String?>(null) }
+    val title = imConnectorTitle(kind)
+
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .94f) {
+        SheetHeader(
+            title = title,
+            subtitle = if (kind == "feishu") "飞书官方单聊" else "腾讯官方微信 ClawBot",
+            onClose = onDismiss,
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+        ) {
+            WhiteCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Label(
+                        status?.message?.takeIf { it.isNotBlank() }
+                            ?: if (loading) "正在读取连接状态…" else "尚未连接",
+                        12.5f,
+                        if (status?.connected == true) V2Colors.ink(.88f) else V2Colors.ink(.62f),
+                        FontWeight.Medium,
+                        maxLines = 4,
+                    )
+                    if (status?.running == true) {
+                        Spacer(Modifier.height(4.dp))
+                        Label(
+                            if (kind == "feishu") "飞书长连接运行在 Flux 服务端" else "微信长轮询运行在 Flux 服务端",
+                            10f,
+                            V2Colors.ink(.40f),
+                        )
+                    }
+                }
+            }
+
+            val flash = error ?: status?.error
+            if (!flash.isNullOrBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(V2Colors.rose.copy(alpha = .08f))
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                ) {
+                    Label(flash, 10.5f, V2Colors.rose700, maxLines = 5)
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            if (kind == "feishu") {
+                FeishuConnectorContent(
+                    status = status,
+                    loading = loading,
+                    onConnect = onConnectFeishu,
+                    onDisconnect = onDisconnectFeishu,
+                    confirmDisconnect = confirmDisconnect,
+                    onAskDisconnect = { confirmDisconnect = true },
+                )
+            } else {
+                WechatConnectorContent(
+                    status = status,
+                    login = login,
+                    loading = loading,
+                    code = code,
+                    codeError = codeError,
+                    onCodeChange = {
+                        code = it
+                        codeError = null
+                    },
+                    onSubmitCode = {
+                        login?.let { session ->
+                            onSubmitWechatCode(session.loginId, code) { failure ->
+                                codeError = failure
+                                if (failure == null) code = ""
+                            }
+                        }
+                    },
+                    onStart = onStartWechat,
+                    onDisconnect = onDisconnectWechat,
+                    confirmDisconnect = confirmDisconnect,
+                    onAskDisconnect = { confirmDisconnect = true },
+                    onOpenUrl = onOpenUrl,
+                )
+            }
+            Spacer(Modifier.height(22.dp))
+        }
+    }
+}
+
+@Composable
+private fun FeishuConnectorContent(
+    status: ImConnectorStatus?,
+    loading: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    confirmDisconnect: Boolean,
+    onAskDisconnect: () -> Unit,
+) {
+    Label("使用前提", 10.5f, V2Colors.ink(.42f), FontWeight.Medium)
+    Spacer(Modifier.height(6.dp))
+    WhiteCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp)) {
+            Label(
+                "1. 在飞书开放平台创建「企业自建应用」，开启「长连接接收事件」，订阅 im.message.receive_v1。",
+                10.5f,
+                V2Colors.ink(.56f),
+                maxLines = 4,
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                "2. 开通单聊消息读取与以应用身份发消息的权限，并发布应用。",
+                10.5f,
+                V2Colors.ink(.56f),
+                maxLines = 3,
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                "3. 把 App ID / App Secret 配到 Flux 服务端环境变量 FLUX_FEISHU_IM_APP_ID / FLUX_FEISHU_IM_APP_SECRET，然后重启服务端。",
+                10.5f,
+                V2Colors.ink(.56f),
+                maxLines = 4,
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                "Flux 只处理单聊；群消息会被忽略。密钥不会显示在 App 里。",
+                10f,
+                V2Colors.ink(.38f),
+                maxLines = 3,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(14.dp))
+    if (status?.connected == true || status?.bound == true || status?.waitingForMessage == true) {
+        SettingsActionRow(
+            icon = Icons.Outlined.Logout,
+            title = if (confirmDisconnect) "再次点击确认断开" else "断开飞书单聊",
+            description = "断开后不再向这个飞书单聊推送任务通知",
+            danger = true,
+            onClick = { if (confirmDisconnect) onDisconnect() else onAskDisconnect() },
+        )
+    } else {
+        PrimaryButton(
+            text = if (loading) "正在连接…" else "启动飞书连接",
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onConnect,
+        )
+        Spacer(Modifier.height(8.dp))
+        Label(
+            if (status?.configured == false) {
+                "服务端还没有配置飞书应用；配置并重启后，这个按钮才能真正连上。"
+            } else {
+                "启动后请在飞书里给机器人发第一条单聊消息，Flux 收到后才会记为已连接。"
+            },
+            9.5f,
+            V2Colors.ink(.36f),
+            maxLines = 3,
+        )
+    }
+}
+
+@Composable
+private fun WechatConnectorContent(
+    status: ImConnectorStatus?,
+    login: WechatLoginSession?,
+    loading: Boolean,
+    code: String,
+    codeError: String?,
+    onCodeChange: (String) -> Unit,
+    onSubmitCode: () -> Unit,
+    onStart: () -> Unit,
+    onDisconnect: () -> Unit,
+    confirmDisconnect: Boolean,
+    onAskDisconnect: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
+    Label("使用前提", 10.5f, V2Colors.ink(.42f), FontWeight.Medium)
+    Spacer(Modifier.height(6.dp))
+    WhiteCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp)) {
+            Label(
+                "需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信 ClawBot」。这两条是常见前提，官方 README 并未写死这些版本号。",
+                10.5f,
+                V2Colors.ink(.56f),
+                maxLines = 6,
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                "如果插件列表里没有「微信 ClawBot」，说明你的微信还没有灰度到该功能，请稍后再试；Flux 不会假装连接成功。",
+                10.5f,
+                V2Colors.ink(.48f),
+                maxLines = 4,
+            )
+            Spacer(Modifier.height(6.dp))
+            Label(
+                "同一个微信号不要再绑定到另一个 ClawBot / OpenClaw 后端，否则消息可能被分流。",
+                10f,
+                V2Colors.rose700,
+                maxLines = 3,
+            )
+        }
+    }
+
+    val active = login?.takeIf { it.isActive }
+    if (active != null) {
+        Spacer(Modifier.height(14.dp))
+        WhiteCard(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.padding(16.dp).fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Label(active.message.ifBlank { "等待扫码确认…" }, 11.5f, V2Colors.ink(.72f), FontWeight.Medium)
+                Spacer(Modifier.height(10.dp))
+                if (active.qrcodeMatrix.isNotEmpty()) {
+                    QrMatrixView(active.qrcodeMatrix)
+                } else {
+                    Label(
+                        "二维码矩阵暂不可用；请使用下面的备份链接在微信内打开。",
+                        10f,
+                        V2Colors.ink(.42f),
+                        maxLines = 3,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Label("二维码约 5 分钟内有效，过期会自动刷新。", 9.5f, V2Colors.ink(.36f))
+                if (!active.backupUrl.isNullOrBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    GhostButton(
+                        text = "在微信中打开备份链接",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onOpenUrl(active.backupUrl.orEmpty()) },
+                    )
+                }
+                if (active.needsVerifyCode) {
+                    Spacer(Modifier.height(12.dp))
+                    Label(
+                        "手机微信显示了数字，请在下面输入以继续绑定：",
+                        10.5f,
+                        V2Colors.ink(.46f),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    ConnectorTextField(
+                        value = code,
+                        placeholder = "输入手机微信显示的数字",
+                        onChange = onCodeChange,
+                    )
+                    codeError?.let { message ->
+                        Spacer(Modifier.height(6.dp))
+                        Label(message, 10f, V2Colors.rose700)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GhostButton(
+                        text = "提交数字",
+                        enabled = !loading,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onSubmitCode,
+                    )
+                }
+            }
+        }
+    }
+
+    if (status?.connected == true && active == null) {
+        Spacer(Modifier.height(14.dp))
+        WhiteCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp)) {
+                Label("已连接", 12f, V2Colors.ink(.86f), FontWeight.Medium)
+                Spacer(Modifier.height(5.dp))
+                Label(
+                    "首次使用请先在微信「微信 ClawBot」会话里发一句话。没有 context_token 时，Flux 无法回复。",
+                    10.5f,
+                    V2Colors.ink(.52f),
+                    maxLines = 4,
+                )
+                Spacer(Modifier.height(6.dp))
+                Label(
+                    status.capabilities.proactiveWindowNote
+                        ?: "微信只在你最近互动后允许主动消息；推不出去时会保留，下次对话补发。",
+                    9.5f,
+                    V2Colors.ink(.38f),
+                    maxLines = 4,
+                )
+                if (status.pendingNotices > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Label("有 ${status.pendingNotices} 条提醒等你下次开口后补发。", 9.5f, V2Colors.ink(.42f))
+                }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        PrimaryButton(
+            text = "重新扫码绑定",
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onStart,
+        )
+        Spacer(Modifier.height(8.dp))
+        SettingsActionRow(
+            icon = Icons.Outlined.Logout,
+            title = if (confirmDisconnect) "再次点击确认断开" else "断开个人微信",
+            description = "清除本机保存的微信绑定凭据",
+            danger = true,
+            onClick = { if (confirmDisconnect) onDisconnect() else onAskDisconnect() },
+        )
+    } else if (active == null) {
+        Spacer(Modifier.height(14.dp))
+        PrimaryButton(
+            text = if (loading) "正在向官方申请二维码…" else "连接个人微信",
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onStart,
+        )
+        Spacer(Modifier.height(8.dp))
+        Label(
+            "二维码由 Flux 服务端向腾讯官方 iLink 申请；不需要安装 OpenClaw，也不用自己搭转发器。",
+            9.5f,
+            V2Colors.ink(.36f),
+            maxLines = 3,
+        )
+    }
+
+    if (login?.isFailed == true) {
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(V2Colors.rose.copy(alpha = .08f))
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+        ) {
+            Label(login.message.ifBlank { "绑定失败，请重新扫码" }, 10.5f, V2Colors.rose700, maxLines = 4)
+        }
+        Spacer(Modifier.height(8.dp))
+        GhostButton(
+            text = "重新获取二维码",
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onStart,
+        )
+    }
+}
+
+@Composable
+private fun QrMatrixView(rows: List<String>, size: Dp = 216.dp) {
+    val columns = rows.firstOrNull()?.length ?: 0
+    if (columns == 0) return
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.White)
+            .padding(10.dp),
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val cell = this.size.width / columns
+            val cellHeight = this.size.height / rows.size
+            for (row in rows.indices) {
+                val line = rows[row]
+                for (column in line.indices) {
+                    if (line[column] == '1') {
+                        drawRect(
+                            color = Color.Black,
+                            topLeft = Offset(column * cell, row * cellHeight),
+                            size = Size(cell + 0.3f, cellHeight + 0.3f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

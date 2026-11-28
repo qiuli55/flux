@@ -1519,6 +1519,22 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImWechatCodeRequest": {
+        "description": "个人微信绑定过程中，手机显示的数字（官方 PIN 流程）。",
+        "properties": {
+          "code": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "ImWechatCodeRequest",
+        "type": "object"
+      },
       "InstallationConnectRequest": {
         "description": "接入一个本机 CLI Agent（或全部已安装的）。\n\n- `agent`：adapter 名（codex / opencode / claude-code），必须是服务端内置 adapter 之一；\n- `all=true`：接入全部**已安装**的 Agent（未安装的跳过，不导致整体失败）；\n- 两者要么给一个，要么给 all，都不给按 422 拒绝（避免\"接入什么\"含糊不清）。",
         "properties": {
@@ -7640,6 +7656,261 @@
         "summary": "Stop Session",
         "tags": [
           "ide"
+        ]
+      }
+    },
+    "/api/v1/im-connectors": {
+      "get": {
+        "description": "飞书 / 个人微信连接器状态（不含任何 token / QR 原值）。",
+        "operationId": "list_im_connectors_api_v1_im_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Im Connectors Api V1 Im Connectors Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Im Connectors",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/feishu/connect": {
+      "post": {
+        "description": "校验飞书应用凭据并启动长连接；随后用户在飞书里发第一条单聊消息。",
+        "operationId": "connect_feishu_api_v1_im_connectors_feishu_connect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Connect Feishu Api V1 Im Connectors Feishu Connect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connect Feishu",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/feishu/disconnect": {
+      "post": {
+        "description": "断开飞书长连接并清除已绑定的单聊（服务端 App 凭据保留）。",
+        "operationId": "disconnect_feishu_api_v1_im_connectors_feishu_disconnect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Disconnect Feishu Api V1 Im Connectors Feishu Disconnect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Disconnect Feishu",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/wechat/connect": {
+      "post": {
+        "description": "向官方 iLink 申请绑定二维码；返回可直接绘制的矩阵与备份链接。",
+        "operationId": "connect_wechat_api_v1_im_connectors_wechat_connect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Connect Wechat Api V1 Im Connectors Wechat Connect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Connect Wechat",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/wechat/disconnect": {
+      "post": {
+        "description": "停止轮询并清除本机保存的微信绑定凭据。",
+        "operationId": "disconnect_wechat_api_v1_im_connectors_wechat_disconnect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Disconnect Wechat Api V1 Im Connectors Wechat Disconnect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Disconnect Wechat",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/wechat/login/{login_id}": {
+      "get": {
+        "description": "查询扫码绑定进度（pending / scaned / need_verifycode / confirmed / failed）。",
+        "operationId": "wechat_login_status_api_v1_im_connectors_wechat_login__login_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "login_id",
+            "required": true,
+            "schema": {
+              "title": "Login Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Wechat Login Status Api V1 Im Connectors Wechat Login  Login Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Wechat Login Status",
+        "tags": [
+          "im-connectors"
+        ]
+      }
+    },
+    "/api/v1/im-connectors/wechat/login/{login_id}/verify-code": {
+      "post": {
+        "description": "提交手机微信显示的绑定数字（官方 PIN 流程）。",
+        "operationId": "wechat_verify_code_api_v1_im_connectors_wechat_login__login_id__verify_code_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "login_id",
+            "required": true,
+            "schema": {
+              "title": "Login Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImWechatCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Wechat Verify Code Api V1 Im Connectors Wechat Login  Login Id  Verify Code Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Wechat Verify Code",
+        "tags": [
+          "im-connectors"
         ]
       }
     },

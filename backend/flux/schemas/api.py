@@ -623,3 +623,9 @@ class McpConnectorCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=64)
     url: str = Field(min_length=1, max_length=2048)
+
+
+class ImWechatCodeRequest(BaseModel):
+    """个人微信绑定过程中，手机显示的数字（官方 PIN 流程）。"""
+
+    code: str = Field(min_length=1, max_length=32)

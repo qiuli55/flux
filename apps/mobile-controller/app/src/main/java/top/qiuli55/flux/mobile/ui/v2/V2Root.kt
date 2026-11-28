@@ -176,6 +176,7 @@ fun FluxV2Root() {
     var githubSheetOpen by remember { mutableStateOf(false) }
     var connectorDetail by remember { mutableStateOf<McpConnector?>(null) }
     var agentConnectorKind by remember { mutableStateOf<String?>(null) }
+    var imConnectorKind by remember { mutableStateOf<String?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
     var agentPickerOpen by remember { mutableStateOf(false) }
     var manualConnectOpen by remember { mutableStateOf(false) }
@@ -465,7 +466,7 @@ fun FluxV2Root() {
         settingsOpen || keyVaultOpen || newChatOpen ||
         agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
         designExitOpen || memoryOpen || customConnectorOpen || githubSheetOpen ||
-        connectorDetail != null
+        connectorDetail != null || imConnectorKind != null
 
     BackHandler(enabled = hasBack) {
         when {
@@ -482,6 +483,7 @@ fun FluxV2Root() {
             memoryOpen -> memoryOpen = false
             customConnectorOpen -> customConnectorOpen = false
             githubSheetOpen -> githubSheetOpen = false
+            imConnectorKind != null -> imConnectorKind = null
             connectorDetail != null -> connectorDetail = null
             settingsOpen -> settingsOpen = false
             else -> route = when (val current = route) {
@@ -730,7 +732,10 @@ fun FluxV2Root() {
                             extraTop = extraTop,
                             showBack = showBack,
                             onBack = { route = V2Route.Profile },
-                            onReload = { vm.loadConnectors() },
+                            onReload = {
+                                vm.loadConnectors()
+                                vm.loadImConnectors()
+                            },
                             onAdd = { customConnectorOpen = true },
                             onGitHub = { githubSheetOpen = true },
                             onReconnect = { item ->
@@ -743,6 +748,10 @@ fun FluxV2Root() {
                                         agentConnectorKind = item.id
                                         vm.loadAgentConnectorAccount(item.id)
                                     }
+                                    "feishu", "wechat" -> {
+                                        imConnectorKind = item.id
+                                        vm.loadImConnectors()
+                                    }
                                     else -> vm.probeConnector(item.id) { failure ->
                                         if (failure != null) {
                                             Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
@@ -751,6 +760,10 @@ fun FluxV2Root() {
                                 }
                             },
                             onOpenCustom = { connectorDetail = it },
+                            onOpenIm = { item ->
+                                imConnectorKind = item.id
+                                vm.loadImConnectors()
+                            },
                             onDismissMessages = { vm.clearMessages() },
                         )
 
@@ -1250,6 +1263,30 @@ fun FluxV2Root() {
                                 vm.logoutAgentConnector(kind)
                                 agentConnectorKind = null
                             },
+                            onOpenUrl = { openInternalBrowser(it) },
+                        )
+                    }
+
+                    imConnectorKind?.let { kind ->
+                        val imStatus = if (kind == "feishu") {
+                            app.imConnectors?.feishu
+                        } else {
+                            app.imConnectors?.wechat
+                        }
+                        ImConnectorSheet(
+                            kind = kind,
+                            status = imStatus,
+                            login = app.wechatLogin,
+                            loading = app.imConnecting || app.imConnectorsLoading,
+                            error = app.imConnectorsError,
+                            onDismiss = { imConnectorKind = null },
+                            onConnectFeishu = { vm.connectFeishu() },
+                            onDisconnectFeishu = { vm.disconnectFeishu() },
+                            onStartWechat = { vm.startWechatLogin() },
+                            onSubmitWechatCode = { loginId, code, onResult ->
+                                vm.submitWechatCode(loginId, code, onResult)
+                            },
+                            onDisconnectWechat = { vm.disconnectWechat() },
                             onOpenUrl = { openInternalBrowser(it) },
                         )
                     }

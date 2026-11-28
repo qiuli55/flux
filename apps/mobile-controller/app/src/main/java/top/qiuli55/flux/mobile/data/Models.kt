@@ -1013,6 +1013,69 @@ data class McpConnectorList(
     val items: List<McpConnector> = emptyList(),
 )
 
+/** 飞书 / 个人微信连接器的能力说明（不包含任何 token）。 */
+@Serializable
+data class ImConnectorCapabilities(
+    val chat: Boolean = false,
+    val notifications: Boolean = false,
+    val group: Boolean = false,
+    @SerialName("proactive_window_note") val proactiveWindowNote: String? = null,
+)
+
+/**
+ * 连接器 · 飞书单聊 / 个人微信（官方微信 ClawBot）。
+ *
+ * 后端只返回状态与公开字段；bot_token、context_token、原始二维码值都不在响应里。
+ */
+@Serializable
+data class ImConnectorStatus(
+    val id: String = "",
+    val enabled: Boolean = false,
+    val configured: Boolean = false,
+    val connected: Boolean = false,
+    val running: Boolean = false,
+    val bound: Boolean = false,
+    @SerialName("waiting_for_message") val waitingForMessage: Boolean = false,
+    @SerialName("needs_reauth") val needsReauth: Boolean = false,
+    @SerialName("has_context_token") val hasContextToken: Boolean = false,
+    @SerialName("pending_notices") val pendingNotices: Int = 0,
+    @SerialName("pending_login") val pendingLogin: WechatLoginSession? = null,
+    val error: String? = null,
+    val message: String = "",
+    val capabilities: ImConnectorCapabilities = ImConnectorCapabilities(),
+)
+
+@Serializable
+data class ImConnectorOverview(
+    val feishu: ImConnectorStatus = ImConnectorStatus(id = "feishu"),
+    val wechat: ImConnectorStatus = ImConnectorStatus(id = "wechat"),
+)
+
+/**
+ * 个人微信扫码绑定会话。
+ *
+ * [qrcodeMatrix] 是 0/1 行矩阵，手机端直接绘制，不依赖图片组件；
+ * [backupUrl] 是官方提供的、可在微信内打开的备份链接。
+ */
+@Serializable
+data class WechatLoginSession(
+    @SerialName("login_id") val loginId: String = "",
+    /** pending / scaned / need_verifycode / confirmed / failed */
+    val state: String = "pending",
+    val message: String = "",
+    @SerialName("qrcode_image") val qrcodeImage: String = "",
+    @SerialName("qrcode_matrix") val qrcodeMatrix: List<String> = emptyList(),
+    @SerialName("backup_url") val backupUrl: String? = null,
+    @SerialName("expires_at") val expiresAt: Long = 0,
+    @SerialName("needs_verify_code") val needsVerifyCode: Boolean = false,
+    val error: String? = null,
+) {
+    val isPending: Boolean get() = state == "pending" || state == "scaned"
+    val isActive: Boolean get() = isPending || state == "need_verifycode"
+    val isConfirmed: Boolean get() = state == "confirmed"
+    val isFailed: Boolean get() = state == "failed"
+}
+
 class FluxApiException(
     val code: String,
     override val message: String,
