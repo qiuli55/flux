@@ -257,6 +257,12 @@ async def test_terminal_command_jwt_is_redacted_on_all_projections(
     assert _JWT not in folded
     assert "[REDACTED:token]" in folded
 
+    # 4) terminal_events（_emit 的 command/chunk 路径）同样打码。
+    events = await apply_container.terminal.list_events(session.id)
+    stored = "\n".join(f"{event.command or ''}\n{event.chunk or ''}" for event in events)
+    assert _JWT not in stored
+    assert "[REDACTED:token]" in stored
+
 
 async def test_run_command_reports_failure_exit_code(apply_container: Container) -> None:
     session = await apply_container.terminal.create_session()

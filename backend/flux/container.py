@@ -478,7 +478,12 @@ class Container:
         # DSH / CLI 的运行事件 → 任务流：前端订阅 SSE 就能看到 Agent 正在干什么
         # 同时把增量合并成执行轨迹，Run 终态落库（任务详情的思考过程与命令输出靠它回看）。
         # 原生工具/命令不经过 Flux MCP，故 relay 同时承担这部分上下文摄入。
-        TaskStreamRelay(self.task_stream, self.run_trace, self.context_ingestor).attach(self.bus)
+        TaskStreamRelay(
+            self.task_stream,
+            self.run_trace,
+            self.context_ingestor,
+            literals=self.settings.redaction_literal_list,
+        ).attach(self.bus)
         # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
         self.context_backfill = BackfillObserver()
         # 助理（Supervisor）：P0 只有事件幂等入库 + outbox 排队；判断层（P1）与派发

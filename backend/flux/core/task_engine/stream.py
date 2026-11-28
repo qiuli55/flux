@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -186,8 +186,12 @@ class TaskStreamRelay:
         hub: TaskStreamHub,
         recorder: RunTraceRecorder | None = None,
         ingestor: ContextIngestor | None = None,
+        literals: Sequence[str] = (),
     ) -> None:
         self._hub = hub
+        #: 可控脱敏字面量清单（`FLUX_REDACTION_LITERALS`）：与上下文摄入 / 终端同口径，
+        #: 无前缀、低熵的短密钥只能靠它精确命中。默认空清单，行为与只走默认规则一致。
+        self._literals = tuple(literals)
         #: 执行轨迹记录器：把思考/命令增量合并后落库，供任务详情回看（可选装配，单测可省）
         self._recorder = recorder
         #: 上下文摄入：runtime 原生工具/命令不经过 Flux MCP，只能从这里补进 step 日志
@@ -208,7 +212,7 @@ class TaskStreamRelay:
         if task_id is None:
             return
         event_type = str(body.get("event_type") or body.get("method") or "")
-        payload = _event_payload(body, event_type)
+        payload = _event_payload(body, event_type, literals=self._literals)
         # 心跳/用量类事件不推给手机端：时间线只收思考、命令、正文、错误
         if not payload:
             return
@@ -307,10 +311,14 @@ def _event_text(body: dict[str, Any]) -> str:
     return ""
 
 
-def _redacted(text: str) -> str:
-    """工具出入参可能带凭据：进手机端之前统一打码（与上下文摄入同一套规则）。"""
+def _redacted(text: str, literals: Sequence[str] = ()) -> str:
+    """工具出入参可能带凭据：进手机端之前统一打码（与上下文摄入同一套规则）。
+
+    `literals` 是配置的可控字面量清单：默认空清单时只走内置规则（`sk-` / JWT / 熵检测），
+    与既有行为一致；装配层会传入 `Settings.redaction_literal_list`。
+    """
     try:
-        return redact(text).text
+        return redact(text, literals=literals).text
     except Exception:  # noqa: BLE001 - 脱敏失败绝不能把原文推出去
         logger.exception("运行事件脱敏失败，按空文本处理")
         return ""
@@ -406,7 +414,10 @@ def _event_kind(event_type: str) -> str:
 
 
 def _tool_payload(
-    body: dict[str, Any], part: dict[str, Any], item: dict[str, Any]
+    body: dict[str, Any],
+    part: dict[str, Any],
+    item: dict[str, Any],
+    literals: Sequence[str] = (),
 ) -> dict[str, Any]:
     """工具事件的可展示字段：名称、命令行/参数、状态、输出、调用 id。
 
@@ -428,7 +439,7 @@ def _tool_payload(
     fields: dict[str, Any] = {
         # 名称未知时留空：客户端显示兜底名，轨迹合并也不会用「tool」把真实名字覆盖掉
         "name": _clip(str(name), 80) if name else "",
-        "detail": _clip(_redacted(str(detail)), DETAIL_LIMIT) if detail else "",
+        "detail": _clip(_redacted(str(detail), literals), DETAIL_LIMIT) if detail else "",
         "status": str(body.get("status") or body.get("state") or state.get("status") or ""),
     }
     # 分类与文件路径随事件一起下发：客户端据此实时累加「概览」的命令/文件数
@@ -438,10 +449,10 @@ def _tool_payload(
     if paths:
         fields["paths"] = paths
     if isinstance(output, str) and output.strip():
-        fields["output"] = _clip(_redacted(output), OUTPUT_LIMIT)
+        fields["output"] = _clip(_redacted(output, literals), OUTPUT_LIMIT)
     title = body.get("title") or state.get("title")
     if isinstance(title, str) and title.strip():
-        fields["title"] = _clip(_redacted(title), DETAIL_LIMIT)
+        fields["title"] = _clip(_redacted(title, literals), DETAIL_LIMIT)
     call_id = body.get("call_id") or part.get("callID") or item.get("id")
     if isinstance(call_id, str) and call_id.strip():
         fields["call_id"] = call_id
@@ -456,14 +467,16 @@ def _json_compact(value: Any) -> str:
         return str(value)
 
 
-def _event_payload(body: dict[str, Any], event_type: str) -> dict[str, Any]:
+def _event_payload(
+    body: dict[str, Any], event_type: str, literals: Sequence[str] = ()
+) -> dict[str, Any]:
     """一条运行事件 → 手机端时间线载荷；返回空 dict 表示这类事件不值得推。"""
     kind = _event_kind(event_type)
     part = body.get("part") if isinstance(body.get("part"), dict) else {}
     item = body.get("item") if isinstance(body.get("item"), dict) else {}
 
     if kind == "tool":
-        fields = _tool_payload(body, part, item)
+        fields = _tool_payload(body, part, item, literals)
         # 连工具名都没有的空中间态不单独成卡；但带 call_id 的收尾事件必须放行，
         # 否则轨迹里的命令永远停在「运行中」（DSH 的 tool/result 不带名称与参数）
         if (
@@ -489,7 +502,7 @@ def _event_payload(body: dict[str, Any], event_type: str) -> dict[str, Any]:
     if kind == "status":
         # 未知事件类型但带正文：按正文处理，保持旧行为（不丢增量文字）
         kind = "text"
-    payload: dict[str, Any] = {"kind": kind, "text": _clip(_redacted(text), OUTPUT_LIMIT)}
+    payload: dict[str, Any] = {"kind": kind, "text": _clip(_redacted(text, literals), OUTPUT_LIMIT)}
     if kind == "thinking" and body.get("phase"):
         payload["phase"] = str(body["phase"])
     return payload
