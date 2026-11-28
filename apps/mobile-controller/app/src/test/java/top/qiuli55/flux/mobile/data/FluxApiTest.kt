@@ -92,6 +92,41 @@ class FluxApiTest {
     }
 
     @Test
+    fun artifactExtractBody_includesOnlyPresentOptionalFields() {
+        val minimal = artifactExtractBody(" https://example.com/a ", "doc")
+        assertEquals("https://example.com/a", minimal["url"]?.jsonPrimitive?.content)
+        assertEquals("doc", minimal["type"]?.jsonPrimitive?.content)
+        assertTrue("html" !in minimal)
+        assertTrue("title" !in minimal)
+        assertTrue("task_id" !in minimal)
+
+        val full = artifactExtractBody(
+            "https://example.com/a",
+            "page",
+            html = "<html></html>",
+            title = " 标题 ",
+            taskId = " task-1 ",
+        )
+        assertEquals("page", full["type"]?.jsonPrimitive?.content)
+        assertEquals("<html></html>", full["html"]?.jsonPrimitive?.content)
+        assertEquals("标题", full["title"]?.jsonPrimitive?.content)
+        assertEquals("task-1", full["task_id"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun artifactExtractionDecodesFallbackAndSendBackFields() {
+        val result = json.decodeFromString<ArtifactExtraction>(
+            """{"artifact":{"id":"a1","type":"doc","title":"页面"},"fallback":true,
+               "excerpt":"摘录","note":"抓取失败","message_id":"m1","task_id":"t1"}""",
+        )
+        assertEquals("a1", result.artifact.id)
+        assertTrue(result.fallback)
+        assertEquals("抓取失败", result.note)
+        assertEquals("m1", result.messageId)
+        assertEquals("t1", result.taskId)
+    }
+
+    @Test
     fun decodePolledTaskEventsList() {
         // 中转模式轮询 /tasks/{id}/events 拿到的事件数组：结构与 /stream 一致
         val events = json.decodeFromString<List<TaskStreamEvent>>(

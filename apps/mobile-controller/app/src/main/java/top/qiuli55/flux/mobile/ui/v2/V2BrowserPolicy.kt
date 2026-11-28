@@ -242,6 +242,9 @@ internal enum class V2BrowserFailureKind {
 
     /** 离线预览试图访问真实站点，已拦截。 */
     PREVIEW_BLOCKED,
+
+    /** 站点明确拒绝 WebView 登录（如 Google 的 disallowed_useragent）。 */
+    LOGIN_RESTRICTED,
 }
 
 /**
@@ -262,10 +265,13 @@ internal data class V2BrowserFailure(
             V2BrowserFailureKind.HTTP -> "网页返回 ${statusCode ?: "错误"}"
             V2BrowserFailureKind.SSL -> "证书不受信任"
             V2BrowserFailureKind.PREVIEW_BLOCKED -> "预览已拦截外部请求"
+            V2BrowserFailureKind.LOGIN_RESTRICTED -> "该网站限制应用内登录"
         }
 
-    /** 预览被拦截不是「再试一次」能解决的，重试按钮只在真正可重试时出现。 */
-    val canRetry: Boolean get() = kind != V2BrowserFailureKind.PREVIEW_BLOCKED
+    /** 预览被拦截 / 站点限制 WebView 登录都不是「再试一次」能解决的。 */
+    val canRetry: Boolean
+        get() = kind != V2BrowserFailureKind.PREVIEW_BLOCKED &&
+            kind != V2BrowserFailureKind.LOGIN_RESTRICTED
 
     /**
      * 失败页可以显式交给系统浏览器；这是用户主动选择，不改变内置浏览器自己
@@ -275,8 +281,10 @@ internal data class V2BrowserFailure(
         get() = kind != V2BrowserFailureKind.PREVIEW_BLOCKED &&
             browserShareableUrl(SITE_BROWSER_POLICY, failedUrl, null) != null
 
-    /** HTTP 错误页通常仍有服务端内容（如 404 说明页），允许用户收起错误层查看。 */
-    val canShowPageAnyway: Boolean get() = kind == V2BrowserFailureKind.HTTP
+    /** HTTP 错误页 / 登录限制页通常仍有服务端内容，允许用户收起错误层查看。 */
+    val canShowPageAnyway: Boolean
+        get() = kind == V2BrowserFailureKind.HTTP ||
+            kind == V2BrowserFailureKind.LOGIN_RESTRICTED
 }
 
 private fun browserFailureDetail(description: String?): String? =
@@ -332,6 +340,39 @@ internal fun browserPreviewBlockedFailure(): V2BrowserFailure = V2BrowserFailure
     message = "离线预览不会加载外部网络资源，也不会把站点 cookie 带出去。",
 )
 
+/**
+ * 识别「网站拒绝在应用内浏览器登录」的典型页面（Google 的 disallowed_useragent /
+ * 「此浏览器或应用可能不安全」）。命中后给中文说明，并保留「在系统浏览器打开」出口；
+ * 主浏览路径仍然是我们自己的 WebView，不改成 Custom Tabs。
+ *
+ * 只在 Google 账号域上判断，避免普通网页里出现同名字样时误报。
+ */
+internal fun browserLoginRestrictionFailure(
+    url: String?,
+    title: String?,
+    pageText: String?,
+): V2BrowserFailure? {
+    val host = httpUrlHost(url) ?: return null
+    if (host != "google.com" && !host.endsWith(".google.com")) return null
+    val haystack = "${url.orEmpty()} ${title.orEmpty()} ${pageText.orEmpty()}".lowercase()
+    val markers = listOf(
+        "disallowed_useragent",
+        "此浏览器或应用可能不安全",
+        "浏览器可能不安全",
+        "couldn't sign you in",
+        "this browser or app may not be secure",
+        "unsupported browser",
+    )
+    if (markers.none { it in haystack }) return null
+    return V2BrowserFailure(
+        kind = V2BrowserFailureKind.LOGIN_RESTRICTED,
+        message = "该网站限制在应用内浏览器登录，可以改用系统浏览器打开。",
+        failedUrl = url,
+        detail = "Google 等站点会拒绝 WebView 登录；内置浏览器不会为此改用其它浏览内核，"
+            + "但会保留「用系统浏览器打开」作为出口。",
+    )
+}
+
 /** 常见 HTTP 状态的中文说明；没有对应文案时只显示状态码。 */
 internal fun httpStatusReason(statusCode: Int): String? = when (statusCode) {
     400 -> "请求无效"
@@ -358,6 +399,8 @@ internal fun preferredBrowserFailure(
 ): V2BrowserFailure? = when {
     incoming == null -> current
     current == null -> incoming
+    current.kind == V2BrowserFailureKind.LOGIN_RESTRICTED &&
+        incoming.kind != V2BrowserFailureKind.LOGIN_RESTRICTED -> current
     current.kind == V2BrowserFailureKind.SSL &&
         incoming.kind != V2BrowserFailureKind.SSL -> current
     current.kind == V2BrowserFailureKind.HTTP &&

@@ -163,6 +163,9 @@ class V2AppViewModel : FluxViewModel() {
                     }.getOrElse { session }
                 }
                 val config = FluxEnv.settings.config.first()
+                // 账号加载完成后对齐同步的 WebView profile 键（含从旧版本升级、尚无键的情况）；
+                // 根容器随后会比较目标 profile，必要时重启进程让数据目录生效。
+                FluxEnv.settings.syncWebViewProfile(session)
                 val boot = when {
                     session?.hasDevice == true -> V2Boot.READY
                     session != null -> V2Boot.DEVICES

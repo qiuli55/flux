@@ -59,6 +59,7 @@ import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -80,6 +81,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,7 +101,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import java.io.ByteArrayInputStream
+import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 
 /** 网页 JS 对话框的类型；三种都必须在 App 内应答，否则页面会卡住。 */
@@ -154,6 +161,10 @@ fun V2BrowserScreen(
     showBack: Boolean = true,
     html: String? = null,
     title: String? = null,
+    /** 从对话进入时带上任务 id，提取后可以「发回当前对话」。 */
+    taskId: String? = null,
+    /** 提取成功后打开产物详情；为空时只提示已保存。 */
+    onOpenArtifact: ((String) -> Unit)? = null,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -195,8 +206,12 @@ fun V2BrowserScreen(
     // OAuth / 登录弹窗：onCreateWindow 创建的 WebView 叠在主页面上，可手动关闭
     var popupView by remember(initialUrl) { mutableStateOf<WebView?>(null) }
     var popupOpen by remember(initialUrl) { mutableStateOf(false) }
-    // 顶栏溢出菜单：复制 / 分享 / 系统浏览器
+    // 顶栏溢出菜单：复制 / 分享 / 提取到创作 / 系统浏览器
     var toolsOpen by remember(initialUrl) { mutableStateOf(false) }
+    // 提取到创作：先选择类型（可顺带发回当前对话），再走加载 / 成功 / 失败弹层
+    var extractUi by remember(initialUrl) { mutableStateOf<V2BrowserExtractUi?>(null) }
+    var extractChoice by remember(initialUrl) { mutableStateOf<V2BrowserExtractType?>(null) }
+    val scope = rememberCoroutineScope()
 
     // 站点会话的 UA 选择跨进入 / 退出保留，默认桌面版
     var desktopMode by remember(initialUrl) { mutableStateOf(settingsStore.desktopMode()) }
@@ -408,6 +423,28 @@ fun V2BrowserScreen(
     }
 
     /**
+     * Google 等站点会明确拒绝 WebView 登录（disallowed_useragent）。页面本身可能
+     * 正常返回 200，所以只能在加载完成后读标题 / 正文做识别；命中后给出中文说明，
+     * 并把「用系统浏览器打开」保留为出口，而不是把主浏览换成 Custom Tabs。
+     */
+    fun detectLoginRestriction(view: WebView?, finishedUrl: String?) {
+        if (policy.isOfflinePreview) return
+        val host = httpUrlHost(finishedUrl) ?: return
+        if (host != "google.com" && !host.endsWith(".google.com")) return
+        val script = "(function(){try{return (document.title||'')+'\\n'" +
+            "+((document.body&&document.body.innerText)||'');}catch(e){return '';}})()"
+        runCatching {
+            view?.evaluateJavascript(script) { raw ->
+                val text = decodeEvaluatedJavascriptString(raw).orEmpty()
+                val restricted = browserLoginRestrictionFailure(finishedUrl, view.title, text)
+                if (restricted != null) {
+                    failure = preferredBrowserFailure(failure, restricted)
+                }
+            }
+        }
+    }
+
+    /**
      * 主页面和登录弹窗共用同一套配置：同样的持久化 cookie、同一份证书白名单，
      * 弹窗只是在上面叠了一层可关闭的 WebView。
      */
@@ -554,6 +591,7 @@ fun V2BrowserScreen(
                 canGoBack = view?.canGoBack() == true
                 canGoForward = view?.canGoForward() == true
                 recordVisit(finishedUrl ?: view?.url, view?.title)
+                detectLoginRestriction(view, finishedUrl ?: view?.url)
             }
 
             override fun doUpdateVisitedHistory(
@@ -918,6 +956,76 @@ fun V2BrowserScreen(
         }
     }
 
+    /**
+     * 读取当前页 outerHTML 一并交给服务端，避开部分站点对服务端抓取的拦截。
+     * 拿不到（页面还没加载完 / 结果过大 / WebView 已销毁）就返回 null，由服务端按 URL 抓取。
+     */
+    suspend fun capturePageHtml(): String? = withTimeoutOrNull(2_500L) {
+        suspendCancellableCoroutine { continuation ->
+            val script = "(function(){try{return document.documentElement.outerHTML;}" +
+                "catch(e){return null;}})()"
+            val started = runCatching {
+                webView.evaluateJavascript(script) { raw ->
+                    if (continuation.isActive) continuation.resume(browserExtractHtml(raw))
+                }
+            }
+            if (started.isFailure && continuation.isActive) continuation.resume(null)
+        }
+    }
+
+    /** 提取到创作：服务端完成抓取与正文抽取；失败保留可重试状态，不静默丢操作。 */
+    fun startExtraction(type: V2BrowserExtractType, sendToChat: Boolean) {
+        val link = currentLink()
+        if (link == null) {
+            extractChoice = null
+            Toast.makeText(context, EXTRACT_NO_LINK_HINT, Toast.LENGTH_SHORT).show()
+            return
+        }
+        extractChoice = null
+        extractUi = V2BrowserExtractUi(type, sendToChat, loading = true)
+        scope.launch {
+            try {
+                val html = if (browserCanExtract(policy)) capturePageHtml() else null
+                val api = FluxEnv.api(FluxEnv.configWithFreshToken())
+                val result = api.extractArtifact(
+                    url = link,
+                    type = type.apiType,
+                    html = html,
+                    title = webView.title,
+                    taskId = if (sendToChat) taskId else null,
+                )
+                extractUi = V2BrowserExtractUi(
+                    type = type,
+                    sendToChat = sendToChat,
+                    loading = false,
+                    artifactId = result.artifact.id,
+                    fallback = result.fallback,
+                    sentToChat = result.taskId != null,
+                    note = result.note,
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                extractUi = V2BrowserExtractUi(
+                    type = type,
+                    sendToChat = sendToChat,
+                    loading = false,
+                    error = browserExtractErrorText(e),
+                )
+            }
+        }
+    }
+
+    /** 菜单点击：从对话进入且拿得到任务 id 时，先问一句是否顺带发回当前对话。 */
+    fun chooseExtraction(type: V2BrowserExtractType) {
+        toolsOpen = false
+        if (browserCanExtract(policy) && browserCanSendExtractToChat(policy, taskId)) {
+            extractChoice = type
+        } else {
+            startExtraction(type, sendToChat = false)
+        }
+    }
+
     fun runFind(query: String) {
         if (query.isBlank()) {
             runCatching { webView.clearMatches() }
@@ -1154,6 +1262,32 @@ fun V2BrowserScreen(
                                 toolsOpen = false
                                 shareCurrentLink()
                             },
+                        )
+                        DropdownMenuItem(
+                            text = { Label(EXTRACT_DOC_LABEL, 12f, V2Colors.ink(.82f)) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Description,
+                                    contentDescription = null,
+                                    tint = V2Colors.ink(.5f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            enabled = link != null,
+                            onClick = { chooseExtraction(V2BrowserExtractType.DOC) },
+                        )
+                        DropdownMenuItem(
+                            text = { Label(EXTRACT_PAGE_LABEL, 12f, V2Colors.ink(.82f)) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Language,
+                                    contentDescription = null,
+                                    tint = V2Colors.ink(.5f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            enabled = link != null,
+                            onClick = { chooseExtraction(V2BrowserExtractType.PAGE) },
                         )
                         DropdownMenuItem(
                             text = { Label("在系统浏览器打开", 12f, V2Colors.ink(.82f)) },
@@ -1700,6 +1834,118 @@ fun V2BrowserScreen(
                 }
             },
         )
+    }
+
+    // 从对话进入的浏览器：提取前先问是否顺带发回当前对话。
+    extractChoice?.let { type ->
+        AlertDialog(
+            onDismissRequest = { extractChoice = null },
+            title = {
+                Label(browserExtractTitle(type), 16f, V2Colors.ink(.92f), FontWeight.SemiBold)
+            },
+            text = {
+                Label(
+                    "提取后会保存到「创作」。是否同时发回当前对话？",
+                    12.5f,
+                    V2Colors.ink(.58f),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { startExtraction(type, sendToChat = true) }) {
+                    Label("发回当前对话", 13f, V2Colors.ink(.9f))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { startExtraction(type, sendToChat = false) }) {
+                    Label("仅保存到创作", 13f, V2Colors.ink(.62f))
+                }
+            },
+        )
+    }
+
+    // 提取中 / 失败重试 / 成功后的去向：加载和失败都有中文说明，不静默结束。
+    extractUi?.let { ui ->
+        when {
+            ui.loading -> AlertDialog(
+                onDismissRequest = {},
+                title = { Label("正在提取", 16f, V2Colors.ink(.92f), FontWeight.SemiBold) },
+                text = {
+                    Label(
+                        "正在读取页面正文并保存到「创作」，请稍候…",
+                        12.5f,
+                        V2Colors.ink(.58f),
+                    )
+                },
+                confirmButton = {},
+            )
+
+            ui.error != null -> AlertDialog(
+                onDismissRequest = { extractUi = null },
+                title = { Label("提取失败", 16f, V2Colors.ink(.92f), FontWeight.SemiBold) },
+                text = { Label(ui.error, 12.5f, V2Colors.ink(.58f)) },
+                confirmButton = {
+                    TextButton(onClick = { startExtraction(ui.type, ui.sendToChat) }) {
+                        Label("重试", 13f, V2Colors.ink(.9f))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { extractUi = null }) {
+                        Label("取消", 13f, V2Colors.ink(.62f))
+                    }
+                },
+            )
+
+            else -> {
+                val artifactId = ui.artifactId
+                AlertDialog(
+                    onDismissRequest = { extractUi = null },
+                    title = {
+                        Label("已保存到创作", 16f, V2Colors.ink(.92f), FontWeight.SemiBold)
+                    },
+                    text = {
+                        Column {
+                            Label(
+                                browserExtractSuccessText(ui.fallback, ui.sentToChat),
+                                12.5f,
+                                V2Colors.ink(.58f),
+                            )
+                            ui.note?.takeIf { it.isNotBlank() }?.let { note ->
+                                Spacer(Modifier.height(6.dp))
+                                Label(note, 10.5f, V2Colors.ink(.42f))
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                extractUi = null
+                                if (artifactId != null) onOpenArtifact?.invoke(artifactId)
+                            },
+                        ) {
+                            Label(
+                                if (onOpenArtifact != null) "查看产物" else "完成",
+                                13f,
+                                V2Colors.ink(.9f),
+                            )
+                        }
+                    },
+                    dismissButton = if (ui.sentToChat) {
+                        {
+                            TextButton(
+                                onClick = {
+                                    extractUi = null
+                                    onBack()
+                                },
+                            ) {
+                                Label("回到对话", 13f, V2Colors.ink(.62f))
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
     }
 }
 

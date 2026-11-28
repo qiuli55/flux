@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -23,6 +24,18 @@ from flux.api.response import ok
 from flux.api.v1.designs import design_client, load_design
 from flux.container import Container
 from flux.core.artifacts.content import ASSET_MAX_FILE_BYTES, TYPE_DESCRIPTIONS
+from flux.core.artifacts.extract import (
+    ExtractedPage,
+    ExtractFetchError,
+    extract_page,
+    fallback_page,
+    fetch_page_html,
+    normalize_extract_url,
+    validate_client_html,
+    validate_extract_target,
+)
+from flux.core.task_engine.repository import MessageDraft
+from flux.enums import TaskMessageRole
 from flux.errors import BadRequestError, NotFoundError, ValidationError
 from flux.logging import get_logger
 
@@ -258,6 +271,123 @@ async def create_artifact(
         meta=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
     )
     return ok(artifact.to_dict())
+
+
+def _type_label(kind: str) -> str:
+    return "文档" if kind == "doc" else "页面"
+
+
+async def _publish_artifact_card(
+    container: Container, artifact: Any, task_id: uuid.UUID
+) -> str:
+    """把提取结果写成对话里的 artifact_card，沿用 artifact.publish 的卡片载荷。"""
+    data = artifact.to_dict(include_content=False)
+    payload = {
+        "artifact_id": data["id"],
+        "type": data["type"],
+        "title": data["title"],
+        "summary": data["summary"],
+        "description": data.get("description") or "",
+        "icon": data.get("icon") or "",
+        "label": data.get("label") or "",
+        "pinned": bool(data.get("pinned")),
+        "version": data["version"],
+        "metadata": data.get("metadata") or {},
+    }
+    message = (
+        await container.task_repo.add_messages(
+            task_id,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="artifact_card",
+                    content=(
+                        f"已提取{_type_label(artifact.type)}「{artifact.title}」，"
+                        "点开查看完整内容"
+                    ),
+                    payload=payload,
+                )
+            ],
+        )
+    )[0]
+    return str(message.id)
+
+
+@router.post("/extract")
+async def extract_artifact(
+    payload: dict[str, Any] = Body(...),
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """把网页提取成文档（Markdown）或页面（单文件 HTML），可选发回当前对话。
+
+    客户端拿得到当前页 DOM 时直接提交 `html`，服务端不再抓取；否则抓取公开 URL。
+    正文提取失败不报错，退化为「标题 + 链接 + 摘录」；非法 URL / 任务不存在等
+    请求级问题返回中文 4xx，客户端可修正后重试。
+    """
+    kind = _require_type(payload.get("type") or "doc")
+    url = normalize_extract_url(payload.get("url"))
+    # 即使客户端自带 HTML，也不允许把「提取」指向本机 / 内网地址：产物里仍要记来源链接。
+    validate_extract_target(url)
+    html = validate_client_html(payload.get("html"))
+    title = _optional_text(payload, "title")
+
+    task_uuid: uuid.UUID | None = None
+    raw_task_id = payload.get("task_id")
+    if raw_task_id is not None:
+        if not isinstance(raw_task_id, str) or not raw_task_id.strip():
+            raise BadRequestError("task_id 必须是非空字符串")
+        try:
+            task_uuid = uuid.UUID(raw_task_id.strip())
+        except ValueError as exc:
+            raise BadRequestError("task_id 不是合法 UUID") from exc
+        # 先确认任务存在：不要在写不进对话时留下一个孤立的提取产物。
+        await container.task_repo.get(task_uuid)
+
+    result: ExtractedPage
+    if html is not None:
+        result = extract_page(html=html, url=url, kind=kind, title=title)
+    else:
+        try:
+            fetched = await fetch_page_html(url)
+        except ExtractFetchError as exc:
+            # 站点挡抓取 / 超时 / 非网页：降级为链接 + 标题 + 摘录，仍然产出产物。
+            result = fallback_page(url=url, kind=kind, title=title, note=str(exc))
+        else:
+            result = extract_page(html=fetched, url=url, kind=kind, title=title)
+
+    meta: dict[str, Any] = {
+        "source_url": url,
+        "extracted": result.extracted,
+    }
+    if task_uuid is not None:
+        meta["task_id"] = str(task_uuid)
+    artifact = await container.artifacts.create(
+        type=kind,
+        title=result.title,
+        content=result.content,
+        description=result.excerpt,
+        meta=meta,
+    )
+
+    message_id: str | None = None
+    if task_uuid is not None:
+        message_id = await _publish_artifact_card(container, artifact, task_uuid)
+
+    return ok(
+        {
+            "artifact": artifact.to_dict(),
+            "fallback": not result.extracted,
+            "excerpt": result.excerpt,
+            "note": result.note,
+            "message_id": message_id,
+            "task_id": str(task_uuid) if task_uuid is not None else None,
+        },
+        metadata={
+            "extracted": result.extracted,
+            "type": kind,
+            "source_url": url,
+        },
+    )
 
 
 @router.get("/{artifact_id}")

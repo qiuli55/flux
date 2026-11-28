@@ -429,6 +429,24 @@ class FluxApi(
     suspend fun deleteArtifact(artifactId: String): JsonElement =
         delete("api/v1/artifacts/${Uri.encode(artifactId)}")
 
+    /**
+     * 把网页提取成文档 / 页面；服务端完成抓取与正文抽取。
+     *
+     * [html] 是客户端当前页的 outerHTML（拿不到时留空，服务端按 [url] 抓取）；
+     * [taskId] 非空时后端会把产物卡片发进该对话。
+     */
+    suspend fun extractArtifact(
+        url: String,
+        type: String,
+        html: String? = null,
+        title: String? = null,
+        taskId: String? = null,
+    ): ArtifactExtraction =
+        post(
+            "api/v1/artifacts/extract",
+            artifactExtractBody(url, type, html, title, taskId),
+        )
+
     // ---------------------------------------------------------- 设计工作室
 
     suspend fun listDesigns(projectId: String? = null): List<DesignSummary> {
@@ -896,6 +914,25 @@ class FluxApi(
         }
     }
 }
+
+/**
+ * 「提取到创作」请求体。可选字段为空时不下发，避免给老后端多余字段；
+ * 抽成独立函数便于单测锁住字段名（和网页提取 API 的契约）。
+ */
+internal fun artifactExtractBody(
+    url: String,
+    type: String,
+    html: String? = null,
+    title: String? = null,
+    taskId: String? = null,
+): JsonObject = buildJsonObject {
+    put("url", url.trim())
+    put("type", type)
+    if (!html.isNullOrBlank()) put("html", html)
+    if (!title.isNullOrBlank()) put("title", title.trim())
+    if (!taskId.isNullOrBlank()) put("task_id", taskId.trim())
+}
+
 // ---------------------------------------------------------------- 错误文案
 
 /** 从错误响应里解析出的、可以直接展示给用户的信息。 */

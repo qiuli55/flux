@@ -479,6 +479,17 @@ data class Artifact(
             ?.takeIf { it.isNotBlank() }
 }
 
+/** 「提取到创作」的响应：产物 + 是否降级 + 可选发回对话的消息 id。 */
+@Serializable
+data class ArtifactExtraction(
+    val artifact: Artifact = Artifact(),
+    val fallback: Boolean = false,
+    val excerpt: String = "",
+    val note: String? = null,
+    @SerialName("message_id") val messageId: String? = null,
+    @SerialName("task_id") val taskId: String? = null,
+)
+
 // ------------------------------------------------------------------ 设计工作室
 
 /** 设计稿列表项（Luma Studio 的 summary，不含画板正文）。 */
