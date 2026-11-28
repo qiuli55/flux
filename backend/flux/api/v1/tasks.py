@@ -959,9 +959,7 @@ async def start_task(
             details={"task_id": task_id},
         )
 
-    pending_skills, pending_connectors = _specification_ids(
-        task.pending_specified_capabilities
-    )
+    pending_skills, pending_connectors = _specification_ids(task.pending_specified_capabilities)
     result = await container.task_run_service.start(
         task,
         payload.confirmation,
