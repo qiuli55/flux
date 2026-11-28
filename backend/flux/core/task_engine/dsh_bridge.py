@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, is_terminal, utcnow
+from flux.core.context.projection import redacted_message
 from flux.core.context.redact import redact, redact_then_clip
 from flux.core.event.bus import EventBus, Events
 from flux.core.task_engine.repository import MessageDraft, TaskRepository
@@ -304,7 +305,7 @@ class TaskRunBridge:
                 {
                     "run_id": run_id,
                     "status": str(status),
-                    "message": message.to_dict(),
+                    "message": redacted_message(self._literals, message),
                 },
             )
             self._stream.unbind_run(run_id)
@@ -517,7 +518,7 @@ class TaskRunBridge:
                 "run_finished",
                 {
                     "status": "failed",
-                    "message": message.to_dict(),
+                    "message": redacted_message(self._literals, message),
                 },
             )
         self._retry_budget.pop(str(task.id), None)

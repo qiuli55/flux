@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from flux.core.context.projection import redacted_message
 from flux.core.task_engine.decisions import build_decision
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
@@ -130,7 +131,7 @@ async def raise_approval(
         )
     )[0]
     await container.task_stream.publish(
-        task_id, "assistant_message", {"message": message.to_dict()}
+        task_id, "assistant_message", {"message": redacted_message(container, message)}
     )
     await container.bus.publish(
         "task.approval_requested",
@@ -231,7 +232,7 @@ async def _expire(
         )
     )[0]
     await container.task_stream.publish(
-        task_id, "assistant_message", {"message": message.to_dict()}
+        task_id, "assistant_message", {"message": redacted_message(container, message)}
     )
     await container.bus.publish(
         "task.approval_resolved",

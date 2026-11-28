@@ -508,11 +508,24 @@ def test_task_confirmation_response_redacts_configured_literal(
         ]
         response = client.put(f"/api/v1/tasks/{created['id']}/confirmation", json={"items": items})
         assert response.status_code == 200, response.text
-        # 只校验本批修复的消息投影；task.confirmation 仍是任务对象的结构化存储视图。
-        message = response.json()["data"]["message"]
+        data = response.json()["data"]
+        # 消息投影与任务对象投影都不能带明文：嵌套的 task.confirmation 同样是下发副本。
+        message = data["message"]
         body = json.dumps(message, ensure_ascii=False)
         assert LITERAL not in body
         assert PLACEHOLDER in body
+        task_body = json.dumps(data["task"], ensure_ascii=False)
+        assert LITERAL not in task_body
+        assert PLACEHOLDER in task_body
+        confirmation_body = json.dumps(data["task"]["confirmation"], ensure_ascii=False)
+        assert LITERAL not in confirmation_body
+        assert PLACEHOLDER in confirmation_body
+
+        # 存储语义未变：任务上的确认卡仍是原文，只有 HTTP 投影被打码。
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        stored = asyncio.run(container.task_repo.get(uuid.UUID(created["id"])))
+        stored_body = json.dumps(stored.confirmation, ensure_ascii=False)
+        assert LITERAL in stored_body
 
 
 # --- 第五批：assistant_delta 跨帧片段 ---
@@ -806,3 +819,335 @@ def test_http_handoff_redacts_configured_literal(
         assert LITERAL not in body
         assert LITERAL[8:] not in body  # 截断片段也不得漏出
         assert PLACEHOLDER in body
+
+
+# --- 第六批：任务对象投影 / 审批与计划推流 / 中途截断 flush ---
+
+
+def test_task_object_http_projection_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """创建 / 详情 / 列表返回的 task 对象都是投影：description 不得带明文，库里仍是原文。"""
+    description = f"修复登录 {LITERAL}"
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        response = client.post("/api/v1/tasks", json={"description": description})
+        assert response.status_code == 200, response.text
+        created = response.json()["data"]
+        assert LITERAL not in json.dumps(created, ensure_ascii=False)
+        assert PLACEHOLDER in created["description"]
+
+        detail = client.get(f"/api/v1/tasks/{created['id']}")
+        assert detail.status_code == 200, detail.text
+        detail_body = json.dumps(detail.json(), ensure_ascii=False)
+        assert LITERAL not in detail_body
+        assert PLACEHOLDER in detail_body
+
+        listing = client.get("/api/v1/tasks")
+        assert listing.status_code == 200, listing.text
+        listing_body = json.dumps(listing.json(), ensure_ascii=False)
+        assert LITERAL not in listing_body
+        assert PLACEHOLDER in listing_body
+
+        stored = asyncio.run(container.task_repo.get(uuid.UUID(created["id"])))
+        assert stored.description == description
+
+
+def test_task_pending_decision_projection_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """decisions / pending_decision 也是任务对象投影的一部分，问题与说明都要打码。"""
+    seed = Container(literal_settings)
+    task_id = uuid.uuid4()
+    decision = {
+        "id": "decision-literal-1",
+        "question": f"选哪个方案 {LITERAL}",
+        "options": [{"label": "A", "description": f"方案说明 {LITERAL}"}],
+        "context": f"背景 {LITERAL}",
+        "recommendation": None,
+        "mode": "manual",
+        "status": "pending",
+        "chosen": None,
+        "note": None,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "resolved_at": None,
+    }
+    try:
+        asyncio.run(
+            seed.task_repo.create(
+                task_id=task_id,
+                description="等待选择",
+                priority=0,
+                project_id=None,
+                agent_id=None,
+            )
+        )
+        asyncio.run(seed.task_repo.raise_decision(task_id, decision))
+    finally:
+        asyncio.run(seed.dispose())
+
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        response = client.get(f"/api/v1/tasks/{task_id}")
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        body = json.dumps(data, ensure_ascii=False)
+        assert LITERAL not in body
+        assert PLACEHOLDER in body
+        assert data["pending_decision"] is not None
+        assert LITERAL not in json.dumps(data["decisions"], ensure_ascii=False)
+
+        stored = asyncio.run(container.task_repo.get(task_id))
+        assert LITERAL in json.dumps(stored.decisions, ensure_ascii=False)
+
+
+async def test_approval_and_expiry_stream_projections_redact_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """审批卡与超时结果都以消息投影推流：title / detail / decision record 不得带明文。"""
+    from flux.core.task_engine.approvals import _expire, raise_approval
+
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="审批投影用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        record = await raise_approval(
+            container,
+            task_id=task.id,
+            run_id="run-approval-literal",
+            kind="high_risk_command",
+            title=f"是否允许执行 {LITERAL}",
+            detail=f"命令：rm -rf {LITERAL}",
+            meta={"command": f"rm -rf {LITERAL}", "rule": "rm -rf"},
+        )
+        await _expire(
+            container,
+            task_id=task.id,
+            decision_id=record["id"],
+            run_id="run-approval-literal",
+        )
+
+        events = container.task_stream.poll(task.id)
+        streamed = json.dumps([event.to_dict() for event in events], ensure_ascii=False)
+        assert LITERAL not in streamed
+        assert PLACEHOLDER in streamed
+
+        # 落库消息与决策记录仍是原文，只有推流投影被打码。
+        stored = await container.task_repo.get(task.id)
+        assert LITERAL in json.dumps(stored.decisions, ensure_ascii=False)
+        messages, _ = await container.task_repo.list_messages(task.id)
+        assert LITERAL in json.dumps([m.to_dict() for m in messages], ensure_ascii=False)
+    finally:
+        await container.dispose()
+
+
+async def test_plan_card_stream_projection_redacts_configured_literal(
+    literal_settings: Settings,
+    db_schema: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """计划卡的 title / steps / markdown 会随消息投影下发，推流前必须打码。"""
+    from flux.core.mcp.tools.base import ToolContext
+
+    plan_tools = importlib.import_module("flux.core.mcp.tools.plan_tools")
+    monkeypatch.setattr(plan_tools, "PLANS_DIR", tmp_path / "plans")
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="计划卡投影用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        run_id = uuid.uuid4().hex
+        await container.run_repo.create(
+            run_id=run_id,
+            session_id="s",
+            instruction="写计划",
+            status=DshRunStatus.RUNNING,
+            task_id=task.id,
+        )
+        ctx = ToolContext(
+            container=container,
+            identity=AgentIdentity(
+                agent_id=str(uuid.uuid4()),
+                token_id="t",
+                scopes=frozenset({Capability.PLAN_WRITE}),
+                run_id=run_id,
+                permission_mode="plan",
+            ),
+            tool_name="plan.write",
+        )
+        await plan_tools.plan_write(
+            ctx,
+            {
+                "title": f"计划 {LITERAL}",
+                "steps": [{"title": f"步骤 {LITERAL}", "detail": f"说明 {LITERAL}"}],
+                "files": [f"{LITERAL}.py"],
+                "markdown": f"补充 {LITERAL}",
+            },
+        )
+
+        events = container.task_stream.poll(task.id)
+        streamed = json.dumps([event.to_dict() for event in events], ensure_ascii=False)
+        assert LITERAL not in streamed
+        assert PLACEHOLDER in streamed
+
+        # 落库计划卡保持原文，供后续执行指令使用。
+        messages, _ = await container.task_repo.list_messages(task.id)
+        card = next(message for message in messages if message.kind == "plan_card")
+        assert LITERAL in json.dumps(card.to_dict(), ensure_ascii=False)
+    finally:
+        await container.dispose()
+
+
+def test_agent_switch_stream_projection_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """agent_switch 事件里的 task / message 投影同样不得带任务描述或交接卡明文。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+
+        def _agent(name: str) -> str:
+            response = client.post(
+                "/api/v1/agents", json={"name": name, "role": "developer", "runtime": "dsh"}
+            )
+            assert response.status_code == 200, response.text
+            return str(response.json()["data"]["id"])
+
+        agent_a = _agent(f"builder-{uuid.uuid4().hex[:8]}")
+        agent_b = _agent(f"reviewer-{uuid.uuid4().hex[:8]}")
+        created = client.post(
+            "/api/v1/tasks",
+            json={"description": f"切换 Agent {LITERAL}", "agent_id": agent_a},
+        ).json()["data"]
+        task_id = uuid.UUID(created["id"])
+
+        asyncio.run(container.task_repo.set_status(task_id, TaskStatus.RUNNING))
+        queued = client.post(f"/api/v1/tasks/{created['id']}/agent", json={"agent_id": agent_b})
+        assert queued.status_code == 200, queued.text
+        asyncio.run(container.task_repo.set_status(task_id, TaskStatus.COMPLETED))
+
+        async def _apply_pending() -> None:
+            task = await container.task_repo.get(task_id)
+            await container.agent_switch.apply_pending(task, "run-switch-literal", "completed")
+
+        asyncio.run(_apply_pending())
+
+        events = [event.to_dict() for event in container.task_stream.poll(created["id"])]
+        streamed = json.dumps(events, ensure_ascii=False)
+        assert "agent_switched" in [event["type"] for event in events]
+        assert LITERAL not in streamed
+        assert PLACEHOLDER in streamed
+
+        stored = asyncio.run(container.task_repo.get(task_id))
+        assert LITERAL in stored.description
+
+
+async def test_dsh_bridge_stream_projection_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """DSH 收尾消息（含自动重试失败原因）推流前也要走统一投影打码。"""
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="DSH 收尾投影用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await container.task_runs._retry_failed_to_start(  # noqa: SLF001
+            task, RuntimeError(f"启动失败 {LITERAL}")
+        )
+        events = container.task_stream.poll(task.id)
+        streamed = json.dumps([event.to_dict() for event in events], ensure_ascii=False)
+        assert LITERAL not in streamed
+        assert PLACEHOLDER in streamed
+        messages, _ = await container.task_repo.list_messages(task.id)
+        assert LITERAL in json.dumps([m.to_dict() for m in messages], ensure_ascii=False)
+    finally:
+        await container.dispose()
+
+
+def test_streaming_delta_abort_drops_incomplete_literal_prefix(
+    literal_settings: Settings,
+) -> None:
+    """中途截断时，未完成的字面量前半截不能被 flush 当正文放出；正常结束仍放安全尾巴。"""
+    from flux.api.v1.tasks import _StreamingDeltaRedactor
+
+    container = Container(literal_settings)
+    try:
+        prefix = LITERAL[:11]
+        redactor = _StreamingDeltaRedactor(container)
+        assert redactor.feed(f"安全前缀 {prefix}") == "安全前缀 "
+        assert redactor.flush(abort=True) == ""
+        # abort 后继续 feed 也不会把之前丢弃的前缀补发出来。
+        assert redactor.feed("") == ""
+
+        normal = _StreamingDeltaRedactor(container)
+        assert normal.feed("hello") == ""
+        assert normal.feed(" world") == "hello "
+        assert normal.flush() == "world"
+    finally:
+        asyncio.run(container.dispose())
+
+
+def test_task_stream_abort_flush_does_not_leak_incomplete_prefix(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真实 POST 异常路径：流到字面量前半段后中断，delta 帧与拼接文本都不得有残片。"""
+    from flux.core.task_engine.assistant import TaskAssistant
+
+    prefix = LITERAL[:11]
+    fragment = LITERAL[8:]
+
+    async def fake_respond(self: TaskAssistant, *, on_delta: object = None, **_kwargs: object):
+        assert callable(on_delta)
+        await on_delta(f"好的，口令是 {prefix}")  # type: ignore[misc]
+        raise RuntimeError("stream interrupted")
+
+    monkeypatch.setattr(TaskAssistant, "respond", fake_respond)
+    app = create_app(literal_settings)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "中途截断"}).json()["data"]
+        response = client.post(f"/api/v1/tasks/{created['id']}/messages", json={"content": "hi"})
+        assert response.status_code == 500
+        events = [event.to_dict() for event in container.task_stream.poll(created["id"])]
+
+    deltas = [
+        str(event["data"].get("text") or "")
+        for event in events
+        if event["type"] == "assistant_delta"
+    ]
+    joined = "".join(deltas)
+    for frame in deltas:
+        assert LITERAL not in frame
+        assert prefix not in frame
+        assert fragment not in frame
+    assert LITERAL not in joined
+    assert prefix not in joined
+    assert fragment not in joined
+    # 前半段之前的安全正文仍可正常流出，不因中断把整段回复吞掉。
+    assert joined.strip() == "好的，口令是"
+
+
+def test_task_stream_flush_releases_safe_deferred_tail(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正常结束时，被暂缓的普通尾巴仍要 flush 出去（不能为了安全把回复截断）。"""
+    deltas, _events, _body = _drive_streamed_reply(
+        literal_settings, monkeypatch, ["hello", " world"]
+    )
+    assert "".join(deltas) == "hello world"

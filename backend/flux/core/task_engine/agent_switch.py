@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from flux.core.agent_runtime.runtimes.base import CLI_RUNTIMES, DEFAULT_RUNTIME
 from flux.core.context.handoff import build_handoff
+from flux.core.context.projection import redact_projection
 from flux.core.task_engine.conversation_trace import build_dialogue_trace
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import AgentInstallStatus, TaskMessageRole, TaskStatus
@@ -347,7 +348,8 @@ class AgentSwitchService:
         if stream is None:
             return
         try:
-            await stream.publish(task.id, event, payload)
+            # 事件里的 `task` / `message` 都是 to_dict() 投影：与 HTTP 同口径打码后再推。
+            await stream.publish(task.id, event, redact_projection(self._container, payload))
         except Exception:  # noqa: BLE001 - 流推送失败不影响已落库的切换
             logger.warning("推送 %s 事件失败 task=%s", event, task.id, exc_info=True)
 
