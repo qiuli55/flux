@@ -6,6 +6,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
@@ -72,6 +74,80 @@ class FluxApi(
     suspend fun dshStatus(): DshStatus = get("api/v1/dsh/status")
     suspend fun listAgents(): List<Agent> = get("api/v1/agents")
     suspend fun listTasks(): List<Task> = get("api/v1/tasks")
+
+    /** 某主助理对话下的临时子任务（只读过程视图的入口）。 */
+    suspend fun listSubtasks(taskId: String): List<SubtaskSummary> =
+        get("api/v1/tasks/$taskId/subtasks")
+
+    /** 右上角切换器：主助理 + 已创建的项目助理（不含临时子任务）。 */
+    suspend fun listAssistants(): AssistantList = get("api/v1/assistants")
+
+    /** 从已有对话自动建议项目助理：只读，不创建。 */
+    suspend fun suggestAssistants(): List<AssistantSuggestion> =
+        get("api/v1/assistants/suggestions")
+
+    /** 用户确认后才创建项目助理；confirmed=false 时服务端不会创建任何内容。 */
+    suspend fun createAssistant(
+        name: String,
+        projectId: String? = null,
+        sourceTaskIds: List<String> = emptyList(),
+        confirmed: Boolean = false,
+    ): AssistantEntry = post(
+        "api/v1/assistants",
+        buildJsonObject {
+            put("name", name.trim())
+            if (!projectId.isNullOrBlank()) put("project_id", projectId)
+            put("source_task_ids", buildJsonArray { sourceTaskIds.forEach { add(it) } })
+            put("confirmed", confirmed)
+        },
+    )
+
+    suspend fun deleteAssistant(assistantId: String): JsonElement =
+        delete("api/v1/assistants/$assistantId")
+
+    /** 项目助理进度汇总：只读已有记录，不启动电脑 Agent、不派子任务。 */
+    suspend fun assistantProgress(assistantId: String): AssistantProgress =
+        get("api/v1/assistants/$assistantId/progress")
+
+    /** 读历史：列出可只读查看的相关对话。 */
+    suspend fun assistantHistory(assistantId: String): AssistantHistory =
+        get("api/v1/assistants/$assistantId/history")
+
+    /** 读历史：只读打开一条相关对话及其消息。 */
+    suspend fun readAssistantHistory(
+        assistantId: String,
+        taskId: String,
+    ): AssistantHistoryDetail = get("api/v1/assistants/$assistantId/history/$taskId")
+
+    /** 接着干：必须 confirmed=true 才向原对话发送并续跑。 */
+    suspend fun continueAssistant(
+        assistantId: String,
+        sourceTaskId: String,
+        content: String,
+        confirmed: Boolean,
+    ): AssistantContinueResult = post(
+        "api/v1/assistants/$assistantId/continue",
+        buildJsonObject {
+            put("source_task_id", sourceTaskId)
+            put("content", content.trim())
+            put("confirmed", confirmed)
+        },
+    )
+
+    /** 开副本：必须 confirmed=true 才新建独立常驻对话。 */
+    suspend fun forkAssistant(
+        assistantId: String,
+        sourceTaskId: String,
+        name: String?,
+        confirmed: Boolean,
+    ): AssistantForkResult = post(
+        "api/v1/assistants/$assistantId/fork",
+        buildJsonObject {
+            put("source_task_id", sourceTaskId)
+            if (!name.isNullOrBlank()) put("name", name.trim())
+            put("confirmed", confirmed)
+        },
+    )
 
     /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")

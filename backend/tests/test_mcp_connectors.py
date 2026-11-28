@@ -102,7 +102,8 @@ def test_add_failure_does_not_persist_or_mark_connected(tmp_path: Path) -> None:
 
 def test_duplicate_name_is_rejected(tmp_path: Path) -> None:
     service = McpConnectorService(
-        _settings(tmp_path), prober=_FakeProber(ok=True)  # type: ignore[arg-type]
+        _settings(tmp_path),
+        prober=_FakeProber(ok=True),  # type: ignore[arg-type]
     )
     asyncio.run(service.add("demo", "https://example.com/mcp"))
     with pytest.raises(ConflictError):
@@ -130,7 +131,8 @@ def test_probe_failure_marks_error_and_removes_from_injection(tmp_path: Path) ->
 
 def test_remove_custom_connector(tmp_path: Path) -> None:
     service = McpConnectorService(
-        _settings(tmp_path), prober=_FakeProber(ok=True)  # type: ignore[arg-type]
+        _settings(tmp_path),
+        prober=_FakeProber(ok=True),  # type: ignore[arg-type]
     )
     item = asyncio.run(service.add("demo", "https://example.com/mcp"))
     assert service.remove(item["id"])["removed"] is True
@@ -139,9 +141,9 @@ def test_remove_custom_connector(tmp_path: Path) -> None:
 
 def test_list_all_includes_github_and_coming_soon(tmp_path: Path) -> None:
     service = McpConnectorService(_settings(tmp_path), prober=_FakeProber())  # type: ignore[arg-type]
-    items = service.list_all(
-        {"logged_in": True, "login": "qiuli55", "scopes": "repo, read:org"}
-    )["items"]
+    items = service.list_all({"logged_in": True, "login": "qiuli55", "scopes": "repo, read:org"})[
+        "items"
+    ]
     github = next(item for item in items if item["id"] == "github")
     assert github["status"] == "connected"
     assert github["account"] == "qiuli55"
@@ -152,9 +154,7 @@ def test_list_all_includes_github_and_coming_soon(tmp_path: Path) -> None:
 
 def test_github_missing_repo_scope_needs_reconnect(tmp_path: Path) -> None:
     service = McpConnectorService(_settings(tmp_path), prober=_FakeProber())  # type: ignore[arg-type]
-    items = service.list_all(
-        {"logged_in": True, "login": "qiuli55", "scopes": "read:org"}
-    )["items"]
+    items = service.list_all({"logged_in": True, "login": "qiuli55", "scopes": "read:org"})["items"]
     github = next(item for item in items if item["id"] == "github")
     assert github["status"] == "needs_reauth"
     assert "repo" in github["error"]
@@ -268,7 +268,7 @@ def test_codex_isolated_config_gets_custom_mcp(
     assert 'url = "https://example.com/mcp"' in config
     # 保留名 flux 永远由 Flux 自己生成，自定义同名条目不能覆盖
     assert "[mcp_servers.flux]" in config
-    assert "[mcp_servers.\"flux\"]" not in config
+    assert '[mcp_servers."flux"]' not in config
 
 
 def test_opencode_config_gets_custom_mcp_and_keeps_flux(tmp_path: Path) -> None:

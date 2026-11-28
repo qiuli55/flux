@@ -13,6 +13,9 @@ import type { CSSProperties } from "react";
 import { api } from "../api/client";
 import type {
   AgentHandle,
+  AssistantHistory,
+  AssistantHistoryDetail,
+  AssistantProgress,
   Change,
   ConfirmationItem,
   DshStatus,
@@ -32,6 +35,7 @@ import { BotAvatar } from "../components/group/BotAvatar";
 import { CreateBotDialog } from "../components/group/CreateBotDialog";
 import { SoloSidePanel } from "../components/side/SoloSidePanel";
 import { SoloChat, clockOf } from "../components/solo/SoloChat";
+import { Modal } from "../shell/Overlay";
 import { BUILTIN_ROLES, ROLE_LABELS, STATE_LABELS, toCreateRequest } from "../data/team";
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
@@ -450,6 +454,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  /** 右上角切换器：主助理 + 已创建的项目助理（不含临时子任务） */
+  const [assistants, setAssistants] = useState<{
+    master: { id: string; name: string; conversation_task_id: string | null };
+    projects: { id: string; name: string; conversation_task_id: string | null }[];
+  } | null>(null);
+  const [activeAssistantId, setActiveAssistantId] = useState("master");
   /** 创建 Bot 弹窗（对话即 bot：名称 + 头像在创建时定） */
   const [createBotOpen, setCreateBotOpen] = useState(false);
   const [createBotSeed, setCreateBotSeed] = useState("");
@@ -544,7 +554,51 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const engineRef = useRef<HTMLDivElement>(null);
   const enginePopRef = useRef<HTMLDivElement>(null);
 
-  const task = useMemo(() => tasks.find((item) => item.id === taskId) ?? null, [tasks, taskId]);
+  // 子任务只作为只读过程视图打开，不混进左侧对话列表（API 默认也不返回它们）
+  const [subtaskTask, setSubtaskTask] = useState<Task | null>(null);
+  const task = useMemo(
+    () => tasks.find((item) => item.id === taskId) ?? (subtaskTask?.id === taskId ? subtaskTask : null),
+    [tasks, taskId, subtaskTask],
+  );
+  // 临时子任务只读：不能在子任务里直接指挥 Agent，要调整请回主助理对话。
+  const readOnlySubtask = task?.origin === "subtask" || Boolean(task?.parent_task_id);
+
+  // 项目助理自己的常驻对话：展示进度汇总 + 读历史 / 接着干 / 开副本入口。
+  const activeProjectAssistant = useMemo(
+    () =>
+      task?.origin === "project_assistant"
+        ? assistants?.projects.find((item) => item.conversation_task_id === taskId)
+        : undefined,
+    [assistants, task?.origin, taskId],
+  );
+  const [assistantProgress, setAssistantProgress] = useState<AssistantProgress | null>(null);
+  const [assistantHistory, setAssistantHistory] = useState<AssistantHistory | null>(null);
+  const [historyDetail, setHistoryDetail] = useState<AssistantHistoryDetail | null>(null);
+  const [assistantActionBusy, setAssistantActionBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeProjectAssistant) {
+      setAssistantProgress(null);
+      setAssistantHistory(null);
+      return;
+    }
+    let alive = true;
+    void Promise.all([
+      api.assistantProgress(activeProjectAssistant.id),
+      api.assistantHistory(activeProjectAssistant.id),
+    ])
+      .then(([progress, history]) => {
+        if (!alive) return;
+        setAssistantProgress(progress);
+        setAssistantHistory(history);
+      })
+      .catch(() => {
+        // 进度面板失败不影响项目助理自己的对话
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeProjectAssistant, messages.length]);
   const pendingChanges = useMemo(() => changes.filter((c) => c.status === "pending"), [changes]);
   const appliedChanges = useMemo(() => changes.filter((c) => c.status === "applied"), [changes]);
   const reviewChange = useMemo(
@@ -788,6 +842,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   // --- 操作 ---
 
   const send = useCallback(async () => {
+    if (readOnlySubtask) {
+      toast("这是只读过程视图，要调整请回到助理对话");
+      return;
+    }
     const content = draft.trim();
     if (!content) {
       toast("请输入内容后再发送");
@@ -818,7 +876,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [draft, quote, sending, taskId]);
+  }, [draft, quote, sending, taskId, readOnlySubtask]);
 
   const runReview = useCallback(
     async (approved: boolean) => {
@@ -1331,6 +1389,187 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     setMScreen("task");
   };
 
+  /** 加载右上角切换器：主助理 + 已创建的项目助理。 */
+  const loadAssistants = useCallback(async () => {
+    try {
+      const data = await api.listAssistants();
+      setAssistants(data);
+    } catch {
+      // 切换器失败不影响主流程
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAssistants();
+  }, [loadAssistants]);
+
+  /** 打开某个助理自己的常驻对话（项目助理对话不在普通任务列表里，需要单独取回）。 */
+  const openAssistantConversation = useCallback(
+    async (id: string) => {
+      setQuote(null);
+      setMScreen("task");
+      const existing = tasks.find((item) => item.id === id);
+      if (existing) {
+        setSubtaskTask(null);
+        setTaskId(id);
+        return;
+      }
+      try {
+        const fetched = await api.getTask(id);
+        setSubtaskTask(fetched);
+        setTaskId(id);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+    },
+    [tasks],
+  );
+
+  /** 切换助理：回到它自己的对话；临时子任务不在切换器里。 */
+  const selectAssistant = (id: string) => {
+    setActiveAssistantId(id);
+    const entry =
+      id === "master"
+        ? assistants?.master
+        : assistants?.projects.find((item) => item.id === id);
+    if (!entry?.conversation_task_id) {
+      toast("这个助理还没有常驻对话，先新建一条对话");
+      return;
+    }
+    void openAssistantConversation(entry.conversation_task_id);
+  };
+
+  /**
+   * 新建项目助理：先给出建议，用户确认后才创建；取消不创建。
+   * 建议只是「从已有对话」的候选，来源对话保持只读。
+   */
+  const createProjectAssistant = async () => {
+    let ideas: { name: string; conversation_ids: string[] }[] = [];
+    try {
+      ideas = await api.assistantSuggestions();
+    } catch {
+      ideas = [];
+    }
+    const suggested = ideas[0];
+    const name = window.prompt("项目助理名称（例如：登录改造）", suggested?.name ?? "");
+    if (!name || !name.trim()) return; // 取消 = 不创建
+    const ok = window.confirm(
+      `创建项目助理「${name.trim()}」？\n\n` +
+        `会新建它自己的常驻对话；${
+          suggested ? `${suggested.conversation_ids.length} 段已有对话只作只读上下文` : "暂不关联已有对话"
+        }。`,
+    );
+    if (!ok) return; // 用户拒绝 = 不创建
+    try {
+      const created = await api.createAssistant({
+        name: name.trim(),
+        source_task_ids: suggested?.conversation_ids ?? [],
+        confirmed: true,
+      });
+      toast(`已创建项目助理「${created.name}」`);
+      await loadAssistants();
+      setActiveAssistantId(created.id);
+      if (created.conversation_task_id) {
+        await openAssistantConversation(created.conversation_task_id);
+      }
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  };
+
+  /** 读历史：只读打开一条相关对话，不发送、不改动。 */
+  const readAssistantHistory = async (sourceId: string) => {
+    if (!activeProjectAssistant) return;
+    setAssistantActionBusy(`read:${sourceId}`);
+    try {
+      setHistoryDetail(await api.readAssistantHistory(activeProjectAssistant.id, sourceId));
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setAssistantActionBusy(null);
+    }
+  };
+
+  /** 接着干：先问要发什么，再二次确认；取消或拒绝都不发送。 */
+  const continueAssistantConversation = async (sourceId: string) => {
+    if (!activeProjectAssistant) return;
+    const title =
+      assistantHistory?.conversations.find((item) => item.task_id === sourceId)?.title ??
+      "这段对话";
+    const content = window.prompt(
+      `接着干：要向「${title}」发送什么？\n\n确认后才会发送，原对话在确认前不会被改动。`,
+      "",
+    );
+    if (content === null || !content.trim()) return; // 取消 = 不发送
+    const confirmed = window.confirm(
+      `确认把这条任务发进「${title}」并继续执行？\n\n目标对话会沿用原来的上下文和文件，继续往前推。`,
+    );
+    if (!confirmed) return; // 拒绝 = 原文不变
+    setAssistantActionBusy(`continue:${sourceId}`);
+    try {
+      const outcome = await api.continueAssistant(activeProjectAssistant.id, {
+        source_task_id: sourceId,
+        content: content.trim(),
+        confirmed: true,
+      });
+      toast("已接着干：原对话收到新任务并开始续跑");
+      await loadTasks();
+      setSubtaskTask(outcome.task);
+      setTaskId(sourceId);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setAssistantActionBusy(null);
+    }
+  };
+
+  /** 开副本：先起名，再二次确认；取消或拒绝都不创建。 */
+  const forkAssistantConversation = async (sourceId: string) => {
+    if (!activeProjectAssistant) return;
+    const title =
+      assistantHistory?.conversations.find((item) => item.task_id === sourceId)?.title ??
+      "对话";
+    const name = window.prompt(
+      `开副本：给新对话起个名字（原文不会改动）`,
+      `${title}（副本）`,
+    );
+    if (name === null) return; // 取消 = 不创建
+    const confirmed = window.confirm(
+      `确认开副本「${name.trim() || `${title}（副本）`}」？\n\n` +
+        `会新建一条独立常驻对话，带上原对话的思路和上下文；原文一条消息都不改。`,
+    );
+    if (!confirmed) return; // 拒绝 = 不创建
+    setAssistantActionBusy(`fork:${sourceId}`);
+    try {
+      const outcome = await api.forkAssistant(activeProjectAssistant.id, {
+        source_task_id: sourceId,
+        name: name.trim() || null,
+        confirmed: true,
+      });
+      toast("已开副本：新对话已带上原对话的上下文");
+      await loadTasks();
+      setSubtaskTask(outcome.task);
+      setTaskId(outcome.task.id);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setAssistantActionBusy(null);
+    }
+  };
+
+  /** 打开临时子任务的只读过程视图：不加入左侧对话列表。 */
+  const openSubtask = useCallback(async (subtaskId: string) => {
+    try {
+      const child = await api.getTask(subtaskId);
+      setSubtaskTask(child);
+      setTaskId(subtaskId);
+      setQuote(null);
+      setMScreen("task");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }, []);
+
   const startNewTask = () => {
     pendingSendRef.current = null;
     setCreateBotSeed("");
@@ -1453,6 +1692,26 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </svg>
           {M_SCREEN_TITLES[mScreen] ? <b className="m-top-title">{M_SCREEN_TITLES[mScreen]}</b> : null}
           <span className="m-top-gap" />
+          <select
+            className="fx-select"
+            title="切换助理"
+            value={activeAssistantId}
+            onChange={(event) => {
+              if (event.target.value === "__new") {
+                void createProjectAssistant();
+                return;
+              }
+              selectAssistant(event.target.value);
+            }}
+          >
+            <option value="master">主助理</option>
+            {assistants?.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+            <option value="__new">＋ 项目助理</option>
+          </select>
           <button type="button" className="icon-btn" title="搜索" onClick={openCommandPalette}>
             <svg viewBox="0 0 16 16" className="ic">
               <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
@@ -1497,6 +1756,27 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           <kbd>⌘K</kbd>
         </button>
         <div className="s-top-right">
+          {/* 对话页右上角：主助理 / 已创建的项目助理切换（临时子任务不在这里） */}
+          <select
+            className="fx-select"
+            title="切换助理"
+            value={activeAssistantId}
+            onChange={(event) => {
+              if (event.target.value === "__new") {
+                void createProjectAssistant();
+                return;
+              }
+              selectAssistant(event.target.value);
+            }}
+          >
+            <option value="master">主助理</option>
+            {assistants?.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+            <option value="__new">＋ 新建项目助理</option>
+          </select>
           {task?.status === "running" ? (
             <span className="pill pill-run">
               <i className="dot" />
@@ -2133,6 +2413,86 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               </section>
             ) : null}
 
+            {activeProjectAssistant ? (
+              <section className="card block">
+                <div className="block-head">
+                  <span className="bh-ic">◎</span>
+                  <div>
+                    <b>项目进度</b>
+                    <i>
+                      {assistantProgress
+                        ? `进行中 ${assistantProgress.counts.running ?? 0} · 可能已停住 ${assistantProgress.counts.possibly_stalled ?? 0} · 失败 ${assistantProgress.counts.failed ?? 0} · 已完成 ${assistantProgress.counts.completed ?? 0}`
+                        : "正在只读汇总相关对话…"}
+                    </i>
+                  </div>
+                </div>
+                <div style={{ padding: "0 16px 16px", display: "grid", gap: 10 }}>
+                  {assistantProgress ? (
+                    <i style={{ fontSize: 12, opacity: 0.65 }}>
+                      超过 {assistantProgress.stalled_after_hours} 小时没有新消息，就算「可能已停住」。
+                      这里只读服务端已有记录，不会替你开电脑，也不会派子任务。
+                    </i>
+                  ) : null}
+                  {(assistantHistory?.conversations ?? []).map((item) => (
+                    <div
+                      key={item.task_id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        paddingTop: 10,
+                        borderTop: "1px solid var(--tn-line)",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 180 }}>
+                        <b>{item.title}</b>
+                        <i style={{ display: "block", fontSize: 12, opacity: 0.65 }}>
+                          {item.bucket_label} · 最后更新 {item.idle_hours} 小时前
+                        </i>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={assistantActionBusy !== null}
+                        onClick={() => void readAssistantHistory(item.task_id)}
+                      >
+                        读历史
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={assistantActionBusy !== null || item.bucket === "running"}
+                        title={
+                          item.bucket === "running"
+                            ? "这段对话还在进行中，等这一轮收尾后再接着干"
+                            : item.bucket === "possibly_stalled"
+                              ? "可能已停住：确认后会先结束旧的一轮，再接着干"
+                              : "确认后向原对话发送新任务并继续执行"
+                        }
+                        onClick={() => void continueAssistantConversation(item.task_id)}
+                      >
+                        接着干
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={assistantActionBusy !== null}
+                        onClick={() => void forkAssistantConversation(item.task_id)}
+                      >
+                        开副本
+                      </button>
+                    </div>
+                  ))}
+                  {assistantHistory && assistantHistory.conversations.length === 0 ? (
+                    <i style={{ fontSize: 12, opacity: 0.65 }}>
+                      这个项目助理还没有关联已有对话。可以先在创建时关联，或回到主助理继续聊。
+                    </i>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
             <section className="card block chat-block">
               <div className="block-head">
                 <span
@@ -2174,6 +2534,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 onLoadOlder={() => void loadOlder()}
                 onCopy={(text) => void copyMessage(text)}
                 onQuote={quoteMessage}
+                onOpenSubtask={(subtaskId) => void openSubtask(subtaskId)}
               />
             </section>
           </div>
@@ -2329,7 +2690,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             <input
               ref={inputRef}
               value={draft}
-              placeholder="有新的需求或补充说明吗？可以继续告诉我…"
+              disabled={readOnlySubtask}
+              placeholder={
+                readOnlySubtask
+                  ? "这是只读过程视图，要调整请回到助理对话"
+                  : "有新的需求或补充说明吗？可以继续告诉我…"
+              }
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void send();
@@ -2355,7 +2721,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               <button
                 type="button"
                 className="btn btn-primary btn-send"
-                disabled={sending}
+                disabled={sending || readOnlySubtask}
                 onClick={() => void send()}
               >
                 ↑
@@ -2600,6 +2966,40 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </div>
         </div>
       ) : null}
+
+      <Modal
+        open={historyDetail !== null}
+        large
+        title={historyDetail ? `读历史 · ${botTitle(historyDetail.task)}` : "读历史"}
+        onClose={() => setHistoryDetail(null)}
+        footer={
+          <button type="button" className="btn" onClick={() => setHistoryDetail(null)}>
+            关闭
+          </button>
+        }
+      >
+        {historyDetail ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div className="pill" style={{ justifySelf: "start" }}>
+              只读：不会向这段对话发送消息
+            </div>
+            {historyDetail.messages.length === 0 ? (
+              <i style={{ fontSize: 12, opacity: 0.65 }}>这段对话还没有消息。</i>
+            ) : null}
+            {historyDetail.messages.map((message) => (
+              <div key={message.id}>
+                <b style={{ fontSize: 12 }}>
+                  {message.role === "user" ? "用户" : "助理/Agent"}
+                </b>
+                <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{message.content}</div>
+              </div>
+            ))}
+            {historyDetail.has_more ? (
+              <i style={{ fontSize: 12, opacity: 0.65 }}>只显示最近一段消息。</i>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
 
       <CreateBotDialog
         open={createBotOpen}

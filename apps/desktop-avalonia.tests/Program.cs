@@ -24,6 +24,7 @@ internal static class Program
         CheckSessionConflict();
         CheckChatKey();
         CheckTitle();
+        CheckAssistantProgress();
         CheckTotals();
         CheckDesignOps();
         CheckBrowserProxy();
@@ -102,6 +103,52 @@ internal static class Program
         Equal("首行标题", "先做登录", SoloRules.Title("先做登录\n再做权限"));
         True("空描述有兜底", SoloRules.Title("   ").Length > 0);
         True("长标题截断", SoloRules.Title(new string('a', 60)).Length <= 27);
+    }
+
+    private static void CheckAssistantProgress()
+    {
+        var stalled = new AssistantProgressItem(
+            "t1",
+            "停了很久",
+            "running",
+            "进行中",
+            "possibly_stalled",
+            "可能已停住",
+            10.0,
+            null,
+            "",
+            3,
+            true);
+        True("可能已停住可以接着干", stalled.CanContinue);
+        Equal("空闲文案", "最后更新 10 小时前", stalled.IdleText);
+
+        var running = stalled with { Bucket = "running" };
+        True("正在跑不提供接着干", !running.CanContinue);
+
+        var done = stalled with { Bucket = "completed" };
+        True("已完成可以接着干", done.CanContinue);
+
+        var failed = stalled with { Bucket = "failed" };
+        True("失败可以接着干", failed.CanContinue);
+
+        var progress = new AssistantProgress(
+            "a1",
+            "登录改造",
+            null,
+            6,
+            new Dictionary<string, int>
+            {
+                ["running"] = 1,
+                ["possibly_stalled"] = 1,
+                ["failed"] = 0,
+                ["completed"] = 2,
+            },
+            [stalled]);
+        Equal("进行中计数", 1, progress.Running);
+        Equal("可能已停住计数", 1, progress.PossiblyStalled);
+        Equal("失败计数", 0, progress.Failed);
+        Equal("已完成计数", 2, progress.Completed);
+        True("阈值写进提示", progress.HintText.Contains("6 小时"));
     }
 
     private static void CheckTotals()

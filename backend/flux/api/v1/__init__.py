@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from flux.api.v1 import (
     agents,
     artifacts,
+    assistants,
     billing,
     capabilities,
     claude_account,
@@ -37,6 +38,8 @@ api_v1_router.include_router(billing.router)
 api_v1_router.include_router(keys.router)
 api_v1_router.include_router(installations.router)
 api_v1_router.include_router(tasks.router)
+# 助理入口（2026-11-28）：主助理 / 项目助理切换与项目助理创建（须确认）
+api_v1_router.include_router(assistants.router)
 # 群聊已从产品下线：`core/group` 暂时保留，但不再对外挂载 /api/v1/groups。
 api_v1_router.include_router(workspace.router)
 api_v1_router.include_router(terminal.router)

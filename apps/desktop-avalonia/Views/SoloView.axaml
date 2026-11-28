@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:models="using:Flux.Desktop.Models"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="900"
@@ -59,8 +60,27 @@
                                IsVisible="{Binding IsSummary}" />
                     <TextBlock Text="{Binding Meta}" FontSize="10"
                                Foreground="{DynamicResource TnText4}" />
+                    <!-- 临时子任务：主助理对话下的条目，点开只读过程视图 -->
+                    <Border IsVisible="{Binding IsSubtask}" Background="#0C1B22"
+                            BorderBrush="#1F4E5A" BorderThickness="1" CornerRadius="6"
+                            Padding="10">
+                        <StackPanel Spacing="4">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="{Binding SubtaskTitle}" FontSize="12"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Grid.Column="1" Text="{Binding SubtaskStatus}"
+                                           FontSize="10" Foreground="{DynamicResource TnInfo}" />
+                            </Grid>
+                            <TextBlock Text="{Binding SubtaskResult}" FontSize="11"
+                                       TextWrapping="Wrap" Foreground="{DynamicResource TnText2}" />
+                            <Button Classes="mini" HorizontalAlignment="Left" Content="查看过程（只读）"
+                                    Command="{Binding OpenSubtaskCommand}"
+                                    CommandParameter="{Binding SubtaskId}" />
+                        </StackPanel>
+                    </Border>
                     <TextBlock Text="{Binding Content}" FontSize="12" LineHeight="19"
-                               TextWrapping="Wrap" />
+                               TextWrapping="Wrap"
+                               IsVisible="{Binding !IsSubtask}" />
                 </StackPanel>
             </Border>
         </DataTemplate>
@@ -151,20 +171,152 @@
                                    Foreground="{DynamicResource TnText4}" />
                     </StackPanel>
                 </StackPanel>
-                <Border Grid.Column="1" Classes="pill" Padding="2" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal">
-                        <Button Classes="seg" Classes.active="{Binding IsPipeline}" Content="流水线"
-                                Command="{Binding SwitchToPipelineCommand}" />
-                        <Button Classes="seg" Classes.active="{Binding IsSoloAgent}" Content="单 Agent"
-                                Command="{Binding SwitchToAgentCommand}" />
-                    </StackPanel>
-                </Border>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                            VerticalAlignment="Center">
+                    <!-- 右上角助理切换：主助理 + 已创建的项目助理（临时子任务不在这里） -->
+                    <ComboBox Classes="select" Width="150"
+                              ItemsSource="{Binding AssistantChoices}"
+                              SelectedItem="{Binding SelectedAssistant, Mode=TwoWay}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="models:AssistantEntry">
+                                <TextBlock Text="{Binding Name}" FontSize="11" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <Button Classes="mini" Content="＋助理"
+                            Command="{Binding RequestNewAssistantCommand}" />
+                    <Border Classes="pill" Padding="2">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Classes="seg" Classes.active="{Binding IsPipeline}" Content="流水线"
+                                    Command="{Binding SwitchToPipelineCommand}" />
+                            <Button Classes="seg" Classes.active="{Binding IsSoloAgent}" Content="单 Agent"
+                                    Command="{Binding SwitchToAgentCommand}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </Grid>
 
             <!-- 流水线模式 -->
             <Grid Grid.Row="1" RowDefinitions="*,Auto" IsVisible="{Binding IsPipeline}">
                 <ScrollViewer Grid.Row="0">
                     <StackPanel Margin="20,0,20,12" Spacing="12">
+
+                        <!-- 项目助理进度：只读汇总相关对话，读历史 / 接着干 / 开副本 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasProjectProgress}">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="项目进度" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ProjectProgressHint}" />
+                                <StackPanel Orientation="Horizontal" Spacing="14">
+                                    <TextBlock FontSize="12" Text="{Binding ProjectRunningText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectStalledText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectFailedText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectCompletedText}" />
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding ProjectConversations}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="models:AssistantProgressItem">
+                                            <Border Background="{DynamicResource TnBg2}" CornerRadius="6"
+                                                    Padding="10" Margin="0,0,0,6">
+                                                <StackPanel Spacing="5">
+                                                    <Grid ColumnDefinitions="*,Auto">
+                                                        <TextBlock Text="{Binding Title}" FontSize="12"
+                                                                   FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding BucketLabel}"
+                                                                   FontSize="10" Foreground="{DynamicResource TnInfo}" />
+                                                    </Grid>
+                                                    <TextBlock Text="{Binding SummaryText}" FontSize="10"
+                                                               Foreground="{DynamicResource TnText4}"
+                                                               TextWrapping="Wrap" />
+                                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                                        <Button Classes="mini" Content="读历史"
+                                                                Command="{Binding DataContext.ReadAssistantHistoryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding TaskId}" />
+                                                        <Button Classes="mini" Content="接着干"
+                                                                IsEnabled="{Binding CanContinue}"
+                                                                Command="{Binding DataContext.BeginContinueCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                        <Button Classes="mini" Content="开副本"
+                                                                Command="{Binding DataContext.BeginForkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock FontSize="10" Foreground="{DynamicResource TnText4}"
+                                           IsVisible="{Binding HasNoProjectConversations}"
+                                           Text="这个项目助理还没有关联已有对话。" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 接着干：写内容 → 再点确认；取消不发送 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasContinueDraft}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="接着干" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ContinueTargetTitle, StringFormat='要向「{0}」发送什么？确认后才会发送并继续执行。'}" />
+                                <TextBox Classes="input" Height="64" AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         Text="{Binding ContinueDraft, Mode=TwoWay}"
+                                         Watermark="写一句要接着做的事" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="btn primary" Content="确认发送"
+                                            Command="{Binding ConfirmContinueCommand}" />
+                                    <Button Classes="btn quiet" Content="取消"
+                                            Command="{Binding CancelContinueCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 开副本：起名 → 再点确认；取消不创建 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasForkDraft}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="开副本" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ForkTargetTitle, StringFormat='会新建一条独立常驻对话，带上「{0}」的思路和上下文；原文一条消息都不改。'}" />
+                                <TextBox Classes="input" Height="30"
+                                         Text="{Binding ForkDraftName, Mode=TwoWay}"
+                                         Watermark="副本名称" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="btn primary" Content="确认开副本"
+                                            Command="{Binding ConfirmForkCommand}" />
+                                    <Button Classes="btn quiet" Content="取消"
+                                            Command="{Binding CancelForkCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 读历史：只读消息列表，没有输入框，不能发送 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasReadOnlyHistory}">
+                            <StackPanel Spacing="6">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="读历史" FontSize="13" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding ReadOnlyHistoryTitle}" FontSize="10"
+                                                   Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Classes="mini" Content="关闭"
+                                            Command="{Binding CloseReadOnlyHistoryCommand}" />
+                                </Grid>
+                                <TextBlock Classes="page-desc" Text="只读：不会向这段对话发送消息。" />
+                                <ScrollViewer MaxHeight="360">
+                                    <ItemsControl ItemsSource="{Binding ReadOnlyHistoryMessages}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:MessageRow">
+                                                <StackPanel Spacing="2" Margin="0,0,0,8">
+                                                    <TextBlock Text="{Binding Meta}" FontSize="10"
+                                                               Foreground="{DynamicResource TnText4}" />
+                                                    <TextBlock Text="{Binding Content}" FontSize="12"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
 
                         <Border Classes="solo-card" IsVisible="{Binding IsNewTask}">
                             <StackPanel Spacing="6">
@@ -184,6 +336,24 @@
                                         <TextBlock Text="改动可回滚" FontSize="10"
                                                    Foreground="{DynamicResource TnText3}" />
                                     </Border>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 新建项目助理：用户点「创建」前什么都不创建，取消就是不创建 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasAssistantSuggestion}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="新建项目助理" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="只读取已有对话用来按项目跟进度；来源对话不会被修改。" />
+                                <TextBox Classes="input" Height="30"
+                                         Text="{Binding AssistantSuggestionName, Mode=TwoWay}"
+                                         Watermark="项目名称，例如「登录改造」" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="btn primary" Content="创建"
+                                            Command="{Binding ConfirmNewAssistantCommand}" />
+                                    <Button Classes="btn quiet" Content="取消"
+                                            Command="{Binding CancelNewAssistantCommand}" />
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -387,15 +557,19 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
+                        <TextBlock Text="这是只读过程视图，要调整请回到助理对话" FontSize="10"
+                                   Foreground="{DynamicResource TnInfo}" TextWrapping="Wrap"
+                                   IsVisible="{Binding IsReadOnlySubtask}" />
                         <TextBlock Text="{Binding ConfirmationHint}" FontSize="10"
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBox Classes="compose" Text="{Binding Draft, Mode=TwoWay}"
+                                     IsEnabled="{Binding !IsReadOnlySubtask}"
                                      Watermark="描述需求或继续对话…" />
                             <Button Grid.Column="1" Classes="btn primary" Content="发送"
                                     Height="62" Margin="10,0,0,0" Width="88"
                                     Command="{Binding SendCommand}"
-                                    IsEnabled="{Binding !IsSending}" />
+                                    IsEnabled="{Binding !IsReadOnlySubtask}" />
                         </Grid>
                     </StackPanel>
                 </Border>

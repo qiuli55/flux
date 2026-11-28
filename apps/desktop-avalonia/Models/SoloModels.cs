@@ -41,7 +41,117 @@ public sealed record TaskDetail(
     TaskDecision? PendingDecision,
     string? RunId,
     string? Model,
-    string? ApiKeyId);
+    string? ApiKeyId,
+    string? Origin = null,
+    string? ParentTaskId = null);
+
+/// <summary>右上角助理切换项：主助理或已创建的项目助理。</summary>
+public sealed record AssistantEntry(
+    string Id,
+    string Name,
+    string Kind,
+    string? ConversationTaskId,
+    string? ProjectId = null,
+    string[]? SourceTaskIds = null,
+    string? StatusLabel = null);
+
+public sealed record AssistantList(AssistantEntry Master, AssistantEntry[] Projects);
+
+/// <summary>项目助理创建建议：只建议，不创建。</summary>
+public sealed record AssistantSuggestion(
+    string Name,
+    string? ProjectId,
+    int ConversationCount,
+    string[] ConversationIds,
+    string[]? Titles = null);
+
+/// <summary>项目助理进度汇总里的一段相关对话（只读）。</summary>
+public sealed record AssistantProgressItem(
+    string TaskId,
+    string Title,
+    string Status,
+    string StatusLabel,
+    string Bucket,
+    string BucketLabel,
+    double IdleHours,
+    string? LastActivityAt,
+    string LastMessage,
+    int MessageCount,
+    bool ReadOnly)
+{
+    public string IdleText => $"最后更新 {IdleHours:0.#} 小时前";
+
+    public string SummaryText => LastMessage.Length > 0 ? $"{IdleText} · {LastMessage}" : IdleText;
+
+    /// <summary>真正进行中先别叠第二轮；可能已停住可在二次确认后接着干。</summary>
+    public bool CanContinue => Bucket is not "running";
+}
+
+/// <summary>GET /assistants/{id}/progress：只读汇总，不启动电脑 Agent、不派子任务。</summary>
+public sealed record AssistantProgress(
+    string AssistantId,
+    string AssistantName,
+    string? GeneratedAt,
+    int StalledAfterHours,
+    Dictionary<string, int> Counts,
+    AssistantProgressItem[] Conversations,
+    string[]? MissingSources = null)
+{
+    public int Running => Counts.TryGetValue("running", out var value) ? value : 0;
+
+    public int PossiblyStalled => Counts.TryGetValue("possibly_stalled", out var value) ? value : 0;
+
+    public int Failed => Counts.TryGetValue("failed", out var value) ? value : 0;
+
+    public int Completed => Counts.TryGetValue("completed", out var value) ? value : 0;
+
+    public string HintText =>
+        $"超过 {StalledAfterHours} 小时没有新消息，就算「可能已停住」。这里只读服务端已有记录，不会替你开电脑，也不会派子任务。";
+}
+
+/// <summary>GET /assistants/{id}/history：可「读历史」的相关对话列表。</summary>
+public sealed record AssistantHistory(
+    string AssistantId,
+    string AssistantName,
+    bool ReadOnly,
+    int Count,
+    AssistantProgressItem[] Conversations,
+    string[]? MissingSources = null);
+
+/// <summary>GET /assistants/{id}/history/{task_id}：只读打开的对话与消息。</summary>
+public sealed record AssistantHistoryDetail(
+    string AssistantId,
+    bool ReadOnly,
+    bool HasMore,
+    TaskDetail Task,
+    TaskMessage[] Messages);
+
+/// <summary>POST /assistants/{id}/continue：确认后向原对话发送并续跑。</summary>
+public sealed record AssistantContinueResult(
+    TaskDetail Task,
+    TaskMessage[] Messages,
+    bool ReadOnly);
+
+/// <summary>POST /assistants/{id}/fork：确认后新建的独立常驻对话。</summary>
+public sealed record AssistantForkResult(
+    TaskDetail Task,
+    string SourceTaskId,
+    int SummaryChars,
+    string? ParentTaskId,
+    string Origin);
+
+/// <summary>某主对话下的临时子任务摘要。</summary>
+public sealed record SubtaskSummary(
+    string SubtaskId,
+    string? ParentTaskId,
+    string Status,
+    string StatusLabel,
+    string? AgentId,
+    string? ModelName,
+    string? ApiKeyId,
+    string Title,
+    string? Result = null,
+    string? CreatedAt = null);
 
 /// <summary>GET/POST /tasks/{id}/messages 的单条消息。</summary>
 public sealed record TaskMessage(

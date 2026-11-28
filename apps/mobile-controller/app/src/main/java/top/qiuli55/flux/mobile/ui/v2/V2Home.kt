@@ -86,7 +86,12 @@ fun V2HomeScreen(
     conversations: List<V2Conversation>,
     extraTop: androidx.compose.ui.unit.Dp,
     onOpenArtifacts: () -> Unit,
-    onOpenAssistant: () -> Unit,
+    /** 右上角切换器：主助理 + 已创建的项目助理（临时子任务不在这里）。 */
+    assistantOptions: List<top.qiuli55.flux.mobile.data.AssistantEntry> = emptyList(),
+    activeAssistantId: String = "master",
+    assistantsLoading: Boolean = false,
+    onSelectAssistant: (top.qiuli55.flux.mobile.data.AssistantEntry) -> Unit = {},
+    onNewProjectAssistant: () -> Unit = {},
     onOpenConversation: (V2Conversation) -> Unit,
     onDeleteConversation: (V2Conversation) -> Unit,
     onNewChat: () -> Unit,
@@ -126,11 +131,16 @@ fun V2HomeScreen(
                 searchOpen = searchOpen,
                 deviceMenuOpen = deviceMenu,
                 extraTop = extraTop,
+                assistantOptions = assistantOptions,
+                activeAssistantId = activeAssistantId,
+                assistantsLoading = assistantsLoading,
                 onToggleDevice = { deviceMenu = !deviceMenu },
                 onToggleSearch = {
                     if (searchOpen) query = ""
                     searchOpen = !searchOpen
                 },
+                onSelectAssistant = onSelectAssistant,
+                onNewProjectAssistant = onNewProjectAssistant,
             )
 
             AnimatedVisibility(
@@ -161,7 +171,8 @@ fun V2HomeScreen(
                     state = listState,
                     contentPadding = PaddingValues(top = 4.dp, bottom = 120.dp),
                 ) {
-                    item { AssistantCard(onClick = onOpenAssistant) }
+                    // 助理入口统一收口到右上角切换器：列表里不再放第二张「助理」卡片，
+                    // 避免与主助理 / 项目助理切换两条主路径互相打架。
                     item { V2SectionLabel("最近") }
                     item {
                         WhiteCard(Modifier.padding(horizontal = 16.dp)) {
@@ -314,9 +325,18 @@ private fun HomeHeader(
     searchOpen: Boolean,
     deviceMenuOpen: Boolean,
     extraTop: androidx.compose.ui.unit.Dp,
+    assistantOptions: List<top.qiuli55.flux.mobile.data.AssistantEntry>,
+    activeAssistantId: String,
+    assistantsLoading: Boolean,
     onToggleDevice: () -> Unit,
     onToggleSearch: () -> Unit,
+    onSelectAssistant: (top.qiuli55.flux.mobile.data.AssistantEntry) -> Unit,
+    onNewProjectAssistant: () -> Unit,
 ) {
+    var assistantMenu by remember { mutableStateOf(false) }
+    val activeAssistant = assistantOptions.firstOrNull { it.id == activeAssistantId }
+        ?: assistantOptions.firstOrNull()
+    val activeLabel = activeAssistant?.name?.takeIf { it.isNotBlank() } ?: "主助理"
     val chevron by animateFloatAsState(
         targetValue = if (deviceMenuOpen) 180f else 0f,
         animationSpec = tween(180),
@@ -357,6 +377,68 @@ private fun HomeHeader(
                 )
             }
         }
+        // 右上角助理切换器：主助理 + 已创建的项目助理（不含临时子任务）
+        Box {
+            Row(
+                Modifier
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(V2Colors.surface)
+                    .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(18.dp))
+                    .clickable { assistantMenu = true }
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    tint = V2Colors.ink(.55f),
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(5.dp))
+                Label(activeLabel, 11.5f, V2Colors.ink(.72f), maxLines = 1)
+                Icon(
+                    Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = "切换助理",
+                    tint = V2Colors.ink(.35f),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = assistantMenu,
+                onDismissRequest = { assistantMenu = false },
+            ) {
+                assistantOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Label(
+                                option.name + if (option.id == activeAssistantId) " ✓" else "",
+                                13f,
+                                V2Colors.ink(.88f),
+                            )
+                        },
+                        onClick = {
+                            assistantMenu = false
+                            onSelectAssistant(option)
+                        },
+                    )
+                }
+                if (assistantOptions.isEmpty() && assistantsLoading) {
+                    DropdownMenuItem(
+                        text = { Label("正在加载…", 13f, V2Colors.ink(.45f)) },
+                        onClick = {},
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Label("＋ 新建项目助理", 13f, V2Colors.ink(.70f)) },
+                    onClick = {
+                        assistantMenu = false
+                        onNewProjectAssistant()
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
         Box(
             Modifier
                 .size(44.dp)
@@ -410,48 +492,6 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
                 textStyle = TextStyle(fontSize = 12.5.sp, color = V2Colors.ink(.85f)),
                 cursorBrush = SolidColor(V2Colors.accent),
                 singleLine = true,
-            )
-        }
-    }
-}
-
-/** 助理入口：黑圆角方块 + 星芒图标。 */
-@Composable
-private fun AssistantCard(onClick: () -> Unit) {
-    WhiteCard(
-        Modifier
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-            .clickable(onClick = onClick),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(V2Colors.accent),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.AutoAwesome,
-                    contentDescription = null,
-                    tint = V2Colors.actionInk,
-                    modifier = Modifier.size(26.dp),
-                )
-            }
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Label("助理", 17f, V2Colors.ink(.94f), FontWeight.SemiBold)
-                Spacer(Modifier.height(3.dp))
-                Label("读取全部对话，汇总项目进度", 13f, V2Colors.ink(.42f), maxLines = 1)
-            }
-            Icon(
-                Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = V2Colors.ink(.22f),
-                modifier = Modifier.size(18.dp),
             )
         }
     }
@@ -772,6 +812,104 @@ private fun DeviceMenuRow(
                 tint = V2Colors.cyan700,
                 modifier = Modifier.size(14.dp),
             )
+        }
+    }
+}
+
+/**
+ * 新建项目助理：默认从已有对话给出建议，但**用户点「创建」前什么都不创建**。
+ * 取消直接关闭，不写任何数据。
+ */
+@Composable
+fun ProjectAssistantCreateDialog(
+    visible: Boolean,
+    suggestions: List<top.qiuli55.flux.mobile.data.AssistantSuggestion>,
+    busy: Boolean = false,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, sourceTaskIds: List<String>) -> Unit,
+) {
+    if (!visible) return
+    var name by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf(0) }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        WhiteCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Column(Modifier.padding(18.dp)) {
+                Label("新建项目助理", 17f, V2Colors.ink(.94f), FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Label("只读取已有对话，用来按项目跟进度；不会改动那些对话。", 11.5f, V2Colors.ink(.45f))
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(V2Colors.ink(.04f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    if (name.isEmpty()) {
+                        Label("项目名称，例如「登录改造」", 13f, V2Colors.ink(.28f))
+                    }
+                    BasicTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        textStyle = TextStyle(
+                            color = V2Colors.ink(.92f),
+                            fontSize = 13.sp,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (suggestions.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Label("从已有对话建议", 10.5f, V2Colors.ink(.42f), mono = true)
+                    suggestions.take(6).forEachIndexed { index, idea ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { selected = index; if (name.isBlank()) name = idea.name }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (selected == index) Icons.Outlined.Check else Icons.Outlined.AddComment,
+                                null,
+                                tint = V2Colors.ink(if (selected == index) .80f else .35f),
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Label(
+                                "${idea.name} · ${idea.conversationCount} 段对话",
+                                12f,
+                                V2Colors.ink(if (selected == index) .88f else .62f),
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    ) { Label("取消", 13f, V2Colors.ink(.55f)) }
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(V2Colors.accent)
+                            .clickable(enabled = !busy && name.isNotBlank()) {
+                                val sources = suggestions.getOrNull(selected)?.conversationIds.orEmpty()
+                                onConfirm(name.trim(), sources)
+                            }
+                            .padding(horizontal = 16.dp, vertical = 9.dp),
+                    ) {
+                        Label(if (busy) "创建中…" else "创建", 13f, V2Colors.actionInk, FontWeight.Medium)
+                    }
+                }
+            }
         }
     }
 }

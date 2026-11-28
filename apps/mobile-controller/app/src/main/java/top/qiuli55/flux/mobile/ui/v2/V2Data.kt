@@ -75,6 +75,24 @@ data class V2ArtifactCard(
     val version: Int = 0,
 )
 
+/**
+ * 主助理对话里的临时子任务卡片（kind = subtask / subtask_result）。
+ *
+ * 子任务不是独立对话、也不是群聊：它只是主助理派出去的一次执行工作，
+ * 点开是只读过程视图，要调整必须回到主助理对话说。
+ */
+data class V2SubtaskCard(
+    val subtaskId: String,
+    val title: String,
+    /** pending / running / waiting_for_user_decision / completed / failed / cancelled */
+    val status: String,
+    val statusLabel: String,
+    val agentId: String? = null,
+    val model: String? = null,
+    /** 完成/失败后的一句话结果（subtask_result 消息才有）。 */
+    val result: String? = null,
+)
+
 /** 计划卡里的一步：标题必填，说明可空。 */
 data class V2PlanStep(val title: String, val detail: String? = null)
 
@@ -148,6 +166,8 @@ data class V2Message(
     val approvalCard: V2ApprovalCard? = null,
     /** kind = secure_input 时的安全输入卡片。 */
     val secureInputCard: V2SecureInputCard? = null,
+    /** kind = subtask / subtask_result 时的临时子任务卡片。 */
+    val subtaskCard: V2SubtaskCard? = null,
     /** run_finished 关联的 Run：有值时答案上方显示「任务耗时」入口。 */
     val runId: String = "",
     /** kind = handoff 时的交接双方（平台自动生成的 Agent 交接卡）。 */

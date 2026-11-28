@@ -859,11 +859,16 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
             _state.value = _state.value.withSendStarted()
             try {
                 val api = api()
-                // 已结束的对话：新消息走续跑，重开任务并起新一轮 Agent Run；
-                // 进行中的对话：仍走追加消息由助手回话。
-                val outcome = if (current.task?.isFinished == true) {
+                // 助理空间（主助理 / 项目助理）永远走 /messages：
+                // 服务端负责分流——闲聊直接回、执行需求派临时子任务；
+                // 绝不用 continueTask 把助理对话拉去跑 Agent。
+                val assistantSpace = current.task?.origin == "assistant" ||
+                    current.task?.origin == "project_assistant"
+                val outcome = if (current.task?.isFinished == true && !assistantSpace) {
+                    // 普通对话已结束：新消息走续跑，重开任务并起新一轮 Agent Run
                     api.continueTask(taskId, content, attachmentIds)
                 } else {
+                    // 进行中的普通对话 / 助理空间：追加消息由服务端处理
                     api.sendMessage(taskId, content, attachmentIds)
                 }
                 _state.value = _state.value.copy(

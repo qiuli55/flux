@@ -65,6 +65,8 @@ import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.McpConnector
+import top.qiuli55.flux.mobile.data.AssistantEntry
+import top.qiuli55.flux.mobile.data.AssistantSuggestion
 import top.qiuli55.flux.mobile.data.UploadedAttachment
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
@@ -74,6 +76,8 @@ import java.time.format.DateTimeFormatter
 private sealed interface V2Route {
     data object Home : V2Route
     data object Assistant : V2Route
+    /** 项目助理进度面板：只读汇总 + 读历史 / 接着干 / 开副本。 */
+    data class ProjectAssistantBoard(val assistantId: String) : V2Route
     data object Designs : V2Route
     /** 一级页面：对话产出的成品（设计稿 / 页面 / 文档）。 */
     data object Artifacts : V2Route
@@ -137,12 +141,18 @@ fun FluxV2Root() {
     val artifactsState by artifactsVm.state.collectAsState()
     val assistantVm: V2AssistantViewModel = viewModel()
     val assistantState by assistantVm.state.collectAsState()
+    val projectAssistantVm: V2ProjectAssistantViewModel = viewModel()
+    val projectAssistantState by projectAssistantVm.state.collectAsState()
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var taskOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var chatOrigin by remember { mutableStateOf<V2Route>(V2Route.Home) }
     var device by remember { mutableStateOf(ALL_DEVICES) }
+    // 右上角切换器当前选中的助理：master 或某个项目助理 id
+    var activeAssistantId by remember { mutableStateOf("master") }
+    var createAssistantOpen by remember { mutableStateOf(false) }
+    var createAssistantBusy by remember { mutableStateOf(false) }
 
     // 对话链接、Codex / GitHub 授权页一律交给 App 内的浏览器，不跳系统浏览器
     fun openInternalBrowser(url: String) {
@@ -222,11 +232,15 @@ fun FluxV2Root() {
     // 首页 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
     LaunchedEffect(route) {
         if (app.boot == V2Boot.READY) {
-            when (route) {
+            when (val current = route) {
                 V2Route.Home -> {
                     vm.refresh(quiet = true)
+                    // 右上角切换器：主助理 + 已创建的项目助理（不阻塞列表刷新）
+                    vm.loadAssistants(quiet = true)
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
+                is V2Route.ProjectAssistantBoard ->
+                    projectAssistantVm.load(current.assistantId, quiet = true)
                 V2Route.Artifacts -> artifactsVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 V2Route.Profile -> {
@@ -338,6 +352,21 @@ fun FluxV2Root() {
         createChat(agentsForDevice(chatDevice).first(), assistant = true)
     }
 
+    /** 右上角切换器：主助理沿用现有入口，项目助理打开它自己的常驻对话。 */
+    fun openAssistantEntry(entry: AssistantEntry) {
+        activeAssistantId = entry.id
+        if (entry.kind == "master") {
+            openAssistant()
+            return
+        }
+        val conversationId = entry.conversationTaskId
+        if (conversationId.isNullOrBlank()) {
+            vm.loadAssistants(quiet = true)
+            return
+        }
+        openChat(conversationId, V2Route.Home)
+    }
+
     fun sendDraftMessage(text: String) {
         Log.i(
             FLUX_UX_LOG_TAG,
@@ -408,8 +437,14 @@ fun FluxV2Root() {
             // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
             draftAttachments.clear()
             draftAttachmentError = null
-            // 新对话第一次发送 = 建任务并立即交给 Agent；只建不跑会让用户以为消息没发出去。
-            vm.startTask(taskId)
+            if (current.isAssistant) {
+                // 主助理只快聊：把首条消息交给服务端分流，执行需求会派临时子任务。
+                // 绝不在父任务上 startTask，否则父对话会变成执行会话。
+                vm.sendAssistantMessage(taskId, description)
+            } else {
+                // 普通对话：新对话第一次发送 = 建任务并立即交给 Agent。
+                vm.startTask(taskId)
+            }
             chat = current.copy(
                 conversationId = taskId,
                 title = text.take(40).ifBlank { "附件对话" },
@@ -461,7 +496,7 @@ fun FluxV2Root() {
     }
 
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
-        settingsOpen || keyVaultOpen || newChatOpen ||
+        settingsOpen || keyVaultOpen || newChatOpen || createAssistantOpen ||
         agentPickerOpen || manualConnectOpen || route != V2Route.Home ||
         designExitOpen || memoryOpen || customConnectorOpen || githubSheetOpen ||
         connectorDetail != null
@@ -474,6 +509,7 @@ fun FluxV2Root() {
                 deleteConversationId = null
                 deleteConversationError = null
             }
+            createAssistantOpen -> createAssistantOpen = false
             manualConnectOpen -> manualConnectOpen = false
             agentPickerOpen -> agentPickerOpen = false
             newChatOpen -> newChatOpen = false
@@ -566,7 +602,14 @@ fun FluxV2Root() {
                             conversations = app.conversations,
                             extraTop = extraTop,
                             onOpenArtifacts = { route = V2Route.Artifacts },
-                            onOpenAssistant = { openAssistant() },
+                            assistantOptions = app.assistants.switcherOptions(),
+                            activeAssistantId = activeAssistantId,
+                            assistantsLoading = app.assistantsLoading,
+                            onSelectAssistant = { openAssistantEntry(it) },
+                            onNewProjectAssistant = {
+                                createAssistantOpen = true
+                                vm.loadAssistantSuggestions()
+                            },
                             onOpenConversation = { openChat(it.id, V2Route.Home) },
                             onDeleteConversation = {
                                 deleteConversationError = null
@@ -595,6 +638,35 @@ fun FluxV2Root() {
                             onOpenDetail = { assistantVm.openDetail(it) },
                             onCloseDetail = { assistantVm.closeDetail() },
                             onDismissMessages = { assistantVm.clearMessages() },
+                        )
+
+                        is V2Route.ProjectAssistantBoard -> V2ProjectAssistantScreen(
+                            state = projectAssistantState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Home },
+                            onRefresh = { projectAssistantVm.load(current.assistantId) },
+                            onReadHistory = { taskId ->
+                                projectAssistantVm.openHistory(current.assistantId, taskId)
+                            },
+                            onCloseHistory = { projectAssistantVm.closeHistory() },
+                            onContinue = { sourceTaskId, content ->
+                                projectAssistantVm.continueConversation(
+                                    assistantId = current.assistantId,
+                                    sourceTaskId = sourceTaskId,
+                                    content = content,
+                                    onDone = { targetId -> openChat(targetId, current) },
+                                )
+                            },
+                            onFork = { sourceTaskId, name ->
+                                projectAssistantVm.forkConversation(
+                                    assistantId = current.assistantId,
+                                    sourceTaskId = sourceTaskId,
+                                    name = name,
+                                    onDone = { targetId -> openChat(targetId, current) },
+                                )
+                            },
+                            onDismissMessages = { projectAssistantVm.clearMessages() },
                         )
 
                         V2Route.Artifacts -> ArtifactsScreen(
@@ -965,34 +1037,52 @@ fun FluxV2Root() {
                             onOpenRun = { route = V2Route.Run(current.taskId) },
                         )
 
-                        is V2Route.TaskChat -> V2TaskChatScreen(
-                            taskId = current.taskId,
-                            extraTop = extraTop,
-                            showBack = showBack,
-                            onBack = {
-                                route = chatOrigin
-                                if (chatOrigin == V2Route.Home) {
-                                    chat = null
-                                    chatMessages.clear()
-                                }
-                            },
-                            onRequestDelete = {
-                                deleteConversationError = null
-                                deleteConversationId = current.taskId
-                            },
-                            onHandoffReady = { summary ->
-                                startHandoffChat(current.taskId, summary)
-                            },
-                            onOpenDesign = { openDesignFromChat(it) },
-                            onOpenArtifact = { openArtifactFromChat(it) },
-                            onOpenUrl = { openInternalBrowser(it) },
-                            designOptions = designState.designs,
-                            designsLoading = designState.loading,
-                            onRequestDesigns = { designVm.loadDesigns(quiet = true) },
-                            // 助理对话右上角可回到进度看板；普通对话不给这个入口
-                            onOpenAssistantBoard = { route = V2Route.Assistant },
-                            onOpenChanges = { route = V2Route.Changes(current.taskId) },
-                        )
+                        is V2Route.TaskChat -> {
+                            // 项目助理自己的常驻对话：右上角进入「项目进度」（读历史 / 接着干 / 开副本），
+                            // 不再跳去主助理的 Supervisor 看板。
+                            val projectEntry = app.assistants.projects.firstOrNull {
+                                it.conversationTaskId == current.taskId
+                            }
+                            V2TaskChatScreen(
+                                taskId = current.taskId,
+                                extraTop = extraTop,
+                                showBack = showBack,
+                                onBack = {
+                                    route = chatOrigin
+                                    if (chatOrigin == V2Route.Home) {
+                                        chat = null
+                                        chatMessages.clear()
+                                    }
+                                },
+                                onRequestDelete = {
+                                    deleteConversationError = null
+                                    deleteConversationId = current.taskId
+                                },
+                                onHandoffReady = { summary ->
+                                    startHandoffChat(current.taskId, summary)
+                                },
+                                onOpenDesign = { openDesignFromChat(it) },
+                                onOpenArtifact = { openArtifactFromChat(it) },
+                                onOpenUrl = { openInternalBrowser(it) },
+                                designOptions = designState.designs,
+                                designsLoading = designState.loading,
+                                onRequestDesigns = { designVm.loadDesigns(quiet = true) },
+                                // 主助理对话可回 Supervisor 看板；项目助理改走项目进度
+                                onOpenAssistantBoard = if (projectEntry == null) {
+                                    ({ route = V2Route.Assistant })
+                                } else {
+                                    null
+                                },
+                                onOpenProjectAssistant = projectEntry?.let { entry ->
+                                    ({ route = V2Route.ProjectAssistantBoard(entry.id) })
+                                },
+                                onOpenChanges = { route = V2Route.Changes(current.taskId) },
+                                // 子任务卡片：点开只读过程视图；返回时回到主助理对话
+                                onOpenSubtask = { childId ->
+                                    openChat(childId, V2Route.TaskChat(current.taskId))
+                                },
+                            )
+                        }
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
                             taskId = current.taskId,
@@ -1311,6 +1401,34 @@ fun FluxV2Root() {
                         )
                     }
 
+                    // 新建项目助理：用户点「创建」前不写任何数据；取消就是不创建。
+                    ProjectAssistantCreateDialog(
+                        visible = createAssistantOpen,
+                        suggestions = app.assistantSuggestions,
+                        busy = createAssistantBusy,
+                        onDismiss = { if (!createAssistantBusy) createAssistantOpen = false },
+                        onConfirm = { name, sources ->
+                            createAssistantBusy = true
+                            vm.createProjectAssistant(
+                                name = name,
+                                sourceTaskIds = sources,
+                                confirmed = true,
+                                onCreated = { created ->
+                                    createAssistantBusy = false
+                                    createAssistantOpen = false
+                                    activeAssistantId = created.id
+                                    created.conversationTaskId?.takeIf { it.isNotBlank() }?.let { id ->
+                                        openChat(id, V2Route.Home)
+                                    }
+                                },
+                                onFailed = { message ->
+                                    createAssistantBusy = false
+                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                },
+                            )
+                        },
+                    )
+
                     val currentChat = chat
                     if (agentPickerOpen && currentChat != null) {
                         AgentPickerSheet(
@@ -1550,6 +1668,7 @@ private fun RailButton(
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
+    is V2Route.ProjectAssistantBoard -> 2
     V2Route.Connectors, V2Route.Subscriptions -> 1
     V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1

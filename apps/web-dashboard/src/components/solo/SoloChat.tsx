@@ -73,6 +73,8 @@ interface Props {
   onLoadOlder: () => void;
   onCopy: (text: string) => void;
   onQuote: (text: string) => void;
+  /** 临时子任务卡片：点开只读过程视图。 */
+  onOpenSubtask?: (subtaskId: string) => void;
 }
 
 export function SoloChat({
@@ -87,6 +89,7 @@ export function SoloChat({
   onLoadOlder,
   onCopy,
   onQuote,
+  onOpenSubtask,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -260,6 +263,33 @@ export function SoloChat({
 
           {messages.map((message) => {
             const isUser = message.role === "user";
+            if (message.kind === "subtask" || message.kind === "subtask_result") {
+              const subtaskId = message.payload?.subtask_id;
+              return (
+                <div className="msg is-in" key={message.id}>
+                  <span className="ava ava-flux">{FLUX_AVATAR}</span>
+                  <div className="msg-body">
+                    <div className="msg-meta">Flux · {clockOf(message.created_at)}</div>
+                    <button
+                      type="button"
+                      className="bubble"
+                      style={{ textAlign: "left", cursor: subtaskId ? "pointer" : "default", width: "100%" }}
+                      onClick={() => subtaskId && onOpenSubtask?.(subtaskId)}
+                    >
+                      <b>{message.payload?.title ?? "临时子任务"}</b>
+                      <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.68 }}>
+                        {message.payload?.status_label ?? ""}
+                        {message.payload?.model_name ? ` · ${message.payload.model_name}` : ""}
+                      </span>
+                      <div style={{ marginTop: 6 }}>{message.content}</div>
+                      <div style={{ marginTop: 6, fontSize: 11, opacity: 0.55 }}>
+                        点开查看过程（只读）
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             const clarify = message.payload?.clarify ?? [];
             const questions = message.payload?.questions ?? [];
             const confirmation = message.payload?.confirmation ?? [];

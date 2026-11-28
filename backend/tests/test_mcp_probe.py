@@ -71,9 +71,7 @@ def test_probe_parses_sse_responses() -> None:
                 "event: message\n"
                 'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n'
             )
-            return httpx.Response(
-                200, text=body, headers={"content-type": "text/event-stream"}
-            )
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
         if payload.get("method") == "notifications/initialized":
             return httpx.Response(204)
         body = (
@@ -138,6 +136,7 @@ def test_probe_reports_network_failure() -> None:
     assert result.ok is False
     assert "无法连接服务器" in result.error
 
+
 def test_probe_skips_notifications_before_the_jsonrpc_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = _rpc(request)
@@ -147,9 +146,7 @@ def test_probe_skips_notifications_before_the_jsonrpc_response() -> None:
                 '"params":{"level":"info"}}\n\n'
                 'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n'
             )
-            return httpx.Response(
-                200, text=body, headers={"content-type": "text/event-stream"}
-            )
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
         if payload.get("method") == "notifications/initialized":
             return httpx.Response(202)
         return httpx.Response(
@@ -160,4 +157,3 @@ def test_probe_skips_notifications_before_the_jsonrpc_response() -> None:
     result = asyncio.run(_client(handler).probe("https://example.com/mcp"))
     assert result.ok is True
     assert result.tools == ("ping",)
-

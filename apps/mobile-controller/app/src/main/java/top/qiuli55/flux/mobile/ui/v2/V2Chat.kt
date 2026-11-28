@@ -195,8 +195,10 @@ fun V2ChatScreen(
     runSummaries: Map<String, TaskRunSummary> = emptyMap(),
     /** 打开某一轮的执行详情（概览 / 思考过程 / 命令输出）。 */
     onOpenRunTrace: (String) -> Unit = {},
-    /** 对话尚未加载出来：暂时不允许发送。 */
+    /** 对话尚未加载出来 / 只读过程视图：不允许发送。 */
     locked: Boolean = false,
+    /** locked 时的输入框占位文案（子任务过程视图提示回助理对话）。 */
+    lockedHint: String? = null,
     /** 真实任务对话没有「删除会话」接口，隐藏该按钮。 */
     showDelete: Boolean = true,
     /** 能不能切换执行 Agent（执行中也可以：排队到本轮结束后生效）。 */
@@ -239,6 +241,8 @@ fun V2ChatScreen(
     onOpenDesign: (String) -> Unit = {},
     /** 已发布的页面 / 文档卡片：点开进入产物详情。 */
     onOpenArtifact: (String) -> Unit = {},
+    /** 临时子任务卡片：点开只读过程视图（不能在里面直接指挥 Agent）。 */
+    onOpenSubtask: (String) -> Unit = {},
     /** 切换对话权限模式（plan / normal / full）；只影响后续消息。 */
     onPermissionModeChange: (String) -> Unit = {},
     /** 审批卡：允许本次执行 / 拒绝本次执行。 */
@@ -259,6 +263,8 @@ fun V2ChatScreen(
     secureInputBusy: Boolean = false,
     /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
     onOpenAssistantBoard: (() -> Unit)? = null,
+    /** 项目助理对话标题栏的「项目进度」入口；null 表示不显示。 */
+    onOpenProjectAssistant: (() -> Unit)? = null,
     /** 标题栏副标题：任务状态 + 最近一条消息时间；为空时显示设备名。 */
     headerStatus: String? = null,
     /** 待审核的文件改动；count = 0 时不显示「去审核」卡片。 */
@@ -588,6 +594,16 @@ fun V2ChatScreen(
                             },
                         )
                     }
+                    val projectBoard = onOpenProjectAssistant
+                    if (projectBoard != null) {
+                        DropdownMenuItem(
+                            text = { Label("项目进度", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                headerMenuOpen = false
+                                projectBoard()
+                            },
+                        )
+                    }
                     if (canSwitchAgent) {
                         DropdownMenuItem(
                             text = { Label("切换 Agent 与模型", 12f, V2Colors.ink(.88f)) },
@@ -699,6 +715,7 @@ fun V2ChatScreen(
                         onOpenUrl = onOpenUrl,
                         onOpenDesign = onOpenDesign,
                         onOpenArtifact = onOpenArtifact,
+                        onOpenSubtask = onOpenSubtask,
                         onSend = onSend,
                         onLongPress = openBubbleMenu,
                         onSubmitSecureInput = onSubmitSecureInput,
@@ -928,7 +945,7 @@ fun V2ChatScreen(
                     if (input.isEmpty()) {
                         Label(
                             when {
-                                locked -> "正在加载对话…"
+                                locked -> lockedHint ?: "正在加载对话…"
                                 uploading -> "附件上传中…"
                                 sending -> "等待 ${agent.name} 回复…"
                                 chat.permissionMode == "plan" -> "让 Agent 先出计划，不动手…"
@@ -1696,6 +1713,8 @@ private fun MessageRow(
     onOpenDesign: (String) -> Unit = {},
     /** 产物卡片：页面 / 文档点开进入 ArtifactDetail。 */
     onOpenArtifact: (String) -> Unit = {},
+    /** 临时子任务卡片：点开只读过程视图。 */
+    onOpenSubtask: (String) -> Unit = {},
     /** 生成式卡片里的动作胶囊：点一下就把按钮的 prompt 发出去。 */
     onSend: (String) -> Unit = {},
     /** 长按气泡：回传消息与气泡在根容器中的位置，用于浮出复制/引用/重发菜单。 */
@@ -1730,6 +1749,14 @@ private fun MessageRow(
         // Agent 通过 artifact.publish 发布的页面 / 文档：点开进产物详情
         ArtifactCardMessage(message.artifactCard, message.time) {
             onOpenArtifact(message.artifactCard.id)
+        }
+        return
+    }
+    val subtaskCard = message.subtaskCard
+    if ((message.kind == "subtask" || message.kind == "subtask_result") && subtaskCard != null) {
+        // 临时子任务：主助理对话里的一个条目，不是独立聊天。点开只看过程。
+        SubtaskCardMessage(subtaskCard, message.text, message.time) {
+            onOpenSubtask(subtaskCard.subtaskId)
         }
         return
     }
@@ -2054,6 +2081,65 @@ private fun SecureInputCardBody(
             Spacer(Modifier.height(4.dp))
             Label("密钥只进密钥库，不写入对话上下文", 8.5f, V2Colors.ink(.30f), mono = true)
         }
+    }
+}
+
+/**
+ * 临时子任务卡片：主助理派活的条目 / 子任务终态回写。
+ *
+ * 它不是独立聊天，也不出现在切换器里；点开只读过程视图。
+ */
+@Composable
+private fun SubtaskCardMessage(card: V2SubtaskCard, text: String, time: String, onClick: () -> Unit) {
+    val finished = card.status == "completed" || card.status == "failed" || card.status == "cancelled"
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(V2Colors.surface(.80f))
+            .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(V2Colors.accent.copy(alpha = .12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = V2Colors.accent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Label(card.title, 13f, V2Colors.ink(.94f), FontWeight.SemiBold, maxLines = 2)
+                Spacer(Modifier.height(2.dp))
+                val meta = listOfNotNull(
+                    card.statusLabel,
+                    card.model?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
+                Label(meta, 9f, V2Colors.ink(.42f), mono = true, maxLines = 1)
+            }
+            Label(time, 8.5f, V2Colors.ink(.22f))
+        }
+        val detail = card.result?.takeIf { it.isNotBlank() } ?: text
+        if (finished && detail.isNotBlank()) {
+            Spacer(Modifier.height(7.dp))
+            Label(detail, 10.5f, V2Colors.ink(.56f), maxLines = 3)
+        }
+        Spacer(Modifier.height(5.dp))
+        Label(
+            if (finished) "点开查看过程（只读）" else "已派出 · 点开查看过程（只读）",
+            8.5f,
+            V2Colors.ink(.30f),
+            mono = true,
+        )
     }
 }
 

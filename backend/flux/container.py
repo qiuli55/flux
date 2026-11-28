@@ -68,6 +68,7 @@ from flux.core.memory.service import MemoryService
 from flux.core.model_gateway.providers.registry import build_providers
 from flux.core.model_gateway.router import ModelRouter
 from flux.core.permission_engine.policy import PermissionPolicy
+from flux.core.project_assistant import ProjectAssistantRepository, ProjectAssistantService
 from flux.core.project_brain.refresh import BrainRefresher
 from flux.core.project_brain.repository import ProjectBrainRepository
 from flux.core.project_brain.service import ProjectBrain
@@ -100,6 +101,7 @@ from flux.core.task_engine.memory_repository import TaskMemoryRepository
 from flux.core.task_engine.repository import TaskRepository
 from flux.core.task_engine.scheduler import TaskScheduler
 from flux.core.task_engine.stream import TaskStreamHub, TaskStreamRelay
+from flux.core.task_engine.subtask_dispatcher import SubtaskDispatcher
 from flux.core.terminal.pty_service import HumanPtyService
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.terminal.service import TerminalService
@@ -217,6 +219,8 @@ class Container:
         #: 内建 CLI Agent Adapter 集合：installation 状态机与 P2-1 的 CLI runtime 共用同一批实例
         cli_adapters = build_default_adapters()
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 项目助理（2026-11-28）：与主助理同级的入口，只读已有对话并按项目汇报
+        self.project_assistants = ProjectAssistantRepository(self.session_factory)  # type: ignore[attr-defined]
         # 密钥库：Agent 模型通道的 API Key（加密落库），与任务级 model / api_key_id 配合解析
         self.key_vault = KeyVaultService(self.session_factory, self.settings)  # type: ignore[attr-defined]
         # GitHub 账号：设备码授权 + 仓库读写；令牌复用密钥库主密钥加密落盘
@@ -321,6 +325,8 @@ class Container:
             bus=self.bus,
             workspace_root=self.settings.workspace_root,
         )
+        # 项目助理服务：自动建议、确认后创建、只读上下文（不派子任务）
+        self.project_assistant_service = ProjectAssistantService(self)
         # 三层记忆（批次② §4.2）：User / Environment 落 memories 表，Project 复用 brain；
         # 写入必须走受控路径（用户 REST / 平台代码），Agent 面只有只读的 memory.recall
         self.memory_repo = MemoryRepository(self.session_factory)  # type: ignore[attr-defined]
@@ -439,6 +445,10 @@ class Container:
         # ChatGPT 账号登录成功时自动采集一次 Codex 额度（plan + 窗口百分比）
         self.codex_account.set_billing(self.billing)
         self.task_run_service = TaskRunService(self, cli_adapters=cli_adapters)
+        # 主助理调度员：派临时子任务、更换/并行、终态回写父对话。
+        # 子任务启动在后台协程里完成，父对话请求不等待执行。
+        self.subtask_dispatcher = SubtaskDispatcher(self)
+        self.task_runs.set_parent_notifier(self.subtask_dispatcher.on_child_terminal)
         # 上游瞬时故障（429 / ReadTimeout）自动续跑一轮：事件桥只做判定与冷却，
         # 真正重新起 Run 交给 TaskRunService（沿用任务自己的 Agent / 模型 / 权限模式）。
         self.task_runs.set_retry_handler(self._auto_retry_task)

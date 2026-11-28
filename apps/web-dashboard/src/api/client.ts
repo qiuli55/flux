@@ -230,6 +230,51 @@ export const api = {
   },
   sendTaskMessage: (taskId: string, content: string) =>
     getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  /** 某主助理对话下的临时子任务（只读过程视图的入口） */
+  listSubtasks: (taskId: string) =>
+    getData<import("./types").SubtaskSummary[]>("GET", `/tasks/${taskId}/subtasks`),
+  /** 右上角切换器：主助理 + 已创建的项目助理（不含临时子任务） */
+  listAssistants: () => getData<import("./types").AssistantList>("GET", "/assistants"),
+  assistantSuggestions: () =>
+    getData<import("./types").AssistantSuggestion[]>("GET", "/assistants/suggestions"),
+  createAssistant: (body: {
+    name: string;
+    project_id?: string | null;
+    source_task_ids?: string[];
+    confirmed: boolean;
+  }) => getData<import("./types").AssistantEntry>("POST", "/assistants", body),
+  /** 进度汇总：只读已有记录（进行中 / 可能已停住 / 失败 / 已完成） */
+  assistantProgress: (assistantId: string) =>
+    getData<import("./types").AssistantProgress>("GET", `/assistants/${assistantId}/progress`),
+  /** 读历史：列出相关对话（只读） */
+  assistantHistory: (assistantId: string) =>
+    getData<import("./types").AssistantHistory>("GET", `/assistants/${assistantId}/history`),
+  /** 读历史：只读打开一条相关对话的消息 */
+  readAssistantHistory: (assistantId: string, taskId: string) =>
+    getData<import("./types").AssistantHistoryDetail>(
+      "GET",
+      `/assistants/${assistantId}/history/${taskId}`,
+    ),
+  /** 接着干：必须二次确认（confirmed=true）才向原对话发送并续跑 */
+  continueAssistant: (
+    assistantId: string,
+    body: { source_task_id: string; content: string; confirmed: boolean },
+  ) =>
+    getData<import("./types").AssistantContinueOutcome>(
+      "POST",
+      `/assistants/${assistantId}/continue`,
+      body,
+    ),
+  /** 开副本：必须二次确认（confirmed=true）才新建独立常驻对话 */
+  forkAssistant: (
+    assistantId: string,
+    body: { source_task_id: string; name?: string | null; confirmed: boolean },
+  ) =>
+    getData<import("./types").AssistantForkOutcome>(
+      "POST",
+      `/assistants/${assistantId}/fork`,
+      body,
+    ),
   startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
     getData<TaskStartOutcome>(
       "POST",
