@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 import pytest
 from sqlalchemy import select
 
@@ -204,6 +207,39 @@ def test_entropy_spares_uploads_absolute_path() -> None:
 def test_entropy_still_catches_base64_with_single_slash() -> None:
     """只含一个 `/` 的候选不是路径，仍按高熵 base64 密钥打码。"""
     token = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae/abcdefGHIJKL0123456789"
+    result = redact(f"value {token}")
+    assert result.text == "value [REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == token
+
+
+def _fictional_standard_base64(seed: int) -> str:
+    """由虚构种子派生标准 base64 串（只用于锁定形态，不是任何真实凭据）。"""
+    digest = hashlib.sha256(f"fictional-test-seed:{seed}".encode()).digest()
+    return base64.b64encode(digest).decode()
+
+
+def test_entropy_catches_multislash_base64_with_short_segment() -> None:
+    """不以 `/` 开头、含多个 `/` 的标准 base64 不能因"切开有短段"就被当成路径。"""
+    token = _fictional_standard_base64(2)
+    assert not token.startswith("/")
+    assert token.count("/") >= 2
+    assert any(len(segment) < 20 for segment in token.split("/"))
+
+    result = redact(f"value {token}")
+    assert result.text == "value [REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    # 记录的是整段令牌，而不是某个恰好像密钥的短段
+    assert result.matches[0].original == token
+
+
+def test_entropy_catches_multislash_base64_with_all_short_segments() -> None:
+    """多段都短于 20 的标准 base64：旧口径整串原样漏出，必须整段打码。"""
+    token = _fictional_standard_base64(15)
+    assert not token.startswith("/")
+    assert token.count("/") >= 2
+    assert all(len(segment) < 20 for segment in token.split("/"))
+
     result = redact(f"value {token}")
     assert result.text == "value [REDACTED:key]"
     assert result.matches[0].kind == RedactionKind.KEY

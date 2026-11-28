@@ -85,6 +85,35 @@ _CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_\-\\]{16,}")
 _PATH_SPLIT_RE = re.compile(r"([/\\])")
 #: 路径段允许的字符集（base64 标准与 URL-safe）；点号等文件名字符不属于密钥形态
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9+/=_\-]+")
+#: 连字符 / 下划线连接的词形目录名切分（`project-2024-backup`、`node_modules`）。
+#: 标准 base64 字母表不含 `-` / `_`，故这种段出现在含 `/` 的候选里本身就是强路径信号。
+_COMPONENT_SPLIT_RE = re.compile(r"[-_]+")
+#: 常见短目录名：`tmp` / `src` / `sys` 这类可能没有元音，词形启发式认不出。
+#: 仅用于**路径分量**判定，不参与 Bearer / 密钥判定（避免误伤 `bearer tokenization`）。
+_COMMON_PATH_COMPONENTS = frozenset(
+    {
+        "tmp",
+        "src",
+        "sys",
+        "srv",
+        "www",
+        "mnt",
+        "bin",
+        "etc",
+        "usr",
+        "var",
+        "lib",
+        "opt",
+        "dev",
+        "run",
+        "log",
+        "app",
+        "cfg",
+        "cwd",
+        "pwd",
+        "nix",
+    }
+)
 #: 带连字符的 UUID：路径段里的常见目录 / 资源 id，字符集不再是纯 hex，需单独认出
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -292,16 +321,25 @@ def _looks_like_jwt(token: str) -> bool:
 
 def _looks_like_secret(token: str) -> bool:
     """熵检测兜底：够长、非纯数字、非纯 hex，且香农熵越线，才当密钥。"""
+    # 文件系统路径不是密钥。候选字符类包含 `/`（标准 base64 需要），否则
+    # `/tmp/.../uploads/<hex>/a` 这类绝对路径会被整体当成一个高熵候选。
+    if _looks_like_filesystem_path(token):
+        return False
+    return _has_secret_entropy(token)
+
+
+def _has_secret_entropy(token: str) -> bool:
+    """不看路径形态，只看长度 / 字符集 / 香农熵是否达到密钥门槛。
+
+    与 `_looks_like_secret` 分开：按段打码一无替换时的整串回退需要这个"纯熵"判定，
+    否则会撞上 `_looks_like_secret` 里的路径短路而永远回退不了。
+    """
     if len(token) < _MIN_SECRET_CHARS:
         return False
     if token.isdigit():
         return False
     # 整串都是十六进制 → 是哈希/摘要（自家 sha256、事实脊柱凭证正在此列），不误伤
     if set(token) <= _HEX_CHARS:
-        return False
-    # 文件系统路径不是密钥。候选字符类包含 `/`（标准 base64 需要），否则
-    # `/tmp/.../uploads/<hex>/a` 这类绝对路径会被整体当成一个高熵候选。
-    if _looks_like_filesystem_path(token):
         return False
     return _entropy(token) >= _MIN_ENTROPY
 
@@ -315,6 +353,7 @@ def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
     成 `/`）；若没有任何段被换，返回原串，避免拆分后无意改写。
     """
     parts = _PATH_SPLIT_RE.split(token)
+    segments = [part for part in parts if part and part not in ("/", "\\")]
     changed = False
     for index, part in enumerate(parts):
         if not part or part in ("/", "\\"):
@@ -322,7 +361,16 @@ def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
         if _looks_like_secret_segment(part):
             parts[index] = replace(part)
             changed = True
-    return "".join(parts) if changed else token
+    if changed:
+        return "".join(parts)
+    # 回退（P1 兜底）：按段一无替换时，若整串仍像密钥，就整段打码，避免含多个 `/`
+    # 的标准 base64 因被误判成路径而整串漏出。**但必须先排除 hex / UUID 标识符**：
+    # uploads 绝对路径（`/tmp/.../uploads/<32位hex>/a`）整串熵约 4.53，已经越过 4.5，
+    # 天真的"没换 + 熵越线就整段打码"会再次把附件路径打成 `[REDACTED:key].txt`
+    # （官方 CI 修过的事故）。含标识符的路径保持原样。
+    if any(_looks_like_path_identifier(part) for part in segments):
+        return token
+    return replace(token) if _has_secret_entropy(token) else token
 
 
 def _looks_like_secret_segment(segment: str) -> bool:
@@ -406,8 +454,16 @@ def _looks_like_filesystem_path(token: str) -> bool:
 
     - 至少两个分隔符（`/` 或 `\\`）。只含单个 `/` 的候选**不**在此列：那仍可能是
       夹了一个 `/` 的标准 base64 密钥，照常整段走熵检测。
-    - 至少要有一个段**不像密钥**。若所有段都像密钥，整串更可能是一个含 `/` 的
-      base64 令牌，按整段密钥处理，避免把令牌切碎后漏掉某个短段。
+    - 至少两个段**真正像路径分量**（`_looks_like_path_component`：自然语言词、
+      词形态目录名、常见短目录名）；或
+    - 含 `\\`（Windows 路径；标准 base64 字母表不含 `\\`，这是强路径信号）；或
+    - 以 `/` 开头（POSIX 绝对路径前缀）；或
+    - 恰有一个路径分量，且另有 hex / UUID 标识符段（`uploads/<hex>/a` 形态）。
+
+    这里**不再**把"某段短于 `_MIN_PATH_SECRET_CHARS`、因此不像密钥"当成路径信号：
+    那正是 PR #42 P1 的根因。标准 base64 被 `/` 切开后的短碎片不是路径分量，据此
+    判成路径后 `_redact_path_segments` 又无段可换，整串令牌会原样漏出。这样的候选
+    现在不命中路径判定，整段走熵检测打成 `[REDACTED:key]`。
 
     注意：这里只回答"整串像不像路径"，**不是**"整串放过"。`_entropy_sub` 命中该
     判定后改走 `_redact_path_segments` 逐段打码，避免 `/api/keys/<base64>` 这类
@@ -416,7 +472,63 @@ def _looks_like_filesystem_path(token: str) -> bool:
     if sum(1 for char in token if char in "/\\") < 2:
         return False
     segments = [part for part in _PATH_SPLIT_RE.split(token) if part and part not in ("/", "\\")]
-    return any(not _looks_like_secret_segment(part) for part in segments)
+    components = sum(1 for part in segments if _looks_like_path_component(part))
+    # 相对路径：至少两个真正的路径分量（`foo/<secret>/bar`、`data/<hex>/<secret>/blob`）。
+    # 只靠一个碎片词就判路径，会让"恰好含一个词形片段"的多斜杠 base64 被误判。
+    if components >= 2:
+        return True
+    # 反斜杠是 Windows 路径的强信号：标准 base64 字母表根本不含 `\`。
+    if "\\" in token:
+        return True
+    # POSIX 绝对路径前缀（标准 base64 也可能以 `/` 开头，属已知边角，见结果摘要）。
+    if token.startswith("/"):
+        return True
+    # 相对路径 + 内容寻址 id（uploads 形态：`uploads/<hex>/a`）。
+    return components >= 1 and any(_looks_like_path_identifier(part) for part in segments)
+
+
+def _looks_like_path_component(segment: str) -> bool:
+    """路径段是否真正像目录 / 文件名，而不是被 `/` 切碎的标准 base64 碎片。
+
+    只认下列路径形态：
+
+    - 自然语言词（`uploads` / `Users` / `payload`）：全小写或首字母大写，至少 3 个
+      字母，复用元音比例启发式。混入内部大写（`qIody`）的片段更像 base64，不认。
+    - 连字符 / 下划线连接的词形目录名（`project-2024-backup`、`node_modules`）：
+      标准 base64 不含 `-` / `_`，这种段出现在含 `/` 的候选里本身就是强路径信号。
+    - 少量常见短目录名（`tmp` / `src` / `sys` 等可能没有元音，形态启发式认不出）。
+
+    刻意**不**把"短、所以不像密钥"当路径信号——那会让多斜杠标准 base64 漏出。
+    """
+    if not segment:
+        return False
+    lowered = segment.lower()
+    if lowered in _COMMON_PATH_COMPONENTS:
+        return True
+    if segment.isalpha():
+        return _looks_like_word_component(segment)
+    if "-" in segment or "_" in segment:
+        parts = [part for part in _COMPONENT_SPLIT_RE.split(segment) if part]
+        if not parts or not any(part.isalpha() for part in parts):
+            return False
+        return all(
+            part.isdigit() or part.isalpha() or part.lower() in _COMMON_PATH_COMPONENTS
+            for part in parts
+        )
+    return False
+
+
+def _looks_like_word_component(segment: str) -> bool:
+    """全字母段是否是自然语言词形态：全小写或仅首字母大写。
+
+    base64 碎片常混入内部大写（`qIody`），不应被当成目录名；`Users` / `uploads`
+    这类词形则保留。至少 3 个字母，避免把 `a` / `xy` 片段当路径分量。
+    """
+    if len(segment) < 3:
+        return False
+    if not (segment.islower() or (segment[0].isupper() and segment[1:].islower())):
+        return False
+    return _looks_like_plain_english(segment.lower())
 
 
 def _entropy(token: str) -> float:
