@@ -310,8 +310,9 @@ class GroupRepository:
             state.turns += 1
             state.last_seen_seq = max(state.last_seen_seq, seq)
             note = note.strip()
-            if note and self._assistant_sanitizer_source is not None:
+            if note:
                 # 个人笔记是 bot 发言的截断副本，同样不能留下未完成密钥前缀。
+                # 未注入来源时也走内置规则（配置字面量清单为空，其余照常消毒）。
                 note = sanitize_assistant_value(self._assistant_sanitizer_source, note)
             if note:
                 merged = f"{state.memory}\n{note}".strip() if state.memory else note
@@ -382,7 +383,8 @@ class GroupRepository:
                 seq += 1
                 content = draft.content
                 payload = draft.payload
-                if draft.role in {"bot", "assistant"} and self._assistant_sanitizer_source:
+                if draft.role in {"bot", "assistant"}:
+                    # 未注入来源时也走内置规则，避免调用方只构造仓储时消毒失效。
                     content, payload = sanitize_assistant_message_fields(
                         self._assistant_sanitizer_source, content, payload
                     )

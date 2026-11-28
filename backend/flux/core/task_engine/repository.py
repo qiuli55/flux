@@ -94,16 +94,13 @@ class TaskRepository:
     def _sanitize_assistant_fields(
         self, content: str, payload: dict[str, Any] | None
     ) -> tuple[str, dict[str, Any] | None]:
-        source = self._assistant_sanitizer_source
-        if source is None:
-            return content, payload
-        return sanitize_assistant_message_fields(source, content, payload)
+        # 未注入来源时也要消毒：内置规则（Bearer / JWT / PEM / `sk-` 等）不依赖
+        # Settings 字面量清单；`projection_literals(None)` 返回 `()`，配置字面量前缀
+        # 在无清单时无法识别属预期，完整字面量仍按既有约定留在库里。
+        return sanitize_assistant_message_fields(self._assistant_sanitizer_source, content, payload)
 
     def _sanitize_assistant_value(self, value: Any) -> Any:
-        source = self._assistant_sanitizer_source
-        if source is None:
-            return value
-        return sanitize_assistant_value(source, value)
+        return sanitize_assistant_value(self._assistant_sanitizer_source, value)
 
     async def create(
         self,

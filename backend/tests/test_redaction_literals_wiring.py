@@ -36,8 +36,9 @@ from flux.core.mcp.context_packager import (
 from flux.core.mcp.tools.base import ToolContext
 from flux.core.mcp.tools.read_tools import context_steps
 from flux.core.task_engine.dsh_bridge import SEDIMENT_ERROR_CHARS
-from flux.core.task_engine.repository import MessageDraft
+from flux.core.task_engine.repository import MessageDraft, TaskRepository
 from flux.core.task_engine.work_memory import MEMORY_ERROR_CHARS, build_memory_card
+from flux.db.session import create_engine, create_session_factory
 from flux.enums import (
     BrainSection,
     Capability,
@@ -1772,3 +1773,205 @@ def test_redacted_message_only_sanitizes_assistant_incomplete_prefix(
     assert "好的，口令是" in assistant_data["content"]
     assert prefix not in json.dumps(assistant_data["payload"], ensure_ascii=False)
     assert assistant_data["payload"]["other"] == "保留"
+
+
+# --- 第十批：未注入消毒来源时也必须默认生效 ---
+#
+# 落库消毒此前依赖 Container 调 `set_assistant_sanitizer_source`。调用方只写
+# `TaskRepository(session_factory)` / `GroupRepository(session_factory)` 时内置规则
+# 会整体失效。下面全部**直接构造仓储且不注入来源**，读库验证默认消毒；不借 Container。
+
+
+def _bare_session_factory(settings: Settings):
+    """只按数据库地址建引擎与会话工厂，不装配 Container、不注入任何 Settings。"""
+    engine = create_engine(settings.database_url)
+    return engine, create_session_factory(engine)
+
+
+async def test_task_repository_without_injected_source_sanitizes_assistant(
+    settings: Settings, db_schema: None
+) -> None:
+    """`TaskRepository(session_factory)` 不注入来源：内置规则与未完成前缀仍生效。"""
+    engine, factory = _bare_session_factory(settings)
+    try:
+        repo = TaskRepository(factory)  # 刻意不调用 set_assistant_sanitizer_source
+        task_id = uuid.uuid4()
+        await repo.create(
+            task_id=task_id,
+            description="默认消毒",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+
+        token = INLINE_BEARER_TOKEN
+        user_text = f"用户自己的口令 {LITERAL}，凭证 bearer {token}"
+        incomplete_fragments = (
+            "sk-",
+            "eyJhbGciOi",
+            "Bearer abc123",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE",
+        )
+        await repo.add_messages(
+            task_id,
+            [
+                MessageDraft(role="user", content=user_text),
+                MessageDraft(role="assistant", content=f"凭证是 bearer {token}，后面还有正文。"),
+                *[
+                    MessageDraft(role="assistant", content=f"停在 {fragment}")
+                    for fragment in incomplete_fragments
+                ],
+            ],
+        )
+        # 决策 JSON 与 assistant 确认卡同样走默认消毒。
+        await repo.raise_decision(
+            task_id,
+            {
+                "id": "decision-default-1",
+                "question": f"凭证 bearer {token}",
+                "context": "停在 sk-",
+                "status": "pending",
+            },
+        )
+        await repo.set_confirmation(
+            task_id,
+            {"actor": "assistant", "items": [{"label": "目标", "value": f"Bearer {token}"}]},
+        )
+
+        messages, _ = await repo.list_messages(task_id, limit=50)
+        assistant_rows = [m for m in messages if m.role == "assistant"]
+        assistant_dump = json.dumps([m.to_dict() for m in assistant_rows], ensure_ascii=False)
+        assert token not in assistant_dump
+        assert TOKEN_PLACEHOLDER in assistant_dump
+        assert "后面还有正文" in assistant_dump
+        for fragment in ("sk-", "eyJhbGciOi", "Bearer abc123", "BEGIN RSA"):
+            assert fragment not in assistant_dump, fragment
+
+        stored_task = await repo.get(task_id)
+        nested_dump = json.dumps(stored_task.decisions, ensure_ascii=False)
+        nested_dump += json.dumps(stored_task.confirmation, ensure_ascii=False)
+        assert token not in nested_dump
+        assert "sk-" not in nested_dump
+        assert "Bearer abc123" not in nested_dump
+
+        # 对照：同一批写入的 user 消息原文完全不变（含完整字面量与 bearer 令牌）。
+        user_rows = [m for m in messages if m.role == "user"]
+        assert user_rows[-1].content == user_text
+    finally:
+        await engine.dispose()
+
+
+async def test_task_repository_without_injected_source_keeps_complete_literal(
+    settings: Settings, db_schema: None
+) -> None:
+    """无注入时完整配置字面量仍按既有约定留在库里，只有投影层打码。"""
+    engine, factory = _bare_session_factory(settings)
+    try:
+        repo = TaskRepository(factory)
+        task_id = uuid.uuid4()
+        await repo.create(
+            task_id=task_id,
+            description="完整字面量留存",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        content = f"完整字面量 {LITERAL} 仍留在库里"
+        await repo.add_messages(task_id, [MessageDraft(role="assistant", content=content)])
+
+        messages, _ = await repo.list_messages(task_id, limit=50)
+        assistant_rows = [m for m in messages if m.role == "assistant"]
+        assert assistant_rows[-1].content == content
+    finally:
+        await engine.dispose()
+
+
+async def test_task_repository_injected_source_still_strips_incomplete_literal_prefix(
+    settings: Settings, db_schema: None
+) -> None:
+    """有注入时未完成字面量前缀仍被去掉（既有 Container 回归不削弱）。"""
+    literal_settings = settings.model_copy(update={"redaction_literals": LITERAL})
+    engine, factory = _bare_session_factory(literal_settings)
+    try:
+        repo = TaskRepository(factory)
+        repo.set_assistant_sanitizer_source(literal_settings)
+        task_id = uuid.uuid4()
+        await repo.create(
+            task_id=task_id,
+            description="注入前缀",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await repo.add_messages(
+            task_id,
+            [
+                MessageDraft(role="assistant", content=f"好的，口令是 {INCOMPLETE_PREFIX}"),
+                MessageDraft(role="assistant", content=f"完整 {LITERAL} 留库"),
+            ],
+        )
+
+        messages, _ = await repo.list_messages(task_id, limit=50)
+        assistant_rows = [m for m in messages if m.role == "assistant"]
+        assert INCOMPLETE_PREFIX not in assistant_rows[0].content
+        assert INCOMPLETE_FRAGMENT not in assistant_rows[0].content
+        assert "好的，口令是" in assistant_rows[0].content
+        # 完整字面量不走落库 redact，仍保持原文（由投影层统一打码）。
+        assert assistant_rows[1].content == f"完整 {LITERAL} 留库"
+    finally:
+        await engine.dispose()
+
+
+async def test_group_repository_without_injected_source_sanitizes_bot_messages(
+    settings: Settings, db_schema: None
+) -> None:
+    """`GroupRepository(session_factory)` 不注入来源：bot/assistant 默认消毒，user 不动。"""
+    from flux.core.group.repository import GroupMessageDraft, GroupRepository
+
+    engine, factory = _bare_session_factory(settings)
+    try:
+        repo = GroupRepository(factory)  # 刻意不调用 set_assistant_sanitizer_source
+        group = await repo.create(name="默认消毒群")
+        token = INLINE_BEARER_TOKEN
+        user_text = f"用户原文 bearer {token} 与 {LITERAL}"
+
+        await repo.add_messages(
+            group.id,
+            [
+                GroupMessageDraft(role="user", content=user_text, author_name="我"),
+                GroupMessageDraft(
+                    role="bot",
+                    content=f"回复 bearer {token}，后面还有正文。",
+                    author_name="bot",
+                ),
+                GroupMessageDraft(role="assistant", content="停在 sk-", author_name="bot2"),
+                GroupMessageDraft(role="bot", content=f"完整 {LITERAL} 留库", author_name="bot3"),
+            ],
+        )
+        rows, _ = await repo.list_messages(group.id)
+        bot_dump = json.dumps([rows[1].to_dict(), rows[2].to_dict()], ensure_ascii=False)
+        assert token not in bot_dump
+        assert TOKEN_PLACEHOLDER in bot_dump
+        assert "sk-" not in bot_dump
+        assert "后面还有正文" in bot_dump
+        # 完整字面量按既有约定留在库里。
+        assert rows[3].content == f"完整 {LITERAL} 留库"
+        # 对照：user 群消息原文完全不变。
+        assert rows[0].content == user_text
+
+        # 个人笔记同样是 bot 发言副本：无注入时也要默认消毒。
+        task_id = uuid.uuid4()
+        await TaskRepository(factory).create(
+            task_id=task_id,
+            description="笔记任务",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        state = await repo.record_member_turn(
+            group.id, task_id, seq=1, note=f"笔记 bearer {token}，结束"
+        )
+        assert token not in state.memory
+        assert TOKEN_PLACEHOLDER in state.memory
+    finally:
+        await engine.dispose()
