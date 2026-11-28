@@ -271,6 +271,7 @@ public sealed partial class ImConnectorView : ObservableObject
                     : "未连接";
         Detail =
             "需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信 ClawBot」。" +
+            "这两条是常见前提，官方 README 并未写死这些版本号。" +
             "绑定成功后请先在会话里发一句话；没有 context_token 时回复发不出去。" +
             "同一个微信号不要再绑定到另一个后端，否则消息可能被分流。" +
             "微信只在你最近互动后允许主动消息；推不出去时会保留，下次对话补发。";

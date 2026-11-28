@@ -236,7 +236,8 @@ export function ImConnectorsCard() {
           {wechat?.error ? <i style={{ color: "#e05a4f" }}>{wechat.error}</i> : null}
           <i>
             需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信
-            ClawBot」。插件列表没有该项说明还未灰度到，Flux 不会假装连接成功。
+            ClawBot」。这两条是常见前提，官方 README 并未写死这些版本号。
+            插件列表没有该项说明还未灰度到，Flux 不会假装连接成功。
           </i>
           <i>
             绑定成功后请先在微信 ClawBot 会话里发一句话；没有 context_token 时回复发不出去。

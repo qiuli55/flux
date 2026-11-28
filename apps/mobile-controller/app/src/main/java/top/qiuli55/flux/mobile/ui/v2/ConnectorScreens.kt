@@ -1314,10 +1314,10 @@ private fun WechatConnectorContent(
     WhiteCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Label(
-                "需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信 ClawBot」。",
+                "需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信 ClawBot」。这两条是常见前提，官方 README 并未写死这些版本号。",
                 10.5f,
                 V2Colors.ink(.56f),
-                maxLines = 4,
+                maxLines = 6,
             )
             Spacer(Modifier.height(6.dp))
             Label(
