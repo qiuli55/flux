@@ -11,8 +11,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.qiuli55.flux.mobile.data.CloudAuthBus
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
+import top.qiuli55.flux.mobile.data.ShareIntakeBus
+import top.qiuli55.flux.mobile.data.materializeSharedAttachments
+import top.qiuli55.flux.mobile.data.parseShareIntent
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Root
 import top.qiuli55.flux.mobile.ui.v2.FluxV2Theme
 import top.qiuli55.flux.mobile.ui.v2.V2Colors
@@ -29,6 +36,8 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = true
         }
         handleAuthRedirect(intent)
+        // 进程重建时系统可能把旧的分享 intent 再带回来；只在首次创建时消费，避免重复落草稿。
+        if (savedInstanceState == null) handleShareIntent(intent)
         setContent {
             FluxV2Theme {
                 Box(Modifier.fillMaxSize().background(V2Colors.bg)) {
@@ -42,6 +51,35 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleAuthRedirect(intent)
+        // singleTask：应用已在前台时再分享，只会走这里，不会重新 onCreate。
+        handleShareIntent(intent)
+    }
+
+    /**
+     * 系统分享（SEND / SEND_MULTIPLE）落地。
+     *
+     * 这里只做解析与本地固化：content Uri 的读权限很短，先复制到 cache，
+     * 再投递给根容器；登录墙 / 选设备期间由根容器暂存，进入主界面后只应用一次。
+     * 处理完立刻清掉 intent 的分享动作，避免旋转 / 回前台重复落草稿。
+     */
+    private fun handleShareIntent(intent: Intent?) {
+        val target = intent ?: return
+        val parsed = parseShareIntent(target) ?: return
+        // 消费掉这次分享：同一份 Intent 不再参与后续重建。
+        target.action = null
+        target.removeExtra(Intent.EXTRA_TEXT)
+        target.removeExtra(Intent.EXTRA_SUBJECT)
+        target.removeExtra(Intent.EXTRA_HTML_TEXT)
+        target.removeExtra(Intent.EXTRA_STREAM)
+        target.clipData = null
+
+        val appContext = applicationContext
+        lifecycleScope.launch {
+            val prepared = withContext(Dispatchers.IO) {
+                materializeSharedAttachments(appContext, parsed)
+            }
+            ShareIntakeBus.publish(prepared)
+        }
     }
 
     /**

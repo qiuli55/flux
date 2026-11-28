@@ -3,8 +3,12 @@ package top.qiuli55.flux.mobile.ui.v2
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.media.ThumbnailUtils
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
+import android.util.Size
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -19,6 +23,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -105,9 +110,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -128,8 +136,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.TaskContextUsage
 import top.qiuli55.flux.mobile.data.TaskRunSummary
@@ -163,6 +173,27 @@ internal object V2ChatTags {
     const val MESSAGE_LIST = "v2_chat_message_list"
 }
 
+/**
+ * 从外部（系统分享）一次性注入到输入栏的内容。
+ *
+ * [token] 每次分享都不同：同一份文字不会因为重组被追加两次。
+ * [notice] 是分享解析/落地时被跳过的原因，消费时用 Toast 告诉用户。
+ */
+data class ComposerSeed(
+    val token: Long,
+    val text: String = "",
+    val attachmentUris: List<Uri> = emptyList(),
+    val notice: String? = null,
+)
+
+/** 外部文字并入现有草稿：保留用户已经打的内容，分享内容另起一段。 */
+internal fun appendComposerText(current: String, incoming: String): String = when {
+    incoming.isBlank() -> current
+    current.isBlank() -> incoming.trim()
+    current.trimEnd().endsWith(incoming.trim()) -> current
+    else -> current.trimEnd() + "\n\n" + incoming.trim()
+}
+
 @Composable
 fun V2ChatScreen(
     chat: V2ChatState,
@@ -173,12 +204,16 @@ fun V2ChatScreen(
     onDelete: () -> Unit,
     onOpenAgentPicker: () -> Unit,
     onSend: (String) -> Unit,
-    /** 已上传、等待随下一条消息发送的附件。 */
-    attachments: List<UploadedAttachment> = emptyList(),
-    /** 附件正在上传：输入区显示「上传中…」，发送按钮禁用。 */
-    uploading: Boolean = false,
+    /** 待发送附件草稿：上传中 / 已就绪 / 失败（含本地预览）都由它表达。 */
+    attachmentDrafts: List<ComposerAttachmentDraft> = emptyList(),
     onAddAttachments: (List<Uri>) -> Unit = {},
+    /** 按草稿 localId 移除；失败项也占名额，需要能单独删掉。 */
     onRemoveAttachment: (String) -> Unit = {},
+    /** 失败草稿重试上传（沿用同一份本地文件）。 */
+    onRetryAttachment: (String) -> Unit = {},
+    /** 系统分享注入的一次性内容：文字追加到输入框，附件进草稿。 */
+    seed: ComposerSeed? = null,
+    onSeedApplied: (Long) -> Unit = {},
     /** 「+」菜单里的设计稿来源：null 表示不提供该入口。 */
     designOptions: List<DesignSummary>? = null,
     designsLoading: Boolean = false,
@@ -289,6 +324,8 @@ fun V2ChatScreen(
         it.kind == "decision" && it.approvalCard?.status == "pending" && it.approvalCard.expired != true
     }?.approvalCard
     val inputEnabled = !locked && !sending
+    val uploading = attachmentDrafts.any { it.status == AttachmentDraftStatus.UPLOADING }
+    val attachmentBlocker = attachmentSendBlocker(attachmentDrafts)
     // Plan 模式只读：不允许挂附件（附件通常会触发写盘与执行）
     val canPickFiles = inputEnabled && !uploading && chat.permissionMode != "plan"
 
@@ -298,27 +335,47 @@ fun V2ChatScreen(
     val focusManager = LocalFocusManager.current
     val inputFocus = remember { FocusRequester() }
     var inputFocused by remember { mutableStateOf(false) }
+    // 系统分享注入：同一 token 只应用一次；文字并入已有草稿，附件交给页面上传。
+    LaunchedEffect(seed?.token) {
+        val incoming = seed ?: return@LaunchedEffect
+        if (incoming.text.isNotBlank()) {
+            input = appendComposerText(input, incoming.text)
+        }
+        if (incoming.attachmentUris.isNotEmpty()) {
+            onAddAttachments(incoming.attachmentUris)
+        }
+        if (!incoming.notice.isNullOrBlank()) {
+            Toast.makeText(context, incoming.notice, Toast.LENGTH_LONG).show()
+        }
+        if (incoming.text.isNotBlank() || incoming.attachmentUris.isNotEmpty()) {
+            // 预览 / 测试环境可能还没完成首帧布局，聚焦失败不影响内容已经进入草稿。
+            runCatching { inputFocus.requestFocus() }
+        }
+        onSeedApplied(incoming.token)
+    }
     var bubbleMenu by remember { mutableStateOf<BubbleMenuTarget?>(null) }
     // 返回时草稿未发送 / 运行中点停止：都先确认，避免一次误触丢掉内容或中断长任务。
     var discardConfirmOpen by rememberSaveable { mutableStateOf(false) }
     var stopConfirmOpen by rememberSaveable { mutableStateOf(false) }
     // 所有发送入口共用：连点两次只认第一次（建议 chip、气泡「重发」也走这里）。
     val sendGuard = remember { StopTapGuard(windowMs = 800L) }
-    val hasDraft = input.isNotBlank() || attachments.isNotEmpty()
+    val hasDraft = input.isNotBlank() || attachmentDrafts.isNotEmpty()
     val requestSend: (String) -> Unit = { text ->
-        val accepted = inputEnabled && sendGuard.tryAccept(SystemClock.elapsedRealtime())
-        if (accepted) {
+        if (!inputEnabled) {
+            Log.i(FLUX_UX_LOG_TAG, "send tap ignored enabled=false (busy or locked)")
+        } else if (attachmentBlocker != null) {
+            // 失败 / 上传中的草稿不能悄悄跳过：明确告诉用户先处理附件。
+            Toast.makeText(context, attachmentBlocker, Toast.LENGTH_SHORT).show()
+            Log.i(FLUX_UX_LOG_TAG, "send blocked by attachments: $attachmentBlocker")
+        } else if (sendGuard.tryAccept(SystemClock.elapsedRealtime())) {
             Log.i(
                 FLUX_UX_LOG_TAG,
-                "send accepted len=${text.length} attachments=${attachments.size} " +
+                "send accepted len=${text.length} attachments=${attachmentDrafts.size} " +
                     "conversationId=${chat.conversationId}",
             )
             onSend(text)
         } else {
-            Log.i(
-                FLUX_UX_LOG_TAG,
-                "send tap ignored enabled=$inputEnabled (debounce or busy)",
-            )
+            Log.i(FLUX_UX_LOG_TAG, "send tap ignored by debounce")
         }
     }
     val requestBack: () -> Unit = {
@@ -326,7 +383,7 @@ fun V2ChatScreen(
             Log.i(
                 FLUX_UX_LOG_TAG,
                 "back with draft: ask before discarding len=${input.length} " +
-                    "attachments=${attachments.size}",
+                    "attachments=${attachmentDrafts.size}",
             )
             discardConfirmOpen = true
         } else {
@@ -887,22 +944,31 @@ fun V2ChatScreen(
 
         // 完全访问 / 免审核不再在输入框上方常驻提示条：盾牌图标仍随当前模式变化。
 
-        // 输入框上方：待发送附件 / 上传中状态；发送成功后由状态层清空
-        if (attachments.isNotEmpty() || uploading) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (uploading) UploadingAttachmentChip()
-                attachments.forEach { file ->
-                    AttachmentChip(
-                        name = file.name,
-                        size = file.size,
-                        onRemove = { onRemoveAttachment(file.id) },
+        // 输入框上方：待发送附件 / 上传中 / 失败可重试；发送成功后由状态层清空
+        if (attachmentDrafts.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    attachmentDrafts.forEach { draft ->
+                        ComposerAttachmentChip(
+                            draft = draft,
+                            onRemove = { onRemoveAttachment(draft.localId) },
+                            onRetry = { onRetryAttachment(draft.localId) },
+                        )
+                    }
+                }
+                if (attachmentBlocker != null) {
+                    Label(
+                        attachmentBlocker,
+                        9f,
+                        V2Colors.rose,
+                        modifier = Modifier.padding(start = 18.dp, top = 4.dp),
                     )
                 }
             }
@@ -1073,7 +1139,8 @@ fun V2ChatScreen(
                         }
                     }
                 }
-                val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
+                // 只发附件、不写正文也可以：只要有已就绪附件，且没有失败/上传中的草稿。
+                val enabled = inputEnabled && composerCanSend(input, attachmentDrafts)
                 // 发送 / 停止共用同一个圆钮：执行中就地变成停止
                 ChatSendButton(
                     running = taskRunning,
@@ -2286,9 +2353,10 @@ internal fun AttachmentPickerButton(
         cameraTarget = null
         if (saved && target != null) onPicked(listOf(target))
     }
+    // 系统相册多选：一次最多 5 个（总上限），超出部分由页面的准入逻辑跳过并提示。
     val imageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> if (uri != null) onPicked(listOf(uri)) }
+        ActivityResultContracts.PickMultipleVisualMedia(UploadedAttachment.MAX_FILES),
+    ) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
     val fileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
@@ -2503,25 +2571,177 @@ internal fun AttachmentChip(
     }
 }
 
+/**
+ * 输入栏上方的附件草稿芯片：图片出缩略图，非图片显示名称 + 类型 + 大小。
+ * 上传中 / 失败都有独立状态；失败可点「重试」，不把失败项悄悄漏发。
+ */
 @Composable
-private fun UploadingAttachmentChip() {
+internal fun ComposerAttachmentChip(
+    draft: ComposerAttachmentDraft,
+    onRemove: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val failed = draft.status == AttachmentDraftStatus.FAILED
+    val uploading = draft.status == AttachmentDraftStatus.UPLOADING
+    val accent = when {
+        failed -> V2Colors.rose
+        uploading -> V2Colors.amber700
+        else -> V2Colors.cyan700
+    }
+    val background = when {
+        failed -> V2Colors.rose.copy(alpha = .07f)
+        uploading -> V2Colors.amber500.copy(alpha = .08f)
+        else -> V2Colors.cyan500.copy(alpha = .08f)
+    }
     Row(
         Modifier
+            .testTag(V2ComposerTags.attachmentDraft(draft.localId))
             .clip(RoundedCornerShape(10.dp))
-            .background(V2Colors.amber500.copy(alpha = .08f))
-            .border(1.dp, V2Colors.amber500.copy(alpha = .20f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
+            .background(background)
+            .border(1.dp, accent.copy(alpha = .22f), RoundedCornerShape(10.dp))
+            .padding(start = 6.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(10.dp),
-            strokeWidth = 1.5.dp,
-            color = V2Colors.amber700,
+        if (draft.isImage && draft.uri != null) {
+            Box(contentAlignment = Alignment.Center) {
+                AttachmentThumbnail(
+                    uri = draft.uri,
+                    size = 34.dp,
+                    modifier = Modifier.testTag(V2ComposerTags.attachmentThumb(draft.localId)),
+                )
+                if (uploading) {
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(V2Colors.scrim),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = Color.White,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+        } else {
+            Icon(
+                Icons.Outlined.Description,
+                contentDescription = null,
+                tint = accent.copy(alpha = .75f),
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(5.dp))
+        }
+        Column(Modifier.widthIn(max = 150.dp)) {
+            Label(draft.name, 9.5f, V2Colors.ink(.76f), maxLines = 1)
+            when {
+                failed -> Label(
+                    draft.error?.take(18)?.let { "$it" } ?: "上传失败",
+                    8f,
+                    V2Colors.rose,
+                    maxLines = 1,
+                )
+                uploading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(8.dp),
+                        strokeWidth = 1.2.dp,
+                        color = V2Colors.amber700,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Label("上传中…", 8f, V2Colors.amber700, mono = true)
+                }
+                else -> Label(
+                    "${attachmentKindLabel(draft.name, draft.mime)} · ${formatFileSize(draft.size)}",
+                    8f,
+                    V2Colors.ink(.34f),
+                    mono = true,
+                )
+            }
+        }
+        if (failed) {
+            Spacer(Modifier.width(6.dp))
+            Label(
+                "重试",
+                9f,
+                V2Colors.rose,
+                FontWeight.Medium,
+                modifier = Modifier
+                    .testTag(V2ComposerTags.attachmentRetry(draft.localId))
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onRetry)
+                    .padding(horizontal = 5.dp, vertical = 3.dp),
+            )
+        }
+        Spacer(Modifier.width(3.dp))
+        Icon(
+            Icons.Outlined.Close,
+            contentDescription = "移除附件",
+            tint = V2Colors.ink(.38f),
+            modifier = Modifier
+                .size(14.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onRemove),
         )
-        Spacer(Modifier.width(5.dp))
-        Label("上传中…", 9.5f, V2Colors.amber700, mono = true)
     }
 }
+
+/** 本地图片缩略图：后台解码，失败时退回图标占位，不阻塞输入栏。 */
+@Composable
+private fun AttachmentThumbnail(
+    uri: Uri,
+    size: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val px = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(1)
+    var bitmap by remember(uri, px) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(uri, px) {
+        bitmap = withContext(Dispatchers.IO) { loadAttachmentThumbnail(context, uri, px) }
+    }
+    Box(
+        modifier
+            .size(size)
+            .clip(RoundedCornerShape(8.dp))
+            .background(V2Colors.ink(.06f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        val image = bitmap
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = "附件预览",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Icon(
+                Icons.Outlined.Image,
+                contentDescription = null,
+                tint = V2Colors.ink(.30f),
+                modifier = Modifier.size(15.dp),
+            )
+        }
+    }
+}
+
+private fun loadAttachmentThumbnail(context: Context, uri: Uri, px: Int): ImageBitmap? =
+    runCatching {
+        // 分享落地后是应用自己的 file://；loadThumbnail 只保证 content://，直接解码更稳。
+        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.scheme != "file") {
+            context.contentResolver.loadThumbnail(uri, Size(px, px), null)
+        } else {
+            val raw = if (uri.scheme == "file") {
+                BitmapFactory.decodeFile(uri.path)
+            } else {
+                context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+            }
+            raw?.let { ThumbnailUtils.extractThumbnail(it, px, px) }
+        }
+        bitmap?.asImageBitmap()
+    }.getOrNull()
 
 /** 非逐字流式 Agent 的标注：能力可用，只是正文不会逐 token 到达。 */
 @Composable

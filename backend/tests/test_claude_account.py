@@ -221,9 +221,7 @@ def test_api_login_start_poll_and_code_never_return_token(
             "expires_in": 800,
         }
 
-    async def fake_code(
-        self: ClaudeAccountService, login_id: str, code: str
-    ) -> dict[str, object]:
+    async def fake_code(self: ClaudeAccountService, login_id: str, code: str) -> dict[str, object]:
         assert code == "abc#state"
         return {
             "login_id": login_id,
@@ -248,9 +246,7 @@ def test_api_login_start_poll_and_code_never_return_token(
     assert state.json()["data"]["status"] == "pending"
     assert TOKEN not in state.text
 
-    code = client.post(
-        "/api/v1/claude-account/login/login-1/code", json={"code": "abc#state"}
-    )
+    code = client.post("/api/v1/claude-account/login/login-1/code", json={"code": "abc#state"})
     assert code.status_code == 200
     assert "已提交" in code.json()["data"]["message"]
     assert TOKEN not in code.text
@@ -278,6 +274,7 @@ def test_account_home_defaults_under_flux(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("HOME", str(tmp_path))
     settings = Settings(env="test", claude_account_home="")
     assert str(ClaudeAccountService(settings).home) == str(tmp_path / ".flux" / "claude-account")
+
 
 # --- 完整登录流程（假 CLI 走 PTY，不访问网络）---
 
@@ -325,4 +322,3 @@ def test_setup_token_flow_writes_token_to_isolated_home(
 
     asyncio.run(service.logout())
     assert not service.token_path.exists()
-

@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
@@ -65,13 +66,14 @@ import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.McpConnector
-import top.qiuli55.flux.mobile.data.UploadedAttachment
+import top.qiuli55.flux.mobile.data.ShareIntakeBus
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicLong
 
-private sealed interface V2Route {
+internal sealed interface V2Route {
     data object Home : V2Route
     data object Assistant : V2Route
     data object Designs : V2Route
@@ -151,10 +153,24 @@ fun FluxV2Root() {
 
     var chat by remember { mutableStateOf<V2ChatState?>(null) }
     val chatMessages = remember { mutableStateListOf<V2Message>() }
-    // 新建对话的附件是页面本地状态：离开草稿页就清空，避免残留一组没人发送的附件
-    val draftAttachments = remember { mutableStateListOf<UploadedAttachment>() }
-    var draftUploading by remember { mutableStateOf(false) }
+    // 新建对话的附件草稿：带本地 Uri 与上传状态；离开草稿页就清空。
+    val rootScope = rememberCoroutineScope()
     var draftAttachmentError by remember { mutableStateOf<String?>(null) }
+    val draftAttachments = remember {
+        ComposerAttachmentController(
+            scope = rootScope,
+            upload = { uri, picked, resolver ->
+                vm.uploadPickedFile(uri, picked, resolver)
+            },
+            onProblem = { message -> draftAttachmentError = message },
+        )
+    }
+    val draftAttachmentDrafts by draftAttachments.drafts.collectAsState()
+    // 系统分享注入：新对话与已有对话各一份，消费后清空，避免旋转重复落文字。
+    val seedCounter = remember { AtomicLong(0L) }
+    var chatSeed by remember { mutableStateOf<ComposerSeed?>(null) }
+    var taskSeed by remember { mutableStateOf<Pair<String, ComposerSeed>?>(null) }
+    var shareQueue by remember { mutableStateOf(ShareIntakeState()) }
     val context = LocalContext.current
     // 全局触感控制器：设置里的开关只改 enabled，不重建振动器
     val hapticsController = remember(context) { createV2Haptics(context) }
@@ -320,6 +336,7 @@ fun FluxV2Root() {
             ),
         )
         newChatOpen = false
+        chatSeed = null
         route = V2Route.Chat
     }
 
@@ -341,18 +358,22 @@ fun FluxV2Root() {
     fun sendDraftMessage(text: String) {
         Log.i(
             FLUX_UX_LOG_TAG,
-            "sendDraftMessage invoked textLen=${text.length} attachments=${draftAttachments.size} " +
-                "uploading=$draftUploading",
+            "sendDraftMessage invoked textLen=${text.length} " +
+                "attachments=${draftAttachmentDrafts.size}",
         )
         val current = chat ?: run {
             Log.w(FLUX_UX_LOG_TAG, "send ignored: no active chat")
             return
         }
-        if (draftUploading) {
-            Log.i(FLUX_UX_LOG_TAG, "send ignored: attachment upload in progress")
+        // 失败 / 上传中的草稿不能跳过：先让用户重试或移除。
+        val blocker = attachmentSendBlocker(draftAttachmentDrafts)
+        if (blocker != null) {
+            Toast.makeText(context, blocker, Toast.LENGTH_SHORT).show()
+            Log.i(FLUX_UX_LOG_TAG, "send ignored: attachment blocker=$blocker")
             return
         }
-        val attachmentIds = draftAttachments.map { it.id }
+        val ready = readyAttachments(draftAttachmentDrafts)
+        val attachmentIds = ready.map { it.id }
         // 只有附件没有文字也能发；后端任务描述必填，这里给 Agent 一句最小上下文
         val description = text.ifBlank { "请查看我附上的文件" }
         if (text.isBlank() && attachmentIds.isEmpty()) {
@@ -378,7 +399,7 @@ fun FluxV2Root() {
                     text = text,
                     time = nowMinute(),
                     kind = "attachments",
-                    attachments = draftAttachments.map { V2MessageFile(it.name, it.size) },
+                    attachments = ready.map { V2MessageFile(it.name, it.size) },
                 ),
             )
         }
@@ -449,6 +470,7 @@ fun FluxV2Root() {
         chatMessages.clear()
         draftAttachments.clear()
         draftAttachmentError = null
+        chatSeed = null
         chatMessages.add(
             V2Message(
                 V2MessageRole.SYSTEM,
@@ -458,6 +480,62 @@ fun FluxV2Root() {
         )
         chatOrigin = V2Route.TaskChat(fromTaskId)
         route = V2Route.Chat
+    }
+
+    // 系统分享：先收进本地队列。登录墙 / 选设备期间只暂存，进入主界面后一条一条落地。
+    LaunchedEffect(Unit) {
+        ShareIntakeBus.pending.collect { pending ->
+            if (pending.isEmpty()) return@collect
+            ShareIntakeBus.consume(pending.map { it.id }.toSet())
+            shareQueue = shareQueue.receive(pending.map { it.share })
+        }
+    }
+    // 落地规则：正在看的任务 → 该任务；新对话草稿 → 当前草稿；其它页面 → 新开对话。
+    LaunchedEffect(app.boot, shareQueue, route) {
+        // 上一份分享还没被当前页面消费时先不动队列，避免连续分享时后一份覆盖前一份的文字。
+        val activeSeed = when (val current = route) {
+            is V2Route.TaskChat -> taskSeed?.takeIf { it.first == current.taskId }?.second
+            V2Route.Chat -> chatSeed
+            else -> null
+        }
+        if (activeSeed != null) return@LaunchedEffect
+        val (nextQueue, share) = shareQueue.nextIfReady(app.boot == V2Boot.READY)
+        if (share == null) return@LaunchedEffect
+        val landing = resolveShareLanding(
+            route = route,
+            bootReady = true,
+            hasDraftChat = chat != null,
+        )
+        shareQueue = nextQueue
+        val notice = share.errors.takeIf { it.isNotEmpty() }?.joinToString("；")
+        if (share.text.isBlank() && share.attachments.isEmpty()) {
+            // 全部附件都读不到：只提示原因，不为一条空内容新开对话。
+            if (notice != null) Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            return@LaunchedEffect
+        }
+        val seed = ComposerSeed(
+            token = seedCounter.incrementAndGet(),
+            text = share.text,
+            attachmentUris = share.attachments.map { it.uri },
+            notice = notice,
+        )
+        when (landing) {
+            ShareLanding.CURRENT_TASK -> {
+                val taskId = (route as? V2Route.TaskChat)?.taskId ?: return@LaunchedEffect
+                taskSeed = taskId to seed
+            }
+            ShareLanding.CURRENT_DRAFT -> chatSeed = seed
+            ShareLanding.NEW_CHAT -> {
+                val chatDevice = if (device == ALL_DEVICES) {
+                    V2Registry.devices.firstOrNull()?.name ?: "本机"
+                } else {
+                    device
+                }
+                createChat(agentsForDevice(chatDevice).first())
+                chatSeed = seed
+            }
+            ShareLanding.HOLD -> Unit
+        }
     }
 
     val hasBack = update.kind != UpdateKind.HIDDEN || deleteConversationId != null ||
@@ -862,53 +940,31 @@ fun FluxV2Root() {
                                     },
                                     onOpenAgentPicker = { agentPickerOpen = true },
                                     onSend = { sendDraftMessage(it) },
-                                    attachments = draftAttachments,
-                                    uploading = draftUploading,
+                                    attachmentDrafts = draftAttachmentDrafts,
+                                    // 上限（5 个）、单文件 50MB、空文件、重复 Uri 都在控制器里统一处理，
+                                    // 新对话与已有对话不会一边紧一边松。
                                     onAddAttachments = { uris ->
-                                        val remaining = UploadedAttachment.MAX_FILES - draftAttachments.size
-                                        if (remaining <= 0) {
-                                            Toast.makeText(
-                                                context,
-                                                "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件",
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                        } else {
-                                            if (uris.size > remaining) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "最多 5 个附件，已忽略多选的 ${uris.size - remaining} 个",
-                                                    Toast.LENGTH_SHORT,
-                                                ).show()
-                                            }
-                                            draftAttachmentError = null
-                                            draftUploading = true
-                                            vm.uploadDraftAttachments(
-                                                uris = uris.take(remaining),
-                                                resolver = context.contentResolver,
-                                                onUploaded = { draftAttachments.add(it) },
-                                                onError = { draftAttachmentError = it },
-                                                onFinished = { draftUploading = false },
-                                            )
-                                        }
+                                        draftAttachmentError = null
+                                        draftAttachments.add(uris, context.contentResolver)
                                     },
-                                    onRemoveAttachment = { id ->
-                                        draftAttachments.removeAll { it.id == id }
+                                    onRemoveAttachment = { draftAttachments.remove(it) },
+                                    onRetryAttachment = { draftAttachments.retry(it) },
+                                    seed = chatSeed,
+                                    onSeedApplied = { token ->
+                                        if (chatSeed?.token == token) chatSeed = null
                                     },
                                     designOptions = designState.designs,
                                     designsLoading = designState.loading,
                                     onRequestDesigns = { designVm.loadDesigns(quiet = true) },
                                     onPickDesign = { design ->
                                         draftAttachmentError = null
-                                        draftUploading = true
-                                        vm.uploadDraftDesign(
-                                            designId = design.id,
-                                            name = design.name,
-                                            onUploaded = { draftAttachments.add(it) },
-                                            onError = { draftAttachmentError = it },
-                                            onFinished = { draftUploading = false },
-                                        )
+                                        draftAttachments.addDesign(design.name) {
+                                            vm.uploadDesignAsAttachment(design.id, design.name)
+                                        }
                                     },
-                                    sending = app.busyAction == "create" || draftUploading,
+                                    // 附件上传不算「发送中」：否则上传结束时会被误判成本轮发送成功，
+                                    // 把用户已经打好的文字清空。上传状态由草稿自己表达。
+                                    sending = app.busyAction == "create",
                                     notice = draftAttachmentError ?: app.error,
                                     // 只有建任务/发送失败才保留草稿；附件上传提示不算。
                                     sendError = app.error,
@@ -970,6 +1026,7 @@ fun FluxV2Root() {
                             extraTop = extraTop,
                             showBack = showBack,
                             onBack = {
+                                taskSeed = null
                                 route = chatOrigin
                                 if (chatOrigin == V2Route.Home) {
                                     chat = null
@@ -992,6 +1049,11 @@ fun FluxV2Root() {
                             // 助理对话右上角可回到进度看板；普通对话不给这个入口
                             onOpenAssistantBoard = { route = V2Route.Assistant },
                             onOpenChanges = { route = V2Route.Changes(current.taskId) },
+                            // 系统分享落到当前正在看的这段对话
+                            seed = taskSeed?.takeIf { it.first == current.taskId }?.second,
+                            onSeedApplied = { token ->
+                                if (taskSeed?.second?.token == token) taskSeed = null
+                            },
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
