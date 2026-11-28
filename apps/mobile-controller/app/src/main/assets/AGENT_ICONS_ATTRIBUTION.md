@@ -41,6 +41,12 @@ Android 输入栏 / Agent 选择面板里的运行时图标，只用于标识当
 - 许可：OpenCode 仓库为 MIT License（https://github.com/sst/opencode/blob/dev/LICENSE，
   Copyright (c) 2025 opencode）；商标归 OpenCode 项目所有，仅用于标识运行时。
 
+## Cursor / Antigravity
+
+- 本轮没有引入 Cursor 或谷歌 Antigravity 的官方图标资源：未核对到可再分发的官方
+  SVG，按项目规则回落到中性占位图标（`Icons.Outlined.SmartToy`），不伪造官方标。
+- 运行时匹配：`cursor` / `antigravity`；Agent 选择器用文字标签标识它们。
+
 ## 主题适配
 
 Codex / OpenCode 的填充色引用 `@color/agent_icon_ink` 与 `@color/agent_icon_ink_muted`，

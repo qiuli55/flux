@@ -10,6 +10,9 @@
      （用户配置的 Zen 免费模型因此能在手机/桌面端直接选）；
    - `claude-code`：优先 `FLUX_CLAUDE_CODE_MODEL`；否则读 Claude Code 自己的
      `~/.claude/settings.json` 顶层 `model` / `env.ANTHROPIC_MODEL`（只读模型 id，不读密钥）；
+   - `cursor` / `antigravity`：官方 CLI 的模型清单没有稳定、公开的只读接口；
+     只认 `FLUX_CURSOR_MODEL` / `FLUX_ANTIGRAVITY_MODEL`，留空 = 用官方 CLI 自己的默认，
+     不编造模型 id；
    - 其它 runtime：空列表（前端只显示当前模型，不提供切换）。
 2. 密钥库（`api_keys`）里登记的 key + 模型；按 runtime 的协议兼容性过滤。
 
@@ -29,8 +32,10 @@ from typing import Any
 from flux.config import Settings
 from flux.core.agent_runtime.runtimes.base import (
     DEFAULT_RUNTIME,
+    RUNTIME_ANTIGRAVITY,
     RUNTIME_CLAUDE_CODE,
     RUNTIME_CODEX,
+    RUNTIME_CURSOR,
     RUNTIME_DSH,
     RUNTIME_OPENCODE,
 )
@@ -64,6 +69,9 @@ _RUNTIME_PROVIDERS: dict[str, frozenset[str]] = {
     RUNTIME_OPENCODE: frozenset(KEY_PROVIDERS),
     # claude-code 只讲 Anthropic 协议（ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL）
     RUNTIME_CLAUDE_CODE: frozenset({PROVIDER_ANTHROPIC}),
+    # Cursor / Antigravity 走官方账号订阅；密钥库通道不是连接器主路径，按不兼容处理。
+    RUNTIME_CURSOR: frozenset(),
+    RUNTIME_ANTIGRAVITY: frozenset(),
 }
 
 #: dsh 内部 provider 标识：只有 DeepSeek 官方协议走这个入口
@@ -212,6 +220,12 @@ def models_for_runtime(settings: Settings, runtime: str | None) -> list[str]:
             return [configured]
         model = _claude_settings_model()
         return [model] if model else []
+    if name == RUNTIME_CURSOR:
+        configured = (settings.cursor_model or "").strip()
+        return [configured] if configured else []
+    if name == RUNTIME_ANTIGRAVITY:
+        configured = (settings.antigravity_model or "").strip()
+        return [configured] if configured else []
     return []
 
 
@@ -231,6 +245,10 @@ def default_model_for_runtime(settings: Settings, runtime: str | None) -> str:
         return models[0] if models else ""
     if name == RUNTIME_CLAUDE_CODE:
         return (settings.claude_code_model or "").strip() or _claude_settings_model()
+    if name == RUNTIME_CURSOR:
+        return (settings.cursor_model or "").strip()
+    if name == RUNTIME_ANTIGRAVITY:
+        return (settings.antigravity_model or "").strip()
     return ""
 
 

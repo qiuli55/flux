@@ -302,6 +302,56 @@ export interface Installation {
   detail: Record<string, unknown>;
 }
 
+/** 设置页「连接器」的一项（GET /api/v1/mcp-connectors）。 */
+export interface McpConnector {
+  id: string;
+  name: string;
+  kind: string;
+  /** connected / disconnected / needs_reauth / error / coming_soon */
+  status: string;
+  description: string;
+  available: boolean;
+  url?: string | null;
+  tools: string[];
+  account?: string | null;
+  error?: string | null;
+  featured: boolean;
+  action: string;
+}
+
+export interface McpConnectorList {
+  items: McpConnector[];
+}
+
+/** Cursor / Antigravity 官方 CLI 登录态；后端不返回任何令牌。 */
+export interface AgentCliAccountStatus {
+  logged_in: boolean;
+  auth_mode?: string | null;
+  home: string;
+  binary: string;
+  binary_found: boolean;
+  official_status: string;
+  stale_login: boolean;
+  last_login_at?: string | null;
+  pending_login?: AgentCliLoginSession | null;
+}
+
+export interface AgentCliLoginSession {
+  login_id: string;
+  /** starting / pending / success / failed / cancelled */
+  status: string;
+  url: string;
+  message: string;
+  /** 官方 CLI 自己要求回填授权码（不是粘贴 API token / key） */
+  needs_code: boolean;
+  expires_in: number;
+}
+
+export interface AgentCliLogoutResult {
+  removed: boolean;
+  status: AgentCliAccountStatus;
+}
+
 /**
  * 任务状态机（主规格 §5.1 + 文档 §5）：
  * pending → running → 终态 completed / failed / cancelled；

@@ -58,8 +58,10 @@ from flux.core.agent_runtime.runtimes.base import (
     EVENT_THINKING,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
+    RUNTIME_ANTIGRAVITY,
     RUNTIME_CLAUDE_CODE,
     RUNTIME_CODEX,
+    RUNTIME_CURSOR,
     RUNTIME_NATIVE_STREAMING,
     RUNTIME_OPENCODE,
     RuntimeEvent,
@@ -301,6 +303,10 @@ class _CliSpec:
     adapter_name: str
     binary_env: str
     extra_args: tuple[str, ...]
+    #: 动态追加的模型参数名（空 = 不追加）；任务级模型优先，否则用 Settings 默认值。
+    model_flag: str = ""
+    #: 动态追加的工作目录参数名（空 = 只靠子进程 cwd）。
+    workspace_flag: str = ""
 
 
 #: 外部 CLI 的启动差异（argv 按本机实测版本校准：codex-cli 0.157.1 / opencode 1.18.29 /
@@ -329,6 +335,26 @@ _SPECS: dict[str, _CliSpec] = {
         adapter_name="claude-code",
         binary_env="FLUX_CLAUDE_CODE_CLI_BINARY",
         extra_args=(),
+    ),
+    # Cursor：官方 `agent -p` 非交互 + stream-json；`--stream-partial-output` 提供增量。
+    # 不传 --force：不改写官方 CLI 自己的权限策略，也不把 Flux 的 normal 模式偷偷放宽。
+    RUNTIME_CURSOR: _CliSpec(
+        runtime_id=RUNTIME_CURSOR,
+        adapter_name="cursor",
+        binary_env="FLUX_CURSOR_CLI_BINARY",
+        extra_args=("--print", "--output-format", "stream-json", "--stream-partial-output"),
+        model_flag="--model",
+        workspace_flag="--workspace",
+    ),
+    # Antigravity：官方 `agy -p` 非交互 + stream-json；工作目录只经子进程 cwd 下发
+    # （官方公开参数里没有 `--workspace`，不臆造）。模型同理：只有显式配置 FLUX_ANTIGRAVITY_MODEL
+    # 时才追加 `--model`。
+    RUNTIME_ANTIGRAVITY: _CliSpec(
+        runtime_id=RUNTIME_ANTIGRAVITY,
+        adapter_name="antigravity",
+        binary_env="FLUX_ANTIGRAVITY_CLI_BINARY",
+        extra_args=("--print", "--output-format", "stream-json"),
+        model_flag="--model",
     ),
 }
 
@@ -590,6 +616,10 @@ class CliRuntime:
         self._pooled_runs: dict[str, _PooledServe] = {}
         #: run_id → 本轮停止标志（池化进程不杀进程，只置位让客户端 abort + 静默）
         self._stop_flags: dict[str, threading.Event] = {}
+        #: run_id → 是否已经产出过正文（Cursor / Antigravity 的 result 兜底去重用）
+        self._saw_text: dict[str, bool] = {}
+        #: run_id → 上一条 Cursor 正文（有的版本在 --stream-partial-output 下发累计全文）
+        self._last_text: dict[str, str] = {}
 
     # --- AgentRuntime ---
 
@@ -752,6 +782,15 @@ class CliRuntime:
                     "config_dir": config_dir,
                     "token_id": token_id,
                 }
+        elif self.runtime_id in (RUNTIME_CURSOR, RUNTIME_ANTIGRAVITY):
+            # 官方 headless print 模式：一轮一个进程，指令/workspace 直接下发；
+            # 会话上下文由编排层随指令带入（当前不依赖官方 CLI 的 resume 子命令）。
+            argv = self._build_argv(
+                instruction,
+                mode,
+                model=model_override or self._model_default(),
+                workspace=workspace,
+            )
         elif self.runtime_id == RUNTIME_CLAUDE_CODE:
             # stream-json 双向：每轮一个进程；会话靠 --resume 续聊。
             # 模型留空 = 用 Claude Code 自己的默认（~/.claude/settings.json / ANTHROPIC_MODEL）。
@@ -1031,7 +1070,14 @@ class CliRuntime:
 
     # --- 启动差异 ---
 
-    def _build_argv(self, instruction: str, mode: str = "normal") -> tuple[str, ...]:
+    def _build_argv(
+        self,
+        instruction: str,
+        mode: str = "normal",
+        *,
+        model: str = "",
+        workspace: str = "",
+    ) -> tuple[str, ...]:
         builder = getattr(self._adapter, "build_run_argv", None)
         if builder is not None:
             base = tuple(builder(instruction, mode=mode))
@@ -1043,7 +1089,21 @@ class CliRuntime:
         executable, *rest = base
         prompt = rest[-1] if rest else instruction
         run_args = rest[:-1]
-        return (executable, *run_args, *self._spec.extra_args, prompt)
+        argv = [executable, *run_args, *self._spec.extra_args]
+        if self._spec.model_flag and model.strip():
+            argv.extend((self._spec.model_flag, model.strip()))
+        if self._spec.workspace_flag and workspace.strip():
+            argv.extend((self._spec.workspace_flag, workspace.strip()))
+        argv.append(prompt)
+        return tuple(argv)
+
+    def _model_default(self) -> str:
+        """该 runtime 在 Settings 里的默认模型（空 = 用官方 CLI 自己的默认）。"""
+        if self.runtime_id == RUNTIME_CURSOR:
+            return (self._settings.cursor_model or "").strip()
+        if self.runtime_id == RUNTIME_ANTIGRAVITY:
+            return (self._settings.antigravity_model or "").strip()
+        return ""
 
     def _binary_path(self) -> str:
         """CLI 可执行文件：环境变量覆盖优先，否则用 Adapter 探测到的绝对路径。"""
@@ -1096,6 +1156,19 @@ class CliRuntime:
             raise ConfigurationError(f"MCP 端点必须是 http(s) URL：{url!r}", details={"url": url})
         # 用户自定义 MCP 连接器（设置页添加、探测通过）注入所有 CLI runtime 的隔离配置。
         custom_mcp = _custom_mcp_servers(getattr(self, "_container", None))
+        if self.runtime_id in (RUNTIME_CURSOR, RUNTIME_ANTIGRAVITY):
+            # Cursor / Antigravity 的官方 print 模式没有 Flux 可用的等价 MCP 配置文件参数；
+            # 不改写用户全局配置，也不把密钥写进磁盘。上下文经指令 + workspace + cwd 下发，
+            # 官方 CLI 用自己的原生文件/终端工具读取当前工程。
+            env = {}
+            if channel is not None:
+                # 订阅登录是主路径；密钥库通道对这两个 runtime 不开放，避免出现
+                # “看起来能用 API key 连上”的旁路。
+                raise ConfigurationError(
+                    f"{self.runtime_id} 请使用官方账号连接，不支持密钥库模型通道",
+                    details={"runtime": self.runtime_id},
+                )
+            return env
         if self.runtime_id == RUNTIME_CLAUDE_CODE:
             # 只有 MCP 配置落盘（0600）；模型通道的密钥只进子进程环境，绝不写文件。
             # 先校验通道再写文件：校验失败时不在 run 目录留下含令牌的半成品。
@@ -1761,6 +1834,8 @@ class CliRuntime:
     ) -> None:
         """线程内逐行读 stdout → 统一事件；进程退出后按退出码落终态。"""
         texts: list[str] = []
+        self._saw_text[launch.run_id] = False
+        self._last_text[launch.run_id] = ""
         usage = self._usage.setdefault(launch.run_id, _RunUsage())
         stream = process.popen.stdout
         if stream is not None:
@@ -1768,22 +1843,22 @@ class CliRuntime:
                 parsed = self._adapter.parse_event(line)
                 if parsed is None:
                     continue
-                event = self._normalize(parsed, launch.run_id)
-                delta = _accumulate_usage(usage, event, parsed)
-                if event.type == EVENT_MESSAGE:
-                    text = _text_of(event.data)
-                    if text:
-                        texts.append(text)
-                record = {
-                    **event.data,
-                    "run_id": launch.run_id,
-                    "runtime_id": self.runtime_id,
-                    "event_type": event.type,
-                }
-                loop.call_soon_threadsafe(queue.put_nowait, event)
-                asyncio.run_coroutine_threadsafe(self._on_event(event, record), loop)
-                if delta is not None:
-                    asyncio.run_coroutine_threadsafe(self._record_usage(launch, delta), loop)
+                for event in self._normalize_all(parsed, launch.run_id):
+                    delta = _accumulate_usage(usage, event, parsed)
+                    if event.type == EVENT_MESSAGE:
+                        text = _text_of(event.data)
+                        if text:
+                            texts.append(text)
+                    record = {
+                        **event.data,
+                        "run_id": launch.run_id,
+                        "runtime_id": self.runtime_id,
+                        "event_type": event.type,
+                    }
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+                    asyncio.run_coroutine_threadsafe(self._on_event(event, record), loop)
+                    if delta is not None:
+                        asyncio.run_coroutine_threadsafe(self._record_usage(launch, delta), loop)
         code = process.popen.wait()
         status = DshRunStatus.COMPLETED if code == 0 else DshRunStatus.FAILED
         asyncio.run_coroutine_threadsafe(
@@ -1821,11 +1896,56 @@ class CliRuntime:
 
     def _normalize(self, parsed: dict[str, Any], run_id: str) -> RuntimeEvent:
         """按 runtime 归一化事件：codex 的 `--json` 是 item / turn 两级结构，与统一词表不同源。"""
+        if self.runtime_id in (RUNTIME_CURSOR, RUNTIME_ANTIGRAVITY):
+            event = _normalize_print_json_event(
+                parsed,
+                run_id,
+                self.runtime_id,
+                streamed=self._saw_text.get(run_id, False),
+            )
+            if event.type == EVENT_MESSAGE and _text_of(event.data):
+                self._saw_text[run_id] = True
+            return event
         if self.runtime_id == RUNTIME_CODEX:
             return _normalize_codex_event(parsed, run_id, self.runtime_id)
         if self.runtime_id == RUNTIME_OPENCODE:
             return _normalize_opencode_event(parsed, run_id, self.runtime_id)
         return _normalize_event(parsed, run_id, self.runtime_id)
+
+    def _normalize_all(self, parsed: dict[str, Any], run_id: str) -> list[RuntimeEvent]:
+        """把一行输出摊平成 0..N 条统一事件（stream-json 一行可能含多个内容块）。"""
+        if self.runtime_id in (RUNTIME_CURSOR, RUNTIME_ANTIGRAVITY):
+            events = _print_json_events(
+                parsed,
+                run_id,
+                self.runtime_id,
+                streamed=self._saw_text.get(run_id, False),
+            )
+            if self.runtime_id == RUNTIME_CURSOR:
+                events = self._dedupe_cumulative_text(events, run_id)
+            if any(event.type == EVENT_MESSAGE and _text_of(event.data) for event in events):
+                self._saw_text[run_id] = True
+            return events
+        return [self._normalize(parsed, run_id)]
+
+    def _dedupe_cumulative_text(
+        self, events: list[RuntimeEvent], run_id: str
+    ) -> list[RuntimeEvent]:
+        """Cursor 不同版本可能发增量，也可能发累计全文；按前缀关系只留新增部分。"""
+        last = self._last_text.get(run_id, "")
+        kept: list[RuntimeEvent] = []
+        for event in events:
+            if event.type == EVENT_MESSAGE:
+                text = str(event.data.get("text") or "")
+                if text:
+                    if last and text == last:
+                        continue
+                    if last and text.startswith(last):
+                        event.data["text"] = text[len(last) :]
+                    last = text
+            kept.append(event)
+        self._last_text[run_id] = last
+        return kept
 
     def _open_stderr(self, launch: RuntimeLaunch) -> tuple[Any, Any]:
         """stderr 走管道单独读：既落盘留证据，也要即时识别上游错误。
@@ -2265,6 +2385,208 @@ def _generic_tool_fields(parsed: dict[str, Any], event_type: str) -> dict[str, A
     if isinstance(title, str) and title.strip():
         fields["title"] = _clip(title, _TOOL_DETAIL_CHARS)
     return fields
+
+
+#: Cursor / Antigravity 的 `--output-format stream-json` 事件。
+#:
+#: 两者都基于官方 headless print 模式，输出形态接近 Claude Code 的 stream-json：
+#:   {"type":"system","subtype":"init",...}
+#:   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+#:   {"type":"tool_call","subtype":"started","call_id":"...","tool_call":{...}}
+#:   {"type":"result","subtype":"success","result":"...","usage":{...}}
+#: Antigravity 另有 Gemini 风格的 `message` / `tool_use` / `tool_result` / `result`。
+#: 这里只写**一套**归一化（两个 runtime 共用），不复制出互不同步的第四套词表。
+def _print_tool_fields(parsed: dict[str, Any]) -> dict[str, Any]:
+    """stream-json 工具事件 → 时间线字段（name / detail / output / status / call_id）。"""
+    subtype = str(parsed.get("subtype") or "").strip().lower()
+    payload = parsed.get("tool_call")
+    payload = payload if isinstance(payload, dict) else {}
+    # Cursor: tool_call 里是 {readToolCall: {args, result}} / {shellToolCall: {...}}
+    inner: dict[str, Any] = {}
+    name = str(parsed.get("tool_name") or parsed.get("name") or parsed.get("tool") or "")
+    if payload:
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                inner = value
+                if not name:
+                    name = str(key)
+                break
+    if name.endswith("ToolCall"):
+        name = name[: -len("ToolCall")]
+    args = inner.get("args") if isinstance(inner.get("args"), dict) else None
+    if args is None:
+        args = parsed.get("parameters") if isinstance(parsed.get("parameters"), dict) else None
+    if args is None:
+        raw_input = parsed.get("input")
+        args = raw_input if isinstance(raw_input, dict) else None
+    output = inner.get("result")
+    if output is None:
+        output = inner.get("output")
+    if output is None:
+        output = parsed.get("output")
+    if output is None:
+        output = parsed.get("result")
+    detail = args if args else parsed.get("detail")
+    state = "completed" if subtype in ("completed", "success", "finished") else "running"
+    if subtype in ("failed", "error", "cancelled"):
+        state = "error"
+    status = str(parsed.get("status") or state)
+    fields: dict[str, Any] = {"status": status}
+    if name.strip():
+        fields["name"] = _clip(name.strip(), 80)
+    if detail:
+        fields["detail"] = _clip(detail, _TOOL_DETAIL_CHARS)
+    if output:
+        fields["output"] = _clip(output, _TOOL_OUTPUT_CHARS)
+    call_id = (
+        parsed.get("call_id")
+        or parsed.get("callId")
+        or parsed.get("tool_id")
+        or parsed.get("toolId")
+        or parsed.get("id")
+    )
+    if isinstance(call_id, str) and call_id.strip():
+        fields["call_id"] = call_id
+    return fields
+
+
+def _stream_usage(parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """从 result / stats / usage 里取用量，收敛成统一键；没有则 None。"""
+    raw = parsed.get("usage")
+    if not isinstance(raw, dict):
+        stats = parsed.get("stats")
+        raw = stats if isinstance(stats, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    usage = _normalized_usage(raw)
+    if not any(usage.get(key) for key in ("input", "output", "cache_read", "cache_write")):
+        return None
+    return usage
+
+
+def _normalize_print_json_event(
+    parsed: dict[str, Any], run_id: str, runtime_id: str, *, streamed: bool = False
+) -> RuntimeEvent:
+    """Cursor / Antigravity stream-json → 统一事件（message / thinking / tool / final）。"""
+    raw = str(parsed.get("type") or "").strip().lower()
+    data = {**parsed, "runtime_id": runtime_id}
+    if parsed.get("non_json"):
+        # CLI 的裸日志/提示只当状态，绝不冒充答复
+        return RuntimeEvent(EVENT_STATUS, run_id, data)
+    if raw in ("system", "init", "thread.started"):
+        return RuntimeEvent(EVENT_STATUS, run_id, {**data, "phase": "started"})
+    # Claude Code 风格的流式包装
+    inner_event = parsed.get("event") if isinstance(parsed.get("event"), dict) else {}
+    if raw in ("stream_event", "stream-event") or inner_event:
+        etype = str(inner_event.get("type") or "")
+        if etype == "message_start":
+            return RuntimeEvent(EVENT_THINKING, run_id, {**data, "text": "", "phase": "step_start"})
+        if etype == "content_block_delta":
+            delta = inner_event.get("delta") if isinstance(inner_event.get("delta"), dict) else {}
+            delta_type = str(delta.get("type") or "")
+            if delta_type == "text_delta":
+                text = str(delta.get("text") or "")
+                if text:
+                    return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": text})
+            if delta_type == "thinking_delta":
+                text = str(delta.get("thinking") or "")
+                if text:
+                    return RuntimeEvent(EVENT_THINKING, run_id, {**data, "text": text})
+            return RuntimeEvent(EVENT_STATUS, run_id, data)
+        if etype == "message_delta":
+            usage = _stream_usage(inner_event)
+            if usage is not None:
+                return RuntimeEvent(
+                    EVENT_STATUS,
+                    run_id,
+                    {**data, "step_finished": True, "usage": usage, "cost": None},
+                )
+            return RuntimeEvent(EVENT_STATUS, run_id, data)
+    if raw in ("assistant", "assistant_message", "message"):
+        payload = parsed.get("message") if isinstance(parsed.get("message"), dict) else parsed
+        content = payload.get("content")
+        blocks = content if isinstance(content, list) else []
+        emitted: list[RuntimeEvent] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type == "text":
+                text = str(block.get("text") or "")
+                if text:
+                    emitted.append(RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": text}))
+            elif block_type in ("tool_use", "tool_call"):
+                fields = _print_tool_fields(block)
+                emitted.append(RuntimeEvent(EVENT_TOOL_CALL, run_id, {**data, **fields}))
+            elif block_type == "thinking":
+                text = str(block.get("thinking") or block.get("text") or "")
+                if text:
+                    emitted.append(RuntimeEvent(EVENT_THINKING, run_id, {**data, "text": text}))
+        if emitted:
+            # 一行里多个块：正文优先返回；工具块由调用方按行处理时会用最后一个，
+            # 因此这里把非正文块一并塞进 data，转发层仍能看到工具信息。
+            primary = next((item for item in emitted if item.type == EVENT_MESSAGE), emitted[0])
+            if len(emitted) > 1:
+                primary.data["blocks"] = [{**item.data, "type": item.type} for item in emitted]
+            return primary
+        if isinstance(content, str) and content.strip():
+            return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": content})
+        text = str(payload.get("text") or payload.get("message") or "")
+        if text.strip():
+            return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": text})
+        return RuntimeEvent(EVENT_STATUS, run_id, data)
+    if raw in ("tool_use", "tool_call", "tool_start", "tool-result", "tool_end"):
+        fields = _print_tool_fields(parsed)
+        completed = raw in ("tool-result", "tool_end") or str(
+            parsed.get("subtype") or ""
+        ).lower() in ("completed", "success", "finished", "failed", "error", "cancelled")
+        event_type = EVENT_TOOL_RESULT if completed else EVENT_TOOL_CALL
+        return RuntimeEvent(event_type, run_id, {**data, **fields})
+    if raw in ("tool_result", "tool-output"):
+        return RuntimeEvent(EVENT_TOOL_RESULT, run_id, {**data, **_print_tool_fields(parsed)})
+    if raw in ("result", "final", "done", "response.completed", "turn.completed"):
+        usage = _stream_usage(parsed)
+        status = str(parsed.get("subtype") or parsed.get("status") or "").strip().lower()
+        if status in ("error", "failed", "failure"):
+            message = _text_of(parsed) or "官方 CLI 报告本轮失败"
+            return RuntimeEvent(EVENT_ERROR, run_id, {**data, "message": message})
+        text = parsed.get("result")
+        if not isinstance(text, str):
+            text = parsed.get("response") if isinstance(parsed.get("response"), str) else ""
+        extra: dict[str, Any] = {}
+        if usage is not None:
+            extra.update({"step_finished": True, "usage": usage, "cost": None})
+        if not streamed and isinstance(text, str) and text.strip():
+            # CLI 只给了整段结果（没有增量事件）：作为正文补发一次，避免最终答复为空。
+            return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, **extra, "text": text})
+        return RuntimeEvent(EVENT_FINAL, run_id, {**data, **extra, "status": "completed"})
+    if raw == "error":
+        return RuntimeEvent(EVENT_ERROR, run_id, {**data, "message": _text_of(parsed) or "error"})
+    cached = _EVENT_TYPE_MAP.get(raw)
+    if cached is not None:
+        return RuntimeEvent(cached, run_id, data)
+    text = _text_of(parsed)
+    if text:
+        return RuntimeEvent(EVENT_MESSAGE, run_id, {**data, "text": text})
+    return RuntimeEvent(EVENT_STATUS, run_id, data)
+
+
+def _print_json_events(
+    parsed: dict[str, Any], run_id: str, runtime_id: str, *, streamed: bool = False
+) -> list[RuntimeEvent]:
+    """一行 stream-json 可能包含多个内容块；摊平成多条统一事件，避免丢工具卡。"""
+    event = _normalize_print_json_event(parsed, run_id, runtime_id, streamed=streamed)
+    blocks = event.data.pop("blocks", None)
+    if not isinstance(blocks, list) or not blocks:
+        return [event]
+    expanded: list[RuntimeEvent] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        event_type = str(block.get("type") or "")
+        payload = {key: value for key, value in block.items() if key != "type"}
+        expanded.append(RuntimeEvent(event_type, run_id, payload))
+    return expanded or [event]
 
 
 def _normalize_event(parsed: dict[str, Any], run_id: str, runtime_id: str) -> RuntimeEvent:

@@ -5,6 +5,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import top.qiuli55.flux.mobile.data.Agent
+import top.qiuli55.flux.mobile.data.AgentCliAccountStatus
+import top.qiuli55.flux.mobile.data.AgentSpec
 import top.qiuli55.flux.mobile.data.McpConnector
 
 /** 连接器页的可测逻辑：分区、搜索、表单校验、探测失败展示、GitHub 入口迁移。 */
@@ -139,6 +142,73 @@ class V2ConnectorLogicTest {
         assertEquals("https://example.com/mcp", failed.url)
         assertFalse(failed.busy)
         assertEquals("连接超时（8 秒），服务器没有响应 MCP 握手。", failed.error)
+    }
+
+    @Test
+    fun `cursor and antigravity entry copy names the official products`() {
+        assertEquals("连接 Cursor", agentConnectorConnectLabel("cursor"))
+        assertEquals("连接谷歌 / Antigravity", agentConnectorConnectLabel("antigravity"))
+        assertEquals("Cursor", agentConnectorTitle("cursor"))
+        assertEquals("谷歌 / Antigravity", agentConnectorTitle("antigravity"))
+
+        assertEquals(
+            "连接 Cursor",
+            connectorActionLabel(item("cursor", "disconnected")),
+        )
+        assertEquals(
+            "连接谷歌 / Antigravity",
+            connectorActionLabel(item("antigravity", "disconnected")),
+        )
+        assertEquals("重新连接", connectorActionLabel(item("cursor", "needs_reauth")))
+    }
+
+    @Test
+    fun `official cli prerequisite is explained when not installed`() {
+        assertTrue(
+            agentConnectorPrerequisite("cursor", binaryFound = false).contains("agent"),
+        )
+        assertTrue(
+            agentConnectorPrerequisite("antigravity", binaryFound = false).contains("agy"),
+        )
+        assertTrue(
+            agentConnectorPrerequisite("cursor", binaryFound = true).contains("电脑"),
+        )
+        assertEquals(
+            "未连接 · 未安装官方 CLI",
+            agentConnectorStateText(AgentCliAccountStatus(binaryFound = false)),
+        )
+        assertEquals(
+            "已连接 · 官方 CLI 登录态",
+            agentConnectorStateText(AgentCliAccountStatus(loggedIn = true, binaryFound = true)),
+        )
+    }
+
+    @Test
+    fun `unready cursor and antigravity agents are hidden from the picker`() {
+        fun agent(id: String, runtime: String) = Agent(
+            id = id,
+            state = "active",
+            spec = AgentSpec(name = id, runtime = runtime),
+        )
+        val agents = listOf(
+            agent("builtin", "dsh"),
+            agent("codex", "codex"),
+            agent("cursor", "cursor"),
+            agent("antigravity", "antigravity"),
+        )
+
+        assertEquals(
+            listOf("builtin", "codex"),
+            agents.visibleForReadyRuntimes(emptySet()).map { it.id },
+        )
+        assertEquals(
+            listOf("builtin", "codex", "cursor"),
+            agents.visibleForReadyRuntimes(setOf("cursor")).map { it.id },
+        )
+        assertEquals(
+            listOf("builtin", "codex", "cursor", "antigravity"),
+            agents.visibleForReadyRuntimes(setOf("cursor", "antigravity")).map { it.id },
+        )
     }
 
     @Test

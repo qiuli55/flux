@@ -89,6 +89,8 @@ def settings(tmp_path) -> Settings:
         opencode_config_file="",
         codex_account_home=str(tmp_path / "codex-account"),
         claude_account_home=str(tmp_path / "claude-account"),
+        cursor_account_home=str(tmp_path / "cursor-account"),
+        antigravity_account_home=str(tmp_path / "antigravity-account"),
         mcp_connectors_file=str(tmp_path / "mcp-connectors.json"),
         # 附件默认落到临时目录：测试绝不能往真实 /opt/flux/uploads 写文件
         uploads_dir=str(tmp_path / "uploads"),

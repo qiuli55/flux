@@ -21,15 +21,25 @@ RUNTIME_DSH = "dsh"
 RUNTIME_CODEX = "codex"
 RUNTIME_OPENCODE = "opencode"
 RUNTIME_CLAUDE_CODE = "claude-code"
+RUNTIME_CURSOR = "cursor"
+RUNTIME_ANTIGRAVITY = "antigravity"
 DEFAULT_RUNTIME = RUNTIME_DSH
 KNOWN_RUNTIMES: tuple[str, ...] = (
     RUNTIME_DSH,
     RUNTIME_CODEX,
     RUNTIME_OPENCODE,
     RUNTIME_CLAUDE_CODE,
+    RUNTIME_CURSOR,
+    RUNTIME_ANTIGRAVITY,
 )
 #: 需要 Flux 主动拉起本机 CLI 的 runtime（安装状态必须是 READY）
-CLI_RUNTIMES: tuple[str, ...] = (RUNTIME_CODEX, RUNTIME_OPENCODE, RUNTIME_CLAUDE_CODE)
+CLI_RUNTIMES: tuple[str, ...] = (
+    RUNTIME_CODEX,
+    RUNTIME_OPENCODE,
+    RUNTIME_CLAUDE_CODE,
+    RUNTIME_CURSOR,
+    RUNTIME_ANTIGRAVITY,
+)
 
 #: 每个 runtime 是否原生逐 token 流式。
 #: True = 增量由 runtime 自己产出（DSH 走 LLM SSE 旁路 / codex 走 app-server delta /
@@ -43,6 +53,10 @@ RUNTIME_NATIVE_STREAMING: dict[str, bool] = {
     RUNTIME_CODEX: True,
     RUNTIME_OPENCODE: True,
     RUNTIME_CLAUDE_CODE: True,
+    # Cursor 的 `--stream-partial-output` 会吐增量文本；Antigravity 的 stream-json
+    # 官方未承诺 token 级增量，按消息级事件流接入，不冒充逐 token。
+    RUNTIME_CURSOR: True,
+    RUNTIME_ANTIGRAVITY: False,
 }
 
 
@@ -90,6 +104,9 @@ RUNTIME_LIMITS: dict[str, RuntimeLimits] = {
     # Claude Code 一轮一个进程（`-p` 非交互 + stream-json 双向）：会话靠 --resume 续，
     # 不复用进程，也不走异步回合。
     RUNTIME_CLAUDE_CODE: RuntimeLimits(submit_timeout_seconds=60.0),
+    # Cursor / Antigravity 都是一轮一个 `-p` 进程：会话上下文随指令带入，不复用进程。
+    RUNTIME_CURSOR: RuntimeLimits(submit_timeout_seconds=60.0),
+    RUNTIME_ANTIGRAVITY: RuntimeLimits(submit_timeout_seconds=60.0),
 }
 
 
@@ -233,8 +250,10 @@ __all__ = [
     "EVENT_TOOL_RESULT",
     "KNOWN_RUNTIMES",
     "ModelChannel",
+    "RUNTIME_ANTIGRAVITY",
     "RUNTIME_CLAUDE_CODE",
     "RUNTIME_CODEX",
+    "RUNTIME_CURSOR",
     "RUNTIME_DSH",
     "RUNTIME_EVENT_TYPES",
     "RUNTIME_LIMITS",

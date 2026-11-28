@@ -53,6 +53,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.qiuli55.flux.mobile.data.AgentCliAccountStatus
+import top.qiuli55.flux.mobile.data.AgentCliLoginSession
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
 import top.qiuli55.flux.mobile.data.McpConnector
@@ -99,9 +101,36 @@ internal fun connectorSubtitle(item: McpConnector): String = when (item.status) 
     else -> item.description.takeIf { it.isNotBlank() } ?: "未连接"
 }
 
+/** 入口文案必须点名官方产品：Cursor / 谷歌 / Antigravity。 */
+internal fun agentConnectorConnectLabel(kind: String): String =
+    if (kind == "cursor") "连接 Cursor" else "连接谷歌 / Antigravity"
+
+internal fun agentConnectorTitle(kind: String): String =
+    if (kind == "cursor") "Cursor" else "谷歌 / Antigravity"
+
+internal fun agentConnectorPrerequisite(kind: String, binaryFound: Boolean): String =
+    if (binaryFound) {
+        "需要这台电脑保持在线；Flux 会在这里拉起官方 CLI 完成授权。"
+    } else if (kind == "cursor") {
+        "这台电脑上还没有找到官方 Cursor CLI（agent）。请先在电脑上安装，再回来连接。"
+    } else {
+        "这台电脑上还没有找到官方 Antigravity CLI（agy）。请先在电脑上安装，再回来连接。"
+    }
+
+internal fun agentConnectorStateText(status: AgentCliAccountStatus?): String = when {
+    status == null -> "正在读取登录态…"
+    status.loggedIn -> "已连接 · 官方 CLI 登录态"
+    !status.binaryFound -> "未连接 · 未安装官方 CLI"
+    else -> "未连接"
+}
+
 internal fun connectorActionLabel(item: McpConnector): String? = when (item.status) {
     "needs_reauth", "error" -> "重新连接"
-    "disconnected" -> "连接"
+    "disconnected" -> if (item.id in AGENT_CONNECTOR_RUNTIMES) {
+        agentConnectorConnectLabel(item.id)
+    } else {
+        "连接"
+    }
     "coming_soon" -> "即将支持"
     else -> null
 }
@@ -887,6 +916,159 @@ internal fun GitHubRepoList(
         if (repos.size > 10) {
             Spacer(Modifier.height(8.dp))
             Label("仅显示最近更新的 10 个仓库", 9.5f, V2Colors.ink(.30f))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Cursor / Antigravity 官方授权
+
+@Composable
+fun AgentConnectorSheet(
+    kind: String,
+    status: AgentCliAccountStatus?,
+    session: AgentCliLoginSession?,
+    loading: Boolean,
+    onDismiss: () -> Unit,
+    onStart: () -> Unit,
+    onSubmitCode: (loginId: String, code: String, onResult: (String?) -> Unit) -> Unit,
+    onLogout: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
+    var confirmLogout by remember { mutableStateOf(false) }
+    var code by remember(kind) { mutableStateOf("") }
+    var codeError by remember(kind) { mutableStateOf<String?>(null) }
+    val title = agentConnectorTitle(kind)
+    val loggedIn = status?.loggedIn == true
+    val pending = session?.isPending == true
+
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .9f) {
+        SheetHeader(
+            title = title,
+            subtitle = "用你自己的账号，在电脑上执行编码任务",
+            onClose = onDismiss,
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+        ) {
+            WhiteCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        V2IconTile(
+                            icon = Icons.Outlined.Extension,
+                            tint = if (loggedIn) V2Colors.ink(.72f) else V2Colors.ink(.48f),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Label(
+                                agentConnectorStateText(status),
+                                13.5f,
+                                if (loggedIn) V2Colors.ink(.90f) else V2Colors.ink(.62f),
+                                FontWeight.Medium,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Label(
+                                if (status == null) {
+                                    "正在读取这台电脑上的官方 CLI…"
+                                } else {
+                                    agentConnectorPrerequisite(kind, status.binaryFound)
+                                },
+                                10.5f,
+                                V2Colors.ink(.40f),
+                                maxLines = 3,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (pending || session?.status == "failed") {
+                Spacer(Modifier.height(10.dp))
+                WhiteCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Label("官方授权", 10.5f, V2Colors.ink(.42f), FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        Label(
+                            session?.message?.takeIf { it.isNotBlank() }
+                                ?: "在浏览器完成授权后，Flux 会自动收到结果。",
+                            10.5f,
+                            if (session?.status == "failed") V2Colors.rose else V2Colors.ink(.44f),
+                            maxLines = 3,
+                        )
+                        if (!session?.url.isNullOrBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            PrimaryButton(
+                                text = "打开官方授权页",
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = { onOpenUrl(session?.url.orEmpty()) },
+                            )
+                        }
+                        if (session != null && session.needsCode && pending) {
+                            Spacer(Modifier.height(12.dp))
+                            Label(
+                                "官方 CLI 要求回填授权码（不是 API token / key）：",
+                                10.5f,
+                                V2Colors.ink(.46f),
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            ConnectorTextField(
+                                value = code,
+                                placeholder = "粘贴官方页面给出的授权码",
+                                onChange = {
+                                    code = it
+                                    codeError = null
+                                },
+                            )
+                            codeError?.let { message ->
+                                Spacer(Modifier.height(6.dp))
+                                Label(message, 10f, V2Colors.rose700)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            GhostButton(
+                                text = "提交授权码",
+                                enabled = !loading,
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    onSubmitCode(session.loginId, code) { failure ->
+                                        codeError = failure
+                                        if (failure == null) code = ""
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            if (loggedIn) {
+                SettingsActionRow(
+                    icon = Icons.Outlined.Logout,
+                    title = if (confirmLogout) "再次点击确认退出" else "退出 ${title} 账号",
+                    description = "退出后 Agent 无法再用你的账号执行任务",
+                    danger = true,
+                    onClick = {
+                        if (confirmLogout) onLogout() else confirmLogout = true
+                    },
+                )
+            } else {
+                PrimaryButton(
+                    text = if (loading) "正在启动官方授权…" else agentConnectorConnectLabel(kind),
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onStart,
+                )
+                Spacer(Modifier.height(8.dp))
+                Label(
+                    "编码任务始终在你的电脑上执行；Flux 不保存账号令牌，也不会把令牌发到手机。",
+                    9.5f,
+                    V2Colors.ink(.34f),
+                )
+            }
+            Spacer(Modifier.height(20.dp))
         }
     }
 }

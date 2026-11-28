@@ -12,6 +12,46 @@ public sealed record ReadyInfo(bool Database, int Agents, string[] Providers);
 /// <summary>GET /api/v1/workspace/root 的 data。</summary>
 public sealed record WorkspaceRootInfo(string Root);
 
+/// <summary>GET /api/v1/mcp-connectors 的元素（内置连接器目录 + 自定义 MCP）。</summary>
+public sealed record McpConnector(
+    string Id,
+    string Name,
+    string Kind,
+    string Status,
+    string Description,
+    bool Available,
+    string? Url,
+    string[] Tools,
+    string? Account,
+    string? Error,
+    bool Featured,
+    string Action);
+
+public sealed record McpConnectorList(McpConnector[] Items);
+
+/// <summary>Cursor / Antigravity 官方 CLI 登录态；后端不返回任何令牌。</summary>
+public sealed record AgentCliAccountStatus(
+    bool LoggedIn,
+    string? AuthMode,
+    string Home,
+    string Binary,
+    bool BinaryFound,
+    string OfficialStatus,
+    bool StaleLogin,
+    string? LastLoginAt,
+    AgentCliLoginSession? PendingLogin);
+
+/// <summary>官方 CLI 浏览器登录会话。</summary>
+public sealed record AgentCliLoginSession(
+    string LoginId,
+    string Status,
+    string Url,
+    string Message,
+    bool NeedsCode,
+    int ExpiresIn);
+
+public sealed record AgentCliLogoutResult(bool Removed, AgentCliAccountStatus Status);
+
 /// <summary>GET /api/v1/installations 的元素（本机 CLI Agent 的事实快照）。</summary>
 public sealed record Installation(
     string Id,

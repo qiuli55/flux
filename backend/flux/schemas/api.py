@@ -35,7 +35,7 @@ class AgentCreateRequest(BaseModel):
     #: 执行该 Agent 的 runtime（P2-1 §6.2）：内置 DSH 默认，或本机 CLI
     #: （codex / opencode / claude-code）。
     #: 取值在边界即校验（非法 → 422），并由 AgentManager 再校验一次（内部调用方同样受约束）。
-    runtime: Literal["dsh", "codex", "opencode", "claude-code"] = "dsh"
+    runtime: Literal["dsh", "codex", "opencode", "claude-code", "cursor", "antigravity"] = "dsh"
     #: 接入方式：local 由 Flux 执行并展示；external 只经 MCP 接入，不被 Flux 调用、不展示。
     kind: Literal["local", "external"] = "local"
 
