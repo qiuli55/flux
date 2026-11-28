@@ -110,7 +110,7 @@ def test_adapter_broken_json_is_unknown() -> None:
 
 def test_default_registry_includes_claude_code() -> None:
     names = {adapter.name for adapter in build_default_adapters()}
-    assert names == {"opencode", "codex", "claude-code"}
+    assert names == {"opencode", "codex", "claude-code", "cursor", "antigravity"}
 
 
 # --- argv / MCP 配置 ---

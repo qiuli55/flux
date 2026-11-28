@@ -16,8 +16,10 @@ from flux.cloud.memory_sync import CloudMemorySync
 from flux.config import Settings, get_settings
 from flux.connectors.base import ConnectorRegistry
 from flux.core.agent_runtime.adapters import build_default_adapters
+from flux.core.agent_runtime.antigravity_account import AntigravityAccountService
 from flux.core.agent_runtime.claude_account import ClaudeAccountService
 from flux.core.agent_runtime.codex_account import CodexAccountService
+from flux.core.agent_runtime.cursor_account import CursorAccountService
 from flux.core.agent_runtime.dsh_client import FluxDshClient
 from flux.core.agent_runtime.installation import InstallationRepository, InstallationService
 from flux.core.agent_runtime.manager import AgentManager
@@ -109,6 +111,9 @@ from flux.core.virtual_workspace.repository import ProposalRepository
 from flux.core.virtual_workspace.service import VirtualWorkspaceService
 from flux.db.session import create_engine, create_session_factory
 from flux.enums import ModelProvider
+from flux.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -166,6 +171,9 @@ class Container:
     codex_account: CodexAccountService = field(init=False)
     #: Claude Code 订阅（claude.ai）：官方 setup-token 登录与 Run 时的环境注入
     claude_account: ClaudeAccountService = field(init=False)
+    #: Cursor / 谷歌 Antigravity：官方 CLI 浏览器授权（Flux 不保存第三方令牌）
+    cursor_account: CursorAccountService = field(init=False)
+    antigravity_account: AntigravityAccountService = field(init=False)
     #: 设置页「连接器」：自定义 MCP 服务器探测、持久化与 Run 注入视图
     mcp_connectors: McpConnectorService = field(init=False)
     #: 计费与套餐额度（本地账本 + 官方快照对账 + 闸门）；必须容器级单例，
@@ -430,6 +438,12 @@ class Container:
         self.codex_account = CodexAccountService(self.settings)
         # Claude Code 订阅登录态与自定义 MCP 连接器存储（都只读写 Flux 自己的目录）
         self.claude_account = ClaudeAccountService(self.settings)
+        # Cursor / Antigravity 的登录由官方 CLI 完成；成功后把对应 installation 推到 READY，
+        # 让它立刻进入「可选 Agent」列表（与现有三个 CLI runtime 同一状态机）。
+        self.cursor_account = CursorAccountService(self.settings)
+        self.antigravity_account = AntigravityAccountService(self.settings)
+        self.cursor_account.set_activation(self._activate_cli_runtime)
+        self.antigravity_account.set_activation(self._activate_cli_runtime)
         self.mcp_connectors = McpConnectorService(self.settings)
         # 计费账本与额度闸门：CLI runtime 的每一步用量都落到这里；先于 TaskRunService
         # 装配，因为 Run 创建前的额度检查要读它。
@@ -603,6 +617,17 @@ class Container:
         agent_id = payload.get("agent_id")
         if isinstance(agent_id, str):
             await self.dsh.supervisor.note_mcp_activity(agent_id)
+
+    async def _activate_cli_runtime(self, runtime_id: str) -> None:
+        """官方账号登录成功 → 扫描并接入该 CLI，使它能被任务选中。
+
+        失败只记日志：登录本身已经成功，接入状态还可以由用户手动重扫。
+        """
+        try:
+            await self.installations.scan()
+            await self.installations.connect(runtime_id)
+        except Exception:  # noqa: BLE001 - 接入失败不影响账号登录结果
+            logger.warning("登录后接入 %s 失败", runtime_id, exc_info=True)
 
     async def _on_run_terminal(self, _event: str, payload: dict[str, object]) -> None:
         """Run 落终态后，回收它名下派生的终端会话与命令进程（FINDING-1 防泄漏）。"""

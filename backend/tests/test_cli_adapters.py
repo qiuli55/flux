@@ -250,4 +250,4 @@ def test_start_then_stop_cleans_process_group() -> None:
 
 def test_default_registry_has_all_builtin_adapters() -> None:
     names = {adapter.name for adapter in build_default_adapters()}
-    assert names == {"opencode", "codex", "claude-code"}
+    assert names == {"opencode", "codex", "claude-code", "cursor", "antigravity"}

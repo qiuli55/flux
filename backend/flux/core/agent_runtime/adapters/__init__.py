@@ -4,6 +4,7 @@
 不依赖任何具体 Agent。
 """
 
+from flux.core.agent_runtime.adapters.antigravity import AntigravityAdapter
 from flux.core.agent_runtime.adapters.base import (
     CliAgentAdapter,
     CliAgentProbe,
@@ -13,16 +14,19 @@ from flux.core.agent_runtime.adapters.base import (
 )
 from flux.core.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
 from flux.core.agent_runtime.adapters.codex import CodexAdapter
+from flux.core.agent_runtime.adapters.cursor import CursorAdapter
 from flux.core.agent_runtime.adapters.generic import GenericCliAdapter
 from flux.core.agent_runtime.adapters.opencode import OpenCodeAdapter
 from flux.core.agent_runtime.adapters.registry import build_default_adapters
 
 __all__ = [
+    "AntigravityAdapter",
     "CliAgentAdapter",
     "CliAgentProbe",
     "CliProcess",
     "ClaudeCodeAdapter",
     "CodexAdapter",
+    "CursorAdapter",
     "GenericCliAdapter",
     "OpenCodeAdapter",
     "build_default_adapters",

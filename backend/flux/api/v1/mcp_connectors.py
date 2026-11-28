@@ -18,8 +18,14 @@ router = APIRouter(prefix="/mcp-connectors", tags=["mcp-connectors"])
 
 @router.get("")
 async def list_connectors(container: Container = Depends(get_container)) -> dict[str, object]:
-    """内置连接器目录 + 用户自定义 MCP 连接器（GitHub 状态实时映射）。"""
-    return ok(container.mcp_connectors.list_all(container.github.status()))
+    """内置连接器目录 + 用户自定义 MCP 连接器（GitHub / Cursor / Antigravity 状态实时映射）。"""
+    return ok(
+        container.mcp_connectors.list_all(
+            container.github.status(),
+            cursor_status=container.cursor_account.status(),
+            antigravity_status=container.antigravity_account.status(),
+        )
+    )
 
 
 @router.post("")

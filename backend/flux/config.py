@@ -196,6 +196,15 @@ class Settings(BaseSettings):
     # 拿到一年期 OAuth 令牌，存在这里（0600）；Run 时只以 CLAUDE_CODE_OAUTH_TOKEN
     # 注入子进程环境，不读写用户全局 ~/.claude。
     claude_account_home: str = "~/.flux/claude-account"
+    # Cursor 的默认模型；空 = 用官方 Cursor CLI 自己的默认。非空时以 `--model` 下发。
+    cursor_model: str = ""
+    # Cursor 官方 CLI（agent）的登录标记目录。凭据仍由官方 CLI 自己保存，这里只放一个
+    # 非机密的「曾在 Flux 完成登录」标记，用于官方 status 输出不可识别时的兜底。
+    cursor_account_home: str = "~/.flux/cursor-account"
+    # 谷歌 Antigravity 的默认模型；空 = 用官方 agy 自己的默认。非空时以 `--model` 下发。
+    antigravity_model: str = ""
+    # Antigravity 官方 CLI（agy）的登录标记目录；凭据留在官方 CLI 的安全存储里。
+    antigravity_account_home: str = "~/.flux/antigravity-account"
 
     # --- 连接器设置页（自定义 MCP 服务器）---
     # 用户添加的自定义 MCP 连接器（名称 + URL）。只有探测通过（initialize + tools/list）

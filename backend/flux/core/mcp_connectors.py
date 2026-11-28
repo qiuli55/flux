@@ -54,6 +54,26 @@ _BUILTIN_CONNECTORS: tuple[dict[str, Any], ...] = (
         "action": "github",
     },
     {
+        "id": "cursor",
+        "name": "Cursor",
+        "kind": "builtin",
+        "description": "用你自己的 Cursor 账号，在电脑上执行编码任务",
+        "available": True,
+        "status": _STATUS_DISCONNECTED,
+        "featured": False,
+        "action": "cursor",
+    },
+    {
+        "id": "antigravity",
+        "name": "谷歌 / Antigravity",
+        "kind": "builtin",
+        "description": "用你自己的 Google 账号，在电脑上执行编码任务",
+        "available": True,
+        "status": _STATUS_DISCONNECTED,
+        "featured": False,
+        "action": "antigravity",
+    },
+    {
         "id": "figma",
         "name": "Figma",
         "kind": "builtin",
@@ -124,6 +144,32 @@ def _github_item(status: dict[str, Any] | None) -> dict[str, Any]:
             "error": None,
         }
     )
+    return item
+
+
+def _agent_account_item(base: dict[str, Any], status: dict[str, Any] | None) -> dict[str, Any]:
+    """把 Cursor / Antigravity 的官方 CLI 登录态映射成连接器状态。
+
+    未登录就是未连接；官方 CLI 报告未登录但 Flux 有旧标记时提示重新连接；
+    不把「装没装」伪装成「已连接」。
+    """
+    item = dict(base)
+    item.update({"account": None, "error": None})
+    if not status:
+        item["status"] = _STATUS_DISCONNECTED
+        return item
+    if status.get("logged_in"):
+        item.update({"status": _STATUS_CONNECTED, "error": None})
+        return item
+    if status.get("stale_login"):
+        item.update(
+            {
+                "status": _STATUS_NEEDS_REAUTH,
+                "error": "官方 CLI 报告未登录，请重新连接。",
+            }
+        )
+        return item
+    item["status"] = _STATUS_DISCONNECTED
     return item
 
 
@@ -274,12 +320,28 @@ class McpConnectorService:
 
     # --- 列表 ---
 
-    def list_all(self, github_status: dict[str, Any] | None = None) -> dict[str, Any]:
-        """返回内置目录 + 自定义连接器；GitHub 状态来自现有 GitHub 服务。"""
+    def list_all(
+        self,
+        github_status: dict[str, Any] | None = None,
+        *,
+        cursor_status: dict[str, Any] | None = None,
+        antigravity_status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """返回内置目录 + 自定义连接器。
+
+        GitHub 状态来自现有 GitHub 服务；Cursor / Antigravity 的状态来自各自的
+        官方 CLI 账号服务（只读是否已登录，不含任何令牌）。
+        """
+        agent_status = {
+            "cursor": cursor_status,
+            "antigravity": antigravity_status,
+        }
         items: list[dict[str, Any]] = []
         for builtin in _BUILTIN_CONNECTORS:
             if builtin["id"] == "github":
                 items.append(_github_item(github_status))
+            elif builtin["id"] in agent_status:
+                items.append(_agent_account_item(builtin, agent_status[builtin["id"]]))
             else:
                 items.append(dict(builtin))
         items.extend(item.public() for item in self._load())

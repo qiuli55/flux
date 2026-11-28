@@ -4,12 +4,14 @@ from fastapi import APIRouter
 
 from flux.api.v1 import (
     agents,
+    antigravity_account,
     artifacts,
     billing,
     capabilities,
     claude_account,
     codex_account,
     connectors,
+    cursor_account,
     deliveries,
     designs,
     dsh,
@@ -55,6 +57,8 @@ api_v1_router.include_router(deliveries.router)
 api_v1_router.include_router(uploads.router)
 api_v1_router.include_router(codex_account.router)
 api_v1_router.include_router(claude_account.router)
+api_v1_router.include_router(cursor_account.router)
+api_v1_router.include_router(antigravity_account.router)
 api_v1_router.include_router(mcp_connectors.router)
 api_v1_router.include_router(supervisor.router)
 
