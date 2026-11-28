@@ -171,9 +171,7 @@ class McpProbeClient:
             },
         }
         try:
-            async with client.stream(
-                "POST", url, json=initialize, headers=_headers()
-            ) as resp:
+            async with client.stream("POST", url, json=initialize, headers=_headers()) as resp:
                 status = resp.status_code
                 if status >= 400:
                     return McpProbeResult(ok=False, error=_http_reason(status))
