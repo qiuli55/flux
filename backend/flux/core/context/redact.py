@@ -49,6 +49,12 @@ _PLACEHOLDER_N = "[REDACTED:{kind}:{index}]"
 _MIN_SECRET_CHARS = 32
 #: 香农熵阈值（bit/char）。纯 hex 上限 4.0 → 不误伤自家 sha256；随机 base64 约 5–6 → 命中
 _MIN_ENTROPY = 4.5
+#: 路径段可更短：按 `/` / `\` 切段后单段里看不到分隔符，20 位随机 base64 段已是密钥形态。
+#: 只用于**路径段**，不改全局 `_MIN_SECRET_CHARS`（无路径文本仍按 32 位下限，避免大量误伤）。
+_MIN_PATH_SECRET_CHARS = 20
+#: 短路径段的熵阈值：20 个互异字符的熵上限只有 log2(20)≈4.32，沿用 4.5 会永远抓不到；
+#: 4.0 能覆盖随机 base64 段，又低于 `project-2024-backup` 这类普通目录名（约 3.8）。
+_MIN_PATH_SEGMENT_ENTROPY = 4.0
 #: 十六进制字符集：整串都是它 → 是哈希/摘要，不是密钥
 _HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 
@@ -71,8 +77,14 @@ _ENGLISH_VOWELS = frozenset("aeiou")
 _JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 #: `user:pass@host`：只打码认证段，保留 `@host`
 _CRED_RE = re.compile(r"(?P<cred>[A-Za-z0-9._%+\-]+:[^\s:@/]+)(?P<host>@[A-Za-z0-9.\-]+(?::\d+)?)")
-#: 熵检测候选：无前缀的长 token（hex / base64 / urlsafe）
-_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+#: 熵检测候选：无前缀 token（hex / base64 / urlsafe），含路径分隔符 `/` 与 `\`，
+#: 以便相对路径 / Windows 路径被整体识别后逐段判定。下限放宽到 16 只是让短路径段
+#: 进入按段流程；非路径候选仍由 `_looks_like_secret` 的 32 位下限把关。
+_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_\-\\]{16,}")
+#: 路径分隔符：POSIX `/` 与 Windows `\`；拆开时保留分隔符，拼回原文
+_PATH_SPLIT_RE = re.compile(r"([/\\])")
+#: 路径段允许的字符集（base64 标准与 URL-safe）；点号等文件名字符不属于密钥形态
+_SEGMENT_RE = re.compile(r"[A-Za-z0-9+/=_\-]+")
 #: 带连字符的 UUID：路径段里的常见目录 / 资源 id，字符集不再是纯 hex，需单独认出
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -295,27 +307,79 @@ def _looks_like_secret(token: str) -> bool:
 
 
 def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
-    """把绝对路径候选按 `/` 切开，只替换像密钥的段，再原样拼回。
+    """把路径候选按 `/` 与 `\\` 切开，只替换像密钥的段，再原样拼回。
 
     路径本身不是机密（附件必读路径依赖它可读），但路径中间可以夹一段无前缀的
-    高熵密钥。整段跳过会漏掉这种密钥，故逐段做与 `_looks_like_secret` 相同的判定；
-    标识符段（纯 hex 的目录名、带连字符 UUID）与普通段保留。若没有任何段被换，
-    返回原串，避免拆分后无意改写（例如重复的 `/`）。
+    高熵密钥。整段跳过会漏掉这种密钥，故逐段判定；标识符段（纯 hex 的目录名、
+    带连字符 UUID）与普通段保留。分隔符原样保留（Windows 路径的 `\\` 不会被改写
+    成 `/`）；若没有任何段被换，返回原串，避免拆分后无意改写。
     """
-    parts = token.split("/")
+    parts = _PATH_SPLIT_RE.split(token)
     changed = False
     for index, part in enumerate(parts):
-        if part and _looks_like_secret_segment(part):
+        if not part or part in ("/", "\\"):
+            continue
+        if _looks_like_secret_segment(part):
             parts[index] = replace(part)
             changed = True
-    return "/".join(parts) if changed else token
+    return "".join(parts) if changed else token
 
 
 def _looks_like_secret_segment(segment: str) -> bool:
-    """路径段是否像密钥；标识符段（内容寻址 id、UUID）不算。"""
+    """路径段是否像密钥；标识符段（内容寻址 id、UUID）不算。
+
+    与无路径文本的 32 位下限不同，路径段允许更短（20 位起）：斜杠已经把候选切碎，
+    单段里通常看不到分隔符，像密钥的短段只能靠段级形态判定。全局 `_MIN_SECRET_CHARS`
+    保持不变，无路径文本仍走原来的严格下限。
+    """
     if _looks_like_path_identifier(segment):
         return False
-    return _looks_like_secret(segment)
+    if _looks_like_secret(segment):
+        return True
+    return _looks_like_short_path_secret(segment)
+
+
+def _looks_like_short_path_secret(segment: str) -> bool:
+    """20–31 位路径段是否像密钥（base64 / URL-safe 形态）。
+
+    不能只看"够长 + 高熵"：普通目录名（`project-2024-backup`，熵约 3.8）也会被误伤。
+    故要求同时满足：base64 系字符集、非纯 hex/数字、不是自然语言词，并且
+    - 含 `+` / `=` 这类 base64 强信号；或
+    - 覆盖至少两类字符（大小写 / 数字 / 符号）且熵 ≥ 4.0。
+    """
+    if len(segment) < _MIN_PATH_SECRET_CHARS:
+        return False
+    if segment.isdigit():
+        return False
+    if set(segment) <= _HEX_CHARS:
+        return False
+    if _SEGMENT_RE.fullmatch(segment) is None:
+        return False
+    # 纯字母：自然语言词（`internationalization`、`UserAccountSettings`）保留，
+    # 元音比例失衡的随机串才当密钥。
+    if segment.isalpha() and _looks_like_plain_english(segment.lower()):
+        return False
+    if len(_char_classes(segment)) < 2:
+        return False
+    if _entropy(segment) >= _MIN_PATH_SEGMENT_ENTROPY:
+        return True
+    # `+` / `=` 是标准 base64 的强形态信号，重复字符拉低熵时仍按密钥处理
+    return any(char in "+=" for char in segment)
+
+
+def _char_classes(token: str) -> set[str]:
+    """token 覆盖的字符类别：小写 / 大写 / 数字 / 符号。"""
+    classes: set[str] = set()
+    for char in token:
+        if char.islower():
+            classes.add("lower")
+        elif char.isupper():
+            classes.add("upper")
+        elif char.isdigit():
+            classes.add("digit")
+        else:
+            classes.add("symbol")
+    return classes
 
 
 def _looks_like_path_identifier(segment: str) -> bool:
@@ -336,18 +400,23 @@ def _looks_like_filesystem_path(token: str) -> bool:
     ``_CANDIDATE_RE`` 的字符类必须含 `/`（标准 base64 用的就是它），于是绝对路径
     （尤其附件所在的 ``/tmp/.../uploads/<hex>/a.txt``）会被整体匹配成一个候选，
     长度与熵都越线，被打成 ``[REDACTED:key]``。路径本身不是机密，且调用方（附件
-    必读路径）依赖它可读，故这里按"以 ``/`` 开头且再含至少一个 ``/``"排除 POSIX
-    绝对路径。
+    必读路径）依赖它可读。
 
-    只含单个 `/` 的候选**不**在此列：那仍可能是夹了一个 `/` 的标准 base64 密钥，
-    照常走熵检测。Windows 盘符路径里的 `\\` / `:` 不在候选字符类中，正则会在那里
-    断开；`C:/Users/...` 的 ``/Users/...`` 部分同样按绝对路径处理。
+    判定口径（POSIX 绝对路径 / 相对路径 / Windows 反斜杠路径一致）：
+
+    - 至少两个分隔符（`/` 或 `\\`）。只含单个 `/` 的候选**不**在此列：那仍可能是
+      夹了一个 `/` 的标准 base64 密钥，照常整段走熵检测。
+    - 至少要有一个段**不像密钥**。若所有段都像密钥，整串更可能是一个含 `/` 的
+      base64 令牌，按整段密钥处理，避免把令牌切碎后漏掉某个短段。
 
     注意：这里只回答"整串像不像路径"，**不是**"整串放过"。`_entropy_sub` 命中该
     判定后改走 `_redact_path_segments` 逐段打码，避免 `/api/keys/<base64>` 这类
     嵌在路径中间的无前缀密钥整段漏出。
     """
-    return token.startswith("/") and token.count("/") >= 2
+    if sum(1 for char in token if char in "/\\") < 2:
+        return False
+    segments = [part for part in _PATH_SPLIT_RE.split(token) if part and part not in ("/", "\\")]
+    return any(not _looks_like_secret_segment(part) for part in segments)
 
 
 def _entropy(token: str) -> float:

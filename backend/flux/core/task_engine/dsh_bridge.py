@@ -573,7 +573,9 @@ class TaskRunBridge:
         ]
         finish_reason = body.get("finish_reason")
         if finish_reason:
-            lines.append(f"- 结束原因：{finish_reason}")
+            # 沉淀是下一轮会读的长期记忆：结束原因同样可能夹带密钥 / 配置字面量
+            reason_text = redact(str(finish_reason), literals=self._literals).text
+            lines.append(f"- 结束原因：{reason_text}")
         error = body.get("error")
         if error:
             # 沉淀是长期记忆：错误里可能夹着密钥/令牌，先打码再取尾部

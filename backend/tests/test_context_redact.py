@@ -242,6 +242,69 @@ def test_entropy_still_redacts_secret_alongside_path_identifiers() -> None:
     assert [m.original for m in result.matches] == [secret]
 
 
+def test_entropy_redacts_short_base64_segment_inside_absolute_path() -> None:
+    """切段后的较短 base64 段（20/24 位）仍按密钥打码，前缀路径保留。"""
+    secret20 = "Zx9Qm2Lp7Rw4Tn8Vc3Bk"
+    secret24 = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1"
+    with_plus = "Zx9Qm2Lp+7Rw4Tn8Vc3B"
+    urlsafe = "Zx9Qm2Lp-7Rw4T_8Vc3B"
+
+    result = redact(f"curl /api/keys/{secret20}")
+    assert result.text == "curl /api/keys/[REDACTED:key]"
+    assert [m.original for m in result.matches] == [secret20]
+
+    result = redact(f"curl /api/keys/{secret24}")
+    assert result.text == "curl /api/keys/[REDACTED:key]"
+    assert [m.original for m in result.matches] == [secret24]
+
+    for secret in (with_plus, urlsafe):
+        result = redact(f"curl /api/keys/{secret}")
+        assert result.text == "curl /api/keys/[REDACTED:key]"
+        assert [m.original for m in result.matches] == [secret]
+
+
+def test_entropy_redacts_both_short_segments_split_by_slash() -> None:
+    """被斜杠切成两段、每段约 20 位的密钥：两段都打码，前缀保留。"""
+    first = "Zx9Qm2Lp7Rw4Tn8Vc3Bk"
+    second = "Ab7Yd3Kp9Nm2Qr5Ts8Wx"
+    result = redact(f"/api/keys/{first}/{second}")
+    assert result.text == "/api/keys/[REDACTED:key]/[REDACTED:key:2]"
+    assert [m.original for m in result.matches] == [first, second]
+
+
+def test_entropy_redacts_secret_segment_in_relative_path() -> None:
+    """相对路径与绝对路径同口径：只打密钥段，其余段保留，不整串打码。"""
+    secret32 = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae"
+    result = redact(f"见 foo/{secret32}/bar")
+    assert result.text == "见 foo/[REDACTED:key]/bar"
+    assert [m.original for m in result.matches] == [secret32]
+
+    first = "Zx9Qm2Lp7Rw4Tn8Vc3Bk"
+    second = "Ab7Yd3Kp9Nm2Qr5Ts8Wx"
+    result = redact(f"见 foo/{first}/{second}/bar")
+    assert result.text == "见 foo/[REDACTED:key]/[REDACTED:key:2]/bar"
+    assert [m.original for m in result.matches] == [first, second]
+
+
+def test_entropy_redacts_secret_segment_in_windows_path() -> None:
+    """Windows 反斜杠路径同样按段打码，并原样保留 `\\` 分隔符。"""
+    secret = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae"
+    result = redact(f"打开 C:\\Users\\{secret}\\a.txt")
+    assert result.text == "打开 C:\\Users\\[REDACTED:key]\\a.txt"
+    assert [m.original for m in result.matches] == [secret]
+
+
+def test_entropy_spares_natural_long_directory_names() -> None:
+    """普通目录名（词形态、低熵）不因长度被打码；随机 32 位混合串仍按密钥处理。"""
+    assert redact("path my-super-long-project-name/notes.txt").text == (
+        "path my-super-long-project-name/notes.txt"
+    )
+    assert redact("path project-2024-backup/file.txt").text == "path project-2024-backup/file.txt"
+    assert redact("path data-2024-11-28-backup-x/file.txt").text == (
+        "path data-2024-11-28-backup-x/file.txt"
+    )
+
+
 # --- 占位符编号与复用（映射 1:1）---
 
 

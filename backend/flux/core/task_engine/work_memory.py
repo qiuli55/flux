@@ -90,7 +90,14 @@ def _goal_of(instruction: str, fallback: str) -> str:
     return text or fallback
 
 
-def _confirmation_lines(confirmation: dict[str, Any] | None) -> list[str]:
+def _confirmation_lines(
+    confirmation: dict[str, Any] | None, literals: Sequence[str] = ()
+) -> list[str]:
+    """把需求确认项拼成卡片行；label / value 同样可能复述密钥，先按清单打码。
+
+    确认项原文留在任务 JSON 上（不改已落库原文）；这里只处理**派生给下一轮读的
+    卡片文本**，与 goal / error / 答复同一口径。
+    """
     items = (confirmation or {}).get("items")
     if not isinstance(items, list):
         return []
@@ -98,8 +105,8 @@ def _confirmation_lines(confirmation: dict[str, Any] | None) -> list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        label = str(item.get("label") or "").strip()
-        value = str(item.get("value") or "").strip()
+        label = redact(str(item.get("label") or "").strip(), literals=literals).text
+        value = redact(str(item.get("value") or "").strip(), literals=literals).text
         if label and value:
             lines.append(f"{label}：{value}")
     return lines
@@ -142,7 +149,8 @@ def build_memory_card(
     lines.append(f"- 结果：{state or '未知'}")
     finish_reason = str(getattr(run, "finish_reason", "") or "").strip()
     if finish_reason:
-        lines.append(f"- 结束原因：{finish_reason}")
+        # 结束原因也可能夹带密钥 / 配置字面量：卡片给下一轮读，先打码
+        lines.append(f"- 结束原因：{redact(finish_reason, literals=literals).text}")
     error = str(getattr(run, "error", "") or "").strip()
     if error:
         # 错误里可能夹着密钥/令牌：先对完整原文打码再取尾部，避免跨边界漏片段
@@ -165,7 +173,7 @@ def build_memory_card(
     if commands or reads:
         lines.append(f"- 过程：执行命令 {commands} 条，读取文件 {reads} 次")
 
-    confirmed = _confirmation_lines(confirmation)
+    confirmed = _confirmation_lines(confirmation, literals)
     if confirmed:
         lines.append("- 已确认需求：" + "；".join(confirmed))
 

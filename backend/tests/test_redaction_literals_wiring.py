@@ -275,6 +275,35 @@ def test_memory_card_redacts_configured_literal_in_failure_reason() -> None:
     assert LITERAL in legacy
 
 
+def test_memory_card_redacts_configured_literal_in_confirmation_and_finish_reason() -> None:
+    """确认项 label/value 与结束原因也是卡片正文：显式清单时同样打码。"""
+    task = SimpleNamespace(
+        id=uuid.uuid4(),
+        description="修复登录",
+        confirmation={
+            "items": [
+                {"label": f"预算 {LITERAL}", "value": f"每月 {LITERAL}"},
+            ]
+        },
+    )
+    run = SimpleNamespace(
+        id="run-1",
+        instruction="## 本轮任务\n修复登录",
+        status="failed",
+        finish_reason=f"error {LITERAL}",
+        error="provider quota exhausted",
+    )
+
+    card = build_memory_card(task=task, run=run, status="failed", literals=(LITERAL,))
+    assert LITERAL not in card
+    # 结束原因 + 确认项 label + 确认项 value 三处都换成统一占位符
+    assert card.count(PLACEHOLDER) >= 3
+    assert "已确认需求" in card
+
+    legacy = build_memory_card(task=task, run=run, status="failed")
+    assert LITERAL in legacy
+
+
 async def test_task_bridge_literals_reach_sediment_and_memory_card(
     literal_settings: Settings, db_schema: None
 ) -> None:
@@ -289,6 +318,14 @@ async def test_task_bridge_literals_reach_sediment_and_memory_card(
             project_id=project.id,
             agent_id=None,
         )
+        await container.task_repo.set_confirmation(
+            task.id,
+            {
+                "actor": "user",
+                "items": [{"label": f"预算 {LITERAL}", "value": f"每月 {LITERAL}"}],
+            },
+        )
+        task = await container.task_repo.get(task.id)
         run_id = "run-literal-1"
         await container.run_repo.create(
             run_id=run_id,
@@ -301,7 +338,7 @@ async def test_task_bridge_literals_reach_sediment_and_memory_card(
             run_id,
             DshRunStatus.FAILED,
             error=f"Run 失败：{LITERAL}",
-            finish_reason="error",
+            finish_reason=f"error {LITERAL}",
             finished=True,
         )
 
@@ -309,12 +346,13 @@ async def test_task_bridge_literals_reach_sediment_and_memory_card(
             task,
             status=TaskStatus.FAILED,
             run_id=run_id,
-            body={"error": f"沉淀错误：{LITERAL}"},
+            body={"error": f"沉淀错误：{LITERAL}", "finish_reason": f"error {LITERAL}"},
         )
         notes = (await container.brain.sections(project.id))[BrainSection.AGENT_NOTES.value]
         assert len(notes) == 1
         note = str(notes[0]["content"])
         assert LITERAL not in note and PLACEHOLDER in note
+        assert "结束原因" in note
 
         await container.task_runs._write_memory_card(
             task, run_id, status=TaskStatus.FAILED, body={}
@@ -323,6 +361,9 @@ async def test_task_bridge_literals_reach_sediment_and_memory_card(
         assert card is not None
         assert LITERAL not in card.content
         assert PLACEHOLDER in card.content
+        # 记忆卡装配路径也要覆盖确认项与结束原因，避免只测到失败原因
+        assert "已确认需求" in card.content
+        assert "结束原因" in card.content
     finally:
         await container.dispose()
 
