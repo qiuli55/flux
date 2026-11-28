@@ -45,6 +45,42 @@ def test_redacts_bearer_token() -> None:
     assert result.matches[0].original == f"Bearer {token}"
 
 
+#: 明显不像英语单词的虚构全小写片段（高辅音、无常见词缀），不是任何真实凭据。
+_LOWERCASE_BEARER_TOKEN = "qxzjvkwpqzbcdfghjklm"
+
+
+def test_redacts_inline_lowercase_bearer_token_with_trailing_prose() -> None:
+    """小写 `bearer` + 全小写令牌在句中出现（后面还有正文）也必须打码。"""
+    for token in ("qxzjvkwpqz", _LOWERCASE_BEARER_TOKEN, _LOWERCASE_BEARER_TOKEN[:8]):
+        text = f"凭证是 bearer {token}，后面还有正文。"
+        result = redact(text)
+        assert token not in result.text
+        assert result.text == "凭证是 [REDACTED:token]，后面还有正文。"
+        assert result.matches[0].kind == RedactionKind.TOKEN
+        assert result.matches[0].original == f"bearer {token}"
+
+
+def test_uppercase_bearer_still_redacts_inline_lowercase_token() -> None:
+    """既有口径不削弱：大写 `Bearer` + 全小写片段无论是否在句中都照旧打码。"""
+    token = "tokenization"  # 12 个字符，满足旧正则的 {8,}
+    result = redact(f"Authorization: Bearer {token}，然后继续。")
+    assert token not in result.text
+    assert result.text == "Authorization: [REDACTED:token]，然后继续。"
+    assert result.matches[0].original == f"Bearer {token}"
+
+
+def test_lowercase_bearer_prose_is_not_redacted() -> None:
+    """对照：普通英语短语不能被扩大后的规则误伤（尤其 `bearer tokenization`）。"""
+    for prose in (
+        "bearer tokenization",
+        "熟悉 bearer token 与 bearer tokens 的区别",
+        "bearer authentication 的说明",
+    ):
+        result = redact(prose)
+        assert result.text == prose
+        assert result.matches == ()
+
+
 def test_redacts_credential_keeps_host() -> None:
     result = redact("postgres://user:s3cr3t@db.internal:5432/app")
     assert result.text == "postgres://[REDACTED:cred]@db.internal:5432/app"

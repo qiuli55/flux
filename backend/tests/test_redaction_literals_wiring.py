@@ -1497,6 +1497,255 @@ def test_assistant_storage_and_projection_drop_incomplete_literal_prefix(
         assert fragment not in payload
 
 
+# --- 第九批：句中小写 bearer / 全部 assistant 落库路径 ---
+
+#: 与 test_context_redact 同一虚构片段：高辅音、全小写、长度 8–31，不是真实凭据。
+INLINE_BEARER_TOKEN = "qxzjvkwpqzbcdfghjklm"
+TOKEN_PLACEHOLDER = "[REDACTED:token]"
+INCOMPLETE_PREFIX = LITERAL[:11]  # CUSTOM_LITE
+INCOMPLETE_FRAGMENT = LITERAL[8:]  # ITERAL_SMOKE_XYZ
+
+
+def test_streaming_delta_flush_keeps_lowercase_bearer_english_prose(
+    literal_settings: Settings,
+) -> None:
+    """对照：`bearer tokenization` / `bearer token(s)` 正常结束仍完整放出。"""
+    from flux.api.v1.tasks import _StreamingDeltaRedactor
+
+    container = Container(literal_settings)
+    try:
+        for prose in ("bearer tokenization", "bearer token", "bearer tokens"):
+            redactor = _StreamingDeltaRedactor(container)
+            redactor.feed(prose)
+            assert redactor.flush() == prose, prose
+    finally:
+        asyncio.run(container.dispose())
+
+
+def test_inline_lowercase_bearer_token_not_in_stream_http_or_storage(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """句中的 `bearer <全小写片段>`（后面还有正文）不得进入增量、投影或 assistant 落库。"""
+    token = INLINE_BEARER_TOKEN
+    chunks = ["凭证是 bearer ", token[:5], token[5:], "，后面还有正文。"]
+    deltas, events, body, rows, listed = _drive_streamed_round(
+        literal_settings, monkeypatch, chunks
+    )
+
+    joined = "".join(deltas)
+    assert "后面还有正文" in joined  # 令牌之后的正文仍完整流出
+    assert token not in joined
+    assert TOKEN_PLACEHOLDER in joined
+    for frame in deltas:
+        assert token not in frame
+
+    assistant_rows = [m for m in rows if m.role == "assistant"]
+    assert assistant_rows
+    stored_dump = json.dumps(assistant_rows[-1].to_dict(), ensure_ascii=False)
+    assert token not in stored_dump
+    assert TOKEN_PLACEHOLDER in assistant_rows[-1].content
+    assert "后面还有正文" in assistant_rows[-1].content
+
+    for payload in (
+        json.dumps(events, ensure_ascii=False),
+        json.dumps(body, ensure_ascii=False),
+        json.dumps(listed, ensure_ascii=False),
+    ):
+        assert token not in payload
+        assert TOKEN_PLACEHOLDER in payload
+
+
+def test_lowercase_bearer_english_prose_survives_stream(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """对照：`bearer tokenization` / `bearer tokens` 这类普通英语短语不得被打码。"""
+    reply = "说明 bearer tokenization 与 bearer tokens 的区别。"
+    deltas, _events, _body, rows, listed = _drive_streamed_round(
+        literal_settings, monkeypatch, [reply]
+    )
+    joined = "".join(deltas)
+    assert joined == reply
+    assert TOKEN_PLACEHOLDER not in joined
+
+    assistant_rows = [m for m in rows if m.role == "assistant"]
+    assert assistant_rows[-1].content == reply
+    listed_assistant = [row for row in listed if row["role"] == "assistant"]
+    assert listed_assistant[-1]["content"] == reply
+
+
+async def test_approval_card_storage_drops_incomplete_secret_prefix(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """审批卡消息与 decision JSON 直接读库也不得留下 `CUSTOM_LITE` / `ITERAL_SMOKE_XYZ`。"""
+    from flux.core.task_engine.approvals import raise_approval
+
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="审批前缀用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await raise_approval(
+            container,
+            task_id=task.id,
+            run_id="run-approval-prefix",
+            kind="high_risk_command",
+            title=f"是否允许执行 {INCOMPLETE_PREFIX}",
+            detail=f"命令：rm -rf {INCOMPLETE_PREFIX}",
+            meta={"command": f"rm -rf {INCOMPLETE_PREFIX}", "rule": "rm -rf"},
+        )
+
+        messages, _ = await container.task_repo.list_messages(task.id)
+        stored_task = await container.task_repo.get(task.id)
+        dump = json.dumps([m.to_dict() for m in messages], ensure_ascii=False)
+        dump += json.dumps(stored_task.decisions, ensure_ascii=False)
+        assert LITERAL not in dump
+        assert INCOMPLETE_PREFIX not in dump
+        assert INCOMPLETE_FRAGMENT not in dump
+        assert "是否允许执行" in dump
+    finally:
+        await container.dispose()
+
+
+def test_decision_storage_and_projection_drop_incomplete_secret_prefix(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """决策卡走真实 HTTP 登记：消息、decision JSON 与响应投影都无未完成前缀。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "决策前缀用例"}).json()["data"]
+        task_id = uuid.UUID(created["id"])
+        asyncio.run(container.task_repo.set_run_id(task_id, "run-decision-prefix"))
+        # user 对照：同一任务里的用户原文不因落库消毒被改动。
+        user_text = f"用户自己的口令 {INCOMPLETE_PREFIX}"
+        asyncio.run(
+            container.task_repo.add_messages(
+                task_id, [MessageDraft(role="user", content=user_text)]
+            )
+        )
+
+        response = client.post(
+            f"/api/v1/tasks/{created['id']}/decisions",
+            json={
+                "question": f"选哪个方案 {INCOMPLETE_PREFIX}",
+                "options": [
+                    {"label": "A", "description": f"方案说明 {INCOMPLETE_PREFIX}"},
+                    {"label": "B", "description": "备选方案"},
+                ],
+                "context": f"背景 {INCOMPLETE_PREFIX}",
+            },
+        )
+        assert response.status_code == 200, response.text
+        response_body = json.dumps(response.json(), ensure_ascii=False)
+        assert INCOMPLETE_PREFIX not in response_body
+        assert INCOMPLETE_FRAGMENT not in response_body
+
+        messages, _ = asyncio.run(container.task_repo.list_messages(task_id))
+        stored_task = asyncio.run(container.task_repo.get(task_id))
+        assistant_dump = json.dumps(
+            [m.to_dict() for m in messages if m.role == "assistant"], ensure_ascii=False
+        )
+        assistant_dump += json.dumps(stored_task.decisions, ensure_ascii=False)
+        assert LITERAL not in assistant_dump
+        assert INCOMPLETE_PREFIX not in assistant_dump
+        assert INCOMPLETE_FRAGMENT not in assistant_dump
+        assert "选哪个方案" in assistant_dump
+
+        user_rows = [m for m in messages if m.role == "user"]
+        assert user_rows[-1].content == user_text
+
+
+async def test_dsh_finish_storage_drops_incomplete_secret_prefix(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """DSH 收尾消息与 payload 直接读库也无未完成前缀，原有安全正文仍在。"""
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="DSH 收尾前缀用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await container.task_runs._retry_failed_to_start(  # noqa: SLF001
+            task, RuntimeError(f"启动失败 {INCOMPLETE_PREFIX}")
+        )
+
+        messages, _ = await container.task_repo.list_messages(task.id)
+        dump = json.dumps([m.to_dict() for m in messages], ensure_ascii=False)
+        assert LITERAL not in dump
+        assert INCOMPLETE_PREFIX not in dump
+        assert INCOMPLETE_FRAGMENT not in dump
+        assert "自动重试未能启动" in dump
+        assert "启动失败" in dump
+    finally:
+        await container.dispose()
+
+
+def test_task_summary_storage_drops_incomplete_secret_prefix(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """建任务带入的前情摘要（assistant 消息）直接读库也无未完成前缀。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        response = client.post(
+            "/api/v1/tasks",
+            json={
+                "description": "摘要前缀用例",
+                "summary": f"上一轮前情 {INCOMPLETE_PREFIX}",
+                "start": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        task_id = uuid.UUID(response.json()["data"]["id"])
+
+        messages, _ = asyncio.run(container.task_repo.list_messages(task_id))
+        summary_rows = [m for m in messages if m.kind == "summary"]
+        assert summary_rows
+        dump = json.dumps(summary_rows[-1].to_dict(), ensure_ascii=False)
+        assert LITERAL not in dump
+        assert INCOMPLETE_PREFIX not in dump
+        assert INCOMPLETE_FRAGMENT not in dump
+        assert "上一轮前情" in summary_rows[-1].content
+
+
+async def test_group_bot_reply_storage_drops_incomplete_secret_prefix(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """群聊 bot 正文接入同一套消毒帮手；user 群消息原文保持不动（路由仍不挂载）。"""
+    from flux.core.group.repository import GroupMessageDraft
+
+    container = Container(literal_settings)
+    try:
+        group = await container.group_repo.create(name="前缀群")
+        user_text = f"用户原文 {LITERAL}"
+        await container.group_repo.add_messages(
+            group.id,
+            [
+                GroupMessageDraft(role="user", content=user_text, author_name="我"),
+                GroupMessageDraft(
+                    role="bot",
+                    content=f"回复 {INCOMPLETE_PREFIX}",
+                    author_name="bot",
+                ),
+            ],
+        )
+        rows, _ = await container.group_repo.list_messages(group.id)
+        bot_dump = json.dumps(rows[1].to_dict(), ensure_ascii=False)
+        assert INCOMPLETE_PREFIX not in bot_dump
+        assert INCOMPLETE_FRAGMENT not in bot_dump
+        assert rows[0].content == user_text
+        assert "回复" in rows[1].content
+    finally:
+        await container.dispose()
+
+
 def test_redacted_message_only_sanitizes_assistant_incomplete_prefix(
     literal_settings: Settings,
 ) -> None:

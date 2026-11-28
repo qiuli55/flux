@@ -23,7 +23,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from flux.core.context.projection import redact_projection, redacted_message
+from flux.core.context.projection import (
+    redact_projection,
+    redacted_message,
+    sanitize_assistant_value,
+)
 from flux.core.task_engine.decisions import build_decision
 from flux.core.task_engine.repository import MessageDraft
 from flux.enums import DecisionMode, DecisionStatus, DshRunStatus, TaskMessageRole, TaskStatus
@@ -114,6 +118,8 @@ async def raise_approval(
         "kind": kind,
         "meta": {**meta, "task_id": str(task_id), "run_id": run_id},
     }
+    # 审批卡正文、decision JSON 与总线投影同源：先消毒本地副本，后续各处复用。
+    record = sanitize_assistant_value(container, record)
     await container.task_repo.raise_decision(task_id, record)
     await container.task_repo.set_status(task_id, TaskStatus.WAITING_FOR_USER_DECISION)
 

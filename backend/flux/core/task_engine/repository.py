@@ -17,10 +17,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from flux.core.context.projection import (
+    sanitize_assistant_message_fields,
+    sanitize_assistant_value,
+)
 from flux.enums import (
     DecisionMode,
     DecisionStatus,
     PermissionMode,
+    TaskMessageRole,
     TaskOrigin,
     TaskStatus,
 )
@@ -71,6 +76,9 @@ class TaskRepository:
         self._message_ingestor: (
             Callable[[Any, str | None, Sequence[TaskMessage]], Awaitable[None]] | None
         ) = None
+        #: assistant 正文 / payload 的落库消毒来源（Container 传 Settings；单测可不装）。
+        #: 只去掉未完成密钥前缀并打码 Bearer 令牌，完整字面量仍按既有约定留在库里。
+        self._assistant_sanitizer_source: Any | None = None
 
     def set_message_ingestor(
         self,
@@ -78,6 +86,24 @@ class TaskRepository:
     ) -> None:
         """装配用户/助手消息的上下文摄入钩子（issue #3：产品主循环也要进 step 日志）。"""
         self._message_ingestor = ingestor
+
+    def set_assistant_sanitizer_source(self, source: Any | None) -> None:
+        """装配 assistant 落库消毒的字面量来源（Container 负责传 Settings）。"""
+        self._assistant_sanitizer_source = source
+
+    def _sanitize_assistant_fields(
+        self, content: str, payload: dict[str, Any] | None
+    ) -> tuple[str, dict[str, Any] | None]:
+        source = self._assistant_sanitizer_source
+        if source is None:
+            return content, payload
+        return sanitize_assistant_message_fields(source, content, payload)
+
+    def _sanitize_assistant_value(self, value: Any) -> Any:
+        source = self._assistant_sanitizer_source
+        if source is None:
+            return value
+        return sanitize_assistant_value(source, value)
 
     async def create(
         self,
@@ -305,7 +331,13 @@ class TaskRepository:
             return task
 
     async def set_confirmation(self, task_id: uuid.UUID, confirmation: dict[str, Any]) -> Task:
-        """写入需求确认（P0-06）。整体覆盖：确认卡的权威副本就是最后一次写入的那份。"""
+        """写入需求确认（P0-06）。整体覆盖：确认卡的权威副本就是最后一次写入的那份。
+
+        assistant 生成的确认项与回复同源，落库前去掉未完成密钥前缀；用户自己提交的
+        确认（actor=user）保持原文。
+        """
+        if confirmation.get("actor") == "assistant":
+            confirmation = self._sanitize_assistant_value(confirmation)
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.confirmation = confirmation
@@ -343,7 +375,12 @@ class TaskRepository:
     # --- 决策点（文档 §5）---
 
     async def raise_decision(self, task_id: uuid.UUID, decision: dict[str, Any]) -> Task:
-        """追加一条决策点记录。读取与写入在同一会话里完成，避免并发下丢记录。"""
+        """追加一条决策点记录。读取与写入在同一会话里完成，避免并发下丢记录。
+
+        决策点由 assistant / Agent 生成，与审批卡 / 决策消息同源：落库前同样去掉
+        未完成密钥前缀（完整字面量仍保持原文，投影层再统一打码）。
+        """
+        decision = self._sanitize_assistant_value(decision)
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.decisions = [*(task.decisions or []), decision]
@@ -413,14 +450,20 @@ class TaskRepository:
             created: list[TaskMessage] = []
             for draft in drafts:
                 seq += 1
+                content = draft.content
+                payload = draft.payload
+                if draft.role == TaskMessageRole.ASSISTANT.value:
+                    # 所有 assistant 落库路径的共同入口：审批卡、决策、DSH 收尾、摘要、
+                    # 计划 / 设计 / 交付 / 产物卡片与微信助手回复都从这里过。
+                    content, payload = self._sanitize_assistant_fields(content, payload)
                 message = TaskMessage(
                     id=uuid.uuid4(),
                     task_id=task_id,
                     seq=seq,
                     role=draft.role,
                     kind=draft.kind,
-                    content=draft.content,
-                    payload=draft.payload,
+                    content=content,
+                    payload=payload,
                 )
                 session.add(message)
                 created.append(message)

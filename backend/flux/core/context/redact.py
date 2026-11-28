@@ -56,8 +56,15 @@ _HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 _KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 #: PEM 私钥 / 证书块（跨行，DOTALL 让 `.` 也吃换行）
 _PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----", re.DOTALL)
-#: `Bearer …` 一类令牌（含前缀整体替换）
-_TOKEN_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._\-+/=]{8,}")
+#: `Bearer …` 一类令牌（含前缀整体替换）。大小写不敏感：模型也会输出小写 `bearer`，
+#: 只认大写会让句中的小写令牌漏出；是否算令牌由 `_is_bearer_token_match` 再判定。
+_TOKEN_RE = re.compile(
+    r"\b(?P<scheme>bearer)\s+(?P<token>[A-Za-z0-9._\-+/=]{8,})",
+    re.IGNORECASE,
+)
+#: 判断"纯小写片段像英语词还是像令牌"时使用的元音集合（不含 y：`tokenization` 里的
+#: y 不改变结论，而随机串往往连元音都不成比例）。
+_ENGLISH_VOWELS = frozenset("aeiou")
 #: 无 `Bearer ` 前缀的 JWT：`header.payload.signature`（base64url 三段，点分隔）。
 #: 三段都要求 ≥ 8 字符，先挡掉 `a.b.c` / 语义版本号 / 普通带点文件名；命中后再校验
 #: header 是否真是 JSON（见 `_looks_like_jwt`），不做"看起来像就换"的猜测。
@@ -141,11 +148,18 @@ def redact(text: str, *, literals: Sequence[str] | None = None) -> RedactionResu
             return token
         return placeholder_for(RedactionKind.TOKEN, token)
 
+    def _token_sub(match: re.Match[str]) -> str:
+        if not _is_bearer_token_match(match):
+            # 普通英语短语（`bearer tokenization`）：原样保留，位置与长度都不变，
+            # 后续 JWT / 熵检测规则也不会再把它当成令牌。
+            return match.group(0)
+        return placeholder_for(RedactionKind.TOKEN, match.group(0))
+
     text = _KEY_RE.sub(whole(RedactionKind.KEY), text)
     text = _PEM_RE.sub(whole(RedactionKind.PEM), text)
     # Bearer 先于裸 JWT：既保持"连 `Bearer ` 一起换掉"的既有占位符约定，
     # 也避免先换 JWT 后留下一个没有前缀归属的 `Bearer [REDACTED:token]`。
-    text = _TOKEN_RE.sub(whole(RedactionKind.TOKEN), text)
+    text = _TOKEN_RE.sub(_token_sub, text)
     text = _JWT_RE.sub(_jwt_sub, text)
     text = _CRED_RE.sub(_cred_sub, text)
     text = _CANDIDATE_RE.sub(_entropy_sub, text)
@@ -177,6 +191,56 @@ def redact_then_clip(text: str, limit: int, *, literals: Sequence[str] | None = 
     if limit <= 0:
         return ""
     return redact(text, literals=literals).text[-limit:]
+
+
+def redact_bearer_tokens(text: str) -> str:
+    """只替换 `Bearer` / `bearer` 令牌，供"不做全量打码"的落库路径复用。
+
+    与 `redact` 的 TOKEN 规则同一判定：大写 `Bearer` 一律替换（既有行为不削弱）；
+    小写 `bearer` 只在后续片段像令牌时替换，`bearer tokenization` 这类正文保留。
+    不跑熵检测、不替换配置字面量——库里的完整字面量 / 其它密钥仍按既有约定保留。
+    """
+    return _TOKEN_RE.sub(
+        lambda match: (
+            match.group(0)
+            if not _is_bearer_token_match(match)
+            else _PLACEHOLDER.format(kind=RedactionKind.TOKEN.value)
+        ),
+        text,
+    )
+
+
+def _is_bearer_token_match(match: re.Match[str]) -> bool:
+    """`Bearer` 命中是否该当令牌换掉。
+
+    大写 `Bearer` 维持原口径：其后缀一律打码。其余大小写（典型是小写 `bearer`）
+    才启用"像令牌 / 像普通英语词"的判别，避免把 `bearer tokenization` 误伤。
+    """
+    if match.group("scheme") == "Bearer":
+        return True
+    return not _looks_like_plain_english(match.group("token"))
+
+
+def _looks_like_plain_english(token: str) -> bool:
+    """纯小写字母片段是否更像普通英语词（`tokenization`）而不是随机令牌。
+
+    零词典依赖：英语词的元音比例通常不低于 1/5，且不会出现长辅音簇；随机令牌
+    （以及高辅音虚构串）往往相反。含数字 / 大写 / 符号的片段不在此列——它们已经
+    是明确的令牌形态，调用方会直接打码。
+    """
+    if not token.isalpha() or not token.islower():
+        return False
+    vowels = sum(1 for char in token if char in _ENGLISH_VOWELS)
+    if vowels == 0 or vowels / len(token) < 0.2:
+        return False
+    longest_run = run = 0
+    for char in token:
+        if char in _ENGLISH_VOWELS:
+            run = 0
+            continue
+        run += 1
+        longest_run = max(longest_run, run)
+    return longest_run < 5
 
 
 def _ordered_literals(literals: Sequence[str] | None) -> list[str]:

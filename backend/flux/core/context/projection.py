@@ -21,7 +21,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from flux.core.context.redact import redact
+from flux.core.context.redact import redact, redact_bearer_tokens
 from flux.enums import TaskMessageRole
 
 #: 跨帧暂缓：仍在拼内置密钥规则的尾串字符（base64 / url-safe / JWT / 凭证 / 熵检测）。
@@ -229,32 +229,43 @@ def strip_incomplete_secret_prefix(source: Any, text: str) -> str:
     return text[: safe_cut(text[:suspicious], literals)]
 
 
-def _replace_equal_strings(value: Any, original: str, replacement: str) -> Any:
-    """深拷贝式把恰好等于 ``original`` 的字符串替换掉（不改动落库对象）。"""
+def redact_assistant_text(source: Any, text: str) -> str:
+    """assistant 文本落库 / 下发前的共享消毒：去未完成前缀 + 打码 Bearer 令牌。
+
+    不替换配置字面量：完整字面量仍按既有约定留在库里，由投影层统一打码。
+    """
+    return redact_bearer_tokens(strip_incomplete_secret_prefix(source, text))
+
+
+def sanitize_assistant_value(source: Any, value: Any) -> Any:
+    """深拷贝式消毒 payload / 决策 JSON 中的字符串（只处理 assistant 来源）。
+
+    嵌套的 decision record、确认项等同样是 assistant 正文的副本；只去掉每条字符串
+    末尾未完成的密钥前缀、打码 Bearer 令牌，完整字面量保持原文。
+    """
     if isinstance(value, str):
-        return replacement if value == original else value
+        return redact_assistant_text(source, value)
     if isinstance(value, list):
-        return [_replace_equal_strings(item, original, replacement) for item in value]
+        return [sanitize_assistant_value(source, item) for item in value]
     if isinstance(value, tuple):
-        return tuple(_replace_equal_strings(item, original, replacement) for item in value)
+        return tuple(sanitize_assistant_value(source, item) for item in value)
     if isinstance(value, dict):
-        return {
-            key: _replace_equal_strings(item, original, replacement) for key, item in value.items()
-        }
+        return {key: sanitize_assistant_value(source, item) for key, item in value.items()}
     return value
 
 
 def sanitize_assistant_message_fields(
     source: Any, content: str, payload: dict[str, Any] | None
 ) -> tuple[str, dict[str, Any] | None]:
-    """对 assistant 消息正文做未完成前缀消毒，并同步同正文的 payload 字段。
+    """对 assistant 消息正文与 payload 做未完成前缀 / Bearer 令牌消毒。
 
-    返回新的 ``(content, payload)``；没有未完成前缀时原样返回，不产生无谓拷贝。
+    payload 里的嵌套字段（决策卡、确认项、工具输出）与正文同源，必须一并处理，
+    否则直接读库仍会看到 ``CUSTOM_LITE`` 这类残片。
     """
-    sanitized = strip_incomplete_secret_prefix(source, content)
-    if payload is None or sanitized == content:
+    sanitized = redact_assistant_text(source, content)
+    if payload is None:
         return sanitized, payload
-    return sanitized, _replace_equal_strings(payload, content, sanitized)
+    return sanitized, sanitize_assistant_value(source, payload)
 
 
 def redacted_message(source: Any, message: Any) -> dict[str, Any]:

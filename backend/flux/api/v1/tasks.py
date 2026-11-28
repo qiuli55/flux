@@ -35,6 +35,7 @@ from flux.core.context.projection import (
     redacted_message,
     safe_cut,
     sanitize_assistant_message_fields,
+    sanitize_assistant_value,
     task_projection,
 )
 from flux.core.event.bus import Events
@@ -619,9 +620,11 @@ async def create_task_message(
     if turn.confirmation:
         # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
         # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
+        # 确认项与回复同源：落库 / 响应前同样去掉未完成密钥前缀。
+        confirmation_items = sanitize_assistant_value(container, turn.confirmation)
         task = await container.task_repo.set_confirmation(
             task_uuid,
-            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
+            {"items": confirmation_items, "actor": "assistant", "updated_at": _now_iso()},
         )
 
     if task.status == TaskStatus.PENDING.value:
@@ -1080,6 +1083,8 @@ async def raise_decision(
         recommendation=payload.recommendation,
         mode=mode,
     )
+    # 决策点由 Agent 生成，与决策消息同源：先消毒本地副本，消息 / 响应 / 落库都用它。
+    record = sanitize_assistant_value(container, record)
     task = await container.task_repo.raise_decision(task_uuid, record)
 
     if record["status"] == DecisionStatus.PENDING.value:

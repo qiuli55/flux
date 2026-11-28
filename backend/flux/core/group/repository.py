@@ -16,6 +16,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from flux.core.context.projection import (
+    sanitize_assistant_message_fields,
+    sanitize_assistant_value,
+)
 from flux.errors import BadRequestError, NotFoundError
 from flux.logging import get_logger
 from flux.models.group import (
@@ -62,6 +66,12 @@ class GroupMessageDraft:
 class GroupRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        #: bot（assistant）发言落库前的消毒来源；Container 传 Settings，单测可不装。
+        self._assistant_sanitizer_source: Any | None = None
+
+    def set_assistant_sanitizer_source(self, source: Any | None) -> None:
+        """装配群聊 bot 正文的落库消毒来源（与任务 assistant 消息同一套口径）。"""
+        self._assistant_sanitizer_source = source
 
     # --- 群 ---
 
@@ -300,6 +310,9 @@ class GroupRepository:
             state.turns += 1
             state.last_seen_seq = max(state.last_seen_seq, seq)
             note = note.strip()
+            if note and self._assistant_sanitizer_source is not None:
+                # 个人笔记是 bot 发言的截断副本，同样不能留下未完成密钥前缀。
+                note = sanitize_assistant_value(self._assistant_sanitizer_source, note)
             if note:
                 merged = f"{state.memory}\n{note}".strip() if state.memory else note
                 state.memory = _tail(merged, MEMBER_MEMORY_MAX_CHARS)
@@ -367,6 +380,12 @@ class GroupRepository:
             created: list[ChatGroupMessage] = []
             for draft in drafts:
                 seq += 1
+                content = draft.content
+                payload = draft.payload
+                if draft.role in {"bot", "assistant"} and self._assistant_sanitizer_source:
+                    content, payload = sanitize_assistant_message_fields(
+                        self._assistant_sanitizer_source, content, payload
+                    )
                 message = ChatGroupMessage(
                     id=uuid.uuid4(),
                     group_id=group_id,
@@ -375,8 +394,8 @@ class GroupRepository:
                     author_name=draft.author_name[:64],
                     role=draft.role,
                     kind=draft.kind,
-                    content=draft.content,
-                    payload=draft.payload,
+                    content=content,
+                    payload=payload,
                     epoch_id=draft.epoch_id,
                 )
                 session.add(message)

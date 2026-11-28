@@ -220,6 +220,9 @@ class Container:
         #: 内建 CLI Agent Adapter 集合：installation 状态机与 P2-1 的 CLI runtime 共用同一批实例
         cli_adapters = build_default_adapters()
         self.task_repo = TaskRepository(self.session_factory)  # type: ignore[attr-defined]
+        # assistant 正文（审批卡 / 决策 / DSH 收尾 / 摘要 / 各类卡片 / 微信回复）落库前
+        # 统一识别未完成密钥前缀；来源是配置，与投影 / 流式 flush 共用同一口径。
+        self.task_repo.set_assistant_sanitizer_source(self.settings)
         # 密钥库：Agent 模型通道的 API Key（加密落库），与任务级 model / api_key_id 配合解析
         self.key_vault = KeyVaultService(self.session_factory, self.settings)  # type: ignore[attr-defined]
         # GitHub 账号：设备码授权 + 仓库读写；令牌复用密钥库主密钥加密落盘
@@ -260,6 +263,8 @@ class Container:
         self.task_stream = TaskStreamHub()
         # 历史群聊编排（已下线）：仅为旧数据保留，不再被 API 挂载
         self.group_repo = GroupRepository(self.session_factory)  # type: ignore[attr-defined]
+        # 群聊 bot 正文与任务 assistant 消息同一套落库消毒（路由已下线，不补 HTTP 用例）。
+        self.group_repo.set_assistant_sanitizer_source(self.settings)
         self.groups = GroupOrchestrator(
             self.group_repo,
             self.task_repo,
