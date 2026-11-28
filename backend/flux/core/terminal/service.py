@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import subprocess
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -87,12 +87,16 @@ class TerminalService:
         *,
         workspace_root: str | Path | None = None,
         redactions: RedactionStore | None = None,
+        literals: Sequence[str] = (),
     ) -> None:
         self._repo = repository
         self._bus = bus
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
         #: 入站脱敏映射表（§10.1）：command/chunk 落库前先打码，换下来的原文进此表；无密钥时不落库
         self._redactions = redactions
+        #: 配置的可控字面量清单（`FLUX_REDACTION_LITERALS`）：无前缀、低熵的短密钥只能靠它
+        #: 精确命中。与 `ContextIngestor` 用同一份清单，保证终端路径与上下文摄入同口径。
+        self._literals = tuple(literals)
         #: 上下文摄入（issue #3）：终端命令与输出也要进 context_steps（Container 后置装配）
         self._context_ingestor: ContextIngestor | None = None
         #: 正在跑的进程（会话 ID → Popen），Stop 与 shutdown 都从这里找
@@ -412,7 +416,7 @@ class TerminalService:
         # target_ref 会被目录行 / 折叠行 / 事实脊柱投影给 agent，必须在写入前先打码——
         # 否则命令行里的密钥/连接串密码可绕过「明文不进 head/blob」的契约。与 `_emit` /
         # `ContextIngestor` 用同一套规则；正文仍交给 ingest 打码，不重复处理占位符。
-        target = redact(command).text
+        target = redact(command, literals=self._literals).text
         body = f"$ {command}\nexit={exit_code}\n{output}"
         await ingestor.ingest(
             run_id=run_id,
@@ -703,11 +707,11 @@ class TerminalService:
         # 打码是纯函数、零模型依赖；无密钥时只是换下来的原文不落映射表（fail-closed）。
         matches: list[RedactionMatch] = []
         if command is not None:
-            command_result = redact(command)
+            command_result = redact(command, literals=self._literals)
             command = command_result.text
             matches.extend(command_result.matches)
         if chunk is not None:
-            chunk_result = redact(chunk)
+            chunk_result = redact(chunk, literals=self._literals)
             chunk = chunk_result.text
             matches.extend(chunk_result.matches)
         async with self._emit_lock:

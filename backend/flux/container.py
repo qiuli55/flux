@@ -289,6 +289,7 @@ class Container:
             self.terminal_repo,
             self.bus,
             workspace_root=self.settings.workspace_root,
+            literals=self.settings.redaction_literal_list,
         )
         # Human Terminal 是独立生命周期：PTY 进程要活过客户端 websocket 断线重连，
         # 但必须在 Flux 进程退出时统一回收（详见 doc/HUMAN_TERMINAL_PTY.md）。
