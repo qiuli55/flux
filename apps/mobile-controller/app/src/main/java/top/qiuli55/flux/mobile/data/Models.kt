@@ -1002,6 +1002,74 @@ data class AssistantSuggestion(
     val titles: List<String> = emptyList(),
 )
 
+/** 项目助理进度汇总里的一段相关对话（只读）。 */
+@Serializable
+data class AssistantProgressItem(
+    @SerialName("task_id") val taskId: String = "",
+    val title: String = "",
+    val status: String = "pending",
+    @SerialName("status_label") val statusLabel: String = "",
+    /** running / possibly_stalled / failed / completed / cancelled / unknown */
+    val bucket: String = "unknown",
+    @SerialName("bucket_label") val bucketLabel: String = "",
+    @SerialName("idle_hours") val idleHours: Double = 0.0,
+    @SerialName("last_activity_at") val lastActivityAt: String? = null,
+    @SerialName("last_message") val lastMessage: String = "",
+    @SerialName("message_count") val messageCount: Int = 0,
+    @SerialName("read_only") val readOnly: Boolean = true,
+)
+
+/** GET /assistants/{id}/progress：只读汇总，不启动电脑 Agent、不派子任务。 */
+@Serializable
+data class AssistantProgress(
+    @SerialName("assistant_id") val assistantId: String = "",
+    @SerialName("assistant_name") val assistantName: String = "",
+    @SerialName("generated_at") val generatedAt: String? = null,
+    @SerialName("stalled_after_hours") val stalledAfterHours: Int = 6,
+    val counts: Map<String, Int> = emptyMap(),
+    val conversations: List<AssistantProgressItem> = emptyList(),
+    @SerialName("missing_sources") val missingSources: List<String> = emptyList(),
+)
+
+/** GET /assistants/{id}/history：可「读历史」的相关对话列表。 */
+@Serializable
+data class AssistantHistory(
+    @SerialName("assistant_id") val assistantId: String = "",
+    @SerialName("assistant_name") val assistantName: String = "",
+    @SerialName("read_only") val readOnly: Boolean = true,
+    val count: Int = 0,
+    val conversations: List<AssistantProgressItem> = emptyList(),
+    @SerialName("missing_sources") val missingSources: List<String> = emptyList(),
+)
+
+/** GET /assistants/{id}/history/{task_id}：只读打开的对话与消息。 */
+@Serializable
+data class AssistantHistoryDetail(
+    @SerialName("assistant_id") val assistantId: String = "",
+    @SerialName("read_only") val readOnly: Boolean = true,
+    @SerialName("has_more") val hasMore: Boolean = false,
+    val task: Task = Task(),
+    val messages: List<TaskMessage> = emptyList(),
+)
+
+/** POST /assistants/{id}/continue：确认后向原对话发送并续跑。 */
+@Serializable
+data class AssistantContinueResult(
+    val task: Task = Task(),
+    val messages: List<TaskMessage> = emptyList(),
+    @SerialName("read_only") val readOnly: Boolean = false,
+)
+
+/** POST /assistants/{id}/fork：确认后新建的独立常驻对话。 */
+@Serializable
+data class AssistantForkResult(
+    val task: Task = Task(),
+    @SerialName("source_task_id") val sourceTaskId: String = "",
+    @SerialName("summary_chars") val summaryChars: Int = 0,
+    @SerialName("parent_task_id") val parentTaskId: String? = null,
+    val origin: String = "chat",
+)
+
 class FluxApiException(
     val code: String,
     override val message: String,

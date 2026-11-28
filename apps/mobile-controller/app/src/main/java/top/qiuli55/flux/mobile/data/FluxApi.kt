@@ -105,6 +105,50 @@ class FluxApi(
     suspend fun deleteAssistant(assistantId: String): JsonElement =
         delete("api/v1/assistants/$assistantId")
 
+    /** 项目助理进度汇总：只读已有记录，不启动电脑 Agent、不派子任务。 */
+    suspend fun assistantProgress(assistantId: String): AssistantProgress =
+        get("api/v1/assistants/$assistantId/progress")
+
+    /** 读历史：列出可只读查看的相关对话。 */
+    suspend fun assistantHistory(assistantId: String): AssistantHistory =
+        get("api/v1/assistants/$assistantId/history")
+
+    /** 读历史：只读打开一条相关对话及其消息。 */
+    suspend fun readAssistantHistory(
+        assistantId: String,
+        taskId: String,
+    ): AssistantHistoryDetail = get("api/v1/assistants/$assistantId/history/$taskId")
+
+    /** 接着干：必须 confirmed=true 才向原对话发送并续跑。 */
+    suspend fun continueAssistant(
+        assistantId: String,
+        sourceTaskId: String,
+        content: String,
+        confirmed: Boolean,
+    ): AssistantContinueResult = post(
+        "api/v1/assistants/$assistantId/continue",
+        buildJsonObject {
+            put("source_task_id", sourceTaskId)
+            put("content", content.trim())
+            put("confirmed", confirmed)
+        },
+    )
+
+    /** 开副本：必须 confirmed=true 才新建独立常驻对话。 */
+    suspend fun forkAssistant(
+        assistantId: String,
+        sourceTaskId: String,
+        name: String?,
+        confirmed: Boolean,
+    ): AssistantForkResult = post(
+        "api/v1/assistants/$assistantId/fork",
+        buildJsonObject {
+            put("source_task_id", sourceTaskId)
+            if (!name.isNullOrBlank()) put("name", name.trim())
+            put("confirmed", confirmed)
+        },
+    )
+
     /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")
 

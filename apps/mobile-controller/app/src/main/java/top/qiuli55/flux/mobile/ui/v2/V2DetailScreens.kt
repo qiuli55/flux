@@ -536,6 +536,8 @@ fun V2TaskChatScreen(
     onRequestDesigns: () -> Unit = {},
     /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
     onOpenAssistantBoard: (() -> Unit)? = null,
+    /** 项目助理对话标题栏的「项目进度」入口；null 表示不显示。 */
+    onOpenProjectAssistant: (() -> Unit)? = null,
     /** 对话末尾待审核卡：跳到本次任务的文件改动列表。 */
     onOpenChanges: () -> Unit = {},
     /** 临时子任务卡片：点开只读过程视图。 */
@@ -749,6 +751,8 @@ fun V2TaskChatScreen(
             // 下拉刷新：重新拉任务与历史消息（真实数据，不是假骨架）
             onRefresh = { vm.refresh(quiet = true) },
             onOpenAssistantBoard = onOpenAssistantBoard?.takeIf { task?.origin == "assistant" },
+            onOpenProjectAssistant = onOpenProjectAssistant
+                ?.takeIf { task?.origin == "project_assistant" },
             // 标题副标题：任务状态 + 最近一条消息时间（与设计稿一致）
             headerStatus = task?.let { t ->
                 "${t.status.toV2TaskStatus().label} · " +

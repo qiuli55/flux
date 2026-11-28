@@ -263,6 +263,8 @@ fun V2ChatScreen(
     secureInputBusy: Boolean = false,
     /** 助理对话标题栏的「助理进度」入口；null 表示不显示。 */
     onOpenAssistantBoard: (() -> Unit)? = null,
+    /** 项目助理对话标题栏的「项目进度」入口；null 表示不显示。 */
+    onOpenProjectAssistant: (() -> Unit)? = null,
     /** 标题栏副标题：任务状态 + 最近一条消息时间；为空时显示设备名。 */
     headerStatus: String? = null,
     /** 待审核的文件改动；count = 0 时不显示「去审核」卡片。 */
@@ -589,6 +591,16 @@ fun V2ChatScreen(
                             onClick = {
                                 headerMenuOpen = false
                                 board()
+                            },
+                        )
+                    }
+                    val projectBoard = onOpenProjectAssistant
+                    if (projectBoard != null) {
+                        DropdownMenuItem(
+                            text = { Label("项目进度", 12f, V2Colors.ink(.88f)) },
+                            onClick = {
+                                headerMenuOpen = false
+                                projectBoard()
                             },
                         )
                     }

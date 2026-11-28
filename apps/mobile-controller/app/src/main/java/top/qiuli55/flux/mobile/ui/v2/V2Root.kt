@@ -76,6 +76,8 @@ import java.time.format.DateTimeFormatter
 private sealed interface V2Route {
     data object Home : V2Route
     data object Assistant : V2Route
+    /** 项目助理进度面板：只读汇总 + 读历史 / 接着干 / 开副本。 */
+    data class ProjectAssistantBoard(val assistantId: String) : V2Route
     data object Designs : V2Route
     /** 一级页面：对话产出的成品（设计稿 / 页面 / 文档）。 */
     data object Artifacts : V2Route
@@ -139,6 +141,8 @@ fun FluxV2Root() {
     val artifactsState by artifactsVm.state.collectAsState()
     val assistantVm: V2AssistantViewModel = viewModel()
     val assistantState by assistantVm.state.collectAsState()
+    val projectAssistantVm: V2ProjectAssistantViewModel = viewModel()
+    val projectAssistantState by projectAssistantVm.state.collectAsState()
     val update by UpdateCenter.state.collectAsState()
 
     var route by remember { mutableStateOf<V2Route>(V2Route.Home) }
@@ -228,13 +232,15 @@ fun FluxV2Root() {
     // 首页 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
     LaunchedEffect(route) {
         if (app.boot == V2Boot.READY) {
-            when (route) {
+            when (val current = route) {
                 V2Route.Home -> {
                     vm.refresh(quiet = true)
                     // 右上角切换器：主助理 + 已创建的项目助理（不阻塞列表刷新）
                     vm.loadAssistants(quiet = true)
                 }
                 V2Route.Assistant -> assistantVm.load(quiet = true)
+                is V2Route.ProjectAssistantBoard ->
+                    projectAssistantVm.load(current.assistantId, quiet = true)
                 V2Route.Artifacts -> artifactsVm.load(quiet = true)
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 V2Route.Profile -> {
@@ -634,6 +640,35 @@ fun FluxV2Root() {
                             onDismissMessages = { assistantVm.clearMessages() },
                         )
 
+                        is V2Route.ProjectAssistantBoard -> V2ProjectAssistantScreen(
+                            state = projectAssistantState,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Home },
+                            onRefresh = { projectAssistantVm.load(current.assistantId) },
+                            onReadHistory = { taskId ->
+                                projectAssistantVm.openHistory(current.assistantId, taskId)
+                            },
+                            onCloseHistory = { projectAssistantVm.closeHistory() },
+                            onContinue = { sourceTaskId, content ->
+                                projectAssistantVm.continueConversation(
+                                    assistantId = current.assistantId,
+                                    sourceTaskId = sourceTaskId,
+                                    content = content,
+                                    onDone = { targetId -> openChat(targetId, current) },
+                                )
+                            },
+                            onFork = { sourceTaskId, name ->
+                                projectAssistantVm.forkConversation(
+                                    assistantId = current.assistantId,
+                                    sourceTaskId = sourceTaskId,
+                                    name = name,
+                                    onDone = { targetId -> openChat(targetId, current) },
+                                )
+                            },
+                            onDismissMessages = { projectAssistantVm.clearMessages() },
+                        )
+
                         V2Route.Artifacts -> ArtifactsScreen(
                             state = artifactsState,
                             extraTop = extraTop,
@@ -1002,38 +1037,52 @@ fun FluxV2Root() {
                             onOpenRun = { route = V2Route.Run(current.taskId) },
                         )
 
-                        is V2Route.TaskChat -> V2TaskChatScreen(
-                            taskId = current.taskId,
-                            extraTop = extraTop,
-                            showBack = showBack,
-                            onBack = {
-                                route = chatOrigin
-                                if (chatOrigin == V2Route.Home) {
-                                    chat = null
-                                    chatMessages.clear()
-                                }
-                            },
-                            onRequestDelete = {
-                                deleteConversationError = null
-                                deleteConversationId = current.taskId
-                            },
-                            onHandoffReady = { summary ->
-                                startHandoffChat(current.taskId, summary)
-                            },
-                            onOpenDesign = { openDesignFromChat(it) },
-                            onOpenArtifact = { openArtifactFromChat(it) },
-                            onOpenUrl = { openInternalBrowser(it) },
-                            designOptions = designState.designs,
-                            designsLoading = designState.loading,
-                            onRequestDesigns = { designVm.loadDesigns(quiet = true) },
-                            // 助理对话右上角可回到进度看板；普通对话不给这个入口
-                            onOpenAssistantBoard = { route = V2Route.Assistant },
-                            onOpenChanges = { route = V2Route.Changes(current.taskId) },
-                            // 子任务卡片：点开只读过程视图；返回时回到主助理对话
-                            onOpenSubtask = { childId ->
-                                openChat(childId, V2Route.TaskChat(current.taskId))
-                            },
-                        )
+                        is V2Route.TaskChat -> {
+                            // 项目助理自己的常驻对话：右上角进入「项目进度」（读历史 / 接着干 / 开副本），
+                            // 不再跳去主助理的 Supervisor 看板。
+                            val projectEntry = app.assistants.projects.firstOrNull {
+                                it.conversationTaskId == current.taskId
+                            }
+                            V2TaskChatScreen(
+                                taskId = current.taskId,
+                                extraTop = extraTop,
+                                showBack = showBack,
+                                onBack = {
+                                    route = chatOrigin
+                                    if (chatOrigin == V2Route.Home) {
+                                        chat = null
+                                        chatMessages.clear()
+                                    }
+                                },
+                                onRequestDelete = {
+                                    deleteConversationError = null
+                                    deleteConversationId = current.taskId
+                                },
+                                onHandoffReady = { summary ->
+                                    startHandoffChat(current.taskId, summary)
+                                },
+                                onOpenDesign = { openDesignFromChat(it) },
+                                onOpenArtifact = { openArtifactFromChat(it) },
+                                onOpenUrl = { openInternalBrowser(it) },
+                                designOptions = designState.designs,
+                                designsLoading = designState.loading,
+                                onRequestDesigns = { designVm.loadDesigns(quiet = true) },
+                                // 主助理对话可回 Supervisor 看板；项目助理改走项目进度
+                                onOpenAssistantBoard = if (projectEntry == null) {
+                                    ({ route = V2Route.Assistant })
+                                } else {
+                                    null
+                                },
+                                onOpenProjectAssistant = projectEntry?.let { entry ->
+                                    ({ route = V2Route.ProjectAssistantBoard(entry.id) })
+                                },
+                                onOpenChanges = { route = V2Route.Changes(current.taskId) },
+                                // 子任务卡片：点开只读过程视图；返回时回到主助理对话
+                                onOpenSubtask = { childId ->
+                                    openChat(childId, V2Route.TaskChat(current.taskId))
+                                },
+                            )
+                        }
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
                             taskId = current.taskId,
@@ -1619,6 +1668,7 @@ private fun RailButton(
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
+    is V2Route.ProjectAssistantBoard -> 2
     V2Route.Connectors, V2Route.Subscriptions -> 1
     V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
