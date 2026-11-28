@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "note": "设计稿 IR（中间表示）契约。由 backend/flux/core/design_compile.py 的 compile_design() 生成；网页 design_render.py、手机 DesignResolve.kt、桌面 DesignCanvas.cs 只消费 IR，不再各自推断默认值。凡是这里已经展开的字段，渲染端不得再做缺省判断。version 2 随 0.9.0 发布：新增文字效果、节点阴影、渐变填充与组合圆角等字段，旧字段语义不变。",
+  "version": 3,
+  "note": "设计稿 IR（中间表示）契约。由 backend/flux/core/design_compile.py 的 compile_design() 生成；网页 design_render.py、手机 DesignResolve.kt、桌面 DesignCanvas.cs 只消费 IR，不再各自推断默认值。凡是这里已经展开的字段，渲染端不得再做缺省判断。version 3：阴影与文字效果改为携带真实 blur 参数，三端各自做高斯模糊；SHADOW_RINGS 环列表只保留为无模糊能力环境的降级后备。",
   "entry": "compile_design(design: object) -> IRDocument",
   "principles": [
     "颜色、渐变、圆角、填充、描边、阴影、文字样式全部在编译期展开成显式值",
@@ -10,7 +10,7 @@
     "渲染端只画不算：拿到 IR 后不需要任何默认值表"
   ],
   "IRDocument": {
-    "version": "number，当前 2",
+    "version": "number，当前 3",
     "name": "string，缺省「未命名设计稿」",
     "bg": "IRColor，取 document.bg，缺省 shellTop #F4F6F9",
     "screens": "IRScreen[]，w<=0 或 h<=0 的画板直接剔除"
@@ -92,11 +92,11 @@
     },
     "rules": [
       "card 未显式给 shadow 时补 dy=6 / blur=0 / #000000@0.05",
-      "blur=0：单段真实阴影（dx/dy 平移，无外扩），与历史基准图一致",
-      "blur>0：按 N=10 环近似。spread_i = blur × i / N（i=1..N）；alpha_i = color.alpha × 3/N × (1 − i/N)²，Σalpha_i ≈ color.alpha",
-      "绘制顺序：大 spread 在下、小 spread 在上；网页 box-shadow 列表以「小 spread 在前」书写",
-      "inset：环在盒内绘制；网页用 inset 段，手机/桌面用 EvenOdd 环形区域",
-      "模糊溢出节点边界的部分不裁剪"
+      "blur=0：偏移实心硬阴影（dx/dy 平移，无外扩）",
+      "blur>0：三端做真实高斯模糊。blur 是 CSS 模糊半径，标准差 σ = blur / 2；网页直接输出 box-shadow 的 blur，手机用 BlurMaskFilter / 像素高斯，桌面用 Skia BoxShadow / 像素高斯",
+      "inset：阴影画在盒内并裁剪到外形；网页用 inset box-shadow，手机/桌面用环形几何 + 真实模糊",
+      "模糊溢出节点边界的部分不裁剪（card 等 overflow:visible 类型）",
+      "shadow_layers()/SHADOW_RINGS 仅是无模糊能力环境的降级后备，正常渲染路径不得使用"
     ]
   },
   "IRText": {
@@ -137,15 +137,13 @@
       "dy": "number",
       "blur": "number >= 0",
       "intensity": "number 0..1",
-      "color": "IRColor",
-      "rings": [[0.35, 0.55], [0.7, 0.35], [1.0, 0.18]]
+      "color": "IRColor"
     },
     "rules": [
-      "三端按 rings 里的同一套模糊环叠加，避免不同高斯实现导致不一致",
-      "绘制端把每个环当成「字形轮廓外扩 blur × 半径」：居中描边线宽 = 外扩 × 2，内侧一半被填充盖住",
-      "环透明度 = color.alpha × intensity × 环透明度，≤ 0.004 的环整环跳过",
+      "三端都用真实高斯模糊：blur 是 CSS blur 半径，σ = blur / 2；网页 text-shadow、手机/桌面字形轮廓离屏模糊",
+      "有效透明度 = color.alpha × intensity，≤ 0.004 整段效果丢弃",
       "blur=0 退化为同形偏移实心副本；颜色解析失败整段效果丢弃",
-      "绘制顺序（底层 → 顶层）：投影环（半径大 → 小）→ 发光环（半径大 → 小）→ 描边 → 填充"
+      "绘制顺序（底层 → 顶层）：投影 → 发光 → 描边 → 填充"
     ]
   },
   "IRNode": {

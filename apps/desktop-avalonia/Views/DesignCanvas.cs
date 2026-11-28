@@ -2,25 +2,32 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Media.Immutable;
 using Avalonia.Media.TextFormatting;
+using Avalonia.Platform;
 using Flux.Desktop.Models;
 
 namespace Flux.Desktop.Views;
 
 /// <summary>
-/// 设计稿画布（桌面端只读预览）。
+/// 设计稿画布：桌面端预览 + 编辑。
 ///
 /// 渲染规则与移动端 <c>DesignSpec.kt</c> / <c>DesignPainter.kt</c>、后端
 /// <c>backend/flux/core/design_render.py</c> 完全一致：默认圆角、默认填充、文本排版、
 /// 导航 / 开关 / 滑杆几何都按同一份契约来，三端看同一份 JSON 必须得到同一张图。
 /// 想"调好看"请先改契约，不要只改这里。
+///
+/// <see cref="IsEditing"/> 打开时进入编辑态：滚轮绕指针缩放、空格 / 中键平移、
+/// 点选 / 框选、8 向手柄 + 旋转、吸附参考线、Ctrl+Z / Ctrl+Shift+Z 撤销重做。
+/// 关闭时保留原来的可交互预览（按钮切屏 / 滑杆 / 开关 / 导航）。
 /// </summary>
 public sealed class DesignCanvas : Control
 {
@@ -49,15 +56,6 @@ public sealed class DesignCanvas : Control
 
     /// <summary>阴影缺省色：`rgba(0,0,0,.25)`，对齐后端 `DEFAULT_SHADOW` / 手机 `DEFAULT_SHADOW`。</summary>
     private static readonly Color DefaultShadow = Color.FromArgb(64, 0, 0, 0);
-
-    /// <summary>阴影环层数，与后端 `SHADOW_RINGS` / 手机 `SHADOW_RINGS` 一致。</summary>
-    private const int ShadowRingCount = 10;
-
-    /// <summary>发光/投影环：(半径倍率, 透明度倍率)，与后端 `FX_RINGS` / 手机 `DesignSpec.FX_RINGS` 一致。</summary>
-    private static readonly (double Radius, double Alpha)[] FxRings =
-    {
-        (0.35, 0.55), (0.7, 0.35), (1.0, 0.18),
-    };
 
     /// <summary>会裁掉溢出子节点的类型，对齐后端编译层 `CLIP_TYPES`。</summary>
     private static readonly HashSet<string> ClipTypes = new(StringComparer.Ordinal)
@@ -268,6 +266,10 @@ public sealed class DesignCanvas : Control
     public static readonly StyledProperty<bool> IsAiBusyProperty =
         AvaloniaProperty.Register<DesignCanvas, bool>(nameof(IsAiBusy));
 
+    /// <summary>编辑态开关：关闭时是可交互预览，打开时是可选 / 可拖 / 可缩放的设计画布。</summary>
+    public static readonly StyledProperty<bool> IsEditingProperty =
+        AvaloniaProperty.Register<DesignCanvas, bool>(nameof(IsEditing));
+
     static DesignCanvas()
     {
         AffectsRender<DesignCanvas>(
@@ -277,7 +279,14 @@ public sealed class DesignCanvas : Control
             IsThumbnailProperty,
             PreviewDocumentProperty,
             HighlightsProperty,
-            IsAiBusyProperty);
+            IsAiBusyProperty,
+            IsEditingProperty);
+    }
+
+    public DesignCanvas()
+    {
+        Focusable = true;
+        ClipToBounds = true;
     }
 
     public DesignDocument? Document
@@ -322,6 +331,12 @@ public sealed class DesignCanvas : Control
         set => SetValue(IsAiBusyProperty, value);
     }
 
+    public bool IsEditing
+    {
+        get => GetValue(IsEditingProperty);
+        set => SetValue(IsEditingProperty, value);
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var width = double.IsInfinity(availableSize.Width) ? 320 : availableSize.Width;
@@ -338,7 +353,8 @@ public sealed class DesignCanvas : Control
         }
 
         var bg = SingleColor(frame.Bg, ShellTop);
-        var nodes = ApplyDemoState(frame.Nodes);
+        // 编辑态用真实节点（不做演示态的滑杆 / 开关替换）；预览态保留可交互效果。
+        var nodes = IsEditing ? frame.Nodes : ApplyDemoState(frame.Nodes);
 
         using (context.PushTransform(Matrix.CreateScale(frame.Scale, frame.Scale) * Matrix.CreateTranslation(frame.OffsetX, frame.OffsetY)))
         {
@@ -358,7 +374,7 @@ public sealed class DesignCanvas : Control
                 {
                     foreach (var node in nodes)
                     {
-                        DrawNode(context, node, 0, 0, 1d);
+                        DrawNode(context, node, 0, 0, 1d, frame.Scale);
                     }
                 }
 
@@ -372,6 +388,93 @@ public sealed class DesignCanvas : Control
                     DrawAiScope(context, frame.Width, frame.Height);
                 }
             }
+
+            // 选中框与参考线画在设备裁剪之外：贴边手柄不会被圆角切掉。
+            if (Editable)
+            {
+                DrawEditingOverlay(context, frame, nodes);
+            }
+        }
+    }
+
+    /// <summary>编辑态叠加层：多选/单选框、8 向手柄 + 旋转柄、吸附参考线、框选矩形。</summary>
+    private void DrawEditingOverlay(DrawingContext context, CanvasFrame frame, List<DesignNode> nodes)
+    {
+        if (frame.Scale <= 0) return;
+        var scale = frame.Scale;
+        var stroke = 1.5 / scale;
+        var accent = new ImmutableSolidColorBrush(Accent);
+        var accentPen = new Pen(accent, stroke);
+        var flat = DesignCanvasInteract.Flatten(nodes);
+
+        foreach (var id in _selectedIds)
+        {
+            var node = DesignCanvasInteract.FindById(flat, id);
+            if (node is null) continue;
+            var cx = node.CenterX;
+            var cy = node.CenterY;
+            var matrix = Matrix.Identity;
+            if (Math.Abs(node.Rotation) > .01)
+            {
+                matrix = Matrix.CreateTranslation(-cx, -cy)
+                    * Matrix.CreateRotation(node.Rotation * Math.PI / 180)
+                    * Matrix.CreateTranslation(cx, cy);
+            }
+
+            using (context.PushTransform(matrix))
+            {
+                context.DrawRectangle(null, accentPen, new Rect(node.X, node.Y, node.W, node.H));
+                if (_selectedIds.Count == 1)
+                {
+                    var rotateOffset = 26 / scale;
+                    var radius = DesignCanvasInteract.HandleRadius(4.5 / scale, node.Frame);
+                    var white = new ImmutableSolidColorBrush(Colors.White);
+                    foreach (var (handle, point) in DesignCanvasInteract.HandlePositions(node, rotateOffset))
+                    {
+                        var drawRadius = handle == DesignCanvasInteract.Handle.Rotate ? radius * .8 : radius;
+                        context.DrawEllipse(white, accentPen, point, drawRadius, drawRadius);
+                    }
+                    context.DrawLine(
+                        new Pen(new ImmutableSolidColorBrush(Color.FromArgb(140, Accent.R, Accent.G, Accent.B)), stroke),
+                        new Point(node.CenterX, node.Y),
+                        new Point(node.CenterX, node.Y - rotateOffset));
+                }
+            }
+        }
+
+        var guideBrush = new ImmutableSolidColorBrush(Color.FromArgb(190, Accent.R, Accent.G, Accent.B));
+        var guidePen = new Pen(guideBrush, 1 / scale);
+        foreach (var x in _guides.Vertical)
+        {
+            context.DrawLine(guidePen, new Point(x, 0), new Point(x, frame.Height));
+        }
+        foreach (var y in _guides.Horizontal)
+        {
+            context.DrawLine(guidePen, new Point(0, y), new Point(frame.Width, y));
+        }
+        foreach (var gap in _guides.Gaps)
+        {
+            context.DrawLine(guidePen, gap.Start, gap.End);
+            var horizontal = Math.Abs(gap.Start.Y - gap.End.Y) < .01;
+            var tick = 3 / scale;
+            if (horizontal)
+            {
+                context.DrawLine(guidePen, new Point(gap.Start.X, gap.Start.Y - tick), new Point(gap.Start.X, gap.Start.Y + tick));
+                context.DrawLine(guidePen, new Point(gap.End.X, gap.End.Y - tick), new Point(gap.End.X, gap.End.Y + tick));
+            }
+            else
+            {
+                context.DrawLine(guidePen, new Point(gap.Start.X - tick, gap.Start.Y), new Point(gap.Start.X + tick, gap.Start.Y));
+                context.DrawLine(guidePen, new Point(gap.End.X - tick, gap.End.Y), new Point(gap.End.X + tick, gap.End.Y));
+            }
+        }
+
+        if (_marquee is { } marquee)
+        {
+            context.DrawRectangle(
+                new ImmutableSolidColorBrush(Color.FromArgb(26, Accent.R, Accent.G, Accent.B)),
+                new Pen(guideBrush, stroke),
+                marquee);
         }
     }
 
@@ -487,11 +590,70 @@ public sealed class DesignCanvas : Control
         var padding = thumbnail ? 0d : 24d;
         var availableW = Math.Max(bounds.Width - padding * 2, 1);
         var availableH = Math.Max(bounds.Height - padding * 2, 1);
-        var scale = Math.Min(availableW / width, availableH / height);
-        var offsetX = (bounds.Width - width * scale) / 2;
-        var offsetY = (bounds.Height - height * scale) / 2;
+        var zoom = thumbnail ? 1d : _zoom;
+        var scale = Math.Min(availableW / width, availableH / height) * zoom;
+        // 缩放绕指针 / 双指重心：origin 由「居中原点 + 用户平移」共同决定。
+        var offsetX = (bounds.Width - width * scale) / 2 + (thumbnail ? 0 : _panX);
+        var offsetY = (bounds.Height - height * scale) / 2 + (thumbnail ? 0 : _panY);
         return new CanvasFrame(width, height, nodes, scale, offsetX, offsetY, rawBg);
     }
+
+    /// <summary>与 <see cref="ProbeLayout"/> 完全一致的相机，供手势与命中测试使用。</summary>
+    private DesignCanvasInteract.DesignCamera Camera(Rect bounds, CanvasFrame frame) => new(
+        bounds.Width,
+        bounds.Height,
+        frame.Width,
+        frame.Height,
+        _zoom,
+        _panX,
+        _panY);
+
+    // ---------- 编辑态 ----------
+
+    /// <summary>一次完整手势开始（拖 / 缩 / 转）时触发一次：宿主用它压撤销栈。</summary>
+    public event EventHandler? EditStarted;
+
+    /// <summary>手势结束：把选中节点的最终 X / Y / W / H / 旋转交回宿主写进真源。</summary>
+    public event EventHandler<IReadOnlyList<DesignFrameChange>>? FramesCommitted;
+
+    /// <summary>删除键：交出当前选中的图层 id。</summary>
+    public event EventHandler<IReadOnlyList<string>>? DeleteRequested;
+
+    /// <summary>选中集合变化：宿主用它刷新右侧「选中图层」面板。</summary>
+    public event EventHandler<IReadOnlyList<string>>? SelectionChanged;
+
+    public event EventHandler? UndoRequested;
+
+    public event EventHandler? RedoRequested;
+
+    private enum CanvasGesture { None, Pending, Move, Resize, Rotate, Pan, Marquee }
+
+    private readonly HashSet<string> _selectedIds = new(StringComparer.Ordinal);
+    private double _zoom = 1;
+    private double _panX;
+    private double _panY;
+    private CanvasGesture _gesture = CanvasGesture.None;
+    private Point _pressPoint;
+    private Point _pressDesign;
+    private Point _lastPoint;
+    private DesignCanvasInteract.FlatNode? _pressNode;
+    private DesignCanvasInteract.Handle? _pressHandle;
+    private DesignCanvasInteract.Frame _pressFrame;
+    private DesignCanvasInteract.DesignCamera _pressCamera;
+    private List<DesignCanvasInteract.FlatNode> _pressFlat = new();
+    private double _pressRotation;
+    private double _rotationBase;
+    private readonly List<DesignCanvasInteract.FlatNode> _dragNodes = new();
+    private readonly Dictionary<string, (double X, double Y)> _dragStart = new(StringComparer.Ordinal);
+    private readonly List<Rect> _snapTargets = new();
+    private DesignCanvasInteract.SnapResult _guides = DesignCanvasInteract.SnapResult.None;
+    private Rect? _marquee;
+    private bool _spaceHeld;
+    private bool _editStarted;
+    private string? _lastDocumentId;
+
+    private bool Editable =>
+        IsEditing && !IsThumbnail && PreviewDocument is null && Document is not null;
 
     // ---------- 演示态交互 ----------
 
@@ -516,7 +678,58 @@ public sealed class DesignCanvas : Control
             _navs.Clear();
             _dragSlider = null;
             _pressedNode = null;
+            // 只有切换到另一份设计稿才重置相机；自己提交的手势更新同 id 文档时要保持视口。
+            var id = Document?.Id;
+            if (!string.Equals(id, _lastDocumentId, StringComparison.Ordinal))
+            {
+                _zoom = 1;
+                _panX = 0;
+                _panY = 0;
+                _selectedIds.Clear();
+                _gesture = CanvasGesture.None;
+                _guides = DesignCanvasInteract.SnapResult.None;
+                _marquee = null;
+            }
+            _lastDocumentId = id;
+            SyncSelection();
         }
+        else if (change.Property == ScreenIndexProperty)
+        {
+            _zoom = 1;
+            _panX = 0;
+            _panY = 0;
+            _selectedIds.Clear();
+            _gesture = CanvasGesture.None;
+            _guides = DesignCanvasInteract.SnapResult.None;
+            _marquee = null;
+            InvalidateVisual();
+        }
+        else if (change.Property == IsEditingProperty && !IsEditing)
+        {
+            _selectedIds.Clear();
+            _gesture = CanvasGesture.None;
+            _guides = DesignCanvasInteract.SnapResult.None;
+            _marquee = null;
+            NotifySelection();
+            InvalidateVisual();
+        }
+        else if (change.Property == IsEditingProperty)
+        {
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>文档被宿主替换后，丢掉已经不存在的选中项。</summary>
+    private void SyncSelection()
+    {
+        if (ProbeLayout(Bounds) is not { } frame)
+        {
+            _selectedIds.Clear();
+            return;
+        }
+        var flat = DesignCanvasInteract.Flatten(frame.Nodes);
+        _selectedIds.RemoveWhere(id => DesignCanvasInteract.FindById(flat, id) is null);
+        NotifySelection();
     }
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
@@ -528,6 +741,13 @@ public sealed class DesignCanvas : Control
         }
 
         var position = e.GetPosition(this);
+        if (Editable)
+        {
+            PressEditing(e, frame, position);
+            return;
+        }
+
+        // ---------- 预览态：点按钮 / 开关 / 滑杆 / 导航 ----------
         var point = DesignPoint(position, frame);
         if (HitTest(frame.Nodes, point, default, 1d) is not { } node ||
             !InteractiveTypes.Contains(TypeOf(node)))
@@ -548,6 +768,97 @@ public sealed class DesignCanvas : Control
         e.Handled = true;
     }
 
+    /// <summary>编辑态按下：中键 / 空格 = 平移，左键 = 选图层或抓手柄。</summary>
+    private void PressEditing(PointerPressedEventArgs e, CanvasFrame frame, Point position)
+    {
+        Focus();
+        var properties = e.GetCurrentPoint(this).Properties;
+        var camera = Camera(Bounds, frame);
+        _lastPoint = position;
+        _pressPoint = position;
+        _pressCamera = camera;
+        _pressDesign = camera.ToDesign(position);
+        _pressFlat = DesignCanvasInteract.Flatten(frame.Nodes);
+        _marquee = null;
+        _guides = DesignCanvasInteract.SnapResult.None;
+        _editStarted = false;
+        _dragNodes.Clear();
+
+        if (properties.IsMiddleButtonPressed || _spaceHeld)
+        {
+            _gesture = CanvasGesture.Pan;
+            _pressNode = null;
+            _pressHandle = null;
+            e.Pointer.Capture(this);
+            e.Handled = true;
+            Cursor = new Cursor(StandardCursorType.SizeAll);
+            return;
+        }
+
+        if (!properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var single = _selectedIds.Count == 1
+            ? DesignCanvasInteract.FindById(_pressFlat, _selectedIds.First())
+            : null;
+        var rotateOffset = 26 / Math.Max(camera.Scale, 1e-4);
+        var hotRadius = single is null
+            ? 0
+            : DesignCanvasInteract.HandleRadius(22 / Math.Max(camera.Scale, 1e-4), single.Frame);
+        var handle = single is null
+            ? null
+            : DesignCanvasInteract.HitHandle(single, _pressDesign, hotRadius, rotateOffset);
+        var hit = DesignCanvasInteract.HitTest(_pressFlat, _pressDesign);
+        _pressNode = hit;
+        _pressHandle = handle;
+
+        var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        if (handle is null && hit is not null)
+        {
+            if (shift)
+            {
+                // Shift 点击：叠加 / 取消选中
+                if (!_selectedIds.Remove(hit.Id)) _selectedIds.Add(hit.Id);
+            }
+            else if (!_selectedIds.Contains(hit.Id))
+            {
+                _selectedIds.Clear();
+                _selectedIds.Add(hit.Id);
+            }
+        }
+        else if (handle is null && hit is null && !shift)
+        {
+            _selectedIds.Clear();
+        }
+
+        if (single is not null)
+        {
+            _pressFrame = single.Frame;
+            _pressRotation = single.Rotation;
+        }
+        else if (hit is not null)
+        {
+            _pressFrame = hit.Frame;
+            _pressRotation = hit.Rotation;
+        }
+        else
+        {
+            _pressFrame = default;
+            _pressRotation = 0;
+        }
+
+        _gesture = CanvasGesture.Pending;
+        e.Pointer.Capture(this);
+        e.Handled = true;
+        NotifySelection();
+        InvalidateVisual();
+    }
+
+    private void NotifySelection() =>
+        SelectionChanged?.Invoke(this, _selectedIds.ToList());
+
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
@@ -556,7 +867,14 @@ public sealed class DesignCanvas : Control
             return;
         }
 
-        var point = DesignPoint(e.GetPosition(this), frame);
+        var position = e.GetPosition(this);
+        if (Editable)
+        {
+            MoveEditing(e, frame, position);
+            return;
+        }
+
+        var point = DesignPoint(position, frame);
         if (_dragSlider is { Id: { Length: > 0 } id } slider)
         {
             _sliders[id] = SliderValue(slider, point.X);
@@ -567,9 +885,167 @@ public sealed class DesignCanvas : Control
         UpdateCursor(HitTest(frame.Nodes, point, default, 1d));
     }
 
+    private void MoveEditing(PointerEventArgs e, CanvasFrame frame, Point position)
+    {
+        var camera = _pressCamera.Scale > 0 ? _pressCamera : Camera(Bounds, frame);
+        var scale = Math.Max(camera.Scale, 1e-4);
+        var design = camera.ToDesign(position);
+        var slop = 4d;
+        var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+        switch (_gesture)
+        {
+            case CanvasGesture.Pending:
+            {
+                if (!DesignCanvasInteract.DragExceeded(_pressPoint, position, slop))
+                {
+                    return;
+                }
+                if (_pressHandle is { } handle &&
+                    DesignCanvasInteract.FindById(_pressFlat, _selectedIds.FirstOrDefault() ?? "") is { } single)
+                {
+                    _dragNodes.Clear();
+                    _dragNodes.Add(single);
+                    _dragStart[single.Id] = (single.LocalX, single.LocalY);
+                    _snapTargets.Clear();
+                    _snapTargets.AddRange(SnapTargets(_pressFlat, _selectedIds));
+                    _pressFrame = single.Frame;
+                    _pressRotation = single.Rotation;
+                    _rotationBase = single.Rotation;
+                    _gesture = handle == DesignCanvasInteract.Handle.Rotate
+                        ? CanvasGesture.Rotate
+                        : CanvasGesture.Resize;
+                    FireEditStarted();
+                }
+                else if (_selectedIds.Count > 0)
+                {
+                    CollectTopLevel(_pressFlat, _selectedIds, false, _dragNodes);
+                    _dragStart.Clear();
+                    foreach (var node in _dragNodes)
+                    {
+                        _dragStart[node.Id] = (node.LocalX, node.LocalY);
+                    }
+                    _snapTargets.Clear();
+                    _snapTargets.AddRange(SnapTargets(_pressFlat, _selectedIds));
+                    _gesture = CanvasGesture.Move;
+                    FireEditStarted();
+                }
+                else
+                {
+                    _gesture = CanvasGesture.Marquee;
+                }
+                break;
+            }
+            case CanvasGesture.Pan:
+            {
+                _panX += position.X - _lastPoint.X;
+                _panY += position.Y - _lastPoint.Y;
+                _lastPoint = position;
+                InvalidateVisual();
+                return;
+            }
+            case CanvasGesture.Move:
+            {
+                if (_dragNodes.Count == 0) break;
+                var minX = _dragNodes.Min(node => node.Frame.X);
+                var maxX = _dragNodes.Max(node => node.Frame.Right);
+                var minY = _dragNodes.Min(node => node.Frame.Y);
+                var maxY = _dragNodes.Max(node => node.Frame.Bottom);
+                var totalX = design.X - _pressDesign.X;
+                var totalY = design.Y - _pressDesign.Y;
+                totalX = Math.Clamp(totalX, -minX, Math.Max(frame.Width - maxX, -minX));
+                totalY = Math.Clamp(totalY, -minY, Math.Max(frame.Height - maxY, -minY));
+
+                var union = new Rect(minX + totalX, minY + totalY, maxX - minX, maxY - minY);
+                var snap = DesignCanvasInteract.SnapMove(union, _snapTargets, 6 / scale);
+                totalX = Math.Clamp(totalX + snap.Dx, -minX, Math.Max(frame.Width - maxX, -minX));
+                totalY = Math.Clamp(totalY + snap.Dy, -minY, Math.Max(frame.Height - maxY, -minY));
+                foreach (var node in _dragNodes)
+                {
+                    if (_dragStart.TryGetValue(node.Id, out var start))
+                    {
+                        node.Node.X = start.X + totalX;
+                        node.Node.Y = start.Y + totalY;
+                    }
+                }
+                _guides = snap;
+                InvalidateVisual();
+                break;
+            }
+            case CanvasGesture.Resize:
+            {
+                if (_dragNodes.Count != 1 ||
+                    DesignCanvasInteract.FindById(_pressFlat, _dragNodes[0].Id) is not { } node)
+                {
+                    break;
+                }
+                var next = DesignCanvasInteract.ResizeFrame(
+                    _pressFrame,
+                    _pressRotation,
+                    _pressHandle ?? DesignCanvasInteract.Handle.BottomRight,
+                    design,
+                    12 / scale,
+                    shift);
+                var snapped = DesignCanvasInteract.SnapResize(
+                    next,
+                    _pressRotation,
+                    _pressHandle ?? DesignCanvasInteract.Handle.BottomRight,
+                    _snapTargets,
+                    6 / scale,
+                    12 / scale);
+                node.Node.X = snapped.Frame.X - node.OriginX;
+                node.Node.Y = snapped.Frame.Y - node.OriginY;
+                node.Node.W = snapped.Frame.W;
+                node.Node.H = snapped.Frame.H;
+                _guides = new DesignCanvasInteract.SnapResult(
+                    0, 0, snapped.Vertical, snapped.Horizontal, Array.Empty<DesignCanvasInteract.GapGuide>());
+                InvalidateVisual();
+                break;
+            }
+            case CanvasGesture.Rotate:
+            {
+                if (_dragNodes.Count != 1 ||
+                    DesignCanvasInteract.FindById(_pressFlat, _dragNodes[0].Id) is not { } node)
+                {
+                    break;
+                }
+                var center = new Point(_pressFrame.CenterX, _pressFrame.CenterY);
+                var delta = DesignCanvasInteract.RotationDegrees(center, _pressDesign, design);
+                var raw = _rotationBase + delta;
+                // Shift = 强制 15° 档；否则靠近直角 / 15° 时吸附。
+                node.Node.Rotation = shift
+                    ? DesignCanvasInteract.ConstrainRotation(raw, 15)
+                    : DesignCanvasInteract.SnapRotation(raw);
+                InvalidateVisual();
+                break;
+            }
+            case CanvasGesture.Marquee:
+            {
+                _marquee = new Rect(
+                    Math.Min(_pressDesign.X, design.X),
+                    Math.Min(_pressDesign.Y, design.Y),
+                    Math.Abs(design.X - _pressDesign.X),
+                    Math.Abs(design.Y - _pressDesign.Y));
+                var ids = DesignCanvasInteract.MarqueeSelection(_pressFlat, _marquee.Value);
+                _selectedIds.Clear();
+                _selectedIds.UnionWith(ids);
+                InvalidateVisual();
+                break;
+            }
+        }
+
+        _lastPoint = position;
+    }
+
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        if (Editable)
+        {
+            ReleaseEditing(e);
+            return;
+        }
+
         var pressed = _pressedNode;
         _pressedNode = null;
         _dragSlider = null;
@@ -609,6 +1085,211 @@ public sealed class DesignCanvas : Control
         }
 
         InvalidateVisual();
+    }
+
+    /// <summary>编辑态松手：一次手势只提交一次几何，宿主据此压一格撤销。</summary>
+    private void ReleaseEditing(PointerReleasedEventArgs e)
+    {
+        // 先取快照并把手势标记清掉：Capture(null) 可能同步触发 CaptureLost。
+        var changes = CollectFrameChanges();
+        _gesture = CanvasGesture.None;
+        e.Pointer.Capture(null);
+        if (changes.Count > 0)
+        {
+            FramesCommitted?.Invoke(this, changes);
+        }
+
+        _dragNodes.Clear();
+        _dragStart.Clear();
+        _snapTargets.Clear();
+        _guides = DesignCanvasInteract.SnapResult.None;
+        _marquee = null;
+        _lastPoint = default;
+        Cursor = new Cursor(StandardCursorType.Arrow);
+        NotifySelection();
+        InvalidateVisual();
+    }
+
+    private void FireEditStarted()
+    {
+        if (_editStarted) return;
+        _editStarted = true;
+        EditStarted?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>只保留最上层的选中节点：父子同时选中时，父移动已经带着子一起走。</summary>
+    private static void CollectTopLevel(
+        IReadOnlyList<DesignCanvasInteract.FlatNode> nodes,
+        HashSet<string> selected,
+        bool ancestorSelected,
+        List<DesignCanvasInteract.FlatNode> output)
+    {
+        foreach (var node in nodes)
+        {
+            var isSelected = selected.Contains(node.Id);
+            if (isSelected && !ancestorSelected)
+            {
+                output.Add(node);
+            }
+            CollectTopLevel(node.Children, selected, ancestorSelected || isSelected, output);
+        }
+    }
+
+    /// <summary>吸附目标：除选中节点及其子树之外的所有可见图层。</summary>
+    private static IEnumerable<Rect> SnapTargets(
+        IReadOnlyList<DesignCanvasInteract.FlatNode> nodes,
+        HashSet<string> selected)
+    {
+        var excluded = new HashSet<string>(StringComparer.Ordinal);
+        void Collect(DesignCanvasInteract.FlatNode node, bool underSelected)
+        {
+            var isSelected = selected.Contains(node.Id);
+            if (underSelected || isSelected)
+            {
+                excluded.Add(node.Id);
+            }
+            foreach (var child in node.Children)
+            {
+                Collect(child, underSelected || isSelected);
+            }
+        }
+        foreach (var node in nodes)
+        {
+            Collect(node, false);
+        }
+        return DesignCanvasInteract.FlattenAll(nodes)
+            .Where(node => !excluded.Contains(node.Id) && node.Alpha > .05 && node.Type != "decor")
+            .Select(node => node.Bounds);
+    }
+
+    /// <summary>手势进行中拿到 / 丢掉指针捕获时，几何仍要提交，不能把半截拖动留在画布上。</summary>
+    private List<DesignFrameChange> CollectFrameChanges()
+    {
+        if (_gesture is not (CanvasGesture.Move or CanvasGesture.Resize or CanvasGesture.Rotate))
+        {
+            return new List<DesignFrameChange>();
+        }
+        return _dragNodes
+            .Where(node => node.Id.Length > 0)
+            .Select(node => new DesignFrameChange(
+                node.Id,
+                node.LocalX,
+                node.LocalY,
+                node.Node.W ?? node.W,
+                node.Node.H ?? node.H,
+                node.Rotation))
+            .ToList();
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        var changes = CollectFrameChanges();
+        base.OnPointerCaptureLost(e);
+        _dragSlider = null;
+        _pressedNode = null;
+        _gesture = CanvasGesture.None;
+        _dragNodes.Clear();
+        _snapTargets.Clear();
+        _guides = DesignCanvasInteract.SnapResult.None;
+        _marquee = null;
+        if (changes.Count > 0)
+        {
+            FramesCommitted?.Invoke(this, changes);
+        }
+    }
+
+    /// <summary>
+    /// 滚轮平移（双指滚动），Ctrl / Cmd + 滚轮绕指针缩放。
+    /// 触控板双指捏合在 Avalonia 里通常映射成 Ctrl+滚轮，正好落在缩放分支。
+    /// </summary>
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    {
+        base.OnPointerWheelChanged(e);
+        if (IsThumbnail || ProbeLayout(Bounds) is not { } frame)
+        {
+            return;
+        }
+
+        var zoomModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control) ||
+            e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (Editable && !zoomModifier)
+        {
+            _panX += e.Delta.X * 42;
+            _panY += e.Delta.Y * 42;
+        }
+        else
+        {
+            var camera = Camera(Bounds, frame);
+            var next = camera.ZoomAround(e.GetPosition(this), Math.Pow(1.18, e.Delta.Y));
+            _zoom = next.Zoom;
+            _panX = next.PanX;
+            _panY = next.PanY;
+        }
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (!Editable) return;
+
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control) ||
+            e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        switch (e.Key)
+        {
+            case Key.Z when ctrl:
+                if (shift) RedoRequested?.Invoke(this, EventArgs.Empty);
+                else UndoRequested?.Invoke(this, EventArgs.Empty);
+                e.Handled = true;
+                return;
+            case Key.Y when ctrl:
+                RedoRequested?.Invoke(this, EventArgs.Empty);
+                e.Handled = true;
+                return;
+            case Key.Space:
+                _spaceHeld = true;
+                Cursor = new Cursor(StandardCursorType.SizeAll);
+                e.Handled = true;
+                return;
+            case Key.Escape:
+                _selectedIds.Clear();
+                _guides = DesignCanvasInteract.SnapResult.None;
+                _marquee = null;
+                NotifySelection();
+                InvalidateVisual();
+                e.Handled = true;
+                return;
+            case Key.Delete:
+            case Key.Back:
+                if (_selectedIds.Count > 0)
+                {
+                    DeleteRequested?.Invoke(this, _selectedIds.ToList());
+                    e.Handled = true;
+                }
+                return;
+            case Key.D0 or Key.NumPad0 when ctrl:
+                _zoom = 1;
+                _panX = 0;
+                _panY = 0;
+                InvalidateVisual();
+                e.Handled = true;
+                return;
+        }
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (e.Key == Key.Space)
+        {
+            _spaceHeld = false;
+            if (_gesture != CanvasGesture.Pan)
+            {
+                Cursor = new Cursor(StandardCursorType.Arrow);
+            }
+        }
     }
 
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
@@ -810,27 +1491,26 @@ public sealed class DesignCanvas : Control
         return copy ?? node;
     }
 
-    /// <summary>设备投影 `0 26px 60px rgba(0,0,0,.55)`：用多层扩张圆角矩形近似高斯模糊。</summary>
+    /// <summary>
+    /// 设备投影 `0 26px 60px rgba(0,0,0,.55)`：交给 Skia 的 BoxShadow 做真实高斯模糊。
+    /// blur 半径与 CSS 同口径（标准差 = blur / 2），不再用扩张矩形叠层。
+    /// </summary>
     private static void DrawDeviceShadow(DrawingContext context, double width, double height, double radius)
     {
-        const int layers = 10;
-        for (var i = layers; i >= 1; i--)
+        var shadow = new BoxShadow
         {
-            var t = i / (double)layers;
-            var expand = 34 * t;
-            var alpha = (byte)Math.Round(140 * 3.0 / layers * (1 - t) * (1 - t));
-            if (alpha == 0)
-            {
-                continue;
-            }
-
-            context.DrawRectangle(
-                new ImmutableSolidColorBrush(Color.FromArgb(alpha, 0, 0, 0)),
-                null,
-                new RoundedRect(
-                    new Rect(-expand, 26 - expand, width + expand * 2, height + expand * 2),
-                    radius + expand));
-        }
+            OffsetX = 0,
+            OffsetY = 26,
+            Blur = 60,
+            Spread = 0,
+            Color = Color.FromArgb(140, 0, 0, 0),
+            IsInset = false,
+        };
+        context.DrawRectangle(
+            Brushes.Transparent,
+            null,
+            new RoundedRect(new Rect(0, 0, width, height), radius),
+            new BoxShadows(shadow));
     }
 
     private static void DrawNode(
@@ -838,7 +1518,9 @@ public sealed class DesignCanvas : Control
         DesignNode node,
         double originX,
         double originY,
-        double parentAlpha)
+        double parentAlpha,
+        double scale,
+        bool skipBlur = false)
     {
         if (node.Hidden == true)
         {
@@ -875,34 +1557,323 @@ public sealed class DesignCanvas : Control
                 * Matrix.CreateTranslation(cx, cy);
         }
 
+        // 节点级 `filter: blur()`：整棵子树离屏后做像素高斯，而不是给边缘描虚边。
+        if (!skipBlur && node.Blur is > .0001)
+        {
+            DrawBlurredNode(context, node, originX, originY, scale);
+            return;
+        }
+
         using (context.PushOpacity(opacity))
         using (context.PushTransform(matrix))
         {
-            DrawNodeCore(context, node, type, x, y, w, h);
+            DrawNodeContent(context, node, type, x, y, w, h, alpha, scale);
+        }
+    }
 
-            if (node.Children is { Count: > 0 })
+    /// <summary>节点自身 + 子层（不含本节点的透明度 / 模糊包装，供普通与离屏路径复用）。</summary>
+    private static void DrawNodeContent(
+        DrawingContext context,
+        DesignNode node,
+        string type,
+        double x,
+        double y,
+        double w,
+        double h,
+        double alpha,
+        double scale)
+    {
+        DrawNodeCore(context, node, type, x, y, w, h, scale);
+
+        if (node.Children is not { Count: > 0 })
+        {
+            return;
+        }
+
+        if (ClipTypes.Contains(type))
+        {
+            // 网页里这类节点是 `overflow:hidden`，子层裁剪到父框圆角内。
+            var corners = CornersOf(node, type, w, h);
+            using (PushShapeClip(context, IsEllipse(type, w, h), corners, new Rect(x, y, w, h)))
             {
-                if (ClipTypes.Contains(type))
+                foreach (var child in node.Children)
                 {
-                    // 网页里这类节点是 `overflow:hidden`，子层裁剪到父框圆角内。
-                    var corners = CornersOf(node, type, w, h);
-                    using (PushShapeClip(context, IsEllipse(type, w, h), corners, new Rect(x, y, w, h)))
-                    {
-                        foreach (var child in node.Children)
-                        {
-                            DrawNode(context, child, x, y, alpha);
-                        }
-                    }
-                }
-                else
-                {
-                    foreach (var child in node.Children)
-                    {
-                        DrawNode(context, child, x, y, alpha);
-                    }
+                    DrawNode(context, child, x, y, alpha, scale);
                 }
             }
         }
+        else
+        {
+            foreach (var child in node.Children)
+            {
+                DrawNode(context, child, x, y, alpha, scale);
+            }
+        }
+    }
+
+    // ---------- 真实模糊 ----------
+
+    /// <summary>离屏模糊位图缓存：几何不变时平移/缩放只重贴图，不重复做高斯。</summary>
+    private static readonly Dictionary<string, WriteableBitmap> BlurCache = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 节点级 `filter: blur()`：整棵子树画进 RenderTargetBitmap，做 3 遍盒式模糊
+    /// （近似高斯，σ = blur），再按原位置贴回。旋转与自身透明度一并烘进位图。
+    /// </summary>
+    private static void DrawBlurredNode(
+        DrawingContext context,
+        DesignNode node,
+        double originX,
+        double originY,
+        double scale)
+    {
+        var x = originX + (node.X ?? 0);
+        var y = originY + (node.Y ?? 0);
+        var blur = Math.Max(node.Blur ?? 0, 0);
+        var bounds = SubtreeBounds(node, x, y);
+        var pad = DesignRenderMath.LayerBlurPadding(blur);
+        var left = Math.Floor(bounds.Left - pad);
+        var top = Math.Floor(bounds.Top - pad);
+        var right = Math.Ceiling(bounds.Right + pad);
+        var bottom = Math.Ceiling(bounds.Bottom + pad);
+        var wPx = Math.Max(1, (int)(right - left));
+        var hPx = Math.Max(1, (int)(bottom - top));
+
+        // 异常大的图层不做离屏模糊，避免一次分配几十 MB；退化为不模糊。
+        if ((long)wPx * hPx > 8_000_000L)
+        {
+            DrawNode(context, node, originX, originY, 1d, scale, skipBlur: true);
+            return;
+        }
+
+        using var target = new RenderTargetBitmap(new PixelSize(wPx, hPx), new Vector(96, 96));
+        using (var targetContext = target.CreateDrawingContext())
+        {
+            using (targetContext.PushTransform(Matrix.CreateTranslation(-left, -top)))
+            {
+                DrawNode(targetContext, node, originX, originY, 1d, scale, skipBlur: true);
+            }
+        }
+
+        var pixels = new int[wPx * hPx];
+        CopyPixels(target, pixels, wPx, hPx);
+        DesignRenderMath.BlurArgb(pixels, wPx, hPx, DesignRenderMath.LayerSigma(blur));
+        var bitmap = WriteBitmap(pixels, wPx, hPx);
+        context.DrawImage(bitmap, new Rect(left, top, wPx, hPx));
+    }
+
+    /// <summary>子树未旋转时的包围盒 + 阴影 / 文字效果外扩；最后按本节点旋转取 AABB。</summary>
+    private static Rect SubtreeBounds(DesignNode node, double x, double y)
+    {
+        var w = node.W ?? 0;
+        var h = node.H ?? 0;
+        var left = x;
+        var top = y;
+        var right = x + w;
+        var bottom = y + h;
+        var type = TypeOf(node);
+
+        foreach (var spec in ShadowSpecs(node, type))
+        {
+            var pad = DesignRenderMath.BlurPadding(spec.Blur);
+            left = Math.Min(left, x + spec.Dx - pad);
+            top = Math.Min(top, y + spec.Dy - pad);
+            right = Math.Max(right, x + w + spec.Dx + pad);
+            bottom = Math.Max(bottom, y + h + spec.Dy + pad);
+        }
+
+        var fxPad = TextEffectPadding(node);
+        if (fxPad > 0)
+        {
+            left -= fxPad;
+            top -= fxPad;
+            right += fxPad;
+            bottom += fxPad;
+        }
+
+        if (node.Children is { Count: > 0 })
+        {
+            foreach (var child in node.Children)
+            {
+                var childBounds = SubtreeBounds(child, x + (child.X ?? 0), y + (child.Y ?? 0));
+                left = Math.Min(left, childBounds.Left);
+                top = Math.Min(top, childBounds.Top);
+                right = Math.Max(right, childBounds.Right);
+                bottom = Math.Max(bottom, childBounds.Bottom);
+            }
+        }
+
+        var bounds = new Rect(left, top, right - left, bottom - top);
+        var rotation = node.Rotation ?? 0;
+        if (Math.Abs(rotation) <= .01)
+        {
+            return bounds;
+        }
+
+        return RotateBounds(bounds, x + w / 2, y + h / 2, rotation);
+    }
+
+    /// <summary>文字发光/投影的最大外扩（模糊 3σ + 偏移）。</summary>
+    private static double TextEffectPadding(DesignNode node)
+    {
+        var pad = 0d;
+        foreach (var effect in new[] { node.TextShadow, node.TextGlow })
+        {
+            if (effect is null)
+            {
+                continue;
+            }
+
+            var blur = Math.Max(effect.Blur ?? effect.Radius ?? 0, 0);
+            var offset = Math.Max(Math.Abs(effect.Dx ?? 0), Math.Abs(effect.Dy ?? 0));
+            pad = Math.Max(pad, DesignRenderMath.BlurPadding(blur) + offset);
+        }
+
+        return pad;
+    }
+
+    private static Rect RotateBounds(Rect rect, double cx, double cy, double degrees)
+    {
+        var radians = degrees * Math.PI / 180;
+        var cos = Math.Cos(radians);
+        var sin = Math.Sin(radians);
+        var minX = double.MaxValue;
+        var minY = double.MaxValue;
+        var maxX = double.MinValue;
+        var maxY = double.MinValue;
+        foreach (var (px, py) in new[]
+                 {
+                     (rect.Left, rect.Top),
+                     (rect.Right, rect.Top),
+                     (rect.Right, rect.Bottom),
+                     (rect.Left, rect.Bottom),
+                 })
+        {
+            var dx = px - cx;
+            var dy = py - cy;
+            var rx = cx + dx * cos - dy * sin;
+            var ry = cy + dx * sin + dy * cos;
+            minX = Math.Min(minX, rx);
+            minY = Math.Min(minY, ry);
+            maxX = Math.Max(maxX, rx);
+            maxY = Math.Max(maxY, ry);
+        }
+
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    /// <summary>
+    /// 任意几何的离屏高斯模糊：先画到透明 RenderTargetBitmap，再像素级模糊。
+    /// [offsetX] / [offsetY] 是几何局部原点在父坐标系里的位置。
+    /// </summary>
+    private static void DrawBlurredGeometry(
+        DrawingContext context,
+        Geometry geometry,
+        Color color,
+        double blur,
+        double offsetX,
+        double offsetY,
+        string cacheKey)
+    {
+        if (blur <= .0001 || color.A == 0)
+        {
+            return;
+        }
+
+        var image = BlurredGeometryImage(geometry, color, blur, cacheKey);
+        if (image is null)
+        {
+            return;
+        }
+
+        var bounds = geometry.Bounds;
+        var pad = DesignRenderMath.BlurPadding(blur);
+        var left = Math.Floor(bounds.Left - pad);
+        var top = Math.Floor(bounds.Top - pad);
+        context.DrawImage(
+            image,
+            new Rect(offsetX + left, offsetY + top, image.Size.Width, image.Size.Height));
+    }
+
+    private static WriteableBitmap? BlurredGeometryImage(
+        Geometry geometry,
+        Color color,
+        double blur,
+        string cacheKey)
+    {
+        if (BlurCache.TryGetValue(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        var bounds = geometry.Bounds;
+        var pad = DesignRenderMath.BlurPadding(blur);
+        var left = Math.Floor(bounds.Left - pad);
+        var top = Math.Floor(bounds.Top - pad);
+        var right = Math.Ceiling(bounds.Right + pad);
+        var bottom = Math.Ceiling(bounds.Bottom + pad);
+        var wPx = Math.Max(1, (int)(right - left));
+        var hPx = Math.Max(1, (int)(bottom - top));
+        if ((long)wPx * hPx > 8_000_000L)
+        {
+            return null;
+        }
+
+        using var target = new RenderTargetBitmap(new PixelSize(wPx, hPx), new Vector(96, 96));
+        using (var targetContext = target.CreateDrawingContext())
+        {
+            using (targetContext.PushTransform(Matrix.CreateTranslation(-left, -top)))
+            {
+                targetContext.DrawGeometry(new ImmutableSolidColorBrush(color), null, geometry);
+            }
+        }
+
+        var pixels = new int[wPx * hPx];
+        CopyPixels(target, pixels, wPx, hPx);
+        DesignRenderMath.BlurArgb(pixels, wPx, hPx, DesignRenderMath.ShadowSigma(blur));
+        var bitmap = WriteBitmap(pixels, wPx, hPx);
+        if (BlurCache.Count > 96)
+        {
+            // 不在这里 Dispose：当前帧可能还有绘制指令引用旧贴图，交给 GC 回收更安全。
+            BlurCache.Clear();
+        }
+
+        BlurCache[cacheKey] = bitmap;
+        return bitmap;
+    }
+
+    private static void CopyPixels(RenderTargetBitmap target, int[] pixels, int w, int h)
+    {
+        var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        try
+        {
+            target.CopyPixels(
+                new PixelRect(0, 0, w, h),
+                handle.AddrOfPinnedObject(),
+                pixels.Length * 4,
+                w * 4);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    private static WriteableBitmap WriteBitmap(int[] pixels, int w, int h)
+    {
+        var bitmap = new WriteableBitmap(
+            new PixelSize(w, h),
+            new Vector(96, 96),
+            PixelFormat.Bgra8888,
+            AlphaFormat.Premul);
+        using var buffer = bitmap.Lock();
+        for (var y = 0; y < h; y++)
+        {
+            // Marshal.Copy 的 length 是元素个数（每个 int = 4 字节），一行正好 w 个。
+            Marshal.Copy(pixels, y * w, IntPtr.Add(buffer.Address, y * buffer.RowBytes), w);
+        }
+
+        return bitmap;
     }
 
     private static void DrawNodeCore(
@@ -912,16 +1883,14 @@ public sealed class DesignCanvas : Control
         double x,
         double y,
         double w,
-        double h)
+        double h,
+        double scale)
     {
         var ellipse = IsEllipse(type, w, h);
         var corners = CornersOf(node, type, w, h);
 
         // CSS 合成顺序：外阴影 → 背景 → 内阴影 → 内容/子节点 → 边框 → 文字。
-        foreach (var ring in ShadowRings(node, type))
-        {
-            DrawShadowRing(context, ellipse, corners, x, y, w, h, ring);
-        }
+        DrawNodeShadows(context, node, type, ellipse, corners, x, y, w, h);
 
         switch (type)
         {
@@ -962,7 +1931,7 @@ public sealed class DesignCanvas : Control
         }
         else
         {
-            DrawNodeText(context, node, type, x, y, w, h);
+            DrawNodeText(context, node, type, x, y, w, h, scale);
         }
     }
 
@@ -1063,15 +2032,18 @@ public sealed class DesignCanvas : Control
         return geometry;
     }
 
-    /// <summary>一个阴影环；`Spread` 是向外扩张（inset 时向内收）的距离。</summary>
-    private readonly record struct ShadowRing(double Dx, double Dy, double Spread, Color Color, bool Inset);
+    /// <summary>
+    /// 一个阴影：真实高斯模糊参数。[Blur] 是 CSS box-shadow 的模糊半径
+    /// （标准差 = blur / 2），0 表示硬阴影。
+    /// </summary>
+    private readonly record struct ShadowSpec(double Dx, double Dy, double Blur, Color Color, bool Inset);
 
-    /// <summary>外阴影环（大 spread 在下、小 spread 在上）；card 无显式 shadow 时补默认投影。</summary>
-    private static List<ShadowRing> ShadowRings(DesignNode node, string type)
+    /// <summary>外阴影；card 无显式 shadow 时补默认投影（dy=6 / blur=0）。</summary>
+    private static List<ShadowSpec> ShadowSpecs(DesignNode node, string type)
     {
         if (node.Shadow is null && type == "card")
         {
-            return new List<ShadowRing>
+            return new List<ShadowSpec>
             {
                 new(
                     0,
@@ -1082,91 +2054,113 @@ public sealed class DesignCanvas : Control
             };
         }
 
-        return ShadowRingLayers(node.Shadow, false).Where(ring => !ring.Inset).ToList();
+        return ShadowSpecsOf(node.Shadow, false).Where(spec => !spec.Inset).ToList();
     }
 
-    /// <summary>内阴影环：`insetShadow` 恒在盒内，`shadow` 里 inset=true 的层也算内阴影。</summary>
-    private static List<ShadowRing> InsetShadowRings(DesignNode node) =>
-        ShadowRingLayers(node.Shadow, false)
-            .Concat(ShadowRingLayers(node.InsetShadow, true))
-            .Where(ring => ring.Inset)
+    /// <summary>内阴影：`insetShadow` 恒在盒内，`shadow` 里 inset=true 的层也算内阴影。</summary>
+    private static List<ShadowSpec> InsetShadowSpecs(DesignNode node) =>
+        ShadowSpecsOf(node.Shadow, false)
+            .Concat(ShadowSpecsOf(node.InsetShadow, true))
+            .Where(spec => spec.Inset)
             .ToList();
 
-    /// <summary>
-    /// blur&gt;0 时按 N=10 环近似：spread_i = blur × i / N，
-    /// alpha_i = color.alpha × 3/N × (1 − i/N)²；blur=0 退化为单段。
-    /// </summary>
-    private static List<ShadowRing> ShadowRingLayers(DesignShadow? shadow, bool forceInset)
+    private static List<ShadowSpec> ShadowSpecsOf(DesignShadow? shadow, bool forceInset)
     {
-        var rings = new List<ShadowRing>();
         if (shadow is null)
         {
-            return rings;
+            return new List<ShadowSpec>();
         }
 
-        var baseColor = SingleColor(shadow.Color, DefaultShadow);
-        var baseAlpha = baseColor.A / 255d;
-        if (baseAlpha <= .004)
+        var color = SingleColor(shadow.Color, DefaultShadow);
+        if (color.A / 255d <= .004)
         {
-            return rings;
+            return new List<ShadowSpec>();
         }
 
-        var dx = shadow.Dx;
-        var dy = shadow.Dy;
-        var blur = Math.Max(shadow.Blur, 0);
-        var inset = forceInset || shadow.Inset;
-        if (blur <= .0001)
+        return new List<ShadowSpec>
         {
-            rings.Add(new ShadowRing(dx, dy, 0, baseColor, inset));
-            return rings;
-        }
-
-        for (var index = ShadowRingCount; index >= 1; index--)
-        {
-            var ratio = index / (double)ShadowRingCount;
-            var alpha = baseAlpha * 3d / ShadowRingCount * (1 - ratio) * (1 - ratio);
-            if (alpha <= .004)
-            {
-                continue;
-            }
-
-            rings.Add(
-                new ShadowRing(
-                    dx,
-                    dy,
-                    blur * ratio,
-                    Color.FromArgb((byte)Math.Round(alpha * 255), baseColor.R, baseColor.G, baseColor.B),
-                    inset));
-        }
-
-        return rings;
+            new(
+                shadow.Dx,
+                shadow.Dy,
+                Math.Max(shadow.Blur, 0),
+                color,
+                forceInset || shadow.Inset),
+        };
     }
 
-    /// <summary>外阴影环：环已按「大 spread 在下、小 spread 在上」排好序。</summary>
-    private static void DrawShadowRing(
+    /// <summary>
+    /// 外阴影：矩形/圆角矩形交给 Skia BoxShadow 做真实模糊；椭圆走离屏像素高斯。
+    /// blur=0 直接画偏移实心形状，保持硬边锐利。
+    /// </summary>
+    private static void DrawNodeShadows(
         DrawingContext context,
+        DesignNode node,
+        string type,
         bool ellipse,
         Corners corners,
         double x,
         double y,
         double w,
-        double h,
-        ShadowRing ring)
+        double h)
     {
-        var left = x - ring.Spread + ring.Dx;
-        var top = y - ring.Spread + ring.Dy;
-        var width = w + ring.Spread * 2;
-        var height = h + ring.Spread * 2;
-        var geometry = ShapeGeometry(ellipse, corners, left, top, width, height, ring.Spread);
-        if (geometry is null)
+        foreach (var spec in ShadowSpecs(node, type))
         {
-            return;
-        }
+            if (spec.Color.A == 0)
+            {
+                continue;
+            }
 
-        context.DrawGeometry(new ImmutableSolidColorBrush(ring.Color), null, geometry);
+            if (spec.Blur <= .0001)
+            {
+                var geometry = ShapeGeometry(ellipse, corners, x + spec.Dx, y + spec.Dy, w, h, 0);
+                if (geometry is not null)
+                {
+                    context.DrawGeometry(new ImmutableSolidColorBrush(spec.Color), null, geometry);
+                }
+
+                continue;
+            }
+
+            if (!ellipse)
+            {
+                var shadow = new BoxShadow
+                {
+                    OffsetX = spec.Dx,
+                    OffsetY = spec.Dy,
+                    Blur = spec.Blur,
+                    Spread = 0,
+                    Color = spec.Color,
+                    IsInset = false,
+                };
+                context.DrawRectangle(
+                    Brushes.Transparent,
+                    null,
+                    new RoundedRect(new Rect(x, y, w, h), corners.Tl, corners.Tr, corners.Br, corners.Bl),
+                    new BoxShadows(shadow));
+                continue;
+            }
+
+            var local = ShapeGeometry(true, corners, 0, 0, w, h, 0);
+            if (local is null)
+            {
+                continue;
+            }
+
+            DrawBlurredGeometry(
+                context,
+                local,
+                spec.Color,
+                spec.Blur,
+                x + spec.Dx,
+                y + spec.Dy,
+                $"shadow|{node.Id}|{w:F2}|{h:F2}|{spec.Blur:F2}|{spec.Color}");
+        }
     }
 
-    /// <summary>内阴影：外框减去「内缩 spread 并偏移 (dx, dy)」的洞，得到一圈贴边的阴影。</summary>
+    /// <summary>
+    /// 内阴影：矩形用 Skia 的 inset BoxShadow（真实模糊）；椭圆用「大矩形 − 偏移洞」
+    /// 的环形几何做离屏模糊，再裁剪到外形内。blur=0 时仍是硬边内投影。
+    /// </summary>
     private static void DrawInsetShadows(
         DrawingContext context,
         DesignNode node,
@@ -1177,8 +2171,8 @@ public sealed class DesignCanvas : Control
         double w,
         double h)
     {
-        var rings = InsetShadowRings(node);
-        if (rings.Count == 0)
+        var specs = InsetShadowSpecs(node);
+        if (specs.Count == 0)
         {
             return;
         }
@@ -1191,29 +2185,69 @@ public sealed class DesignCanvas : Control
 
         using (context.PushGeometryClip(outer))
         {
-            foreach (var ring in rings)
+            foreach (var spec in specs)
             {
-                var inset = ring.Spread;
-                var hole = ShapeGeometry(
-                    ellipse,
-                    corners,
-                    x + inset + ring.Dx,
-                    y + inset + ring.Dy,
-                    w - inset * 2,
-                    h - inset * 2,
-                    -inset);
-                var brush = new ImmutableSolidColorBrush(ring.Color);
+                if (!ellipse && spec.Blur > .0001)
+                {
+                    var shadow = new BoxShadow
+                    {
+                        OffsetX = spec.Dx,
+                        OffsetY = spec.Dy,
+                        Blur = spec.Blur,
+                        Spread = 0,
+                        Color = spec.Color,
+                        IsInset = true,
+                    };
+                    context.DrawRectangle(
+                        Brushes.Transparent,
+                        null,
+                        new RoundedRect(new Rect(x, y, w, h), corners.Tl, corners.Tr, corners.Br, corners.Bl),
+                        new BoxShadows(shadow));
+                    continue;
+                }
+
+                var hole = ShapeGeometry(ellipse, corners, x + spec.Dx, y + spec.Dy, w, h, 0);
                 if (hole is null)
                 {
-                    context.DrawGeometry(brush, null, outer);
+                    context.DrawGeometry(new ImmutableSolidColorBrush(spec.Color), null, outer);
+                    continue;
                 }
-                else
+
+                if (spec.Blur <= .0001)
                 {
                     context.DrawGeometry(
-                        brush,
+                        new ImmutableSolidColorBrush(spec.Color),
                         null,
                         new CombinedGeometry(GeometryCombineMode.Exclude, outer, hole));
+                    continue;
                 }
+
+                // 模糊版：外框用一块「足够大」的矩形，只有洞的边缘被模糊；
+                // 随后被外框 clip 掉，因此贴边处仍是实色（与 CSS inset 阴影一致）。
+                var pad = DesignRenderMath.BlurPadding(spec.Blur) + 2;
+                var localOuter = new RectangleGeometry(new Rect(-pad, -pad, w + pad * 2, h + pad * 2));
+                var localHole = ShapeGeometry(
+                    true,
+                    corners,
+                    spec.Dx,
+                    spec.Dy,
+                    w,
+                    h,
+                    0);
+                if (localHole is null)
+                {
+                    continue;
+                }
+
+                var ring = new CombinedGeometry(GeometryCombineMode.Exclude, localOuter, localHole);
+                DrawBlurredGeometry(
+                    context,
+                    ring,
+                    spec.Color,
+                    spec.Blur,
+                    x,
+                    y,
+                    $"inset|{node.Id}|{w:F2}|{h:F2}|{spec.Dx:F2}|{spec.Dy:F2}|{spec.Blur:F2}|{spec.Color}");
             }
         }
     }
@@ -1390,7 +2424,8 @@ public sealed class DesignCanvas : Control
         double x,
         double y,
         double w,
-        double h)
+        double h,
+        double scale)
     {
         var text = node.Text ?? "";
         if (text.Trim().Length == 0)
@@ -1487,8 +2522,11 @@ public sealed class DesignCanvas : Control
         var layout = entry.Gradient ?? entry.Solid;
 
         var top = y + (h - layout.Height) / 2;
-        var origin = new Point(x + inset, top);
-        var rings = TextRingsOf(node);
+        // 整数倍缩放时把文字原点吸附到像素网格；任意缩放保留亚像素定位，避免平移抖动。
+        var origin = new Point(
+            DesignRenderMath.SnapToPixel(x + inset, scale),
+            DesignRenderMath.SnapToPixel(top, scale));
+        var effects = TextEffectsOf(node);
         var stroke = TextStrokeOf(node);
 
         using (context.PushClip(new Rect(x, y, w, h)))
@@ -1499,22 +2537,83 @@ public sealed class DesignCanvas : Control
 
             void Paint()
             {
-                if (rings.Count == 0 && stroke == null)
+                if (effects.Count == 0 && stroke == null)
                 {
                     layout.Draw(context, origin);
                     return;
                 }
 
-                // 与手机端 `drawTextNode` 同序：投影环 → 发光环 → 描边 → 填充。
-                var geometry = TextGeometry(text, typeface, size, alignment, boxWidth, ratio, node, autoFit, decorations, origin);
-                if (geometry != null)
+                // 与手机端 `drawTextNode` 同序：投影 → 发光 → 描边 → 填充。
+                if (effects.Count > 0)
                 {
-                    foreach (var ring in rings)
+                    // 效果用局部字形轮廓，位图可按「文字 + 字号 + 颜色 + blur」缓存，
+                    // 节点移动时只改贴图位置，不重做模糊。
+                    var local = TextGeometry(
+                        text,
+                        typeface,
+                        size,
+                        alignment,
+                        boxWidth,
+                        ratio,
+                        node,
+                        autoFit,
+                        decorations,
+                        new Point(0, 0));
+                    if (local != null)
                     {
-                        DrawTextRing(context, geometry, ring);
-                    }
+                        foreach (var effect in effects)
+                        {
+                            if (effect.Blur <= .0001)
+                            {
+                                using (context.PushTransform(
+                                           Matrix.CreateTranslation(origin.X + effect.Dx, origin.Y + effect.Dy)))
+                                {
+                                    context.DrawGeometry(
+                                        new ImmutableSolidColorBrush(effect.Color),
+                                        null,
+                                        local);
+                                }
 
-                    if (stroke is { } line)
+                                continue;
+                            }
+
+                            DrawBlurredGeometry(
+                                context,
+                                local,
+                                effect.Color,
+                                effect.Blur,
+                                origin.X + effect.Dx,
+                                origin.Y + effect.Dy,
+                                TextEffectKey(
+                                    node,
+                                    text,
+                                    typeface,
+                                    size,
+                                    ratio,
+                                    letterSpacing,
+                                    maxLines,
+                                    boxWidth,
+                                    alignment,
+                                    autoFit,
+                                    effect));
+                        }
+                    }
+                }
+
+                if (stroke is { } line)
+                {
+                    var geometry = TextGeometry(
+                        text,
+                        typeface,
+                        size,
+                        alignment,
+                        boxWidth,
+                        ratio,
+                        node,
+                        autoFit,
+                        decorations,
+                        origin);
+                    if (geometry != null)
                     {
                         context.DrawGeometry(
                             null,
@@ -1541,64 +2640,57 @@ public sealed class DesignCanvas : Control
     }
 
     /// <summary>
-    /// 文字环：投影整组在下、发光整组在上，每组按半径从大到小画。
-    /// 顺序与手机端 `DesignSpec.FX_RINGS.asReversed()` 完全一致。
+    /// 一个文字效果：真实高斯模糊参数。[Blur] 是 CSS text-shadow 的 blur 半径
+    /// （标准差 = blur / 2），0 表示硬阴影。
     /// </summary>
-    private static List<TextRing> TextRingsOf(DesignNode node) =>
-        RingsOf(node.TextShadow, false).Concat(RingsOf(node.TextGlow, true)).ToList();
+    private readonly record struct TextEffectSpec(double Dx, double Dy, double Blur, Color Color);
 
-    private static List<TextRing> RingsOf(DesignTextEffect? effect, bool glow)
+    /// <summary>投影在下、发光在上，与网页 / 手机同序。</summary>
+    private static List<TextEffectSpec> TextEffectsOf(DesignNode node) =>
+        EffectsOf(node.TextShadow, false).Concat(EffectsOf(node.TextGlow, true)).ToList();
+
+    private static List<TextEffectSpec> EffectsOf(DesignTextEffect? effect, bool glow)
     {
-        var rings = new List<TextRing>();
         if (effect == null || ParseColor(effect.Color) is not { } baseColor)
         {
             // 颜色解析失败整段丢弃，对齐编译层 `_compile_fx`。
-            return rings;
+            return new List<TextEffectSpec>();
         }
 
-        var baseAlpha = baseColor.A / 255d;
-        var intensity = Math.Clamp(effect.Intensity ?? 1, 0, 1);
+        var alpha = Math.Clamp(baseColor.A / 255d * Math.Clamp(effect.Intensity ?? 1, 0, 1), 0, 1);
+        if (alpha <= .004)
+        {
+            return new List<TextEffectSpec>();
+        }
+
         // blur 缺省时回退到 radius（设计稿里发光习惯写 radius），与 `_compile_fx` 一致。
         var blur = Math.Max(effect.Blur ?? effect.Radius ?? 0, 0);
         var dx = glow ? 0 : effect.Dx ?? 0;
         var dy = glow ? 0 : effect.Dy ?? 0;
-        for (var i = FxRings.Length - 1; i >= 0; i--)
-        {
-            var (radius, ringAlpha) = FxRings[i];
-            var alpha = Math.Clamp(baseAlpha * intensity * ringAlpha, 0, 1);
-            if (alpha <= .004)
-            {
-                continue;
-            }
-
-            var color = Color.FromArgb((byte)Math.Round(alpha * 255), baseColor.R, baseColor.G, baseColor.B);
-            rings.Add(new TextRing(dx, dy, blur * radius, color));
-        }
-
-        return rings;
+        var color = Color.FromArgb((byte)Math.Round(alpha * 255), baseColor.R, baseColor.G, baseColor.B);
+        return new List<TextEffectSpec> { new(dx, dy, blur, color) };
     }
 
-    private static void DrawTextRing(DrawingContext context, Geometry geometry, TextRing ring)
-    {
-        var brush = new ImmutableSolidColorBrush(ring.Color);
-        using (context.PushTransform(Matrix.CreateTranslation(ring.Dx, ring.Dy)))
-        {
-            if (ring.Spread <= 0)
-            {
-                // blur=0：网页是硬阴影（同形实心副本），直接填充字形轮廓。
-                context.DrawGeometry(brush, null, geometry);
-            }
-            else
-            {
-                // 环外扩 spread：居中描边的线宽 = 2×spread，内侧一半随后被填充盖住。
-                context.DrawGeometry(null, new ImmutablePen(brush, ring.Spread * 2), geometry);
-            }
-        }
-    }
+    private static string TextEffectKey(
+        DesignNode node,
+        string text,
+        Typeface typeface,
+        double size,
+        double ratio,
+        double letterSpacing,
+        int maxLines,
+        double boxWidth,
+        TextAlignment alignment,
+        bool autoFit,
+        TextEffectSpec effect) =>
+        $"{node.Id}|{text}|{typeface.FontFamily.Name}|{typeface.Style}|{typeface.Weight}|" +
+        $"{size:F2}|{ratio:F2}|{letterSpacing:F2}|{maxLines}|{boxWidth:F2}|" +
+        $"{alignment}|{autoFit}|{node.Underline == true}|{node.Strikethrough == true}|" +
+        $"{effect.Blur:F2}|{effect.Color}";
 
     /// <summary>
-    /// 字形轮廓：网页没有高斯模糊，三端统一用「轮廓环」近似，所以描边/发光都基于几何。
-    /// `FormattedText` 不支持 letterSpacing，带字距的艺术字环会有微小水平偏差（已知限制）。
+    /// 字形轮廓：文字描边与发光/投影都基于它。`FormattedText` 不支持 letterSpacing，
+    /// 带字距的艺术字轮廓会有微小水平偏差（已知限制）。
     /// </summary>
     private static Geometry? TextGeometry(
         string text,
@@ -1993,8 +3085,6 @@ public sealed class DesignCanvas : Control
 
         return parts.Count == 0 ? null : TextDecorationCollection.Parse(string.Join(" ", parts));
     }
-
-    private readonly record struct TextRing(double Dx, double Dy, double Spread, Color Color);
 
     /// <summary>排版缓存键：影响 TextLayout 结果的全部输入（含渐变原文与盒宽）。</summary>
     private readonly record struct TextKey(

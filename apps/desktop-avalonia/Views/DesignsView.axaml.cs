@@ -1,7 +1,11 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Flux.Desktop.Models;
 using Flux.Desktop.ViewModels;
 
 namespace Flux.Desktop.Views;
@@ -15,6 +19,48 @@ public partial class DesignsView : UserControl
     }
 
     private DesignsViewModel? ViewModel => DataContext as DesignsViewModel;
+
+    /// <summary>一次画布手势开始：宿主压一格撤销快照。</summary>
+    private void OnCanvasEditStarted(object? sender, EventArgs e) => ViewModel?.BeginCanvasEdit();
+
+    /// <summary>手势结束：把最终几何写回原始 JSON。</summary>
+    private void OnCanvasFramesCommitted(object? sender, IReadOnlyList<DesignFrameChange> changes) =>
+        ViewModel?.CommitCanvasEdit(changes);
+
+    private void OnCanvasDeleteRequested(object? sender, IReadOnlyList<string> ids) =>
+        ViewModel?.DeleteCanvasNodes(ids);
+
+    private void OnCanvasSelectionChanged(object? sender, IReadOnlyList<string> ids) =>
+        ViewModel?.SelectCanvasNode(ids);
+
+    private void OnCanvasUndoRequested(object? sender, EventArgs e) =>
+        ViewModel?.UndoEditCommand.Execute(null);
+
+    private void OnCanvasRedoRequested(object? sender, EventArgs e) =>
+        ViewModel?.RedoEditCommand.Execute(null);
+
+    /// <summary>焦点在按钮 / 输入框上时，快捷键也能撤销重做（画布聚焦时由画布自己处理）。</summary>
+    private void OnViewKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (ViewModel is not { IsCanvasEditing: true } vm) return;
+        // 正在输入框里编辑时，Ctrl+Z 应该先撤销文字，而不是撤销画布。
+        if (e.Source is TextBox) return;
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control) ||
+            e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (!ctrl) return;
+        switch (e.Key)
+        {
+            case Key.Z:
+                if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) vm.RedoEditCommand.Execute(null);
+                else vm.UndoEditCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case Key.Y:
+                vm.RedoEditCommand.Execute(null);
+                e.Handled = true;
+                break;
+        }
+    }
 
     /// <summary>画布演示态点按钮/导航时切屏；走 SelectScreenCommand 复用同一套状态更新。</summary>
     private void OnCanvasScreenRequested(object? sender, int index)

@@ -6,7 +6,8 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="1320" d:DesignHeight="900"
              x:Class="Flux.Desktop.Views.DesignsView"
-             x:DataType="vm:DesignsViewModel">
+             x:DataType="vm:DesignsViewModel"
+             KeyDown="OnViewKeyDown">
 
     <UserControl.Resources>
         <!-- 左侧设计稿卡片 -->
@@ -89,10 +90,14 @@
                 <TextBlock Classes="page-desc" MaxWidth="760" HorizontalAlignment="Left"
                            Text="打开 Luma 设计稿看整屏效果，用一句话让 AI 改结构，改坏了随时回到历史版本。" />
             </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                         VerticalAlignment="Bottom">
                 <TextBlock Text="{Binding Hint}" FontSize="11"
                            Foreground="{DynamicResource TnText4}" VerticalAlignment="Center" />
+                <Button Classes="btn subtle" Content="编辑画布" Command="{Binding ToggleCanvasEditingCommand}"
+                        IsVisible="{Binding !IsCanvasEditing}" />
+                <Button Classes="btn subtle" Content="退出编辑" Command="{Binding ToggleCanvasEditingCommand}"
+                        IsVisible="{Binding IsCanvasEditing}" />
                 <Button Classes="btn subtle" Content="导入"
                         Click="OnImportClick" IsEnabled="{Binding !IsBusy}" />
                 <Button Classes="btn subtle" Content="导出 SVG"
@@ -130,10 +135,27 @@
                             <TextBlock Text="{Binding Meta}" Classes="mono" FontSize="10.5"
                                        Foreground="{DynamicResource TnText4}" />
                         </StackPanel>
-                        <TextBlock Grid.Column="1" Text="{Binding MetaDetail}" FontSize="10.5"
-                                   Foreground="{DynamicResource TnText4}"
-                                   VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis"
-                                   MaxWidth="260" />
+                        <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Bottom"
+                                    HorizontalAlignment="Right">
+                            <TextBlock Text="{Binding MetaDetail}" FontSize="10.5"
+                                       Foreground="{DynamicResource TnText4}"
+                                       HorizontalAlignment="Right" TextTrimming="CharacterEllipsis"
+                                       MaxWidth="260" />
+                            <StackPanel Orientation="Horizontal" Spacing="6"
+                                        HorizontalAlignment="Right"
+                                        IsVisible="{Binding IsCanvasEditing}">
+                                <Button Classes="mini" Content="撤销"
+                                        Command="{Binding UndoEditCommand}"
+                                        IsEnabled="{Binding CanUndo}" />
+                                <Button Classes="mini" Content="重做"
+                                        Command="{Binding RedoEditCommand}"
+                                        IsEnabled="{Binding CanRedo}" />
+                                <Button Classes="mini" Content="保存"
+                                        Command="{Binding SaveCommand}"
+                                        IsEnabled="{Binding !IsBusy}"
+                                        IsVisible="{Binding HasUnsavedChanges}" />
+                            </StackPanel>
+                        </StackPanel>
                     </Grid>
 
                     <ScrollViewer Grid.Row="1" Margin="0,10,0,10"
@@ -157,9 +179,20 @@
                                                 PreviewDocument="{Binding PreviewDocument}"
                                                 Highlights="{Binding Highlights}"
                                                 IsAiBusy="{Binding IsAiBusy}"
+                                                IsEditing="{Binding IsCanvasEditing}"
                                                 ScreenIndex="{Binding ActiveScreenIndex}"
                                                 ScreenRequested="OnCanvasScreenRequested"
+                                                EditStarted="OnCanvasEditStarted"
+                                                FramesCommitted="OnCanvasFramesCommitted"
+                                                DeleteRequested="OnCanvasDeleteRequested"
+                                                SelectionChanged="OnCanvasSelectionChanged"
+                                                UndoRequested="OnCanvasUndoRequested"
+                                                RedoRequested="OnCanvasRedoRequested"
                                                 IsVisible="{Binding HasDesign}" />
+                            <TextBlock Text="{Binding CanvasHint}" FontSize="10.5"
+                                       Foreground="#99FFFFFF" IsHitTestVisible="False"
+                                       HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                       Margin="12" TextWrapping="Wrap" MaxWidth="520" />
                             <StackPanel Spacing="6" HorizontalAlignment="Center"
                                         VerticalAlignment="Center" IsVisible="{Binding !HasDesign}">
                                 <TextBlock Text="从左侧选一份设计稿" FontSize="12"
@@ -177,6 +210,75 @@
             <!-- 右栏：AI 与历史 -->
             <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Spacing="14">
+                    <!-- 选中图层：与手机轻编辑对齐的桌面属性面板 -->
+                    <Border Classes="card" Padding="14" IsVisible="{Binding HasCanvasSelection}">
+                        <StackPanel Spacing="8">
+                            <TextBlock Classes="section-title" Text="选中图层" />
+                            <TextBlock Text="{Binding SelectedNodeLabel}" FontSize="11.5"
+                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="多选时可在画布上整体拖动；单选可改属性。"
+                                       FontSize="10.5" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TnText4}"
+                                       IsVisible="{Binding NodeMulti}" />
+                            <StackPanel Spacing="6" IsVisible="{Binding HasNodeSelection}">
+                                <TextBox Classes="compose" Text="{Binding NodeText}"
+                                         Watermark="文案（留空不改）" />
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="8"
+                                      RowDefinitions="Auto,Auto" RowSpacing="6">
+                                    <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="X" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeX}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="Y" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeY}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="宽" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeW}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="高" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeH}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="填充色" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeFill}" Watermark="#FFFFFF" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="文字色" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeColor}" Watermark="#0F172A" />
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="描边色（none 表示去掉）" FontSize="10"
+                                               Foreground="{DynamicResource TnText4}" />
+                                    <TextBox Classes="compose" Text="{Binding NodeStroke}" Watermark="#0891B2" />
+                                </StackPanel>
+                                <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="字号" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeFontSize}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="圆角" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeRadius}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Spacing="2">
+                                        <TextBlock Text="不透明度" FontSize="10" Foreground="{DynamicResource TnText4}" />
+                                        <TextBox Classes="compose" Text="{Binding NodeOpacity}" Watermark="0–1" />
+                                    </StackPanel>
+                                </Grid>
+                                <Button Classes="btn primary" Content="应用修改"
+                                        Command="{Binding ApplyNodeEditsCommand}" />
+                                <Button Classes="btn subtle" Content="删除选中图层"
+                                        Command="{Binding DeleteSelectedNodeCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
                     <Border Classes="card" Padding="14">
                         <StackPanel Spacing="8">
                             <TextBlock Classes="section-title" Text="AI 修改" />
@@ -226,13 +328,14 @@
                                        IsVisible="{Binding AiReply, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
                             <StackPanel Orientation="Horizontal" Spacing="8"
-                                        IsVisible="{Binding HasUnsavedAi}">
+                                        IsVisible="{Binding HasUnsavedChanges}">
                                 <Button Classes="btn primary" Content="保存"
                                         Command="{Binding SaveCommand}"
                                         IsEnabled="{Binding !IsBusy}" />
                                 <Button Classes="btn subtle" Content="撤销 AI 修改"
                                         Command="{Binding UndoAiCommand}"
-                                        IsEnabled="{Binding !IsBusy}" />
+                                        IsEnabled="{Binding !IsBusy}"
+                                        IsVisible="{Binding HasUnsavedAi}" />
                             </StackPanel>
                         </StackPanel>
                     </Border>

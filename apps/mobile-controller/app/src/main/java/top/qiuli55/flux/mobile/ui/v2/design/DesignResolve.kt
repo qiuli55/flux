@@ -3,6 +3,7 @@ package top.qiuli55.flux.mobile.ui.v2.design
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -57,18 +58,22 @@ data class ResolvedNode(
     val trackColor: Color,
     /** 节点描边；null 表示不描边。 */
     val stroke: DesignSpec.StrokeSpec?,
-    /** 外阴影环，顺序即绘制顺序（底层 → 顶层）。 */
-    val shadowRings: List<DesignSpec.ShadowRing>,
-    /** 内阴影环，顺序即绘制顺序（底层 → 顶层）。 */
-    val insetShadowRings: List<DesignSpec.ShadowRing>,
+    /** 外阴影，顺序即绘制顺序（底层 → 顶层）。 */
+    val shadows: List<DesignSpec.ShadowSpec>,
+    /** 内阴影，顺序即绘制顺序（底层 → 顶层）。 */
+    val insetShadows: List<DesignSpec.ShadowSpec>,
+    /** 节点级 `filter: blur()` 半径；0 表示不模糊。 */
+    val blur: Float = 0f,
     val text: String,
     /** 主文本的绘制原点（已含对齐与垂直居中偏移）。 */
     val textOrigin: Offset,
     val textLayout: TextLayoutResult?,
     /** 文字描边（宽度已折算成居中描边）；null 表示不描边。 */
     val textStroke: DesignSpec.TextStroke? = null,
-    /** 发光/投影环，顺序即绘制顺序（底层 → 顶层）。 */
-    val textRings: List<DesignSpec.TextRing> = emptyList(),
+    /** 发光/投影，顺序即绘制顺序（底层 → 顶层）。 */
+    val textEffects: List<DesignSpec.TextEffect> = emptyList(),
+    /** 字形轮廓（布局局部坐标），仅在有文字效果时生成，用于真实模糊。 */
+    val textPath: Path? = null,
     val navCells: List<ResolvedNavCell>,
     /** 滑杆进度 0..1。 */
     val value: Float,
@@ -218,6 +223,14 @@ class DesignResolver(
             textOrigin = Offset(dx, y + (node.h - layout.size.height) / 2f)
         }
 
+        val textEffects = if (textLayout == null) emptyList() else DesignSpec.textEffectsOf(node)
+        val textPath = if (textLayout == null || text.isEmpty() || textEffects.isEmpty()) {
+            null
+        } else {
+            // 只有真的有发光/投影时才构轮廓路径；没有效果时不要为每段文字多付一次
+            // 路径生成成本。路径是布局局部坐标，绘制期再加 textOrigin / 偏移。
+            textLayout.getPathForRange(0, text.length)
+        }
         return ResolvedNode(
             id = node.id,
             type = type,
@@ -234,13 +247,15 @@ class DesignResolver(
             fillColor = fillColor,
             trackColor = DesignSpec.color(node.track, DesignSpec.SWITCH_OFF),
             stroke = DesignSpec.strokeOf(node),
-            shadowRings = DesignSpec.shadowRings(node),
-            insetShadowRings = DesignSpec.insetShadowRings(node),
+            shadows = DesignSpec.shadowSpecs(node),
+            insetShadows = DesignSpec.insetShadowSpecs(node),
+            blur = (node.blur ?: 0f).coerceAtLeast(0f),
             text = text,
             textOrigin = textOrigin,
             textLayout = textLayout,
             textStroke = if (textLayout == null) null else DesignSpec.textStrokeOf(node),
-            textRings = if (textLayout == null) emptyList() else DesignSpec.textRingsOf(node),
+            textEffects = textEffects,
+            textPath = textPath,
             navCells = navCells,
             value = (node.value ?: .5f).coerceIn(0f, 1f),
             switchOn = node.on == true,

@@ -15,7 +15,9 @@ import top.qiuli55.flux.mobile.data.DesignShadow
 import top.qiuli55.flux.mobile.data.DesignTextEffect
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -61,8 +63,19 @@ object DesignSpec {
     /** Web `.t-input input::placeholder{opacity:.5}`：设计稿里的输入框文字按占位符绘制。 */
     const val INPUT_PLACEHOLDER_ALPHA = .5f
 
-    /** 阴影模糊的环近似层数，与后端 `design_compile.SHADOW_RINGS` 一致。 */
-    const val SHADOW_RINGS = 10
+    /**
+     * CSS 阴影 blur 半径 → 高斯标准差。规范里 `box-shadow` / `text-shadow` 的 blur
+     * 半径是标准差的两倍；节点级 `filter: blur()` 的参数就是标准差本身。
+     * 与后端 `SHADOW_BLUR_SIGMA_SCALE` / `LAYER_BLUR_SIGMA_SCALE` 一致。
+     */
+    const val SHADOW_BLUR_SIGMA_SCALE = .5f
+    const val LAYER_BLUR_SIGMA_SCALE = 1f
+
+    /** Skia / Android `BlurMaskFilter` 的 radius → sigma 系数（SkBlurMask 的定义）。 */
+    const val SKIA_RADIUS_TO_SIGMA = .57735f
+
+    /** 3 遍盒式模糊即可把高斯核逼近到肉眼不可分辨（σ 误差 < 3%）。 */
+    const val BLUR_PASSES = 3
 
     /** shadow 未给颜色时的回落值，与后端 `DEFAULT_SHADOW_ALPHA` 一致。 */
     val DEFAULT_SHADOW: Color = Color.Black.copy(alpha = .25f)
@@ -73,15 +86,6 @@ object DesignSpec {
 
     /** 文字恒居中、不跟随 `align` 的类型，对齐后端 `CENTER_TEXT_TYPES`。 */
     val CENTER_TEXT_TYPES = setOf("button", "pill", "nav", "badge", "chip", "avatar")
-
-    /**
-     * 发光/投影的固定模糊环 `(半径倍率, alpha 系数)`，与后端 `design_compile.FX_RINGS` 逐项一致。
-     *
-     * 三端都没有高斯模糊：统一用「字形轮廓外扩一圈」近似，外扩距离 = blur × 倍率，
-     * 这样三端只差轮廓算法，不差模糊算法。
-     */
-    val FX_RINGS: List<Pair<Float, Float>> =
-        listOf(.35f to .55f, .7f to .35f, 1f to .18f)
 
     private val TOKEN_RE =
         Regex("""#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\)""")
@@ -467,8 +471,18 @@ object DesignSpec {
     /** 解析后的文字描边：[width] 已是居中描边宽度（outside 时翻倍），可直接喂给 `Stroke`。 */
     data class TextStroke(val width: Float, val color: Color)
 
-    /** 一个发光/投影环；[spread] 为轮廓外扩距离，0 表示同形偏移副本（对应 blur=0 的 CSS 阴影）。 */
-    data class TextRing(val dx: Float, val dy: Float, val spread: Float, val color: Color)
+    /**
+     * 一个发光/投影效果：真实高斯模糊参数。
+     *
+     * [blur] 是 CSS `text-shadow` 的模糊半径（标准差 = blur / 2）；0 表示硬阴影。
+     * 绘制端直接对字形轮廓做模糊，不再拆成多层「轮廓环」。
+     */
+    data class TextEffect(
+        val dx: Float,
+        val dy: Float,
+        val blur: Float,
+        val color: Color,
+    )
 
     /**
      * 文字渐变画笔，只看 `textFill`（与 IR `fill` 同源）。
@@ -492,27 +506,26 @@ object DesignSpec {
     }
 
     /**
-     * 发光/投影环，返回**绘制顺序（底层 → 顶层）**：先投影环，再发光环。
+     * 发光/投影，返回**绘制顺序（底层 → 顶层）**：先投影，再发光。
      *
-     * 网页 `text-shadow` 列表里「先列在上层」，后端又是先写发光再写投影，
-     * 所以投影整组在下、发光整组在上；每组内部按半径从大到小画。
+     * 网页 `text-shadow` 列表里「先列在上层」，后端先写发光再写投影，
+     * 所以投影在下、发光在上，与两端一致。
      */
-    fun textRingsOf(node: DesignNode): List<TextRing> =
-        ringsOf(node.textShadow, glow = false) + ringsOf(node.textGlow, glow = true)
+    fun textEffectsOf(node: DesignNode): List<TextEffect> =
+        effectsOf(node.textShadow, glow = false) + effectsOf(node.textGlow, glow = true)
 
-    private fun ringsOf(effect: DesignTextEffect?, glow: Boolean): List<TextRing> {
+    private fun effectsOf(effect: DesignTextEffect?, glow: Boolean): List<TextEffect> {
         if (effect == null) return emptyList()
         val base = colorOrNull(effect.color) ?: return emptyList()
         val intensity = (effect.intensity ?: 1f).coerceIn(0f, 1f)
+        val alpha = (base.alpha * intensity).coerceIn(0f, 1f)
+        if (alpha <= .004f) return emptyList()
         // 与后端 `_compile_fx` 一致：blur 缺省时回退到 radius（设计稿里发光习惯写 radius）。
         val blur = (effect.blur ?: effect.radius ?: 0f).coerceAtLeast(0f)
         // 发光不认偏移，投影才用 dx/dy（对齐 `_text_shadow_css`）。
         val dx = if (glow) 0f else (effect.dx ?: 0f)
         val dy = if (glow) 0f else (effect.dy ?: 0f)
-        return FX_RINGS.asReversed().mapNotNull { (radius, ringAlpha) ->
-            val alpha = (base.alpha * intensity * ringAlpha).coerceIn(0f, 1f)
-            if (alpha <= .004f) null else TextRing(dx, dy, blur * radius, base.copy(alpha = alpha))
-        }
+        return listOf(TextEffect(dx, dy, blur, base.copy(alpha = alpha)))
     }
 
     // ------------------------------------------------------------ 节点描边 / 阴影
@@ -541,57 +554,199 @@ object DesignSpec {
         return StrokeSpec(strokeColor, width, raw.dash.isNotEmpty(), sides.ifEmpty { null })
     }
 
-    /** 一个阴影环；[spread] 是向外扩张（inset 时向内收）的距离。 */
-    data class ShadowRing(
+    /**
+     * 一个阴影：真实高斯模糊参数。
+     *
+     * [blur] 是 CSS `box-shadow` 的模糊半径（标准差 = blur / 2），0 表示硬阴影。
+     * 绘制端用平台模糊 / 像素高斯一次成形，不再拆成多层 spread 环。
+     */
+    data class ShadowSpec(
         val dx: Float,
         val dy: Float,
-        val spread: Float,
+        val blur: Float,
         val color: Color,
         val inset: Boolean,
     )
 
-    /** 外阴影环（大 spread 在下、小 spread 在上）；card 无显式 shadow 时补默认投影。 */
-    fun shadowRings(node: DesignNode): List<ShadowRing> {
+    /** 外阴影；card 无显式 shadow 时补默认投影（dy=6 / blur=0）。 */
+    fun shadowSpecs(node: DesignNode): List<ShadowSpec> {
         if (node.shadow == null && typeOf(node) == "card") {
             return listOf(
-                ShadowRing(
+                ShadowSpec(
                     dx = 0f,
                     dy = CARD_SHADOW_OFFSET,
-                    spread = 0f,
+                    blur = 0f,
                     color = Color.Black.copy(alpha = CARD_SHADOW_ALPHA),
                     inset = false,
                 ),
             )
         }
-        return shadowRingLayers(node.shadow, forceInset = false).filterNot { it.inset }
+        return shadowSpecsOf(node.shadow, forceInset = false).filterNot { it.inset }
     }
 
-    /** 内阴影环：`insetShadow` 恒在盒内绘制，`shadow` 里 inset=true 的层也算内阴影。 */
-    fun insetShadowRings(node: DesignNode): List<ShadowRing> =
-        (shadowRingLayers(node.shadow, forceInset = false) +
-            shadowRingLayers(node.insetShadow, forceInset = true)).filter { it.inset }
+    /** 内阴影：`insetShadow` 恒在盒内绘制，`shadow` 里 inset=true 的层也算内阴影。 */
+    fun insetShadowSpecs(node: DesignNode): List<ShadowSpec> =
+        (shadowSpecsOf(node.shadow, forceInset = false) +
+            shadowSpecsOf(node.insetShadow, forceInset = true)).filter { it.inset }
 
-    /**
-     * blur>0 时按 N=10 环近似：spread_i = blur × i / N，
-     * alpha_i = color.alpha × 3/N × (1 − i/N)²；blur=0 退化为单段。
-     */
-    private fun shadowRingLayers(shadow: DesignShadow?, forceInset: Boolean): List<ShadowRing> {
+    private fun shadowSpecsOf(shadow: DesignShadow?, forceInset: Boolean): List<ShadowSpec> {
         if (shadow == null) return emptyList()
         val base = color(shadow.color, DEFAULT_SHADOW)
         if (base.alpha <= .004f) return emptyList()
-        val dx = shadow.dx
-        val dy = shadow.dy
-        val blur = shadow.blur.coerceAtLeast(0f)
-        val inset = forceInset || shadow.inset
-        if (blur <= .0001f) return listOf(ShadowRing(dx, dy, 0f, base, inset))
-        val rings = ArrayList<ShadowRing>(SHADOW_RINGS)
-        for (index in SHADOW_RINGS downTo 1) {
-            val ratio = index.toFloat() / SHADOW_RINGS
-            val alpha = base.alpha * 3f / SHADOW_RINGS * (1f - ratio) * (1f - ratio)
-            if (alpha <= .004f) continue
-            rings += ShadowRing(dx, dy, blur * ratio, base.copy(alpha = alpha), inset)
+        return listOf(
+            ShadowSpec(
+                dx = shadow.dx,
+                dy = shadow.dy,
+                blur = shadow.blur.coerceAtLeast(0f),
+                color = base,
+                inset = forceInset || shadow.inset,
+            ),
+        )
+    }
+
+    // ------------------------------------------------------------ 模糊 / 像素对齐
+
+    /** 阴影/文字效果：CSS blur 半径 → 高斯标准差。 */
+    fun shadowSigma(blur: Float): Float =
+        blur.coerceAtLeast(0f) * SHADOW_BLUR_SIGMA_SCALE
+
+    /** 节点级 `filter: blur()`：CSS 参数就是高斯标准差。 */
+    fun layerSigma(blur: Float): Float =
+        blur.coerceAtLeast(0f) * LAYER_BLUR_SIGMA_SCALE
+
+    /**
+     * 阴影模糊半径 → `BlurMaskFilter` 的 radius。
+     *
+     * Skia 的 `SkBlurMask::ConvertRadiusToSigma` 是 `sigma = 0.57735 * radius + 0.5`，
+     * 反解即可让 Android 的模糊与浏览器 CSS（σ = blur / 2）落在同一强度。
+     */
+    fun blurMaskRadius(blur: Float): Float {
+        val sigma = shadowSigma(blur)
+        if (sigma <= 0f) return 0f
+        return ((sigma - .5f) / SKIA_RADIUS_TO_SIGMA).coerceAtLeast(.01f)
+    }
+
+    /** 模糊核在几何外的可见半径（3σ 截断 + 1px 保护），用于离屏位图留边。 */
+    fun blurPadding(blur: Float): Float = ceil(shadowSigma(blur) * 3f + 1f)
+
+    /** 节点级模糊的离屏留边。 */
+    fun layerBlurPadding(blur: Float): Float = ceil(layerSigma(blur) * 3f + 1f)
+
+    /**
+     * 只有缩放接近整数（100% / 200% / …）时才做像素对齐；任意缩放时对齐会让
+     * 平移中的边缘抖动（Figma 等成熟产品的做法也是只在整数倍吸附）。
+     */
+    fun isPixelScale(scale: Float): Boolean {
+        if (!scale.isFinite() || scale <= 0f) return false
+        val rounded = scale.roundToInt()
+        return rounded >= 1 && abs(scale - rounded) <= .002f
+    }
+
+    /** 把设计坐标吸附到设备像素网格（仅在整数缩放时调用）。 */
+    fun snapToPixel(value: Float, scale: Float): Float =
+        if (!isPixelScale(scale)) value else (value * scale).roundToInt() / scale
+
+    /** 描边中心线吸附：让线宽的外沿落在像素边界上，奇偶线宽都不会半像素发虚。 */
+    fun snapStrokeCenter(center: Float, width: Float, scale: Float): Float {
+        if (!isPixelScale(scale)) return center
+        val edge = snapToPixel(center - width / 2f, scale)
+        return edge + width / 2f
+    }
+
+    /**
+     * 3 遍盒式模糊的盒宽序列（奇数）。盒式模糊方差 = (w² − 1) / 12，
+     * 用 Kutskir 的近似把 [passes] 个盒子的总方差对齐到 σ²；比单遍盒式模糊
+     * 的边缘更接近高斯，不会出现方形光晕。
+     */
+    fun boxBlurRadii(sigma: Float, passes: Int = BLUR_PASSES): IntArray {
+        if (passes <= 0) return IntArray(0)
+        if (sigma <= .01f) return IntArray(passes) { 1 }
+        val square = sigma * sigma
+        val ideal = sqrt(12f * square / passes + 1f)
+        var lower = floor(ideal).toInt()
+        if (lower % 2 == 0) lower--
+        lower = lower.coerceAtLeast(1)
+        val upper = lower + 2
+        val mIdeal = (12f * square - passes * lower * lower - 4f * passes * lower - 3f * passes) /
+            (-4f * lower - 4f)
+        val m = mIdeal.roundToInt().coerceIn(0, passes)
+        return IntArray(passes) { if (it < m) lower else upper }
+    }
+
+    /**
+     * 纯 Kotlin 的 ARGB 盒式模糊（3 遍≈高斯）。像素按 Android 的 premultiplied
+     * ARGB 处理，因此对半透明内容也正确。用于节点级 `filter: blur()`——
+     * `BlurMaskFilter` 只模糊 alpha，不能模糊彩色内容。
+     */
+    fun boxBlurArgb(pixels: IntArray, width: Int, height: Int, sigma: Float) {
+        if (width <= 0 || height <= 0 || pixels.size < width * height || sigma <= .01f) return
+        val sizes = boxBlurRadii(sigma)
+        val temp = IntArray(pixels.size)
+        sizes.forEach { boxSize ->
+            val radius = (boxSize - 1) / 2
+            if (radius <= 0) return@forEach
+            blurHorizontal(pixels, temp, width, height, radius)
+            blurVertical(temp, pixels, width, height, radius)
         }
-        return rings
+    }
+
+    private fun blurHorizontal(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val divisor = r * 2 + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var a = 0
+            var red = 0
+            var green = 0
+            var blue = 0
+            for (offset in -r..r) {
+                val pixel = src[row + offset.coerceIn(0, w - 1)]
+                a += pixel ushr 24 and 0xFF
+                red += pixel ushr 16 and 0xFF
+                green += pixel ushr 8 and 0xFF
+                blue += pixel and 0xFF
+            }
+            for (x in 0 until w) {
+                dst[row + x] = ((a / divisor) shl 24) or
+                    ((red / divisor) shl 16) or
+                    ((green / divisor) shl 8) or
+                    (blue / divisor)
+                val out = src[row + (x - r).coerceIn(0, w - 1)]
+                val into = src[row + (x + r + 1).coerceIn(0, w - 1)]
+                a += (into ushr 24 and 0xFF) - (out ushr 24 and 0xFF)
+                red += (into ushr 16 and 0xFF) - (out ushr 16 and 0xFF)
+                green += (into ushr 8 and 0xFF) - (out ushr 8 and 0xFF)
+                blue += (into and 0xFF) - (out and 0xFF)
+            }
+        }
+    }
+
+    private fun blurVertical(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val divisor = r * 2 + 1
+        for (x in 0 until w) {
+            var a = 0
+            var red = 0
+            var green = 0
+            var blue = 0
+            for (offset in -r..r) {
+                val pixel = src[offset.coerceIn(0, h - 1) * w + x]
+                a += pixel ushr 24 and 0xFF
+                red += pixel ushr 16 and 0xFF
+                green += pixel ushr 8 and 0xFF
+                blue += pixel and 0xFF
+            }
+            for (y in 0 until h) {
+                dst[y * w + x] = ((a / divisor) shl 24) or
+                    ((red / divisor) shl 16) or
+                    ((green / divisor) shl 8) or
+                    (blue / divisor)
+                val out = src[(y - r).coerceIn(0, h - 1) * w + x]
+                val into = src[(y + r + 1).coerceIn(0, h - 1) * w + x]
+                a += (into ushr 24 and 0xFF) - (out ushr 24 and 0xFF)
+                red += (into ushr 16 and 0xFF) - (out ushr 16 and 0xFF)
+                green += (into ushr 8 and 0xFF) - (out ushr 8 and 0xFF)
+                blue += (into and 0xFF) - (out and 0xFF)
+            }
+        }
     }
 
     /** 可解析返回颜色，否则 null；对应后端 `ir_color(x)` 不带默认值时「整段丢弃」的语义。 */

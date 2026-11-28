@@ -44,8 +44,82 @@ public partial class DesignsViewModel : ViewModelBase
 
     private readonly DispatcherTimer _aiTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
+    /// <summary>画布手工编辑的撤销 / 重做栈：保存原始 JSON 快照，避免反序列化丢字段。</summary>
+    private readonly Stack<JsonObject> _undoStack = new();
+    private readonly Stack<JsonObject> _redoStack = new();
+
+    /// <summary>最近一次保存 / 打开时的 JSON 文本，用于判断当前是否真的偏离已保存版本。</summary>
+    private string _savedRawText = "";
+
+    /// <summary>本次手势按下时的快照；只有真的改了东西才压进撤销栈。</summary>
+    private JsonObject? _pendingEdit;
+
     [ObservableProperty]
     private bool _isBusy;
+
+    [ObservableProperty]
+    private bool _hasUnsavedChanges;
+
+    [ObservableProperty]
+    private bool _canUndo;
+
+    [ObservableProperty]
+    private bool _canRedo;
+
+    [ObservableProperty]
+    private bool _isCanvasEditing;
+
+    [ObservableProperty]
+    private string _canvasHint = "点按钮 / 滑杆 / 开关可交互；打开「编辑画布」可拖动、缩放和吸附。";
+
+    // ---- 右侧「选中图层」轻编辑面板 ----
+    [ObservableProperty]
+    private bool _hasCanvasSelection;
+
+    [ObservableProperty]
+    private bool _hasNodeSelection;
+
+    [ObservableProperty]
+    private bool _nodeMulti;
+
+    [ObservableProperty]
+    private string _selectedNodeLabel = "";
+
+    [ObservableProperty]
+    private string _nodeText = "";
+
+    [ObservableProperty]
+    private string _nodeFill = "";
+
+    [ObservableProperty]
+    private string _nodeColor = "";
+
+    [ObservableProperty]
+    private string _nodeStroke = "";
+
+    [ObservableProperty]
+    private string _nodeX = "";
+
+    [ObservableProperty]
+    private string _nodeY = "";
+
+    [ObservableProperty]
+    private string _nodeW = "";
+
+    [ObservableProperty]
+    private string _nodeH = "";
+
+    [ObservableProperty]
+    private string _nodeFontSize = "";
+
+    [ObservableProperty]
+    private string _nodeRadius = "";
+
+    [ObservableProperty]
+    private string _nodeOpacity = "";
+
+    private string _selectedNodeId = "";
+
 
     [ObservableProperty]
     private bool _isAiBusy;
@@ -387,6 +461,9 @@ public partial class DesignsViewModel : ViewModelBase
             AiReply = "";
             AiElapsedText = "";
             ApplyDocument(raw);
+            _savedRawText = raw.ToJsonString();
+            HasUnsavedChanges = false;
+            ResetHistory();
             await LoadRevisionsAsync(api);
             AppLog.Info($"设计页打开 · {card.Id} v{_version}");
         }
@@ -449,6 +526,9 @@ public partial class DesignsViewModel : ViewModelBase
         ClearAiPlan();
         _aiBackup = null;
         HasUnsavedAi = false;
+        HasUnsavedChanges = false;
+        _savedRawText = "";
+        ResetHistory();
     }
 
     private async Task LoadRevisionsAsync(FluxApiClient api)
@@ -473,6 +553,255 @@ public partial class DesignsViewModel : ViewModelBase
 
         ActiveScreenIndex = tab.Index;
         MetaDetail = $"当前画板：{tab.Label}";
+    }
+
+    // ------------------------------------------------------------ 画布编辑 / 撤销
+
+    partial void OnIsCanvasEditingChanged(bool value)
+    {
+        CanvasHint = value
+            ? "拖图层移动 · 拖手柄缩放 · Shift 等比 · Shift 旋转 15° · 滚轮平移 · Ctrl+滚轮缩放 · 空格拖动 · Ctrl+Z 撤销"
+            : "点按钮 / 滑杆 / 开关可交互；打开「编辑画布」可拖动、缩放和吸附。";
+    }
+
+    [RelayCommand]
+    private void ToggleCanvasEditing() => IsCanvasEditing = !IsCanvasEditing;
+
+    /// <summary>画布手势开始：记下快照，真要改了才在提交时压栈。</summary>
+    public void BeginCanvasEdit()
+    {
+        if (_raw is null) return;
+        _pendingEdit = (JsonObject)_raw.DeepClone();
+    }
+
+    /// <summary>手势结束：把最终几何写回原始 JSON，再刷新只读视图。</summary>
+    public void CommitCanvasEdit(IReadOnlyList<DesignFrameChange> changes)
+    {
+        if (_raw is null || changes.Count == 0) return;
+        var changed = false;
+        foreach (var change in changes)
+        {
+            changed |= DesignOps.SetNodeFrame(
+                _raw,
+                change.Id,
+                change.X,
+                change.Y,
+                change.W,
+                change.H,
+                change.Rotation);
+        }
+        if (!changed)
+        {
+            _pendingEdit = null;
+            return;
+        }
+
+        if (_pendingEdit is not null)
+        {
+            PushUndo(_pendingEdit);
+        }
+        HasUnsavedChanges = SavedDiffers();
+        RefreshCanvasDocument();
+        AiState = "画布已修改，点「保存」写入设计稿";
+    }
+
+    public void DeleteCanvasNodes(IReadOnlyList<string> ids)
+    {
+        if (_raw is null || ids.Count == 0) return;
+        var snapshot = (JsonObject)_raw.DeepClone();
+        if (DesignOps.RemoveNodes(_raw, ids) == 0) return;
+        PushUndo(snapshot);
+        HasUnsavedChanges = SavedDiffers();
+        RefreshCanvasDocument();
+        AiState = $"已删除 {ids.Count} 个图层，点「保存」写入设计稿";
+    }
+
+    [RelayCommand]
+    private void UndoEdit()
+    {
+        if (_raw is null || _undoStack.Count == 0) return;
+        _pendingEdit = null;
+        _redoStack.Push((JsonObject)_raw.DeepClone());
+        _raw = _undoStack.Pop();
+        HasUnsavedChanges = SavedDiffers();
+        UpdateHistory();
+        RefreshCanvasDocument();
+        AiState = "已撤销上一步画布修改";
+    }
+
+    [RelayCommand]
+    private void RedoEdit()
+    {
+        if (_raw is null || _redoStack.Count == 0) return;
+        _pendingEdit = null;
+        _undoStack.Push((JsonObject)_raw.DeepClone());
+        _raw = _redoStack.Pop();
+        HasUnsavedChanges = SavedDiffers();
+        UpdateHistory();
+        RefreshCanvasDocument();
+        AiState = "已重做上一步画布修改";
+    }
+
+    private bool SavedDiffers() =>
+        _raw is not null && _savedRawText.Length > 0 &&
+        !string.Equals(_raw.ToJsonString(), _savedRawText, StringComparison.Ordinal);
+
+    private void UpdateHistory()
+    {
+        CanUndo = _undoStack.Count > 0;
+        CanRedo = _redoStack.Count > 0;
+    }
+
+    private void ResetHistory()
+    {
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _pendingEdit = null;
+        UpdateHistory();
+    }
+
+    /// <summary>只刷新画布绑定的只读文档，不重建页签 / 不重置当前画板。</summary>
+    private void RefreshCanvasDocument()
+    {
+        if (_raw is null) return;
+        try
+        {
+            var document = JsonSerializer.Deserialize<DesignDocument>(_raw, DesignJson.Options);
+            Document = document;
+            var layers = (document?.Screens ?? new List<DesignScreen>())
+                .Sum(screen => CountLayers(screen.Nodes));
+            Meta = $"v{_version} · {Screens.Count} 屏 · {layers} 层";
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("画布编辑后刷新文档失败", ex);
+        }
+    }
+
+    /// <summary>画布选中变化：单选时读出可编辑属性，多选时只显示数量。</summary>
+    public void SelectCanvasNode(IReadOnlyList<string> ids)
+    {
+        HasCanvasSelection = ids.Count > 0;
+        NodeMulti = ids.Count > 1;
+        if (ids.Count != 1 || _raw is null || DesignOps.GetNode(_raw, ids[0]) is not { } node)
+        {
+            _selectedNodeId = "";
+            HasNodeSelection = false;
+            SelectedNodeLabel = ids.Count > 1 ? $"已选 {ids.Count} 个图层" : "";
+            return;
+        }
+
+        _selectedNodeId = ids[0];
+        HasNodeSelection = true;
+        var type = (Text(node["type"]) is { Length: > 0 } t ? t : "text");
+        var name = Text(node["name"]);
+        SelectedNodeLabel = (name.Length > 0 ? name : type) + " · " + type;
+        NodeText = Text(node["text"]);
+        NodeFill = Text(node["fill"]);
+        NodeColor = Text(node["color"]);
+        NodeStroke = node["stroke"] is JsonObject stroke ? Text(stroke["color"]) : Text(node["stroke"]);
+        NodeX = NumberText(node["x"]);
+        NodeY = NumberText(node["y"]);
+        NodeW = NumberText(node["w"]);
+        NodeH = NumberText(node["h"]);
+        NodeFontSize = NumberText(node["fontSize"]);
+        NodeRadius = node["radius"] is JsonObject radius
+            ? NumberText(radius["tl"])
+            : NumberText(node["radius"]);
+        NodeOpacity = NumberText(node["opacity"]);
+    }
+
+    /// <summary>把右侧面板的数值 / 文本一次性写回图层；空字段表示不修改。</summary>
+    [RelayCommand]
+    private void ApplyNodeEdits()
+    {
+        if (_raw is null || _selectedNodeId.Length == 0) return;
+        if (DesignOps.GetNode(_raw, _selectedNodeId) is not { } node)
+        {
+            AiState = "选中的图层已不存在";
+            return;
+        }
+
+        var snapshot = (JsonObject)_raw.DeepClone();
+        var set = new JsonObject();
+        if (NodeText.Length > 0) set["text"] = NodeText;
+        if (NodeFill.Trim().Length > 0) set["fill"] = NodeFill.Trim();
+        if (NodeColor.Trim().Length > 0) set["color"] = NodeColor.Trim();
+
+        void Number(string key, string raw)
+        {
+            if (double.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                set[key] = value;
+            }
+        }
+
+        Number("x", NodeX);
+        Number("y", NodeY);
+        Number("w", NodeW);
+        Number("h", NodeH);
+        Number("fontSize", NodeFontSize);
+        Number("radius", NodeRadius);
+        Number("opacity", NodeOpacity);
+
+        var changed = 0;
+        var stroke = NodeStroke.Trim();
+        if (stroke.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            node.Remove("stroke");
+            changed++;
+        }
+        else if (stroke.Length > 0)
+        {
+            set["stroke"] = stroke;
+        }
+
+        changed += DesignOps.ApplyPatch(node, set);
+        if (changed == 0)
+        {
+            AiState = "没有可应用的修改";
+            return;
+        }
+
+        PushUndo(snapshot);
+        HasUnsavedChanges = SavedDiffers();
+        UpdateHistory();
+        RefreshCanvasDocument();
+        SelectCanvasNode(new[] { _selectedNodeId });
+        AiState = "图层已修改，点「保存」写入设计稿";
+    }
+
+    [RelayCommand]
+    private void DeleteSelectedNode()
+    {
+        if (_selectedNodeId.Length == 0) return;
+        DeleteCanvasNodes(new[] { _selectedNodeId });
+    }
+
+    private void PushUndo(JsonObject snapshot)
+    {
+        _pendingEdit = null;
+        _undoStack.Push(snapshot);
+        _redoStack.Clear();
+        UpdateHistory();
+    }
+
+    private static string Text(JsonNode? value)
+    {
+        if (value is null) return "";
+        return value is JsonValue json && json.TryGetValue<string>(out var text) ? text : "";
+    }
+
+    private static string NumberText(JsonNode? value)
+    {
+        if (value is null) return "";
+        if (value is JsonValue json && json.TryGetValue<double>(out var number))
+        {
+            return Math.Abs(number - Math.Round(number)) < 1e-9
+                ? ((int)Math.Round(number)).ToString(CultureInfo.InvariantCulture)
+                : number.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+        return Text(value);
     }
 
     [RelayCommand]
@@ -679,6 +1008,14 @@ public partial class DesignsViewModel : ViewModelBase
 
             _raw = plan.Preview;
             ApplyDocument(_raw);
+            // AI 修改也进同一套撤销栈：Ctrl+Z 与「撤销 AI 修改」都能回到应用前。
+            if (_aiBackup is not null)
+            {
+                _undoStack.Push((JsonObject)_aiBackup.DeepClone());
+                _redoStack.Clear();
+                UpdateHistory();
+            }
+            HasUnsavedChanges = SavedDiffers();
             _aiPlan = null;
             HasAiPreview = false;
             HasUnsavedAi = true;
@@ -729,6 +1066,9 @@ public partial class DesignsViewModel : ViewModelBase
         _raw = (JsonObject)_aiBackup.DeepClone();
         ApplyDocument(_raw);
         HasUnsavedAi = false;
+        HasUnsavedChanges = SavedDiffers();
+        _pendingEdit = null;
+        UpdateHistory();
         AiState = "已撤销 AI 修改";
         AiReply = "";
         Hint = "已撤销 AI 修改";
@@ -758,6 +1098,9 @@ public partial class DesignsViewModel : ViewModelBase
             }
 
             ApplyDocument(savedRaw);
+            _savedRawText = savedRaw.ToJsonString();
+            HasUnsavedChanges = false;
+            ResetHistory();
             HasUnsavedAi = false;
             _aiBackup = null;
             AiState = $"已保存 v{_version}";
@@ -808,6 +1151,9 @@ public partial class DesignsViewModel : ViewModelBase
             _aiBackup = null;
             HasUnsavedAi = false;
             ApplyDocument(raw);
+            _savedRawText = raw.ToJsonString();
+            HasUnsavedChanges = false;
+            ResetHistory();
             await LoadRevisionsAsync(api);
             AiState = $"已恢复到 v{revision.Version}（当前 v{_version}）";
             AppLog.Info($"设计页回滚 · {_designId} 恢复到 v{revision.Version}");

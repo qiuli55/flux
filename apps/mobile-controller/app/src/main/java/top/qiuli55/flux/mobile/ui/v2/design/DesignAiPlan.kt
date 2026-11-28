@@ -46,6 +46,11 @@ data class DesignAiPlan(
     val totalOps: Int,
     val unapplied: Int,
     val reply: String = "",
+    /**
+     * 每应用完一条 op 后的中间文档（与 [changes] 同序）。
+     * 确认后可以一项一项地演进画布；取消时直接回到应用前。
+     */
+    val steps: List<DesignDocument> = emptyList(),
 ) {
     val hasChanges: Boolean get() = applied > 0
 
@@ -93,9 +98,18 @@ object DesignAiPlanner {
         var applied = 0
         var unapplied = 0
         val changes = mutableListOf<DesignAiChange>()
+        val steps = mutableListOf<DesignDocument>()
+
+        /** 当前 nodes 对应的完整文档快照；分步应用时每一步都用它。 */
+        fun snapshot(): DesignDocument {
+            val screens = document.screens.toMutableList()
+            screens[screenIndex] = screen.copy(nodes = nodes)
+            return document.copy(screens = screens)
+        }
 
         ops.forEach { op ->
             val kind = op.op.ifBlank { "set" }.lowercase()
+            val changesBefore = changes.size
             var hit = false
             when (kind) {
                 "set" -> {
@@ -197,22 +211,22 @@ object DesignAiPlanner {
                 }
             }
             if (!hit) unapplied += 1
+            // 一条成功 op 产生一个变更项，也对应一份可独立呈现的中间稿。
+            if (changes.size > changesBefore) steps += snapshot()
         }
 
         if (applied == 0) {
             return DesignAiPlan(document, emptyList(), 0, ops.size, maxOf(unapplied, 1), reply)
         }
 
-        val screens = document.screens.toMutableList()
-        val updatedScreen: DesignScreen = screen.copy(nodes = nodes)
-        screens[screenIndex] = updatedScreen
         return DesignAiPlan(
-            preview = document.copy(screens = screens),
+            preview = steps.lastOrNull() ?: snapshot(),
             changes = changes,
             applied = applied,
             totalOps = ops.size,
             unapplied = unapplied,
             reply = reply,
+            steps = steps,
         )
     }
 

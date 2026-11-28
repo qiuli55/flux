@@ -172,6 +172,54 @@ public static class DesignOps
         return 1;
     }
 
+    /// <summary>按 id 取节点（右侧「选中图层」面板读取当前值用）。</summary>
+    public static JsonObject? GetNode(JsonObject design, string id) =>
+        id.Length == 0 ? null : Find(design, id)?.Node;
+
+    /// <summary>
+    /// 画布拖动 / 缩放手势结束后写回单个图层几何。坐标是父级坐标系，
+    /// 与 JSON 里节点自身的 x/y 同义，不改动其它字段。
+    /// </summary>
+    public static bool SetNodeFrame(
+        JsonObject design,
+        string id,
+        double x,
+        double y,
+        double w,
+        double h,
+        double? rotation = null)
+    {
+        var hit = Find(design, id);
+        if (hit is null) return false;
+        SetNumber(hit.Node, "x", x);
+        SetNumber(hit.Node, "y", y);
+        SetNumber(hit.Node, "w", Math.Max(1, w));
+        SetNumber(hit.Node, "h", Math.Max(1, h));
+        if (rotation is { } value)
+        {
+            var next = ((value % 360) + 360) % 360;
+            if (next > 180) next -= 360;
+            // 0° 不写进 JSON，避免给原本没有 rotation 的图层平白加字段。
+            if (Math.Abs(next) < 1e-6) hit.Node.Remove("rotation");
+            else SetNumber(hit.Node, "rotation", next);
+        }
+        return true;
+    }
+
+    /// <summary>按 id 删除图层；返回实际删除的数量。</summary>
+    public static int RemoveNodes(JsonObject design, IEnumerable<string> ids)
+    {
+        var removed = 0;
+        foreach (var id in ids.Distinct())
+        {
+            var hit = Find(design, id);
+            if (hit is null || hit.Index < 0 || hit.Index >= hit.List.Count) continue;
+            hit.List.RemoveAt(hit.Index);
+            removed++;
+        }
+        return removed;
+    }
+
     /// <summary>应用一组属性；只接受白名单键，每个被处理的键计 1 项。</summary>
     public static int ApplyPatch(JsonObject node, JsonObject set)
     {

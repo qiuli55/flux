@@ -12,9 +12,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -42,13 +39,16 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Checklist
@@ -69,6 +69,7 @@ import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Redo
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Rotate90DegreesCcw
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Undo
@@ -91,6 +92,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -98,6 +100,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
@@ -112,6 +115,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -126,6 +131,7 @@ import top.qiuli55.flux.mobile.data.DesignRevision
 import top.qiuli55.flux.mobile.data.DesignScreen
 import top.qiuli55.flux.mobile.ui.v2.design.DesignAiChange
 import top.qiuli55.flux.mobile.ui.v2.design.DesignAiPlan
+import top.qiuli55.flux.mobile.ui.v2.design.DesignCamera
 import top.qiuli55.flux.mobile.ui.v2.design.DesignChangeKind
 import top.qiuli55.flux.mobile.ui.v2.design.DesignHandle
 import top.qiuli55.flux.mobile.ui.v2.design.DesignInteract
@@ -135,6 +141,7 @@ import top.qiuli55.flux.mobile.ui.v2.design.DesignSpec
 import top.qiuli55.flux.mobile.ui.v2.design.NodeFrame
 import top.qiuli55.flux.mobile.ui.v2.design.ResolvedNode
 import top.qiuli55.flux.mobile.ui.v2.design.SnapResult
+import top.qiuli55.flux.mobile.ui.v2.design.TwoFingerIntent
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -735,6 +742,7 @@ private fun DrawScope.drawDesignPreview(
                     height = preview.h,
                     bg = bg,
                     device = false,
+                    pixelScale = scale,
                 )
             }
         }
@@ -852,6 +860,20 @@ fun DesignCanvasScreen(
     onSetAlign: (String?) -> Unit,
     onSetStroke: (String?) -> Unit,
     onSetShadow: (Boolean) -> Unit,
+    onSetLineHeight: (Float) -> Unit,
+    onSetLetterSpacing: (Float) -> Unit,
+    onSetFontFamily: (String?) -> Unit,
+    onSetMaxLines: (Int) -> Unit,
+    onSetAutoFit: (Boolean) -> Unit,
+    onSetShadowBlur: (Float) -> Unit,
+    onSetShadowOffsetY: (Float) -> Unit,
+    onSetShadowColor: (String?) -> Unit,
+    onSetStrokeWidth: (Float) -> Unit,
+    onSetX: (Float) -> Unit,
+    onSetY: (Float) -> Unit,
+    onSetWidth: (Float) -> Unit,
+    onSetHeight: (Float) -> Unit,
+    onSetRotation: (Float) -> Unit,
     onAskAi: (String) -> Unit,
     onApplyAi: () -> Unit,
     onCancelAi: () -> Unit,
@@ -997,7 +1019,12 @@ fun DesignCanvasScreen(
 
                 // AI 预览时画布画的是「应用后」的预览稿；确认前原文档不变。
                 val aiPlan = state.aiPlan
-                val previewScreen = aiPlan?.preview?.screens?.getOrNull(state.screenIndex)
+                // 确认前看最终预览稿；开始分步应用后改看真实文档，逐项演进。
+                val previewScreen = aiPlan
+                    ?.takeIf { state.aiApplyingIndex < 0 }
+                    ?.preview
+                    ?.screens
+                    ?.getOrNull(state.screenIndex)
                 val canvasScreen = previewScreen ?: screen
                 // 解析一次、绘制与命中测试共用；节点不变时不会重新量字（Resolver 内部还有 LRU）
                 val resolver = rememberDesignResolver(textMeasurer)
@@ -1029,6 +1056,13 @@ fun DesignCanvasScreen(
                     var marquee by remember(document.id, state.screenIndex) {
                         mutableStateOf<Rect?>(null)
                     }
+                    // 等比缩放 / 15° 步进旋转：手机没有 Shift，用画布上的两个小开关等价实现。
+                    var proportional by remember(document.id, state.screenIndex) {
+                        mutableStateOf(false)
+                    }
+                    var stepRotation by remember(document.id, state.screenIndex) {
+                        mutableStateOf(false)
+                    }
 
                     Canvas(
                         Modifier
@@ -1049,43 +1083,43 @@ fun DesignCanvasScreen(
                                     if (view.width <= 0f || view.height <= 0f) return@awaitEachGesture
                                     val slop = viewConfiguration.touchSlop
 
-                                    fun currentScale(): Float = min(
-                                        view.width / drawScreen.w,
-                                        view.height / drawScreen.h,
-                                    ) * .92f * zoom
-
-                                    fun currentOrigin(scale: Float): Offset = Offset(
-                                        (view.width - drawScreen.w * scale) / 2f + pan.x,
-                                        (view.height - drawScreen.h * scale) / 2f + pan.y,
+                                    fun camera(): DesignCamera = DesignCamera(
+                                        viewW = view.width,
+                                        viewH = view.height,
+                                        boardW = drawScreen.w,
+                                        boardH = drawScreen.h,
+                                        zoom = zoom,
+                                        pan = pan,
                                     )
 
-                                    fun toDesign(position: Offset, scale: Float): Offset {
-                                        val origin = currentOrigin(scale)
-                                        return Offset(
-                                            (position.x - origin.x) / scale,
-                                            (position.y - origin.y) / scale,
-                                        )
-                                    }
-
-                                    val scaleAtDown = currentScale()
-                                    val downDesign = toDesign(down.position, scaleAtDown)
-                                    // 热区按缩放反算，保证屏幕上永远是 44dp 的手指友好尺寸
-                                    val hotRadius = 22.dp.toPx() / scaleAtDown
+                                    val startCamera = camera()
+                                    val scaleAtDown = startCamera.scale
+                                    if (scaleAtDown <= 0f) return@awaitEachGesture
+                                    val downDesign = startCamera.toDesign(down.position)
+                                    // 热区按缩放反算，保证屏幕上约 44dp 的手指友好尺寸；
+                                    // 小节点上 handleHitRadius 会收窄，避免手柄吞掉整个节点。
+                                    val desiredHandle = 22.dp.toPx() / scaleAtDown
                                     val rotateOffset = 26.dp.toPx() / scaleAtDown
                                     val snapThreshold = 6.dp.toPx() / scaleAtDown
 
                                     // 手柄只在单选时出现与响应
                                     val selectedNode = latestSelection.value.singleOrNull()
                                         ?.let { findResolved(latestResolved.value, it) }
+                                    val handleRadius = selectedNode?.let {
+                                        DesignInteract.handleHitRadius(
+                                            desiredHandle,
+                                            NodeFrame(it.x, it.y, it.w, it.h),
+                                        )
+                                    } ?: 0f
                                     val handleDown = selectedNode?.let {
-                                        DesignInteract.hitHandle(it, downDesign, hotRadius, rotateOffset)
+                                        DesignInteract.hitHandle(it, downDesign, handleRadius, rotateOffset)
                                     }
                                     val startFrame = selectedNode?.let {
                                         NodeFrame(it.x, it.y, it.w, it.h)
                                     }
                                     val hit = DesignInteract.hitTest(latestResolved.value, downDesign)
 
-                                    // 0 未定；1 拖图层；2 平移画布；3 双指缩放；4 手柄缩放；5 旋转；6 框选
+                                    // 0 未定；1 拖图层；2 平移画布；3 双指；4 手柄缩放；5 旋转；6 框选
                                     var mode = 0
                                     var dragIds: Set<String> = emptySet()
                                     var dragStartRect: Rect? = null
@@ -1097,78 +1131,151 @@ fun DesignCanvasScreen(
                                     var lastY = down.position.y
                                     var marqueeStart = downDesign
 
+                                    // 双指手势：先处于「还不确定」，再决定平移还是缩放
+                                    var twoStarted = false
+                                    var twoIntent = TwoFingerIntent.Undecided
+                                    var startSpan = 0f
+                                    var prevSpan = 0f
+                                    var startCentroid = Offset.Zero
+                                    var prevCentroid = Offset.Zero
+
+                                    fun collectTargets(exclude: Set<String>) {
+                                        dragTargets.clear()
+                                        dragTargets += flattenResolved(latestResolved.value)
+                                            .filter {
+                                                it.id !in exclude &&
+                                                    it.alpha > .05f && it.type != "decor"
+                                            }
+                                            .map { Rect(it.x, it.y, it.right, it.bottom) }
+                                    }
+
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val pressed = event.changes.filter { it.pressed }
                                         if (pressed.isEmpty()) break
 
                                         if (pressed.size > 1) {
-                                            // 双指：缩放 + 平移，按双指中点做锚点
-                                            mode = 3
-                                            val next = (zoom * event.calculateZoom()).coerceIn(.6f, 4f)
-                                            val ratio = next / zoom
-                                            val centroid = event.calculateCentroid(useCurrent = true)
-                                            val center = Offset(view.width / 2f, view.height / 2f)
-                                            pan = (pan + centroid - center) * ratio - (centroid - center) +
-                                                event.calculatePan()
-                                            zoom = next
+                                            val two = pressed.take(2).map { it.position }
+                                            val span = DesignInteract.pointerSpan(two)
+                                            val centroid = (two[0] + two[1]) / 2f
+                                            if (mode != 3) {
+                                                // 双指接管：停止单指拖动 / 变换，避免边捏边改图层
+                                                mode = 3
+                                                guides = SnapResult(0f, 0f, emptyList(), emptyList())
+                                                marquee = null
+                                            }
+                                            if (!twoStarted) {
+                                                twoStarted = true
+                                                twoIntent = TwoFingerIntent.Undecided
+                                                startSpan = span
+                                                prevSpan = span
+                                                startCentroid = centroid
+                                                prevCentroid = centroid
+                                            } else {
+                                                twoIntent = DesignInteract.twoFingerIntent(
+                                                    current = twoIntent,
+                                                    startSpan = startSpan,
+                                                    startCentroid = startCentroid,
+                                                    span = span,
+                                                    centroid = centroid,
+                                                    slop = slop,
+                                                )
+                                                when (twoIntent) {
+                                                    TwoFingerIntent.Zoom -> {
+                                                        // 缩放绕双指重心，不做整页重排；中心同时平移跟随手指。
+                                                        val factor = if (prevSpan > .5f) {
+                                                            span / prevSpan
+                                                        } else {
+                                                            1f
+                                                        }
+                                                        var cam = camera().zoomAround(prevCentroid, factor)
+                                                        cam = cam.panBy(centroid - prevCentroid)
+                                                        zoom = cam.zoom
+                                                        pan = cam.pan
+                                                    }
+                                                    TwoFingerIntent.Pan -> {
+                                                        pan = camera().panBy(centroid - prevCentroid).pan
+                                                    }
+                                                    TwoFingerIntent.Undecided -> Unit
+                                                }
+                                                prevSpan = span
+                                                prevCentroid = centroid
+                                            }
                                             pressed.forEach { it.consume() }
                                             continue
                                         }
 
                                         val change = pressed.first()
+                                        // 双指后抬起一根：用剩下那根继续平移，而不是卡住
+                                        if (mode == 3) {
+                                            mode = 2
+                                            lastX = change.position.x
+                                            lastY = change.position.y
+                                        }
                                         val dx = change.position.x - lastX
                                         val dy = change.position.y - lastY
                                         lastX = change.position.x
                                         lastY = change.position.y
 
                                         if (mode == 0) {
-                                            val distance = hypot(
-                                                change.position.x - down.position.x,
-                                                change.position.y - down.position.y,
-                                            )
-                                            if (distance <= slop) continue
-                                            // 命中优先级：手柄 > 已选中图层拖动 > 空白（多选时框选，否则平移）
+                                            if (!DesignInteract.dragExceeded(
+                                                    down.position,
+                                                    change.position,
+                                                    slop,
+                                                )
+                                            ) {
+                                                continue
+                                            }
+                                            // 命中优先级：手柄 > 已选图形 > 其它图形 > 空白（多选框选，否则平移）
                                             mode = when {
                                                 handleDown == DesignHandle.Rotate -> 5
                                                 handleDown != null && selectedNode != null -> 4
-                                                hit != null && hit.id in latestSelection.value -> 1
-                                                hit == null && latestMulti.value -> 6
+                                                hit != null -> 1
+                                                latestMulti.value -> 6
                                                 else -> 2
                                             }
                                             when (mode) {
                                                 1 -> {
-                                                    val selected = latestSelection.value
-                                                    dragIds = if (latestMulti.value) {
-                                                        selected
-                                                    } else {
-                                                        setOfNotNull(hit?.id)
-                                                    }
-                                                    latestBeginDrag.value(dragIds)
-                                                    dragStartRect = unionRect(latestResolved.value, dragIds)
-                                                    dragTargets.clear()
-                                                    dragTargets += flattenResolved(latestResolved.value)
-                                                        .filter {
-                                                            it.id !in dragIds &&
-                                                                it.alpha > .05f && it.type != "decor"
+                                                    val target = hit
+                                                    if (target != null) {
+                                                        val selected = latestSelection.value
+                                                        val insideSelection = target.id in selected
+                                                        // 拖未选中的图形时先选中再拖，而不是变成平移画布。
+                                                        if (!insideSelection) latestSelect.value(target.id)
+                                                        // 多选下拖动任一新命中的图层，应该带着整组一起走。
+                                                        dragIds = if (latestMulti.value) {
+                                                            selected + target.id
+                                                        } else {
+                                                            setOf(target.id)
                                                         }
-                                                        .map { Rect(it.x, it.y, it.right, it.bottom) }
-                                                    haptics?.play(V2HapticLevel.TICK)
+                                                    }
+                                                    if (dragIds.isEmpty()) {
+                                                        mode = 2
+                                                    } else {
+                                                        latestBeginDrag.value(dragIds)
+                                                        dragStartRect = unionRect(
+                                                            latestResolved.value,
+                                                            dragIds,
+                                                        )
+                                                        collectTargets(dragIds)
+                                                        haptics?.play(V2HapticLevel.TICK)
+                                                    }
                                                 }
                                                 4, 5 -> {
                                                     latestBeginDrag.value(setOfNotNull(selectedNode?.id))
                                                     rotateBase = selectedNode?.rotation ?: 0f
+                                                    collectTargets(setOfNotNull(selectedNode?.id))
                                                     haptics?.play(V2HapticLevel.TICK)
                                                 }
-                                                6 -> marqueeStart = toDesign(down.position, scaleAtDown)
+                                                6 -> marqueeStart = downDesign
                                             }
                                         }
 
                                         when (mode) {
                                             1 -> {
                                                 val start = dragStartRect
-                                                if (start != null && dragIds.isNotEmpty() && scaleAtDown > 0f) {
-                                                    val pointer = toDesign(change.position, scaleAtDown)
+                                                if (start != null && dragIds.isNotEmpty()) {
+                                                    val pointer = startCamera.toDesign(change.position)
                                                     val totalX = pointer.x - downDesign.x
                                                     val totalY = pointer.y - downDesign.y
                                                     val moved = Rect(
@@ -1195,33 +1302,59 @@ fun DesignCanvasScreen(
                                             2 -> pan += Offset(dx, dy)
                                             4 -> {
                                                 val frame = startFrame
+                                                val node = selectedNode
                                                 val handle = handleDown
-                                                if (selectedNode != null && frame != null &&
-                                                    handle != null && scaleAtDown > 0f
-                                                ) {
-                                                    val pointer = toDesign(change.position, scaleAtDown)
-                                                    val next = DesignInteract.resizeFrame(
-                                                        frame, selectedNode.rotation, handle, pointer,
+                                                if (node != null && frame != null && handle != null) {
+                                                    val pointer = startCamera.toDesign(change.position)
+                                                    val resized = DesignInteract.resizeFrame(
+                                                        frame = frame,
+                                                        rotation = node.rotation,
+                                                        handle = handle,
+                                                        pointer = pointer,
+                                                        lockAspect = proportional,
+                                                    )
+                                                    // 缩放手柄也吸附到其它对象的边，落定后再画参考线。
+                                                    val snapped = DesignInteract.snapResize(
+                                                        frame = resized,
+                                                        rotation = node.rotation,
+                                                        handle = handle,
+                                                        targets = dragTargets,
+                                                        threshold = snapThreshold,
                                                     )
                                                     latestTransform.value(
-                                                        selectedNode.id, next.x, next.y, next.w, next.h,
+                                                        node.id,
+                                                        snapped.frame.x,
+                                                        snapped.frame.y,
+                                                        snapped.frame.w,
+                                                        snapped.frame.h,
+                                                    )
+                                                    guides = SnapResult(
+                                                        0f,
+                                                        0f,
+                                                        snapped.vertical,
+                                                        snapped.horizontal,
                                                     )
                                                 }
                                             }
                                             5 -> {
-                                                if (selectedNode != null && scaleAtDown > 0f) {
-                                                    val pointer = toDesign(change.position, scaleAtDown)
+                                                val node = selectedNode
+                                                if (node != null) {
+                                                    val pointer = startCamera.toDesign(change.position)
                                                     val delta = DesignInteract.rotationDegrees(
-                                                        selectedNode.center, downDesign, pointer,
+                                                        node.center, downDesign, pointer,
                                                     )
-                                                    latestRotate.value(
-                                                        selectedNode.id,
-                                                        DesignInteract.snapRotation(rotateBase + delta),
-                                                    )
+                                                    val raw = rotateBase + delta
+                                                    val next = if (stepRotation) {
+                                                        // 手机上的「15°」等价于桌面按住 Shift
+                                                        DesignInteract.constrainRotation(raw, 15f)
+                                                    } else {
+                                                        DesignInteract.snapRotation(raw)
+                                                    }
+                                                    latestRotate.value(node.id, next)
                                                 }
                                             }
                                             6 -> {
-                                                val pointer = toDesign(change.position, scaleAtDown)
+                                                val pointer = startCamera.toDesign(change.position)
                                                 val rect = Rect(
                                                     min(marqueeStart.x, pointer.x),
                                                     min(marqueeStart.y, pointer.y),
@@ -1240,20 +1373,22 @@ fun DesignCanvasScreen(
                                     }
 
                                     if (mode == 0) {
-                                        // 没拖动 = 点按：短时间内两次点按视为双击，回到适配视图
-                                        val now = down.uptimeMillis
-                                        val doubleTap = now - lastTapTime < 320L && hypot(
-                                            down.position.x - lastTapX,
-                                            down.position.y - lastTapY,
-                                        ) < 40f
-                                        lastTapTime = now
-                                        lastTapX = down.position.x
-                                        lastTapY = down.position.y
-                                        if (doubleTap) {
-                                            zoom = 1f
-                                            pan = Offset.Zero
-                                        } else {
-                                            latestSelect.value(hit?.id)
+                                        // 点在手柄上：保持选中，不当成空白取消选择。
+                                        if (handleDown == null) {
+                                            val now = down.uptimeMillis
+                                            val doubleTap = now - lastTapTime < 320L && hypot(
+                                                down.position.x - lastTapX,
+                                                down.position.y - lastTapY,
+                                            ) < 40f
+                                            lastTapTime = now
+                                            lastTapX = down.position.x
+                                            lastTapY = down.position.y
+                                            if (doubleTap) {
+                                                zoom = 1f
+                                                pan = Offset.Zero
+                                            } else {
+                                                latestSelect.value(hit?.id)
+                                            }
                                         }
                                     }
                                     guides = SnapResult(0f, 0f, emptyList(), emptyList())
@@ -1264,12 +1399,17 @@ fun DesignCanvasScreen(
                         with(DesignPainter) {
                             drawDotGrid(V2Colors.ink(.045f), step = 22.dp.toPx())
                         }
-                        val scale = min(size.width / canvasScreen.w, size.height / canvasScreen.h) *
-                            .92f * zoom
-                        val origin = Offset(
-                            (size.width - canvasScreen.w * scale) / 2f + pan.x,
-                            (size.height - canvasScreen.h * scale) / 2f + pan.y,
+                        // 绘制与手势共用同一个相机，缩放 / 平移不会在两处各算一套。
+                        val camera = DesignCamera(
+                            viewW = size.width,
+                            viewH = size.height,
+                            boardW = canvasScreen.w,
+                            boardH = canvasScreen.h,
+                            zoom = zoom,
+                            pan = pan,
                         )
+                        val scale = camera.scale
+                        val origin = camera.origin
                         translate(origin.x, origin.y) {
                             scale(scale, scale, pivot = Offset.Zero) {
                                 with(DesignPainter) {
@@ -1279,6 +1419,7 @@ fun DesignCanvasScreen(
                                         height = canvasScreen.h,
                                         bg = boardBg,
                                         device = true,
+                                        pixelScale = scale,
                                     )
                                 }
                                 with(DesignInteract) {
@@ -1296,10 +1437,14 @@ fun DesignCanvasScreen(
                                             )
                                         }
                                         val snap = guides
-                                        if (snap.vertical.isNotEmpty() || snap.horizontal.isNotEmpty()) {
+                                        if (snap.vertical.isNotEmpty() ||
+                                            snap.horizontal.isNotEmpty() ||
+                                            snap.gaps.isNotEmpty()
+                                        ) {
                                             drawSnapGuides(
                                                 snap.vertical, snap.horizontal,
                                                 canvasScreen.w, canvasScreen.h,
+                                                snap.gaps,
                                             )
                                         }
                                         marquee?.let { drawMarquee(it, strokeWidth) }
@@ -1450,6 +1595,23 @@ fun DesignCanvasScreen(
                             }
                             Spacer(Modifier.height(6.dp))
                         }
+                        // 单选手柄的两个约束：等比缩放、15° 步进旋转。
+                        // 手机没有 Shift，用常驻小开关等价实现，避免「只能自由拖、没法等比」。
+                        if (state.selectedNodes.size == 1) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                DockButton(
+                                    "等比",
+                                    Icons.Outlined.AspectRatio,
+                                    accent = proportional,
+                                ) { proportional = !proportional }
+                                DockButton(
+                                    "15°",
+                                    Icons.Outlined.Rotate90DegreesCcw,
+                                    accent = stepRotation,
+                                ) { stepRotation = !stepRotation }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
                         Label("${(zoom * 100).roundToInt()}%", 9.5f, V2Colors.ink(.30f), mono = true)
                         Spacer(Modifier.height(6.dp))
                         RoundIconButton(
@@ -1485,6 +1647,20 @@ fun DesignCanvasScreen(
                 onSetAlign = onSetAlign,
                 onSetStroke = onSetStroke,
                 onSetShadow = onSetShadow,
+                onSetLineHeight = onSetLineHeight,
+                onSetLetterSpacing = onSetLetterSpacing,
+                onSetFontFamily = onSetFontFamily,
+                onSetMaxLines = onSetMaxLines,
+                onSetAutoFit = onSetAutoFit,
+                onSetShadowBlur = onSetShadowBlur,
+                onSetShadowOffsetY = onSetShadowOffsetY,
+                onSetShadowColor = onSetShadowColor,
+                onSetStrokeWidth = onSetStrokeWidth,
+                onSetX = onSetX,
+                onSetY = onSetY,
+                onSetWidth = onSetWidth,
+                onSetHeight = onSetHeight,
+                onSetRotation = onSetRotation,
             )
         }
         if (aiOpen && screen != null) {
@@ -1717,6 +1893,7 @@ private fun DesignDemoPreview(
                                 height = screen.h,
                                 bg = demoBg,
                                 device = false,
+                                pixelScale = scalePx,
                             )
                         }
                     }
@@ -1953,18 +2130,27 @@ private fun DesignEditSheet(
     onSetAlign: (String?) -> Unit,
     onSetStroke: (String?) -> Unit,
     onSetShadow: (Boolean) -> Unit,
+    onSetLineHeight: (Float) -> Unit,
+    onSetLetterSpacing: (Float) -> Unit,
+    onSetFontFamily: (String?) -> Unit,
+    onSetMaxLines: (Int) -> Unit,
+    onSetAutoFit: (Boolean) -> Unit,
+    onSetShadowBlur: (Float) -> Unit,
+    onSetShadowOffsetY: (Float) -> Unit,
+    onSetShadowColor: (String?) -> Unit,
+    onSetStrokeWidth: (Float) -> Unit,
+    onSetX: (Float) -> Unit,
+    onSetY: (Float) -> Unit,
+    onSetWidth: (Float) -> Unit,
+    onSetHeight: (Float) -> Unit,
+    onSetRotation: (Float) -> Unit,
 ) {
     var text by remember(node.id) { mutableStateOf(node.text.orEmpty()) }
-    var radius by remember(node.id) {
-        mutableFloatStateOf(node.radius?.tl ?: DesignSpec.radiusOf(node))
-    }
-    var opacity by remember(node.id) { mutableFloatStateOf(node.opacity ?: 1f) }
-    var fontSize by remember(node.id) {
-        mutableFloatStateOf(node.fontSize ?: DesignSpec.DEFAULT_FONT_SIZE)
-    }
+    val opacity = node.opacity ?: 1f
     val hasText = !node.text.isNullOrEmpty() || node.type == "text"
+    val family = DesignSpec.normalizeFamily(node.fontFamily)
 
-    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .82f) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .9f) {
         SheetHeader(
             title = "轻编辑",
             subtitle = "${node.name.ifBlank { node.type }} · ${node.type}",
@@ -1973,9 +2159,37 @@ private fun DesignEditSheet(
         Column(
             Modifier
                 .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .imePadding(),
         ) {
+            // ---- 位置与尺寸：数值可读、可改，不是只能拖手柄 ----
+            DesignFieldTitle("位置与尺寸")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignNumberField("X", node.x, Modifier.weight(1f), step = 1f) { onSetX(it) }
+                DesignNumberField("Y", node.y, Modifier.weight(1f), step = 1f) { onSetY(it) }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignNumberField("宽", node.w, Modifier.weight(1f), range = 4f..4096f, step = 1f) {
+                    onSetWidth(it)
+                }
+                DesignNumberField("高", node.h, Modifier.weight(1f), range = 4f..4096f, step = 1f) {
+                    onSetHeight(it)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            DesignNumberField(
+                "旋转",
+                node.rotation ?: 0f,
+                Modifier.fillMaxWidth(),
+                range = -180f..180f,
+                step = 15f,
+                suffix = "°",
+            ) { onSetRotation(it) }
+            Spacer(Modifier.height(16.dp))
+
             if (hasText) {
                 DesignFieldTitle("文案")
                 DesignInput(
@@ -1986,19 +2200,66 @@ private fun DesignEditSheet(
                         onSetText(it)
                     },
                 )
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
 
-                DesignFieldTitle("字号  ${fontSize.roundToInt()}px")
-                Slider(
-                    value = fontSize,
-                    onValueChange = {
-                        fontSize = it
-                        onSetFontSize(it)
-                    },
-                    valueRange = 8f..72f,
-                    colors = designSliderColors(),
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignNumberField(
+                        "字号",
+                        node.fontSize ?: DesignSpec.DEFAULT_FONT_SIZE,
+                        Modifier.weight(1f),
+                        range = 6f..200f,
+                        step = 1f,
+                        decimals = 1,
+                        suffix = "px",
+                    ) { onSetFontSize(it) }
+                    DesignNumberField(
+                        "行高",
+                        node.lineHeight ?: DesignSpec.DEFAULT_LINE_HEIGHT,
+                        Modifier.weight(1f),
+                        range = .8f..3f,
+                        step = .05f,
+                        decimals = 2,
+                        suffix = "×",
+                    ) { onSetLineHeight(it) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignNumberField(
+                        "字距",
+                        node.letterSpacing ?: 0f,
+                        Modifier.weight(1f),
+                        range = -10f..40f,
+                        step = .5f,
+                        decimals = 1,
+                        suffix = "px",
+                    ) { onSetLetterSpacing(it) }
+                    DesignNumberField(
+                        "行数",
+                        (node.maxLines ?: DesignSpec.MAX_TEXT_LINES).toFloat(),
+                        Modifier.weight(1f),
+                        range = 1f..DesignSpec.TEXT_LINES_LIMIT.toFloat(),
+                        step = 1f,
+                    ) { onSetMaxLines(it.roundToInt()) }
+                }
                 Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EditChoice("自动缩字", node.autoFit == true) { onSetAutoFit(node.autoFit != true) }
+                    EditChoice("正常换行", node.autoFit != true) { onSetAutoFit(false) }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                DesignFieldTitle("字族")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "system" to "系统",
+                        "noto-sans-sc" to "无衬线",
+                        "noto-serif-sc" to "衬线",
+                        "mono" to "等宽",
+                    ).forEach { (value, label) ->
+                        EditChoice(label, family == value) { onSetFontFamily(value) }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
 
                 DesignFieldTitle("字重")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2019,41 +2280,35 @@ private fun DesignEditSheet(
                     EditChoice("中", node.align == "center") { onSetAlign("center") }
                     EditChoice("右", node.align == "right") { onSetAlign("right") }
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(16.dp))
             }
 
             if (node.type in fillTypes) {
                 DesignFieldTitle("填充")
-                ColorRow(
-                    selected = node.fill,
-                    options = fillSwatches,
-                    onPick = onSetFill,
-                )
+                ColorRow(selected = node.fill, options = fillSwatches, onPick = onSetFill)
+                Spacer(Modifier.height(8.dp))
+                DesignHexField("填充色值", node.fill, "#FFFFFF", onSetFill)
                 Spacer(Modifier.height(14.dp))
             }
 
             if (hasText || node.color != null) {
                 DesignFieldTitle("文字颜色")
-                ColorRow(
-                    selected = node.color,
-                    options = textSwatches,
-                    onPick = onSetTextColor,
-                )
+                ColorRow(selected = node.color, options = textSwatches, onPick = onSetTextColor)
+                Spacer(Modifier.height(8.dp))
+                DesignHexField("文字色值", node.color, "#0F172A", onSetTextColor)
                 Spacer(Modifier.height(14.dp))
             }
 
             if (node.type in fillTypes) {
-                DesignFieldTitle("圆角  ${radius.roundToInt()}px")
-                Slider(
-                    value = radius,
-                    onValueChange = {
-                        radius = it
-                        onSetRadius(it)
-                    },
-                    valueRange = 0f..80f,
-                    colors = designSliderColors(),
-                )
-                Spacer(Modifier.height(6.dp))
+                DesignNumberField(
+                    "圆角",
+                    node.radius?.tl ?: DesignSpec.radiusOf(node),
+                    Modifier.fillMaxWidth(),
+                    range = 0f..(min(node.w, node.h) / 2f).coerceAtLeast(0f),
+                    step = 1f,
+                    suffix = "px",
+                ) { onSetRadius(it) }
+                Spacer(Modifier.height(14.dp))
             }
 
             DesignFieldTitle("描边")
@@ -2062,31 +2317,200 @@ private fun DesignEditSheet(
                 EditChoice("深色", node.stroke?.color == "#0F172A") { onSetStroke("#0F172A") }
                 EditChoice("主色", node.stroke?.color == "#0891B2") { onSetStroke("#0891B2") }
             }
-            Spacer(Modifier.height(12.dp))
+            if (node.stroke != null) {
+                Spacer(Modifier.height(8.dp))
+                DesignNumberField(
+                    "描边宽度",
+                    node.stroke.width,
+                    Modifier.fillMaxWidth(),
+                    range = 0f..24f,
+                    step = .5f,
+                    decimals = 1,
+                    suffix = "px",
+                ) { onSetStrokeWidth(it) }
+            }
+            Spacer(Modifier.height(14.dp))
 
             DesignFieldTitle("投影")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 EditChoice("无", node.shadow == null) { onSetShadow(false) }
                 EditChoice("柔和投影", node.shadow != null) { onSetShadow(true) }
             }
+            val shadow = node.shadow
+            if (shadow != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignNumberField(
+                        "模糊",
+                        shadow.blur,
+                        Modifier.weight(1f),
+                        range = 0f..80f,
+                        step = 1f,
+                        suffix = "px",
+                    ) { onSetShadowBlur(it) }
+                    DesignNumberField(
+                        "向下偏移",
+                        shadow.dy,
+                        Modifier.weight(1f),
+                        range = -40f..80f,
+                        step = 1f,
+                        suffix = "px",
+                    ) { onSetShadowOffsetY(it) }
+                }
+                Spacer(Modifier.height(8.dp))
+                ColorRow(
+                    selected = shadow.color,
+                    options = listOf("#14000000", "#22000000", "#33000000", "#0F172A", "#0891B2"),
+                    onPick = onSetShadowColor,
+                )
+            }
             Spacer(Modifier.height(14.dp))
 
-            DesignFieldTitle("不透明度  ${(opacity * 100).roundToInt()}%")
-            Slider(
-                value = opacity,
-                onValueChange = {
-                    opacity = it
-                    onSetOpacity(it)
-                },
-                valueRange = .1f..1f,
-                colors = designSliderColors(),
-            )
-            Spacer(Modifier.height(10.dp))
+            DesignNumberField(
+                "不透明度",
+                opacity * 100f,
+                Modifier.fillMaxWidth(),
+                range = 10f..100f,
+                step = 5f,
+                suffix = "%",
+            ) { onSetOpacity(it / 100f) }
+            Spacer(Modifier.height(16.dp))
+
             DesignAction("完成", filled = true, onClick = onDismiss, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(18.dp))
         }
     }
 }
+
+/** 数值输入 + 步进按钮：读数可见、可直接输入，也可以小步微调。 */
+@Composable
+private fun DesignNumberField(
+    label: String,
+    value: Float,
+    modifier: Modifier = Modifier,
+    range: ClosedFloatingPointRange<Float> = -100000f..100000f,
+    step: Float = 1f,
+    decimals: Int = 0,
+    suffix: String = "",
+    onChange: (Float) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var text by remember { mutableStateOf(formatDesignNumber(value, decimals)) }
+    // 外部变化（拖手柄 / 滑杆）时同步读数；正在输入时不打断用户。
+    LaunchedEffect(value, decimals) {
+        if (!focused) text = formatDesignNumber(value, decimals)
+    }
+
+    fun commit(next: Float) {
+        val clamped = next.coerceIn(range.start, range.endInclusive)
+        text = formatDesignNumber(clamped, decimals)
+        onChange(clamped)
+    }
+
+    fun current(): Float = text.trim().replace(',', '.').toFloatOrNull() ?: value
+
+    Column(modifier) {
+        Label(
+            if (suffix.isBlank()) label else "$label（$suffix）",
+            9.5f,
+            V2Colors.ink(.42f),
+            FontWeight.Medium,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(5.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            DesignStepButton("−") { commit(current() - step) }
+            BasicTextField(
+                value = text,
+                onValueChange = { raw ->
+                    text = raw
+                    raw.trim().replace(',', '.').toFloatOrNull()?.let { parsed ->
+                        if (parsed in range) onChange(parsed)
+                    }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(V2Colors.surface(.82f))
+                    .border(1.dp, V2Colors.lineSoft, RoundedCornerShape(10.dp))
+                    .onFocusChanged { focused = it.isFocused }
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                textStyle = TextStyle(
+                    fontSize = 11.sp,
+                    color = V2Colors.ink(.86f),
+                    textAlign = TextAlign.Center,
+                ),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    // 允许负值的字段（旋转、字距、阴影偏移）要能输入减号。
+                    keyboardType = if (range.start < 0f) KeyboardType.Text else KeyboardType.Number,
+                    imeAction = ImeAction.Done,
+                ),
+                cursorBrush = SolidColor(V2Colors.accent),
+            )
+            DesignStepButton("+") { commit(current() + step) }
+        }
+    }
+}
+
+@Composable
+private fun DesignStepButton(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(V2Colors.surface(.72f))
+            .border(1.dp, V2Colors.lineSoft, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Label(text, 15f, V2Colors.ink(.62f), FontWeight.Medium)
+    }
+}
+
+/** 色值输入：常用色板之外，允许直接填 #RRGGBB / #AARRGGBB。 */
+@Composable
+private fun DesignHexField(
+    title: String,
+    value: String?,
+    fallback: String,
+    onPick: (String) -> Unit,
+) {
+    var text by remember(value) { mutableStateOf(value.orEmpty()) }
+    val normalized = text.trim().let { raw ->
+        if (raw.isEmpty() || raw.startsWith("#")) raw else "#$raw"
+    }
+    val valid = Regex("""^#([0-9a-fA-F]{3,8})$""").matches(normalized)
+    DesignFieldTitle(title)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(designColor(value ?: fallback, Color.Transparent))
+                .border(1.dp, V2Colors.ink(.12f), CircleShape),
+        )
+        Box(Modifier.weight(1f)) {
+            DesignInput(
+                value = text,
+                placeholder = "#0F172A",
+                onValueChange = { text = it },
+            )
+        }
+        DesignAction("应用", filled = false, enabled = valid) { onPick(normalized) }
+    }
+}
+
+private fun formatDesignNumber(value: Float, decimals: Int): String =
+    if (decimals <= 0) {
+        value.roundToInt().toString()
+    } else {
+        String.format(java.util.Locale.US, "%.${decimals}f", value)
+    }
 
 @Composable
 private fun designSliderColors() = SliderDefaults.colors(

@@ -173,39 +173,38 @@ class DesignSpecTest {
     }
 
     @Test
-    fun `shadow blur becomes concentric rings large to small`() {
-        val rings = DesignSpec.shadowRings(
+    fun `shadow keeps the real css blur radius`() {
+        val shadows = DesignSpec.shadowSpecs(
             DesignNode(type = "card", shadow = DesignShadow(dy = 6f, blur = 10f, color = "#000000")),
         )
-        assertTrue(rings.isNotEmpty())
-        // 环 i=8 起 alpha 才过可见阈值（0.3×(1−0.8)²=0.012），spread=10×0.8。
-        assertEquals(8f, rings.first().spread, 0.01f)
-        assertEquals(1f, rings.last().spread, 0.01f)
-        assertEquals(6f, rings.first().dy, 0.01f)
-        // 大 spread 在下：越靠外 alpha 越低
-        assertTrue(rings.first().color.alpha < rings.last().color.alpha)
-        assertTrue(rings.zipWithNext().all { (a, b) -> a.spread > b.spread })
+        assertEquals(1, shadows.size)
+        val shadow = shadows[0]
+        assertEquals(6f, shadow.dy, 0.01f)
+        assertEquals(10f, shadow.blur, 0.01f)
+        // σ = blur / 2，绘制端据此做真实高斯模糊，而不是展开成环。
+        assertEquals(5f, DesignSpec.shadowSigma(shadow.blur), 0.01f)
+        assertEquals(1f, shadow.color.alpha, 0.01f)
     }
 
     @Test
-    fun `sharp shadow stays a single ring`() {
+    fun `sharp shadow stays a single hard shadow`() {
         // 不给颜色时回落到共享默认色（黑 25%），与后端 DEFAULT_SHADOW_ALPHA 一致。
-        val rings = DesignSpec.shadowRings(
+        val shadows = DesignSpec.shadowSpecs(
             DesignNode(type = "card", shadow = DesignShadow(dx = 1f, dy = 2f)),
         )
-        assertEquals(1, rings.size)
-        assertEquals(0f, rings[0].spread, 0.01f)
-        assertEquals(1f, rings[0].dx, 0.01f)
-        assertEquals(0.25f, rings[0].color.alpha, 0.01f)
+        assertEquals(1, shadows.size)
+        assertEquals(0f, shadows[0].blur, 0.01f)
+        assertEquals(1f, shadows[0].dx, 0.01f)
+        assertEquals(0.25f, shadows[0].color.alpha, 0.01f)
     }
 
     @Test
     fun `card without shadow gets the shared default shadow`() {
-        val rings = DesignSpec.shadowRings(DesignNode(type = "card", w = 200f, h = 120f))
-        assertEquals(1, rings.size)
-        assertEquals(0f, rings[0].spread, 0.01f)
-        assertEquals(DesignSpec.CARD_SHADOW_OFFSET, rings[0].dy, 0.01f)
-        assertEquals(DesignSpec.CARD_SHADOW_ALPHA, rings[0].color.alpha, 0.01f)
+        val shadows = DesignSpec.shadowSpecs(DesignNode(type = "card", w = 200f, h = 120f))
+        assertEquals(1, shadows.size)
+        assertEquals(0f, shadows[0].blur, 0.01f)
+        assertEquals(DesignSpec.CARD_SHADOW_OFFSET, shadows[0].dy, 0.01f)
+        assertEquals(DesignSpec.CARD_SHADOW_ALPHA, shadows[0].color.alpha, 0.01f)
     }
 
     @Test
@@ -215,10 +214,11 @@ class DesignSpecTest {
             shadow = DesignShadow(dy = 2f, color = "#000000"),
             insetShadow = DesignShadow(dy = 2f, blur = 4f, color = "#FFFFFF"),
         )
-        assertEquals(1, DesignSpec.shadowRings(node).size)
-        val inset = DesignSpec.insetShadowRings(node)
-        assertTrue(inset.isNotEmpty())
-        assertTrue(inset.all { it.inset })
+        assertEquals(1, DesignSpec.shadowSpecs(node).size)
+        val inset = DesignSpec.insetShadowSpecs(node)
+        assertEquals(1, inset.size)
+        assertEquals(4f, inset[0].blur, 0.01f)
+        assertTrue(inset[0].inset)
     }
 
     @Test
@@ -227,7 +227,7 @@ class DesignSpecTest {
             type = "card",
             shadow = DesignShadow(blur = 8f, color = "transparent"),
         )
-        assertTrue(DesignSpec.shadowRings(node).isEmpty())
+        assertTrue(DesignSpec.shadowSpecs(node).isEmpty())
     }
 
     @Test
@@ -327,11 +327,57 @@ class DesignSpecTest {
     }
 
     @Test
-    fun `fx rings match the shared baseline`() {
-        assertEquals(
-            listOf(.35f to .55f, .7f to .35f, 1f to .18f),
-            DesignSpec.FX_RINGS,
-        )
+    fun `blur conversions follow css and skia`() {
+        assertEquals(.5f, DesignSpec.SHADOW_BLUR_SIGMA_SCALE, 0.0001f)
+        assertEquals(1f, DesignSpec.LAYER_BLUR_SIGMA_SCALE, 0.0001f)
+        assertEquals(5f, DesignSpec.shadowSigma(10f), 0.0001f)
+        assertEquals(10f, DesignSpec.layerSigma(10f), 0.0001f)
+        assertEquals(0f, DesignSpec.blurMaskRadius(0f), 0.0001f)
+        // σ = 0.57735 × radius + 0.5 → radius = (σ − 0.5) / 0.57735
+        val radius = DesignSpec.blurMaskRadius(20f)
+        assertEquals(10f, radius * DesignSpec.SKIA_RADIUS_TO_SIGMA + .5f, 0.01f)
+        // 3σ 截断
+        assertEquals(31f, DesignSpec.blurPadding(20f), 0.01f)
+        assertEquals(31f, DesignSpec.layerBlurPadding(10f), 0.01f)
+    }
+
+    @Test
+    fun `box blur radii approximate gaussian variance`() {
+        val radii = DesignSpec.boxBlurRadii(6f)
+        assertEquals(DesignSpec.BLUR_PASSES, radii.size)
+        assertTrue(radii.all { it >= 1 && it % 2 == 1 })
+        // 每个盒宽 w 的方差是 (w²−1)/12，总方差应接近 σ²。
+        val variance = radii.sumOf { (it * it - 1) / 12.0 }
+        assertEquals(36.0, variance, 12.0)
+    }
+
+    @Test
+    fun `box blur keeps a flat field flat and softens an edge`() {
+        val w = 31
+        val h = 9
+        val flat = IntArray(w * h) { 0x80402010.toInt() }
+        DesignSpec.boxBlurArgb(flat, w, h, 3f)
+        assertTrue(flat.all { it == 0x80402010.toInt() })
+
+        val edge = IntArray(w * h) { index -> if (index % w < 15) -1 else 0 }
+        DesignSpec.boxBlurArgb(edge, w, h, 3f)
+        // 边界两侧出现中间值，远离边界（超过模糊核支撑）处保持原值。
+        val row = 4 * w
+        assertTrue(edge[row + 15].ushr(24) in 1..254)
+        assertEquals(255, edge[row].ushr(24))
+        assertEquals(0, edge[row + 30].ushr(24))
+    }
+
+    @Test
+    fun `pixel snapping only applies at integer scales`() {
+        assertEquals(31f / 3f, DesignSpec.snapToPixel(10.4f, 3f), 0.0001f)
+        // 2.5 这类非整数缩放下不吸附，避免平移抖动。
+        assertEquals(10.4f, DesignSpec.snapToPixel(10.4f, 2.5f), 0.0001f)
+        assertTrue(DesignSpec.isPixelScale(2f))
+        assertFalse(DesignSpec.isPixelScale(2.02f))
+        // 描边中心吸附后外沿落在像素边界。
+        val center = DesignSpec.snapStrokeCenter(10.2f, 1f, 2f)
+        assertEquals(0f, (center - 0.5f) * 2f - ((center - 0.5f) * 2f).toInt(), 0.0001f)
     }
 
     @Test
@@ -373,28 +419,27 @@ class DesignSpecTest {
     }
 
     @Test
-    fun `text rings draw shadow first then glow`() {
+    fun `text effects draw shadow first then glow with real blur`() {
         val node = DesignNode(
             textShadow = DesignTextEffect(dx = 2f, dy = 3f, blur = 4f, color = "#FF0000"),
             textGlow = DesignTextEffect(dx = 9f, dy = 9f, blur = 6f, color = "#00FF00"),
         )
-        val rings = DesignSpec.textRingsOf(node)
-        assertEquals(6, rings.size)
+        val effects = DesignSpec.textEffectsOf(node)
+        assertEquals(2, effects.size)
 
-        // 每组按半径从大到小：1.0 / 0.7 / 0.35
-        assertEquals(listOf(4f, 2.8f, 1.4f), rings.take(3).map { it.spread })
-        assertEquals(listOf(6f, 4.2f, 2.1f), rings.drop(3).map { it.spread })
+        // 底层 → 顶层：先投影、后发光；模糊半径原样保留（σ = blur / 2）。
+        assertEquals(4f, effects[0].blur, 0.01f)
+        assertEquals(6f, effects[1].blur, 0.01f)
 
         // 投影带偏移，发光忽略 dx/dy
-        assertEquals(2f, rings[0].dx, 0.01f)
-        assertEquals(3f, rings[0].dy, 0.01f)
-        assertEquals(0f, rings[3].dx, 0.01f)
-        assertEquals(0f, rings[3].dy, 0.01f)
+        assertEquals(2f, effects[0].dx, 0.01f)
+        assertEquals(3f, effects[0].dy, 0.01f)
+        assertEquals(0f, effects[1].dx, 0.01f)
+        assertEquals(0f, effects[1].dy, 0.01f)
 
-        // 环透明度 = color.alpha × intensity × 环倍率
-        assertEquals(.18f, rings[0].color.alpha, 0.01f)
-        assertEquals(.35f, rings[1].color.alpha, 0.01f)
-        assertEquals(.55f, rings[2].color.alpha, 0.01f)
+        // 透明度 = color.alpha × intensity
+        assertEquals(1f, effects[0].color.alpha, 0.01f)
+        assertEquals(1f, effects[1].color.alpha, 0.01f)
     }
 
     @Test
@@ -402,22 +447,28 @@ class DesignSpecTest {
         val node = DesignNode(
             textGlow = DesignTextEffect(radius = 5f, color = "#FFFFFF"),
         )
-        assertEquals(listOf(5f, 3.5f, 1.75f), DesignSpec.textRingsOf(node).map { it.spread })
+        assertEquals(5f, DesignSpec.textEffectsOf(node).single().blur, 0.01f)
     }
 
     @Test
     fun `text effects with invalid color are dropped`() {
         val node = DesignNode(textGlow = DesignTextEffect(blur = 4f, color = "nope"))
-        assertTrue(DesignSpec.textRingsOf(node).isEmpty())
-        assertTrue(DesignSpec.textRingsOf(DesignNode(textShadow = DesignTextEffect(blur = 4f))).isEmpty())
+        assertTrue(DesignSpec.textEffectsOf(node).isEmpty())
+        assertTrue(DesignSpec.textEffectsOf(DesignNode(textShadow = DesignTextEffect(blur = 4f))).isEmpty())
     }
 
     @Test
-    fun `text rings below the alpha floor are skipped`() {
-        // 0x10/255 ≈ 0.0627，再乘 intensity=0.1 与最大环倍率 0.55 也只有 0.0034
-        val node = DesignNode(
-            textGlow = DesignTextEffect(blur = 4f, intensity = .1f, color = "#10000000"),
+    fun `text effects apply intensity and drop below the alpha floor`() {
+        val half = DesignNode(
+            textGlow = DesignTextEffect(blur = 4f, intensity = .5f, color = "#FF000000"),
         )
-        assertTrue(DesignSpec.textRingsOf(node).isEmpty())
+        assertEquals(.5f, DesignSpec.textEffectsOf(half).single().color.alpha, 0.01f)
+
+        // 0x10/255 ≈ 0.0627 × 0.1 = 0.00627 > 0.004 仍保留；
+        // 再低到 0.05 强度才低于阈值。
+        val faint = DesignNode(
+            textGlow = DesignTextEffect(blur = 4f, intensity = .05f, color = "#10000000"),
+        )
+        assertTrue(DesignSpec.textEffectsOf(faint).isEmpty())
     }
 }

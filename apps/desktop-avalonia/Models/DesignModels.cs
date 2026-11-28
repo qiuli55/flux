@@ -6,6 +6,15 @@ using System.Text.Json.Serialization;
 
 namespace Flux.Desktop.Models;
 
+/// <summary>一次画布编辑手势提交的单个图层几何；坐标是父级坐标系内的值。</summary>
+public readonly record struct DesignFrameChange(
+    string Id,
+    double X,
+    double Y,
+    double W,
+    double H,
+    double Rotation);
+
 /// <summary>
 /// 设计稿 JSON 用 camelCase 的节点字段（fontSize / lineHeight），不能套用接口默认的
 /// snake_case 命名策略；这里只做大小写不敏感匹配，顶层 snake_case 字段单独标注。
