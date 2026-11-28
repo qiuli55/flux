@@ -67,6 +67,7 @@ import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
+import top.qiuli55.flux.mobile.data.WebViewProfileRuntime
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
 import java.time.LocalTime
@@ -233,6 +234,13 @@ fun FluxV2Root() {
         } else {
             UpdateCenter.onForeground()
         }
+    }
+
+    // 切换 Flux 账号 / 退出登录后，网站登录态必须换到新的 WebView 数据目录。
+    // 当前进程的 suffix 无法热切换：先 flush cookie，再安全重启应用（API 28+）；
+    // API 26 / 27 没有 suffix，运行时会改为清空 cookie 与 DOM Storage。
+    LaunchedEffect(app.boot, app.account?.userId, app.account?.username, app.account?.email) {
+        if (app.boot != V2Boot.LOADING) WebViewProfileRuntime.restartIfProfileChanged()
     }
 
     // 首页 / 设计列表：进入或切回时拉一次真实数据，不用干等 3 秒轮询
@@ -912,6 +920,13 @@ fun FluxV2Root() {
                                 showBack = showBack,
                                 html = current.html,
                                 title = current.title,
+                                // 从已有对话进入时才提供「发回当前对话」
+                                taskId = (current.origin as? V2Route.TaskChat)?.taskId,
+                                onOpenArtifact = { artifactId ->
+                                    artifactOrigin = current.origin
+                                    artifactsVm.open(artifactId)
+                                    route = V2Route.ArtifactDetail(artifactId)
+                                },
                                 onBack = { route = current.origin },
                             )
                         }
