@@ -90,6 +90,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -110,6 +111,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -146,6 +148,10 @@ data class V2ChatState(
     val model: String,
     /** 模型来自哪条 key 库条目；null = 原生模型。 */
     val modelKeyId: String? = null,
+    /** 模型来自哪个订阅账号（多账号）；与 modelKeyId 互斥。 */
+    val modelAccountId: String? = null,
+    /** 当前模型的思考档（来自模型目录 thinking 元数据）；null = 模型默认档。 */
+    val thinkingLevel: String? = null,
     /** 新建任务时的决策方式：auto = AI 自己定，manual = 停下来问我。 */
     val decisionMode: String = "auto",
     /** 对话权限模式：plan = 只读 + 计划文档；normal = 高风险命令才问；full = 跳过逐步审批。 */
@@ -225,6 +231,13 @@ fun V2ChatScreen(
     onSwitchAgent: (String) -> Unit = {},
     /** 当前 Agent 支持的模型；非空时 Agent 名下提供模型下拉。 */
     modelOptions: List<V2ModelOption> = emptyList(),
+    /** 当前 Agent 的模型分栏（订阅账号 + 兼容密钥）；「全部」只在当前 Agent 内。 */
+    modelChannels: List<V2ModelChannel> = emptyList(),
+    /** 本机收藏（按 Agent 隔离），只影响列表排序/筛选。 */
+    modelFavorites: Set<String> = emptySet(),
+    onToggleModelFavorite: (V2ModelOption) -> Unit = {},
+    /** 思考档随任务与模型一起保存，下一轮 Run 生效。 */
+    onThinkingChange: (V2ModelOption, String) -> Unit = { _, _ -> },
     onSwitchModel: (V2ModelOption) -> Unit = {},
     /** 上下文占用：真实任务对话才有；新建对话传 null，不显示占用条。 */
     contextUsage: TaskContextUsage? = null,
@@ -275,6 +288,8 @@ fun V2ChatScreen(
     var input by rememberSaveable(chat.conversationId) { mutableStateOf("") }
     var agentMenuOpen by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
+    // 当前模型小卡片停在输入栏上方：量出输入区高度，面板底部让出这段，输入栏始终可见。
+    var composerHeightPx by remember { mutableFloatStateOf(0f) }
     var contextInfoOpen by remember { mutableStateOf(false) }
     var headerMenuOpen by remember { mutableStateOf(false) }
     var modeSheetOpen by remember { mutableStateOf(false) }
@@ -915,6 +930,7 @@ fun V2ChatScreen(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
+                .onSizeChanged { composerHeightPx = it.height.toFloat() }
                 .testTag(V2ComposerTags.ROOT)
                 .clip(composerShape)
                 .background(V2Colors.surface)
@@ -1038,24 +1054,11 @@ fun V2ChatScreen(
                     )
                 }
                 // 模型线框立方体：入口仍在工具条上，菜单里才显示模型名称。
-                Box {
-                    ModelCubeButton(
-                        enabled = canSwitchModel && modelOptions.isNotEmpty() && !locked,
-                        onClick = { modelMenuOpen = true },
-                        diameter = 40.dp,
-                    )
-                    FluxModelMenu(
-                        expanded = modelMenuOpen && modelOptions.isNotEmpty(),
-                        onDismissRequest = { modelMenuOpen = false },
-                        options = modelOptions,
-                        currentModel = chat.model,
-                        currentModelKeyId = chat.modelKeyId,
-                        onPick = { option ->
-                            val selected = option.model == chat.model && option.keyId == chat.modelKeyId
-                            if (!selected) onSwitchModel(option)
-                        },
-                    )
-                }
+                ModelCubeButton(
+                    enabled = canSwitchModel && modelOptions.isNotEmpty() && !locked,
+                    onClick = { modelMenuOpen = true },
+                    diameter = 40.dp,
+                )
                 // 上下文占用环：真实对话才有数据；新建对话不显示空仪表。
                 if (chat.conversationId != null && contextUsage != null) {
                     Box {
@@ -1094,6 +1097,34 @@ fun V2ChatScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+    // 模型面板与内容平级叠放（不能嵌在工具条的小 Box 里，否则拿不到整屏高度）。
+    // 小卡片底部让出输入栏高度：输入区仍露在面板下方可见。
+    if (modelMenuOpen && modelOptions.isNotEmpty()) {
+        val bottomInset = with(density) {
+            (composerHeightPx + 16.dp.toPx()).coerceAtLeast(0f).toDp()
+        }
+        FluxModelMenu(
+            expanded = true,
+            onDismissRequest = { modelMenuOpen = false },
+            options = modelOptions,
+            channels = modelChannels,
+            favorites = modelFavorites,
+            currentModel = chat.model,
+            currentModelKeyId = chat.modelKeyId,
+            currentModelAccountId = chat.modelAccountId,
+            currentThinking = chat.thinkingLevel,
+            thinkingEnabled = !locked && !taskRunning,
+            bottomInset = bottomInset,
+            onToggleFavorite = onToggleModelFavorite,
+            onThinkingChange = onThinkingChange,
+            onPick = { option ->
+                val selected = option.model == chat.model &&
+                    option.keyId == chat.modelKeyId &&
+                    option.accountId == chat.modelAccountId
+                if (!selected) onSwitchModel(option)
+            },
+        )
     }
     // 模式面板与内容平级叠放，避免嵌在 Column 里拿不到高度（设计工作室踩过的坑）
     if (modeSheetOpen) {

@@ -116,6 +116,8 @@ def _redact(text: str, limit: int = 400) -> str:
 class _LoginSession:
     login_id: str
     process: Any
+    #: 本次登录写入的账号 id（多账号：每个账号一套隔离配置与令牌文件）
+    account_id: str = ""
     master_fd: int | None = None
     using_pty: bool = False
     created_at: float = field(default_factory=time.monotonic)
@@ -154,13 +156,88 @@ class ClaudeAccountService:
         return claude_account_home(self._settings)
 
     @property
+    def accounts_root(self) -> Path:
+        """多账号目录：`<home>/accounts/<account_id>/token`（旧版 `<home>/token` 视为 default）。"""
+        return self.home / "accounts"
+
+    @property
     def token_path(self) -> Path:
         return self.home / "token"
 
     @property
     def cli_config_dir(self) -> Path:
-        """登录过程给 CLI 的隔离配置目录，避免读写用户全局 `~/.claude`。"""
+        """默认账号的隔离配置目录，避免读写用户全局 `~/.claude`。"""
         return self.home / "cli-config"
+
+    def account_home_for(self, account_id: str) -> Path:
+        value = (account_id or "").strip()
+        if value in ("", "default"):
+            return self.home
+        safe = "".join(ch for ch in value if ch.isalnum() or ch in "-_")
+        if safe != value or not safe:
+            raise ConfigurationError("非法的 Claude 账号标识", details={"account_id": account_id})
+        return self.accounts_root / safe
+
+    def token_path_for(self, account_id: str) -> Path:
+        return self.account_home_for(account_id) / "token"
+
+    def cli_config_for(self, account_id: str) -> Path:
+        return self.account_home_for(account_id) / "cli-config"
+
+    def accounts(self) -> list[dict[str, Any]]:
+        """列出本机已登录的 Claude 订阅账号（旧版单账号 + 多账号目录）。"""
+        found: list[tuple[str, Path]] = []
+        if self.token_path.is_file():
+            found.append(("default", self.home))
+        root = self.accounts_root
+        try:
+            children = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError:
+            children = []
+        for child in children:
+            if child.is_dir() and (child / "token").is_file():
+                found.append((child.name, child))
+        items: list[dict[str, Any]] = []
+        for account_id, home in found:
+            items.append(self._account_view(account_id, home))
+        return items
+
+    def default_account_id(self) -> str:
+        items = self.accounts()
+        if not items:
+            return ""
+        default = next((item for item in items if item["id"] == "default"), None)
+        return str((default or items[0])["id"])
+
+    def get_account(self, account_id: str) -> dict[str, Any] | None:
+        wanted = (account_id or "").strip()
+        return next((item for item in self.accounts() if item["id"] == wanted), None)
+
+    def _account_view(self, account_id: str, home: Path) -> dict[str, Any]:
+        token = self._read_token_file(home / "token")
+        tail = token[-4:] if token and len(token) >= 8 else ""
+        label = f"Claude 订阅 · ••••{tail}" if tail else (
+            "Claude 订阅" if account_id == "default" else f"Claude 账号 {account_id}"
+        )
+        created_at = None
+        try:
+            if (home / "token").is_file():
+                created_at = datetime.fromtimestamp(
+                    (home / "token").stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+        except OSError:
+            created_at = None
+        return {
+            "id": account_id,
+            "label": label,
+            "email": None,
+            "plan": None,
+            "logged_in": token is not None,
+            "home": str(home),
+            "created_at": created_at,
+            #: 只给末位掩码，绝不返回令牌本身
+            "key_hint": f"••••{tail}" if tail else "••••",
+        }
 
     def binary_path(self) -> str:
         override = (os.environ.get("FLUX_CLAUDE_CODE_CLI_BINARY") or "").strip()
@@ -168,9 +245,15 @@ class ClaudeAccountService:
             return override
         return shutil.which("claude") or "claude"
 
-    def token(self) -> str | None:
-        """读取订阅令牌；不存在或格式异常返回 None。绝不记录令牌内容。"""
-        path = self.token_path
+    def token(self, account_id: str | None = None) -> str | None:
+        """读取订阅令牌；不传 account_id 时读默认账号。绝不记录令牌内容。"""
+        value = (account_id or "").strip() or self.default_account_id()
+        if not value:
+            return None
+        return self._read_token_file(self.token_path_for(value))
+
+    @staticmethod
+    def _read_token_file(path: Path) -> str | None:
         try:
             if not path.is_file() or path.stat().st_size > _MAX_TOKEN_BYTES:
                 return None
@@ -182,32 +265,36 @@ class ClaudeAccountService:
             return None
         return value
 
-    def has_token(self) -> bool:
-        return self.token() is not None
+    def has_token(self, account_id: str | None = None) -> bool:
+        return self.token(account_id) is not None
 
-    def _save_token(self, token: str) -> None:
+    def _save_token(self, token: str, account_id: str = "") -> None:
         value = (token or "").strip()
         if not value.startswith("sk-ant-") or len(value) < 24:
             raise ValidationError("Claude 返回的订阅令牌格式无法识别")
-        home = self.home
+        home = self.account_home_for(account_id)
         home.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             os.chmod(home, 0o700)
+        target = home / "token"
         tmp = home / ".token.tmp"
         tmp.write_text(value + "\n", encoding="utf-8")
         secure_file(tmp)
-        os.replace(tmp, self.token_path)
-        secure_file(self.token_path)
+        os.replace(tmp, target)
+        secure_file(target)
 
     # --- 状态 ---
 
-    def status(self) -> dict[str, Any]:
+    def status(self, account_id: str | None = None) -> dict[str, Any]:
         binary = self.binary_path()
-        has_token = self.has_token()
+        selected = (account_id or "").strip() or self.default_account_id()
+        has_token = bool(selected) and self.has_token(selected)
         payload: dict[str, Any] = {
             "logged_in": has_token,
             "auth_mode": "subscription" if has_token else None,
-            "home": str(self.home),
+            "home": str(self.account_home_for(selected) if selected else self.home),
+            "selected_account_id": selected or None,
+            "accounts": self.accounts(),
             "binary": binary,
             "binary_found": shutil.which(binary) is not None,
             "created_at": None,
@@ -216,7 +303,7 @@ class ClaudeAccountService:
         if has_token:
             with contextlib.suppress(OSError):
                 payload["created_at"] = datetime.fromtimestamp(
-                    self.token_path.stat().st_mtime, tz=timezone.utc
+                    self.token_path_for(selected).stat().st_mtime, tz=timezone.utc
                 ).isoformat()
         return payload
 
@@ -238,15 +325,19 @@ class ClaudeAccountService:
         if existing is not None:
             return existing
 
-        self.cli_config_dir.mkdir(parents=True, exist_ok=True)
+        # 多账号：首个账号沿用旧版根目录（向后兼容），之后每次登录都新增一个账号目录。
+        account_id = "default" if not self.accounts() else uuid.uuid4().hex[:12]
+        cli_config = self.cli_config_for(account_id)
+        cli_config.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
-            os.chmod(self.home, 0o700)
-            os.chmod(self.cli_config_dir, 0o700)
+            os.chmod(self.account_home_for(account_id), 0o700)
+            os.chmod(cli_config, 0o700)
 
-        process, master_fd, using_pty = self._spawn(binary)
+        process, master_fd, using_pty = self._spawn(binary, cli_config)
         session = _LoginSession(
             login_id=uuid.uuid4().hex[:12],
             process=process,
+            account_id=account_id,
             master_fd=master_fd,
             using_pty=using_pty,
         )
@@ -266,9 +357,10 @@ class ClaudeAccountService:
             session.message = "等待 Claude Code 输出授权链接…"
         return session.public()
 
-    def _spawn(self, binary: str) -> tuple[Any, int | None, bool]:
+    def _spawn(self, binary: str, cli_config: Path | None = None) -> tuple[Any, int | None, bool]:
         """启动登录进程。优先 PTY（CLI 的交互式授权页需要 TTY），失败回退管道。"""
-        env = self._login_env()
+        target = cli_config if cli_config is not None else self.cli_config_dir
+        env = self._login_env(target)
         argv = (binary, "setup-token")
         try:
             import pty
@@ -282,7 +374,7 @@ class ClaudeAccountService:
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=env,
-                cwd=str(self.cli_config_dir),
+                cwd=str(target),
                 start_new_session=True,
                 close_fds=True,
             )
@@ -299,7 +391,7 @@ class ClaudeAccountService:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                cwd=str(self.cli_config_dir),
+                cwd=str(target),
                 start_new_session=os.name != "nt",
                 close_fds=True,
             )
@@ -310,7 +402,7 @@ class ClaudeAccountService:
                 details={"binary": binary},
             ) from exc
 
-    def _login_env(self) -> dict[str, str]:
+    def _login_env(self, cli_config: Path | None = None) -> dict[str, str]:
         # 清掉所有 Anthropic / Claude Code 凭据变量：否则 CLI 会判定"已登录"而跳过
         # setup-token，或让父进程的密钥通道混进订阅登录。
         env = {
@@ -320,7 +412,9 @@ class ClaudeAccountService:
         }
         env.update(
             {
-                "CLAUDE_CONFIG_DIR": str(self.cli_config_dir),
+                "CLAUDE_CONFIG_DIR": str(
+                    cli_config if cli_config is not None else self.cli_config_dir
+                ),
                 "TERM": "dumb",
                 "NO_COLOR": "1",
                 "BROWSER": "/bin/false" if os.name != "nt" else "",
@@ -444,7 +538,7 @@ class ClaudeAccountService:
             token = parse_subscription_token(session.output)
             if token:
                 try:
-                    self._save_token(token)
+                    self._save_token(token, session.account_id)
                 except (OSError, ValidationError) as exc:
                     session.status = "failed"
                     session.message = f"订阅令牌保存失败：{exc}"
@@ -474,7 +568,7 @@ class ClaudeAccountService:
     def _settle(self, session: _LoginSession, returncode: int | None) -> None:
         if session.status not in _PENDING_STATUSES:
             return
-        if session.token_captured and self.has_token():
+        if session.token_captured and self.has_token(session.account_id):
             session.status = "success"
             session.message = ""
             return
@@ -482,7 +576,7 @@ class ClaudeAccountService:
         token = parse_subscription_token(session.output)
         if token:
             try:
-                self._save_token(token)
+                self._save_token(token, session.account_id)
                 session.token_captured = True
                 session.status = "success"
                 session.message = ""
@@ -526,37 +620,50 @@ class ClaudeAccountService:
 
     # --- 退出 ---
 
-    async def logout(self) -> dict[str, Any]:
-        """删除 Flux 保存的订阅令牌，并终止进行中的登录。"""
+    async def logout(self, account_id: str | None = None) -> dict[str, Any]:
+        """退出一个 Claude 订阅账号；不传 account_id 时退回默认账号（兼容旧调用）。
+
+        多账号下只移除指定账号，其它账号与密钥库不受影响。
+        """
+        target = (account_id or "").strip() or self.default_account_id()
         for session in list(self._logins.values()):
-            if session.status in _PENDING_STATUSES:
+            if session.status in _PENDING_STATUSES and (
+                not target or session.account_id == target
+            ):
                 with contextlib.suppress(ProcessLookupError, OSError):
                     session.process.terminate()
                 session.status = "cancelled"
                 session.message = "已退出登录"
         removed = False
-        try:
-            if self.token_path.exists():
-                self.token_path.unlink()
-                removed = True
-        except OSError as exc:
-            raise ConfigurationError(
-                "删除 Claude 订阅登录态失败", details={"path": str(self.token_path)}
-            ) from exc
-        # 登录过程的隔离配置也一并清掉（只删 Flux 自己的目录）。
-        with contextlib.suppress(OSError):
-            shutil.rmtree(self.cli_config_dir)
-        logger.info("claude 订阅已退出 removed=%s path=%s", removed, self.token_path)
-        return {"removed": removed, "status": self.status()}
+        if target:
+            home = self.account_home_for(target)
+            path = home / "token"
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed = True
+                if target != "default" and home.parent == self.accounts_root:
+                    with contextlib.suppress(OSError):
+                        shutil.rmtree(home)
+                else:
+                    # 旧版单账号：只清 Flux 自己的隔离配置目录
+                    with contextlib.suppress(OSError):
+                        shutil.rmtree(self.cli_config_dir)
+            except OSError as exc:
+                raise ConfigurationError(
+                    "删除 Claude 订阅登录态失败", details={"path": str(path)}
+                ) from exc
+            logger.info("claude 订阅已退出 account=%s removed=%s path=%s", target, removed, path)
+        return {"removed": removed, "account_id": target or None, "status": self.status()}
 
 
-def claude_account_env(settings: Settings) -> dict[str, str]:
+def claude_account_env(settings: Settings, account_id: str = "") -> dict[str, str]:
     """Run 注入：有订阅令牌时返回 `CLAUDE_CODE_OAUTH_TOKEN` 环境变量。
 
     这是 Claude Code 官方支持的无头/无人值守订阅通道。令牌只进子进程环境，
-    不写 run 配置、不进日志。
+    不写 run 配置、不进日志。`account_id` 非空时用任务选中的那个订阅账号。
     """
-    token = ClaudeAccountService(settings).token()
+    token = ClaudeAccountService(settings).token(account_id or None)
     if not token:
         return {}
     return {"CLAUDE_CODE_OAUTH_TOKEN": token}

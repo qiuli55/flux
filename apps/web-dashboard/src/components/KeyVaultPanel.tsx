@@ -6,7 +6,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "../api/client";
-import type { ApiKeyCreateRequest, ApiKeyEntry, ApiKeyUpdateRequest } from "../api/types";
+import type {
+  ApiKeyCreateRequest,
+  ApiKeyEntry,
+  ApiKeyUpdateRequest,
+  ThinkingSpecDetail,
+  ThinkingSpecInput,
+} from "../api/types";
 import { toast } from "../app/toast";
 import { Modal } from "../shell/Overlay";
 import { Badge, Button, Card, Field, Input, SectionTitle, Switch, Textarea } from "../shell/ui";
@@ -49,6 +55,56 @@ function splitModels(text: string): string[] {
   return [...new Set(text.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean))];
 }
 
+const THINKING_KINDS: { value: ThinkingSpecDetail["kind"]; label: string }[] = [
+  { value: "none", label: "不支持思考" },
+  { value: "toggle", label: "开 / 关" },
+  { value: "levels", label: "多档" },
+  { value: "always", label: "始终思考" },
+];
+
+const GENERIC_LEVELS = ["none", "minimal", "low", "medium", "high", "max"];
+const LEVEL_LABELS: Record<string, string> = {
+  none: "无思考",
+  minimal: "最低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  max: "最高",
+  on: "开",
+  off: "关",
+};
+
+function levelLabel(spec: ThinkingSpecDetail, level: string, index: number): string {
+  return spec.labels?.[index] || LEVEL_LABELS[level] || level;
+}
+
+/** 切换思考类型：保留能对上的默认档；多档默认用后端预填值或通用 6 档。 */
+function switchThinkingKind(spec: ThinkingSpecDetail, kind: ThinkingSpecDetail["kind"]): ThinkingSpecDetail {
+  if (kind === "none") return { kind, levels: [], labels: [], default: "" };
+  if (kind === "always") return { kind, levels: [], labels: [], default: "always" };
+  if (kind === "toggle") {
+    return {
+      kind,
+      levels: ["on", "off"],
+      labels: ["开", "关"],
+      default: spec.default === "off" ? "off" : "on",
+    };
+  }
+  const levels = spec.kind === "levels" && spec.levels.length > 0 ? spec.levels : GENERIC_LEVELS;
+  return {
+    kind,
+    levels,
+    labels: levels.map((level, index) =>
+      spec.kind === "levels" ? levelLabel(spec, level, index) : LEVEL_LABELS[level] || level,
+    ),
+    default: levels.includes(spec.default) ? spec.default : (levels[0] ?? "medium"),
+  };
+}
+
+function thinkingInput(spec: ThinkingSpecDetail): ThinkingSpecInput {
+  return { kind: spec.kind, levels: spec.levels, default: spec.default };
+}
+
 export function KeyVaultPanel() {
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,8 +112,10 @@ export function KeyVaultPanel() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<ApiKeyEntry | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [thinking, setThinking] = useState<Record<string, ThinkingSpecDetail>>({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApiKeyEntry | null>(null);
+  const formModels = splitModels(form.modelsText);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,9 +131,27 @@ export function KeyVaultPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // 新增模型未选思考模式时，按后端官方 / 通用规则预填（不请求模型）。
+  useEffect(() => {
+    if (!formOpen) return;
+    const missing = splitModels(form.modelsText).filter((model) => !thinking[model]);
+    if (missing.length === 0) return;
+    let alive = true;
+    api
+      .thinkingDefaults(missing)
+      .then((fetched) => {
+        if (alive) setThinking((prev) => ({ ...fetched, ...prev }));
+      })
+      .catch(() => {
+        /* 取不到时保存会被拦下，界面显示「读取中」 */
+      });
+    return () => { alive = false; };
+  }, [formOpen, form.modelsText, thinking]);
+
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setThinking({});
     setFormOpen(true);
   };
 
@@ -90,6 +166,7 @@ export function KeyVaultPanel() {
       wire_api: (entry.wire_api as WireApi) || "",
       enabled: entry.enabled,
     });
+    setThinking(entry.model_thinking ?? {});
     setFormOpen(true);
   };
 
@@ -98,7 +175,14 @@ export function KeyVaultPanel() {
     const models = splitModels(form.modelsText);
     if (!name) { toast("请填写密钥名称"); return; }
     if (models.length === 0) { toast("至少填写一个模型 id"); return; }
+    if (models.some((model) => !thinking[model])) {
+      toast("请为每个模型选择思考模式");
+      return;
+    }
     if (!editing && !form.api_key.trim()) { toast("请填写 API Key"); return; }
+    const modelThinking = Object.fromEntries(
+      models.map((model) => [model, thinkingInput(thinking[model]!)]),
+    );
     setSaving(true);
     try {
       if (editing) {
@@ -107,6 +191,7 @@ export function KeyVaultPanel() {
           provider: form.provider,
           base_url: form.base_url.trim(),
           models,
+          model_thinking: modelThinking,
           wire_api: form.wire_api,
           enabled: form.enabled,
         };
@@ -120,6 +205,7 @@ export function KeyVaultPanel() {
           base_url: form.base_url.trim(),
           api_key: form.api_key.trim(),
           models,
+          model_thinking: modelThinking,
           wire_api: form.wire_api,
           enabled: form.enabled,
         };
@@ -303,6 +389,64 @@ export function KeyVaultPanel() {
               onChange={(event) => setForm({ ...form, modelsText: event.target.value })}
             />
           </Field>
+
+          {formModels.length > 0 ? (
+            <Field label="思考模式（每个模型必填）" hint="按官方能力预填，可改类型与默认档">
+              <div style={{ display: "grid", gap: 8 }}>
+                {formModels.map((model) => {
+                  const spec = thinking[model];
+                  if (!spec) {
+                    return (
+                      <div key={model} className="fx-note" style={{ fontSize: 11 }}>
+                        {model}：正在读取默认思考模式…
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={model} className="fx-key-row" style={{ padding: 8 }}>
+                      <div className="fx-key-main">
+                        <div className="fx-key-model">{model}</div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <select
+                            className="fx-input"
+                            value={spec.kind}
+                            onChange={(event) =>
+                              setThinking({
+                                ...thinking,
+                                [model]: switchThinkingKind(spec, event.target.value as ThinkingSpecDetail["kind"]),
+                              })
+                            }
+                          >
+                            {THINKING_KINDS.map((kind) => (
+                              <option key={kind.value} value={kind.value}>{kind.label}</option>
+                            ))}
+                          </select>
+                          {spec.kind === "levels" || spec.kind === "toggle" ? (
+                            <select
+                              className="fx-input"
+                              value={spec.default}
+                              onChange={(event) =>
+                                setThinking({
+                                  ...thinking,
+                                  [model]: { ...spec, default: event.target.value },
+                                })
+                              }
+                            >
+                              {spec.levels.map((level, index) => (
+                                <option key={level} value={level}>
+                                  {levelLabel(spec, level, index)}
+                                </option>
+                              ))}
+                            </select>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Field>
+          ) : null}
 
           {isCompatible ? (
             <Field label="wire_api" hint="codex 的请求协议；不确定时先用 chat">

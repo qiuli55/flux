@@ -3,6 +3,7 @@ package top.qiuli55.flux.mobile.ui.v2
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +39,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
+import top.qiuli55.flux.mobile.data.ThinkingSpec
 
 /** 新建/修改密钥的请求草稿；keyId 为空表示新建。 */
 data class V2KeyDraft(
@@ -46,6 +49,8 @@ data class V2KeyDraft(
     val baseUrl: String,
     val apiKey: String,
     val models: List<String>,
+    /** 模型 id → 该模型在密钥库里定好的思考模式（必填）。 */
+    val modelThinking: Map<String, ThinkingSpec>,
     val wireApi: String,
     val enabled: Boolean,
 )
@@ -64,6 +69,8 @@ fun KeyVaultSheet(
     keys: List<ApiKeyEntry>,
     loading: Boolean,
     onRefresh: () -> Unit,
+    /** 按官方 / 公共目录预填一批模型的思考模式（不请求模型）。 */
+    onThinkingDefaults: (List<String>, (Map<String, ThinkingSpec>) -> Unit) -> Unit,
     onSave: (V2KeyDraft, (error: String, notice: String) -> Unit) -> Unit,
     onToggle: (ApiKeyEntry, Boolean, (String) -> Unit) -> Unit,
     onDelete: (ApiKeyEntry, (String) -> Unit) -> Unit,
@@ -76,12 +83,22 @@ fun KeyVaultSheet(
     var baseUrl by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
     var modelsText by remember { mutableStateOf("") }
+    var modelThinking by remember { mutableStateOf<Map<String, ThinkingSpec>>(emptyMap()) }
+    var thinkingRetry by remember { mutableStateOf(0) }
     var wireApi by remember { mutableStateOf("") }
     var enabled by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ApiKeyEntry?>(null) }
+
+    val models = remember(modelsText) {
+        modelsText
+            .split('\n', ',', '，')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
 
     fun startForm(entry: ApiKeyEntry?) {
         editing = entry
@@ -91,11 +108,22 @@ fun KeyVaultSheet(
         baseUrl = entry?.baseUrl.orEmpty()
         apiKey = ""
         modelsText = entry?.models?.joinToString("\n").orEmpty()
+        modelThinking = entry?.modelThinking.orEmpty()
         wireApi = entry?.wireApi.orEmpty()
         enabled = entry?.enabled ?: true
         error = ""
         notice = ""
         deleteTarget = null
+    }
+
+    // 新输入的模型没有预填值时，按后端官方 / 通用规则补上；用户已改过的值优先。
+    LaunchedEffect(formOpen, models, thinkingRetry) {
+        if (!formOpen) return@LaunchedEffect
+        val missing = models.filter { it !in modelThinking }
+        if (missing.isEmpty()) return@LaunchedEffect
+        onThinkingDefaults(missing) { fetched ->
+            modelThinking = fetched + modelThinking
+        }
     }
 
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
@@ -110,7 +138,7 @@ fun KeyVaultSheet(
         ) {
             Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
-                    Label("模型与密钥", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+                    Label("密钥库", 21f, V2Colors.ink(.95f), FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Label(
                         "加密保存，只显示末 4 位；保存时会用该 key 的模型请求一次端点校验可用性",
@@ -304,6 +332,27 @@ fun KeyVaultSheet(
                             singleLine = false,
                         )
 
+                        if (models.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Label("思考模式（每个模型必填）", 11f, V2Colors.ink(.45f))
+                                    if (models.any { it !in modelThinking }) {
+                                        Spacer(Modifier.weight(1f))
+                                        SmallPill("重试") { thinkingRetry += 1 }
+                                    }
+                                }
+                                models.forEach { model ->
+                                    KeyThinkingEditor(
+                                        model = model,
+                                        spec = modelThinking[model],
+                                        onChange = { next ->
+                                            modelThinking = modelThinking + (model to next)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
                         if (provider == "openai_compatible") {
                             Column {
                                 Label("wire_api", 11f, V2Colors.ink(.45f))
@@ -344,14 +393,11 @@ fun KeyVaultSheet(
                             Spacer(Modifier.width(8.dp))
                             SmallPill(if (editing != null) "保存修改" else "创建", primary = true, enabled = !saving) {
                                 val cleanName = name.trim()
-                                val models = modelsText
-                                    .split('\n', ',', '，')
-                                    .map { it.trim() }
-                                    .filter { it.isNotBlank() }
-                                    .distinct()
                                 when {
                                     cleanName.isBlank() -> error = "请填写密钥名称"
                                     models.isEmpty() -> error = "至少填写一个模型 id"
+                                    !keyThinkingComplete(models, modelThinking) ->
+                                        error = "请为每个模型选择思考模式"
                                     editing == null && apiKey.isBlank() -> error = "请填写 API Key"
                                     else -> {
                                         error = ""
@@ -364,6 +410,7 @@ fun KeyVaultSheet(
                                                 baseUrl = baseUrl.trim(),
                                                 apiKey = apiKey,
                                                 models = models,
+                                                modelThinking = keyThinkingPayload(models, modelThinking),
                                                 wireApi = if (provider == "openai_compatible") wireApi else "",
                                                 enabled = enabled,
                                             ),
@@ -381,6 +428,51 @@ fun KeyVaultSheet(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 单个模型的思考模式：类型必选；多档 / 开关类型还要选默认档。 */
+@Composable
+private fun KeyThinkingEditor(
+    model: String,
+    spec: ThinkingSpec?,
+    onChange: (ThinkingSpec) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(V2Colors.ink(.03f), RoundedCornerShape(12.dp))
+            .border(1.dp, V2Colors.ink(.06f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Label(model, 11.5f, V2Colors.ink(.72f), FontWeight.Medium, maxLines = 1, mono = true)
+        if (spec == null) {
+            Label("正在读取默认思考模式…", 10.5f, V2Colors.ink(.34f))
+            return@Column
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            V2_THINKING_KINDS.forEach { (kind, label) ->
+                SmallPill(label, active = spec.kind == kind) {
+                    onChange(switchThinkingKind(spec, kind))
+                }
+            }
+        }
+        if (spec.kind == "levels" || spec.kind == "toggle") {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val active = thinkingActiveLevel(spec)
+                spec.levels.forEachIndexed { index, level ->
+                    val label = spec.labels.getOrNull(index)?.takeIf { it.isNotBlank() }
+                        ?: thinkingLevelLabel(level)
+                    SmallPill(label, active = level == active) {
+                        onChange(spec.copy(default = level))
                     }
                 }
             }

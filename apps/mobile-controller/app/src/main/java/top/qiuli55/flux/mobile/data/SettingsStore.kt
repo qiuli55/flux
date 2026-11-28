@@ -34,6 +34,30 @@ class SettingsStore(context: Context) {
         appContext.getSharedPreferences("flux_oauth", Context.MODE_PRIVATE)
     }
 
+    /** 模型收藏：按 Agent 隔离存在本机；只影响选模列表排序/筛选。 */
+    private val favoritesPrefs by lazy {
+        appContext.getSharedPreferences("flux_model_favorites", Context.MODE_PRIVATE)
+    }
+
+    fun loadModelFavorites(): Map<String, Set<String>> =
+        favoritesPrefs.all.mapNotNull { (agentId, value) ->
+            val items = (value as? String).orEmpty()
+                .split("\n")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            if (items.isEmpty()) null else agentId to items
+        }.toMap()
+
+    fun saveModelFavorites(favorites: Map<String, Set<String>>) {
+        favoritesPrefs.edit().apply {
+            clear()
+            favorites.forEach { (agentId, keys) ->
+                if (keys.isNotEmpty()) putString(agentId, keys.joinToString("\n"))
+            }
+        }.apply()
+    }
+
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
         val TOKEN = stringPreferencesKey("token")

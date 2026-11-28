@@ -24,6 +24,7 @@ import top.qiuli55.flux.mobile.data.billingSyncFailure
 import top.qiuli55.flux.mobile.data.ClaudeAccountStatus
 import top.qiuli55.flux.mobile.data.ClaudeLoginSession
 import top.qiuli55.flux.mobile.data.CloudApi
+import top.qiuli55.flux.mobile.data.ThinkingSpec
 import top.qiuli55.flux.mobile.data.CodexAccountStatus
 import top.qiuli55.flux.mobile.data.CodexLoginSession
 import top.qiuli55.flux.mobile.data.ConnectionConfig
@@ -290,6 +291,7 @@ class V2AppViewModel : FluxViewModel() {
             V2Registry.devices = emptyList()
             V2Registry.models = emptyList()
             V2Registry.agentModels = emptyMap()
+            V2Registry.agentChannels = emptyMap()
             _state.value = V2AppState(boot = V2Boot.LOGIN)
         }
     }
@@ -311,16 +313,59 @@ class V2AppViewModel : FluxViewModel() {
                 val mapped = agents.toV2Agents(tasks)
                 V2Registry.agents = mapped
                 V2Registry.models = models
-                // 每个 Agent 的可用模型 = 原生模型 + 密钥库模型（带 keyId，切换时一起提交）
+                // 每个 Agent 的可用模型 = 后端 model_catalog（按当前 Agent 的通道组装）；
+                // 老服务端没有 model_catalog 时退回 models + key_models。
                 val fallbackOptions = models.map { V2ModelOption(it, it) }
                 V2Registry.agentModels = agents.associate { agent ->
                     val spec = agent.spec
-                    agent.id to buildList {
-                        spec?.models?.forEach { add(V2ModelOption(it, it)) }
-                        spec?.keyModels?.forEach {
-                            add(V2ModelOption(it.model, "${it.model} · ${it.keyName}", it.keyId))
+                    agent.id to if (!spec?.modelCatalog.isNullOrEmpty()) {
+                        spec!!.modelCatalog.map { item ->
+                            V2ModelOption(
+                                model = item.id,
+                                label = item.label.ifBlank { item.id },
+                                keyId = item.keyId.ifBlank { null },
+                                accountId = item.accountId.ifBlank { null },
+                                channelId = item.channelId,
+                                channelKind = item.channelKind.ifBlank { "native" },
+                                channelLabel = item.channelLabel,
+                                contextWindow = item.contextWindow,
+                                capabilities = item.capabilities,
+                                thinking = V2Thinking(
+                                    kind = item.thinking.kind,
+                                    levels = item.thinking.levels,
+                                    labels = item.thinking.labels,
+                                    default = item.thinking.default,
+                                    canDisable = item.thinking.canDisable,
+                                ),
+                            )
+                        }
+                    } else {
+                        buildList {
+                            spec?.models?.forEach { add(V2ModelOption(it, it)) }
+                            spec?.keyModels?.forEach {
+                                add(V2ModelOption(it.model, it.model, it.keyId, channelKind = "key"))
+                            }
                         }
                     }
+                }
+                V2Registry.agentChannels = agents.associate { agent ->
+                    agent.id to agent.spec?.modelChannels.orEmpty().map { item ->
+                        V2ModelChannel(
+                            id = item.id,
+                            kind = item.kind,
+                            label = item.label,
+                            vendor = item.vendor,
+                            accountId = item.accountId,
+                            keyId = item.keyId,
+                            detail = item.detail,
+                            enabled = item.enabled,
+                            chipLabel = item.chipLabel,
+                        )
+                    }
+                }
+                if (V2Registry.favorites.isEmpty()) {
+                    V2Registry.favorites = runCatching { FluxEnv.settings.loadModelFavorites() }
+                        .getOrDefault(emptyMap())
                 }
                 V2Registry.devices = listOf(
                     V2Device(
@@ -412,6 +457,8 @@ class V2AppViewModel : FluxViewModel() {
         permissionMode: String = "normal",
         model: String = "",
         keyId: String? = null,
+        accountId: String? = null,
+        thinking: String? = null,
         summary: String? = null,
         summaryFrom: String? = null,
         attachmentIds: List<String> = emptyList(),
@@ -440,6 +487,8 @@ class V2AppViewModel : FluxViewModel() {
                     permissionMode,
                     model.takeIf { it.isNotBlank() },
                     keyId?.takeIf { it.isNotBlank() },
+                    accountId = accountId?.takeIf { it.isNotBlank() },
+                    thinking = thinking?.takeIf { it.isNotBlank() },
                     summary = summary?.takeIf { it.isNotBlank() },
                     summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
                     attachmentIds = attachmentIds,
@@ -563,6 +612,7 @@ class V2AppViewModel : FluxViewModel() {
         baseUrl: String,
         apiKey: String?,
         models: List<String>,
+        modelThinking: Map<String, ThinkingSpec>,
         wireApi: String,
         enabled: Boolean,
         onResult: (error: String, notice: String) -> Unit,
@@ -571,9 +621,13 @@ class V2AppViewModel : FluxViewModel() {
             try {
                 val api = api()
                 val saved = if (keyId.isNullOrBlank()) {
-                    api.createKey(name, provider, baseUrl, apiKey.orEmpty(), models, wireApi, enabled)
+                    api.createKey(
+                        name, provider, baseUrl, apiKey.orEmpty(), models, modelThinking, wireApi, enabled,
+                    )
                 } else {
-                    api.updateKey(keyId, name, provider, baseUrl, apiKey, models, wireApi, enabled)
+                    api.updateKey(
+                        keyId, name, provider, baseUrl, apiKey, models, modelThinking, wireApi, enabled,
+                    )
                 }
                 refresh(quiet = true)
                 val keys = api.listKeys()
@@ -583,6 +637,22 @@ class V2AppViewModel : FluxViewModel() {
             } catch (e: Exception) {
                 onResult(readable(e), "")
             }
+        }
+    }
+
+    /** 取一批模型的预填思考模式（创建/编辑密钥时用；失败时回调空表，界面会阻止空着保存）。 */
+    fun thinkingDefaults(
+        models: List<String>,
+        onResult: (Map<String, ThinkingSpec>) -> Unit,
+    ) {
+        val clean = models.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) {
+            onResult(emptyMap())
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { api().thinkingDefaults(clean) }.getOrDefault(emptyMap())
+            onResult(result)
         }
     }
 

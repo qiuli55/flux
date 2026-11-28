@@ -12,11 +12,16 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.model_catalog import (
+    THINKING_ALWAYS,
+    ThinkingSpec,
     default_model_for_runtime,
+    default_thinking_level,
+    model_meta,
     models_for_runtime,
     vault_models_for_runtime,
 )
 from flux.core.agent_runtime.runtimes.base import RUNTIME_DSH
+from flux.errors import BadRequestError
 from flux.schemas.dsh import DshRunCreateRequest
 
 router = APIRouter(prefix="/dsh", tags=["dsh"])
@@ -49,12 +54,31 @@ async def start_run(
         if key_id is not None and model
         else None
     )
+    # 密钥库模型以库里保存的思考模式为准；其余按官方 / 通用规则。
+    spec: ThinkingSpec | None = None
+    if key_id is not None and model:
+        spec = await container.key_vault.thinking_spec(key_id, model)
+    resolved = spec if spec is not None else model_meta(model or "").thinking
+    level = (payload.thinking or "").strip().lower()
+    if level:
+        allowed = set(resolved.levels)
+        if resolved.kind == THINKING_ALWAYS:
+            allowed = {"always"}
+        if level not in allowed:
+            raise BadRequestError(
+                f"模型 {model} 不支持思考档 {level}",
+                details={"model": model, "thinking": level, "allowed": sorted(allowed)},
+            )
+    else:
+        level = default_thinking_level(model or "", resolved)
     run = await container.dsh.start_run(
         payload.instruction,
         session_id=payload.session_id,
         agent_id=payload.agent_id,
         model=model,
         channel=channel,
+        thinking=level,
+        thinking_spec=resolved,
     )
     return ok(run.to_dict())
 

@@ -62,9 +62,13 @@ class TaskCreateRequest(BaseModel):
     decision_mode: DecisionMode = DecisionMode.AUTO
     # 对话级权限模式（2026-10-25）：新建对话默认「正常模式」
     permission_mode: PermissionMode = PermissionMode.NORMAL
-    # 任务级模型选择：model + key_id。key_id 留空 = 原生模型；两者都留空 = Agent 默认。
+    # 任务级模型选择：model + key_id / account_id。key_id 与 account_id 互斥；
+    # key_id 留空且 account_id 留空 = 原生模型；三者都留空 = Agent 默认。
     model: str | None = Field(default=None, max_length=128)
     key_id: str | None = Field(default=None, max_length=64)
+    account_id: str | None = Field(default=None, max_length=64)
+    # 思考档（来自模型目录的 thinking 元数据）；留空 = 模型默认档。
+    thinking: str | None = Field(default=None, max_length=32)
     # 「上下文快满 → 新建对话带摘要」：旧对话的前情摘要随新任务一起落库，
     # 既进入助手历史，也拼进 Agent 执行指令；summary_from 仅用于溯源旧对话。
     summary: str | None = Field(default=None, max_length=8000)
@@ -142,21 +146,37 @@ class TaskAgentRequest(BaseModel):
 class TaskModelRequest(BaseModel):
     """切换任务的执行模型：必须是该 Agent runtime 支持的模型。
 
-    `key_id` 非空表示模型来自密钥库；留空 = 原生模型。
+    `key_id` 非空表示模型来自密钥库；`account_id` 非空表示走某个订阅账号。
+    两者互斥，都留空 = runtime 原生模型。
     """
 
     model: str = Field(min_length=1, max_length=128)
     key_id: str | None = Field(default=None, max_length=64)
+    account_id: str | None = Field(default=None, max_length=64)
+    thinking: str | None = Field(default=None, max_length=32)
+
+
+class ThinkingSpecRequest(BaseModel):
+    """密钥库里一个模型的思考模式：类型 + 可选档位 + 默认档（必填）。"""
+
+    kind: Literal["none", "toggle", "levels", "always"]
+    levels: list[str] = Field(default_factory=list, max_length=8)
+    default: str = Field(default="", max_length=32)
 
 
 class ApiKeyCreateRequest(BaseModel):
-    """在密钥库中登记一条 API Key。明文只在请求体里出现，落库即加密。"""
+    """在密钥库中登记一条 API Key。明文只在请求体里出现，落库即加密。
+
+    `model_thinking` 是模型 id → 思考模式；只要登记了模型，就必须逐项给出，
+    不能空着创建。
+    """
 
     name: str = Field(min_length=1, max_length=128)
     provider: Literal["deepseek", "openai", "openai_compatible", "anthropic"]
     base_url: str = Field(default="", max_length=256)
     api_key: str = Field(min_length=1, max_length=4096)
     models: list[str] = Field(default_factory=list)
+    model_thinking: dict[str, ThinkingSpecRequest] = Field(default_factory=dict)
     #: codex 的 wire_api：空 = 按供应商推导；兼容端点可选 chat / responses
     wire_api: str = Field(default="", max_length=16)
     enabled: bool = True
@@ -170,8 +190,15 @@ class ApiKeyUpdateRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=256)
     api_key: str | None = Field(default=None, max_length=4096)
     models: list[str] | None = None
+    model_thinking: dict[str, ThinkingSpecRequest] | None = None
     wire_api: str | None = Field(default=None, max_length=16)
     enabled: bool | None = None
+
+
+class ThinkingDefaultsRequest(BaseModel):
+    """为一批模型取预填思考模式（密钥库新增模型时用，不发起任何模型请求）。"""
+
+    models: list[str] = Field(default_factory=list, max_length=64)
 
 
 class DecisionOption(BaseModel):

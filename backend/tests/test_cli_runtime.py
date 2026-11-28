@@ -694,7 +694,7 @@ def test_write_runtime_config_links_user_assets(
 
     runtime = SimpleNamespace(_settings=settings, runtime_id=RUNTIME_CODEX)
     runtime._secure = lambda path: None
-    runtime._inject_account_auth = lambda home: None
+    runtime._inject_account_auth = lambda home, account_id="": None
 
     run_dir = tmp_path / "runs" / "run-1"
     run_dir.mkdir(parents=True)

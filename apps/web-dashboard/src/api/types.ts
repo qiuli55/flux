@@ -243,6 +243,60 @@ export interface AgentSpec {
   model?: string;
   /** 密钥库中该 runtime 可用的模型 */
   key_models?: KeyModelOption[];
+  /** 该 Agent 的模型分栏（订阅账号 + 兼容密钥 + 原生）；选模页权威数据 */
+  model_channels?: ModelChannel[];
+  /** 该 Agent 的完整模型目录（带通道与思考能力） */
+  model_catalog?: CatalogModel[];
+  /** 该 Agent 已登录可用的订阅账号 */
+  subscription_accounts?: SubscriptionAccount[];
+}
+
+/** 思考能力元数据：前端按 kind / levels 渲染，不在客户端写死。 */
+export interface ThinkingSpec {
+  kind: "none" | "toggle" | "levels" | "always";
+  levels: string[];
+  labels: string[];
+  default: string;
+  can_disable: boolean;
+}
+
+/** 选模页的一条模型（来源通道 + 能力 + 思考元数据）。 */
+export interface CatalogModel {
+  id: string;
+  label: string;
+  channel_id: string;
+  channel_kind: "subscription" | "key" | "native";
+  channel_label: string;
+  account_id: string;
+  key_id: string;
+  provider: string;
+  context_window: number | null;
+  capabilities: string[];
+  thinking: ThinkingSpec;
+}
+
+/** 选模页顶部的一个分栏：订阅账号 / 密钥 / runtime 原生配置。 */
+export interface ModelChannel {
+  id: string;
+  kind: "subscription" | "key" | "native";
+  label: string;
+  vendor: string;
+  account_id: string;
+  key_id: string;
+  detail: string;
+  enabled: boolean;
+  /** 分栏 chip 的短名（订阅账号名 / 密钥名）；列表来源仍用 label。 */
+  chip_label?: string;
+}
+
+/** 已登录的订阅账号（不含任何令牌）。 */
+export interface SubscriptionAccount {
+  account_id: string;
+  label: string;
+  vendor: string;
+  plan: string;
+  detail: string;
+  logged_in: boolean;
 }
 
 /** 密钥库中一个可用模型（GET /agents 的 spec.key_models） */
@@ -387,6 +441,22 @@ export interface Task {
   avatar_color?: string;
 }
 
+/** 一个模型的思考模式（后端 ThinkingSpec.to_dict）。 */
+export interface ThinkingSpecDetail {
+  kind: "none" | "toggle" | "levels" | "always";
+  levels: string[];
+  labels?: string[];
+  default: string;
+  can_disable?: boolean;
+}
+
+/** 提交给密钥库的思考模式（只含类型 / 档位 / 默认档）。 */
+export interface ThinkingSpecInput {
+  kind: "none" | "toggle" | "levels" | "always";
+  levels?: string[];
+  default?: string;
+}
+
 /** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
 export interface ApiKeyEntry {
   id: string;
@@ -395,6 +465,7 @@ export interface ApiKeyEntry {
   base_url: string;
   wire_api: string;
   models: string[];
+  model_thinking?: Record<string, ThinkingSpecDetail>;
   key_hint: string;
   enabled: boolean;
   created_at: string | null;
@@ -407,6 +478,7 @@ export interface ApiKeyCreateRequest {
   base_url?: string;
   api_key: string;
   models: string[];
+  model_thinking?: Record<string, ThinkingSpecInput>;
   wire_api?: string;
   enabled?: boolean;
 }
@@ -417,6 +489,7 @@ export interface ApiKeyUpdateRequest {
   base_url?: string;
   api_key?: string;
   models?: string[];
+  model_thinking?: Record<string, ThinkingSpecInput>;
   wire_api?: string;
   enabled?: boolean;
 }
@@ -777,6 +850,13 @@ export interface BillingPlan {
   /** 模型不带前缀时按 runtime 归因（如 codex → Codex 订阅） */
   runtime_ids?: string[];
   official_source: string;
+  /** 是否有官方采集器（与计费开关无关） */
+  can_auto_refresh?: boolean;
+  /** 本机是否已登录/配置好凭据，且额度页可展示 */
+  available?: boolean;
+  availability_note?: string;
+  /** 官方口径风险说明（Codex：ChatGPT 私有后端，随时可能失效） */
+  risk_note?: string;
   fallback_model: string;
   /** 本机当前账号指纹（顶层 gate / windows 都是它的口径） */
   account_key?: string;

@@ -42,6 +42,57 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _plan_risk(plan_key: str) -> str:
+    """官方口径风险说明；Codex 用的是 ChatGPT 私有后端，必须如实标注。"""
+    if plan_key == "codex":
+        return (
+            "Codex 订阅额度通过 ChatGPT 私有后端（chatgpt.com/backend-api/codex/usage）读取，"
+            "并非 OpenAI 官方公开集成授权，接口随时可能失效；失效时会如实显示失败原因。"
+            "这是 ChatGPT 里的 Codex 订阅额度，不是 OpenAI API 组织账单。"
+        )
+    return ""
+
+
+def _plan_source_notes(plan_key: str, official_source: str) -> tuple[str, str, str]:
+    """(鉴权方式, 口径/限制, 补充说明) —— 给兼容名单与以后 AI 读取用。"""
+    if plan_key == "opencode-go":
+        return (
+            "OpenCode Go Key（Authorization: Bearer）",
+            "官方文档允许在自己的客户端里展示用量；窗口名以接口返回为准，不编造档位名",
+            "优先请求 /inference/go/v1/usage，失败时兼容回退旧 /zen/go/v1/usage",
+        )
+    if plan_key == "codex":
+        return (
+            "ChatGPT 账号登录态（设备码授权，auth.json）",
+            "ChatGPT 里的 Codex 订阅额度；与 OpenAI API 组织账单是两回事，不合并成一张卡",
+            "接口为未公开的 ChatGPT 私有后端，存在随时失效的风险",
+        )
+    if plan_key == "claude":
+        return (
+            "Claude Code 订阅登录态（setup-token）",
+            "已登录的订阅账号可在选模中使用；官方暂无稳定、可脚本化的额度接口",
+            "额度页先不放卡，不用爬账单页或假进度条假装能刷新",
+        )
+    if plan_key == "opencode":
+        return (
+            "OpenCode 配置里的 apiKey",
+            "Zen 免费模型只做本地记账",
+            "没有官方额度接口",
+        )
+    if plan_key == "agent-plan":
+        return (
+            "arkcli 登录态（已有能力保留）",
+            "通过 arkcli 取数，输出结构变化时如实显示失败原因",
+            "不扩大成未文档化的假集成",
+        )
+    return (
+        "按自定义套餐 source 配置",
+        "只做本地记账" if not official_source else "自定义采集方式",
+        "未登记官方口径时不假装能刷新",
+    )
+
+
 #: 闸门等级
 LEVEL_OK = "ok"
 LEVEL_WARNING = "warning"
@@ -185,13 +236,17 @@ class BillingService:
         task_id: str | None = None,
         agent_id: str | None = None,
         occurred_at: datetime | None = None,
+        via_key: bool = False,
     ) -> None:
-        """记录一次模型调用的增量用量；任何异常只记日志，不影响 Run。"""
+        """记录一次模型调用的增量用量；任何异常只记日志，不影响 Run。
+
+        `via_key=True`：本轮走密钥库通道，不归因到订阅套餐（不占订阅额度）。
+        """
         if not self.enabled:
             return
         if not (input_tokens or output_tokens or cache_read_tokens or cache_write_tokens):
             return
-        plan = resolve_plan(model, runtime_id, self._plans)
+        plan = resolve_plan(model, runtime_id, self._plans, via_key=via_key)
         # runtime 自带 cost（opencode 会报）优先；没有就用官方价目表估算，再没有就留空。
         if cost is None:
             cost = self._prices.estimate_cost(
@@ -267,6 +322,52 @@ class BillingService:
     def prices(self) -> dict[str, Any]:
         """官方价目表（前端只读展示，USD / 1M tokens）。"""
         return self._prices.view()
+
+    def plan_catalog(self) -> dict[str, Any]:
+        """兼容名单（只读）：套餐口径、鉴权方式、能否自动刷新与限制说明。
+
+        这是给「以后让 AI 读取」预留的数据源；当前不提供生成入口。
+        不能官方取数的套餐明确标 `can_auto_refresh=false`，不假装有进度。
+        """
+        self.refresh_accounts()
+        items: list[dict[str, Any]] = []
+        for plan in self._plans.values():
+            has_source = plan.key in self._sources
+            auth, limits, note = _plan_source_notes(plan.key, plan.official_source)
+            items.append(
+                {
+                    "plan_key": plan.key,
+                    "label": plan.label,
+                    "vendor": plan.vendor,
+                    "windows": [
+                        {"key": window.key, "label": window.label} for window in plan.windows
+                    ],
+                    "model_prefixes": list(plan.model_prefixes),
+                    "runtime_ids": list(plan.runtime_ids),
+                    "official_source": plan.official_source,
+                    "can_auto_refresh": has_source,
+                    "auth": auth,
+                    "limits": limits,
+                    "note": note,
+                    #: 官方口径说明：Codex 走 ChatGPT 私有后端，存在随时失效风险
+                    "risk": _plan_risk(plan.key),
+                    "builtin": plan.builtin,
+                }
+            )
+        return {"plans": items}
+
+    def _availability(self, plan: PlanDefinition) -> tuple[bool, bool, str]:
+        """(能否官方刷新, 本机是否已登录/配置好凭据, 卡片说明)。"""
+        # 是否有官方采集器与「计费开关」无关：能取数就该能在额度页展示
+        can_refresh = plan.key in self._sources
+        account_key = self._accounts.get(plan.key, "")
+        runtime = (plan.runtime_ids[0] if plan.runtime_ids else plan.key).lower()
+        if not can_refresh:
+            return False, False, "官方暂无稳定的机器可读额度接口，额度页不展示；选模仍可使用"
+        if runtime in ("codex", "opencode") and not account_key:
+            # 采集器存在但本机还没登录：能力上是可刷新的，只是当前没有卡片可展示
+            return True, False, "还没有登录/配置凭据，登录后自动采集额度"
+        return True, True, ""
 
     async def run_usage(self, run_id: str) -> dict[str, Any]:
         """按 Run 回放明细并汇总。"""
@@ -378,16 +479,26 @@ class BillingService:
     # --- 闸门 ---
 
     async def gate_for_model(
-        self, model: str, *, runtime_id: str = "", refresh: bool = False
+        self,
+        model: str,
+        *,
+        runtime_id: str = "",
+        refresh: bool = False,
+        via_key: bool = False,
     ) -> GateDecision:
-        """按模型前缀（其次 runtime）归因套餐并判定额度。未登记套餐一律放行。"""
-        plan = resolve_plan(model, runtime_id, self._plans)
+        """按模型前缀（其次 runtime）归因套餐并判定额度。未登记套餐一律放行。
+
+        `via_key=True`（密钥库通道）不按 runtime 归因，因此不会被订阅额度闸门误拦。
+        """
+        plan = resolve_plan(model, runtime_id, self._plans, via_key=via_key)
         if plan is None:
             return GateDecision(plan_key="", level=LEVEL_OK)
         rows = await self._snapshot_rows(plan, refresh=refresh)
         return await self._gate_for_plan(plan, rows, account_key=self._accounts.get(plan.key, ""))
 
-    async def ensure_can_start(self, *, model: str, runtime_id: str) -> GateDecision:
+    async def ensure_can_start(
+        self, *, model: str, runtime_id: str, via_key: bool = False
+    ) -> GateDecision:
         """Run 创建前的闸门：超额且开启拦截时抛 ConflictError。"""
         if not self.enabled:
             return GateDecision(plan_key="", level=LEVEL_DISABLED)
@@ -396,7 +507,9 @@ class BillingService:
             return GateDecision(
                 plan_key="", level=LEVEL_UNKNOWN, message="无法确定模型，跳过额度检查"
             )
-        decision = await self.gate_for_model(effective, runtime_id=runtime_id, refresh=True)
+        decision = await self.gate_for_model(
+            effective, runtime_id=runtime_id, refresh=True, via_key=via_key
+        )
         if decision.blocked:
             raise ConflictError(decision.message, code="billing_quota_exceeded")
         if decision.alerting:
@@ -434,6 +547,7 @@ class BillingService:
             for key in order
         ]
         primary = next((item for item in accounts if item["is_current"]), accounts[0])
+        can_refresh, available, availability_note = self._availability(plan)
         return {
             "key": plan.key,
             "label": plan.label,
@@ -442,6 +556,11 @@ class BillingService:
             "model_prefixes": list(plan.model_prefixes),
             "runtime_ids": list(plan.runtime_ids),
             "official_source": plan.official_source,
+            #: 额度页只展示 can_refresh 且 available 的套餐；选模不受影响
+            "can_auto_refresh": can_refresh,
+            "available": available,
+            "availability_note": availability_note,
+            "risk_note": _plan_risk(plan.key),
             #: 官方返回的套餐档位（当前只有 Codex 的 plan_type：plus / pro / …）
             "plan_type": str(self._plan_meta.get(plan.key, {}).get("plan_type") or ""),
             "fallback_model": plan.fallback_model,

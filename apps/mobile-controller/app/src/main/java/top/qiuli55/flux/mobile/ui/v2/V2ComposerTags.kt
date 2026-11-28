@@ -35,6 +35,16 @@ internal object V2ComposerTags {
     /** 小窗里的单行：前缀 + agentId / model（含 keyId 时可再拼 keyId）。 */
     const val AGENT_MENU_ROW_PREFIX = "v2_composer_agent_menu_row_"
     const val MODEL_MENU_ROW_PREFIX = "v2_composer_model_menu_row_"
+    /** 「更多模型」行：展开第二层「切换模型」面板。 */
+    const val MODEL_MORE = "v2_composer_model_more"
+    /** 第二层「切换模型」的搜索框。 */
+    const val MODEL_SEARCH = "v2_composer_model_search"
+    /** 第二层的通道筛选 chip：前缀 + channelId。 */
+    const val MODEL_CHANNEL_PREFIX = "v2_composer_model_channel_"
+    /** 收藏星标：前缀 + favoriteKey。 */
+    const val MODEL_STAR_PREFIX = "v2_composer_model_star_"
+    /** 思考档：前缀 + level。 */
+    const val MODEL_THINKING_PREFIX = "v2_composer_model_thinking_"
 }
 
 /** 交互类修复统一使用的日志 tag。 */

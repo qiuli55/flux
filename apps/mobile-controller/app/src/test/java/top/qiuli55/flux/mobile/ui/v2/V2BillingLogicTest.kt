@@ -44,6 +44,8 @@ class V2BillingLogicTest {
                 BillingPlan(
                     key = "codex",
                     label = "Codex 订阅",
+                    canAutoRefresh = true,
+                    available = true,
                     windows = listOf(
                         // 失败窗口即使百分比更大也不能参与
                         window("rolling_5h", "5 小时", percent = 99.0, error = "登录态已失效"),
@@ -53,6 +55,8 @@ class V2BillingLogicTest {
                 BillingPlan(
                     key = "opencode-go",
                     label = "OpenCode Go",
+                    canAutoRefresh = true,
+                    available = true,
                     windows = listOf(window("monthly", "自然月", percent = 30.0)),
                 ),
             ),
@@ -217,5 +221,32 @@ class V2BillingLogicTest {
             gate = BillingGate(level = "unknown", message = "Claude 订阅 没有可用的额度数据"),
         )
         assertEquals("Claude 订阅 没有可用的额度数据", billingGateNote(plan))
+    }
+
+
+    @Test
+    fun `billing page only shows accounts that can officially refresh`() {
+        val overview = BillingOverview(
+            plans = listOf(
+                BillingPlan(
+                    key = "codex",
+                    label = "Codex 订阅",
+                    canAutoRefresh = true,
+                    available = true,
+                    riskNote = "ChatGPT 私有后端，随时可能失效",
+                ),
+                BillingPlan(
+                    key = "claude",
+                    label = "Claude 订阅",
+                    canAutoRefresh = false,
+                    available = false,
+                    availabilityNote = "官方暂无额度接口，额度页不展示",
+                ),
+                BillingPlan(key = "codex-empty", label = "Codex（未登录）", canAutoRefresh = true, available = false),
+            ),
+        )
+        val visible = billingVisiblePlans(overview)
+        assertEquals(listOf("codex"), visible.map { it.key })
+        assertTrue(visible.single().riskNote.contains("私有后端"))
     }
 }

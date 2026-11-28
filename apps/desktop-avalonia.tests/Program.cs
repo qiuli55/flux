@@ -27,6 +27,7 @@ internal static class Program
         CheckTotals();
         CheckDesignOps();
         CheckBrowserProxy();
+        CheckModelCatalog();
 
         if (_failed == 0)
         {
@@ -36,6 +37,50 @@ internal static class Program
 
         Console.Error.WriteLine($"desktop-selftest: {_failed} check(s) failed");
         return 1;
+    }
+
+
+    private static void CheckModelCatalog()
+    {
+        var spec = new AgentSpecDetail(
+            "codex-agent",
+            "developer",
+            "codex",
+            new[] { "gpt-5.5" },
+            "gpt-5.5",
+            null,
+            true,
+            new[]
+            {
+                new ModelChannelDetail("subscription:acc-1", "subscription", "Codex · user@example.com", "OpenAI", "acc-1", "", "", true),
+                new ModelChannelDetail("key:k1", "key", "密钥库 · 我的 key", "OpenAI", "", "k1", "••••abcd", true),
+            },
+            new[]
+            {
+                new CatalogModelDetail(
+                    "gpt-5.5", "gpt-5.5", "subscription:acc-1", "subscription",
+                    "Codex · user@example.com", "acc-1", "", "openai", 400_000,
+                    new[] { "思考", "图片输入", "工具调用" },
+                    new ThinkingSpecDetail("levels", new[] { "minimal", "low", "medium", "high" }, new[] { "极简", "低", "中", "高" }, "medium", true)),
+                new CatalogModelDetail(
+                    "deepseek-chat", "deepseek-chat", "key:k1", "key",
+                    "密钥库 · 我的 key", "", "k1", "deepseek", 128_000,
+                    new[] { "思考", "工具调用" },
+                    new ThinkingSpecDetail("toggle", new[] { "on", "off" }, new[] { "开", "关" }, "on", true)),
+            });
+
+        var choices = SoloModelCatalog.Build(spec);
+        Equal("模型目录只含当前 Agent 的两条", 2, choices.Count);
+        Equal("订阅通道保留账号", "acc-1", choices[0].AccountId);
+        Equal("密钥通道保留 key", "k1", choices[1].KeyId);
+        Equal("上下文展示", "400k ctx", SoloModelCatalog.ContextLabel(400_000));
+        True("副行含来源与能力", SoloModelCatalog.DetailLine(choices[0])!.Contains("思考"));
+        Equal("思考档默认", "medium", choices[0].ThinkingDefault);
+        True("键库模型不混入 Anthropic", choices.All(item => item.Model != "claude-sonnet"));
+
+        var fallback = new DshModelsResponse(new[] { "fallback-model" }, "fallback-model", null);
+        var fallbackChoices = SoloModelCatalog.Build(null, fallback);
+        Equal("无 Agent 目录时退回 DSH", "fallback-model", fallbackChoices[0].Model);
     }
 
     private static void CheckFlowStep()

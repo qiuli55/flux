@@ -90,6 +90,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(KeyFormTitle))]
     private string? _editingKeyId;
 
+    /// <summary>正在编辑的密钥条目里各模型已保存的思考模式（新建为空）。</summary>
+    private Dictionary<string, ThinkingSpecDetail> _editingKeyThinking = new();
+
     [ObservableProperty]
     private string _keyName = "";
 
@@ -296,6 +299,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         KeyWireApi = "";
         KeyEnabled = true;
         DeleteKeyId = null;
+        _editingKeyThinking = new();
         KeyStatus = "";
     }
 
@@ -311,6 +315,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         KeyModelsText = string.Join("\n", entry.Models);
         KeyWireApi = entry.WireApi;
         KeyEnabled = entry.Enabled;
+        _editingKeyThinking = entry.ModelThinking is null
+            ? new()
+            : new Dictionary<string, ThinkingSpecDetail>(entry.ModelThinking);
         DeleteKeyId = null;
         KeyStatus = "留空 API Key 表示不修改";
     }
@@ -353,6 +360,39 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return;
         }
 
+        // 每个登记模型都必须有思考模式：已有条目沿用保存值，新模型按后端规则预填。
+        var missing = models
+            .Where(model => !_editingKeyThinking.ContainsKey(model))
+            .ToArray();
+        var fetched = missing.Length == 0
+            ? new Dictionary<string, ThinkingSpecDetail>()
+            : (await api.ThinkingDefaultsAsync(missing).ConfigureAwait(true))?.Data
+                ?? new Dictionary<string, ThinkingSpecDetail>();
+        var modelThinking = new Dictionary<string, object>();
+        foreach (var model in models)
+        {
+            ThinkingSpecDetail? spec = null;
+            if (_editingKeyThinking.TryGetValue(model, out var saved))
+            {
+                spec = saved;
+            }
+            else if (fetched.TryGetValue(model, out var fallback))
+            {
+                spec = fallback;
+            }
+            if (spec is null)
+            {
+                KeyStatus = $"模型 {model} 缺少思考模式，请稍后重试";
+                return;
+            }
+            modelThinking[model] = new
+            {
+                kind = spec.Kind ?? "levels",
+                levels = spec.Levels ?? Array.Empty<string>(),
+                @default = spec.Default ?? "",
+            };
+        }
+
         var baseUrl = (KeyBaseUrl ?? "").Trim().TrimEnd('/');
         var wireApi = IsCompatProvider ? (KeyWireApi ?? "") : "";
         IsKeysBusy = true;
@@ -362,7 +402,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             if (string.IsNullOrEmpty(EditingKeyId))
             {
                 res = await api.CreateApiKeyAsync(
-                    name, KeyProvider, baseUrl, KeyApiKey.Trim(), models, wireApi, KeyEnabled)
+                    name, KeyProvider, baseUrl, KeyApiKey.Trim(), models, modelThinking, wireApi, KeyEnabled)
                     .ConfigureAwait(true);
             }
             else
@@ -374,6 +414,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
                         provider = KeyProvider,
                         base_url = baseUrl,
                         models,
+                        model_thinking = modelThinking,
                         wire_api = wireApi,
                         enabled = KeyEnabled,
                     }
@@ -384,6 +425,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
                         base_url = baseUrl,
                         api_key = KeyApiKey.Trim(),
                         models,
+                        model_thinking = modelThinking,
                         wire_api = wireApi,
                         enabled = KeyEnabled,
                     };

@@ -43,11 +43,20 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 用 tomli（见 pyproject
 from flux.config import Settings
 from flux.core.agent_runtime.claude_account import claude_account_env
 from flux.core.agent_runtime.codex_account import (
+    CodexAccountService,
     codex_account_home,
     codex_proxy_env,
     sync_account_auth,
 )
-from flux.core.agent_runtime.model_catalog import PROVIDER_TITLES
+from flux.core.agent_runtime.model_catalog import (
+    PROVIDER_TITLES,
+    THINKING_ALWAYS,
+    THINKING_LEVELS,
+    THINKING_TOGGLE,
+    ThinkingSpec,
+    model_meta,
+    thinking_effort,
+)
 from flux.core.agent_runtime.platforms import kill_group, secure_file, signal_group_graceful
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.runtimes.base import (
@@ -390,14 +399,27 @@ def _pool_key(
     mode: str,
     model: str,
     channel: Any,
+    account_id: str = "",
+    thinking: str = "",
 ) -> str:
-    """算复用键：任一维度变化都不能共用进程（模式决定原生工具白名单，模型决定套餐）。"""
+    """算复用键：任一维度变化都不能共用进程（模式、模型、密钥通道、订阅账号、思考档）。"""
     channel_sig = ""
     if channel is not None:
         channel_sig = "|".join(
             str(getattr(channel, name, "") or "") for name in ("key_id", "provider", "base_url")
         )
-    return "|".join((runtime_id, task_id, agent_id, normalize_mode(mode), model or "", channel_sig))
+    return "|".join(
+        (
+            runtime_id,
+            task_id,
+            agent_id,
+            normalize_mode(mode),
+            model or "",
+            channel_sig,
+            account_id or "",
+            thinking or "",
+        )
+    )
 
 
 def _pool_dir_digest(key: str) -> str:
@@ -612,6 +634,9 @@ class CliRuntime:
         mode = normalize_mode(getattr(task, "permission_mode", None))
         # 任务级模型覆盖（移动端切换模型）；留空 = 用 runtime 配置里的默认模型
         model_override = str(getattr(task, "model", "") or "").strip()
+        # 订阅多账号：任务选中的账号（空 = 默认账号）；思考档随任务一起带到 runtime。
+        account_id = str(getattr(task, "subscription_account_id", "") or "").strip()
+        thinking_level = str(getattr(task, "thinking_level", "") or "").strip()
         # 计费归因要的是「本轮真实模型」：没覆盖时取 runtime 的配置默认值
         # （opencode 是 opencode.json 顶层 model，codex 是 FLUX_CODEX_MODEL），
         # 它决定消耗哪个套餐的额度。
@@ -633,6 +658,8 @@ class CliRuntime:
                 mode=mode,
                 model=model_override,
                 channel=channel,
+                account_id=account_id,
+                thinking=thinking_level,
             )
             entry, stale, busy = _pool_acquire(
                 candidate_key,
@@ -685,6 +712,8 @@ class CliRuntime:
                     channel=channel,
                     mode=mode,
                     task_id=task_key if pool_key else "",
+                    account_id=account_id,
+                    thinking=thinking_level,
                 )
             else:
                 # 复用命中：令牌与配置都还挂在常驻进程上，本轮既不签发也不重写
@@ -1090,6 +1119,8 @@ class CliRuntime:
         channel: Any = None,
         mode: str = "normal",
         task_id: str = "",
+        account_id: str = "",
+        thinking: str = "",
     ) -> dict[str, str]:
         url = self._settings.dsh_mcp_url.strip()
         if token_raw is not None and not url.startswith(("http://", "https://")):
@@ -1126,7 +1157,27 @@ class CliRuntime:
             if channel is None:
                 # 订阅通道：只把 Flux 隔离目录里的长期令牌注入环境，不碰用户全局 ~/.claude。
                 # 有 Flux 登录态时它优先于父进程里可能存在的 ANTHROPIC_* 变量。
-                env.update(claude_account_env(self._settings))
+                account_env = claude_account_env(self._settings, account_id)
+                if account_id and not account_env:
+                    raise ConfigurationError(
+                        "任务选中的 Claude 订阅账号已退出登录",
+                        details={
+                            "account_id": account_id,
+                            "hint": "重新登录该账号，或在选模里换通道",
+                        },
+                    )
+                env.update(account_env)
+            if thinking:
+                # Claude Code 官方用 MAX_THINKING_TOKENS 控制扩展思考：关 = 0，开 = 用默认预算。
+                # 密钥库模型的思考模式以库里保存的为准；Anthropic 协议对不上命名档时
+                # 只安全映射成开 / 关，不发明预算数字。
+                spec = _channel_thinking(model or "", channel)
+                value = thinking.strip().lower()
+                if spec.kind in (THINKING_TOGGLE, THINKING_LEVELS):
+                    disabled = value in ("off", "none")
+                    env["MAX_THINKING_TOKENS"] = "0" if disabled else "31999"
+                elif spec.kind == THINKING_ALWAYS:
+                    env["MAX_THINKING_TOKENS"] = "31999"
             config = run_dir / "claude-mcp.json"
             config.write_text(
                 claude_mcp_config(url, token_raw, run_id, extra_servers=custom_mcp),
@@ -1148,6 +1199,7 @@ class CliRuntime:
                     model=model,
                     channel=channel,
                     task_id=task_id,
+                    thinking=thinking,
                     # 用户的 ~/.codex MCP 与设置页添加的自定义连接器都要带进隔离配置
                     user_mcp_servers={
                         **_read_user_mcp_servers(user_home / "config.toml"),
@@ -1162,7 +1214,7 @@ class CliRuntime:
             if channel is None:
                 # 隔离 CODEX_HOME 默认没有 auth.json；把 Flux 账号目录的登录态复制一份进去，
                 # ChatGPT 订阅额度才能生效。密钥库通道（channel）优先，不注入账号。
-                self._inject_account_auth(home)
+                self._inject_account_auth(home, account_id)
             else:
                 # 密钥只进子进程环境：config.toml 里只写 env_key 变量名
                 env["FLUX_MODEL_API_KEY"] = channel.api_key
@@ -1195,11 +1247,12 @@ class CliRuntime:
                 uploads_dir=str(self._settings.uploads_dir),
                 mode=mode,
                 task_id=task_id,
+                thinking=thinking,
                 extra_mcp=custom_mcp,
             )
         return env
 
-    def _inject_account_auth(self, home: Path) -> None:
+    def _inject_account_auth(self, home: Path, account_id: str = "") -> None:
         """把 Flux 账号目录的 ChatGPT 登录态复制进本次 Run 的隔离 CODEX_HOME。
 
         默认供应商（openai / 空）：有账号就注入，订阅额度优先；没有账号则维持原行为
@@ -1207,13 +1260,22 @@ class CliRuntime:
         显式 `chatgpt` 供应商：没有账号直接报错——否则要等 Run 跑起来才看到「未登录」。
         """
         provider = (self._settings.codex_provider or "").strip().lower()
-        account_home = codex_account_home(self._settings)
+        service = CodexAccountService(self._settings)
+        selected = (account_id or "").strip() or service.default_account_id()
+        account_home = (
+            service.account_home_for(selected) if selected else codex_account_home(self._settings)
+        )
         if sync_account_auth(account_home, home):
             logger.info("%s：已注入 ChatGPT 账号登录态 account=%s", self.runtime_id, account_home)
             return
-        if provider == "chatgpt":
+        if account_id or provider == "chatgpt":
+            detail = (
+                f"任务选中的 ChatGPT 订阅账号 {account_id} 已退出登录"
+                if account_id
+                else "还没有登录 ChatGPT 账号，无法使用 Codex 订阅额度"
+            )
             raise ConfigurationError(
-                "还没有登录 ChatGPT 账号，无法使用 Codex 订阅额度",
+                detail,
                 details={
                     "hint": "先在「我的 → 订阅与账号」完成设备码登录",
                     "account_home": str(account_home),
@@ -1815,6 +1877,8 @@ class CliRuntime:
                 cost=delta.get("cost"),
                 task_id=launch.task_id,
                 agent_id=launch.agent_id,
+                # 密钥库通道不归因到订阅套餐（不占订阅额度）
+                via_key=launch.channel is not None,
             )
         except Exception:  # noqa: BLE001 - 账本是旁路，绝不能让 Run 因此中断
             logger.warning("cli.run 计费落账异常 run=%s", launch.run_id, exc_info=True)
@@ -2473,6 +2537,14 @@ def _user_mcp_lines(servers: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _channel_thinking(model: str, channel: Any) -> ThinkingSpec:
+    """思考能力：密钥库保存的优先，否则按模型官方 / 通用规则推断。"""
+    spec = getattr(channel, "thinking", None)
+    if isinstance(spec, ThinkingSpec):
+        return spec
+    return model_meta(model or "").thinking
+
+
 def _codex_config(
     url: str,
     token: str | None,
@@ -2482,6 +2554,7 @@ def _codex_config(
     model: str = "",
     channel: Any = None,
     task_id: str = "",
+    thinking: str = "",
     user_mcp_servers: Mapping[str, Any] | None = None,
 ) -> str:
     """Codex 隔离配置（本机 codex-cli 0.157.1 实测字段：mcp_servers.<name>.url + http_headers）。
@@ -2494,6 +2567,18 @@ def _codex_config(
     """
     lines = ["# Flux 自动生成：为本次 Run 注入 Flux MCP（含一次性令牌，权限 0600）。"]
     lines += _codex_provider_lines(settings, model=model, channel=channel)
+    effective_model = model or (settings.codex_model or "")
+    # 只有支持多档思考的模型才写这个键；密钥库模型以库里保存的类型为准，
+    # toggle 模型不把「开/关」伪造成 codex 的档位（宁可不传，也不让 Run 因未知值失败）。
+    spec = _channel_thinking(effective_model, channel)
+    effort = (
+        thinking_effort(effective_model, thinking, spec)
+        if spec.kind == THINKING_LEVELS
+        else ""
+    )
+    if effort:
+        # 思考档位（官方 minimal/low/medium/high 或通用档），由模型目录给出
+        lines.append(f'model_reasoning_effort = "{effort}"')
     if user_mcp_servers:
         # 隔离 CODEX_HOME 会丢掉用户在 ~/.codex/config.toml 里自建的 MCP，这里原样带回来
         lines += _user_mcp_lines(user_mcp_servers)
@@ -2648,6 +2733,7 @@ def _opencode_config(
     uploads_dir: str = "",
     mode: str = "normal",
     task_id: str = "",
+    thinking: str = "",
     extra_mcp: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """OpenCode 合并式配置（本机 opencode 1.18.29 实测：仅 mcp 块，全局 provider 保留）。
@@ -2675,6 +2761,17 @@ def _opencode_config(
             )
         provider_id = _key_provider_id(channel)
         npm = "@ai-sdk/anthropic" if provider == "anthropic" else "@ai-sdk/openai-compatible"
+        model_entry: dict[str, Any] = {"name": configured_model}
+        # OpenAI 兼容通道按协议映射常见参数；Anthropic 走 opencode 时没有安全的
+        # 命名 effort 档，宁可不传，也不发明预算数字。
+        spec = _channel_thinking(configured_model, channel)
+        effort = (
+            thinking_effort(configured_model, thinking, spec)
+            if provider != "anthropic" and spec.kind == THINKING_LEVELS
+            else ""
+        )
+        if effort:
+            model_entry["options"] = {"reasoningEffort": effort}
         payload["provider"] = {
             provider_id: {
                 "npm": npm,
@@ -2684,7 +2781,7 @@ def _opencode_config(
                     "baseURL": str(getattr(channel, "base_url", "") or ""),
                     "apiKey": str(getattr(channel, "api_key", "") or ""),
                 },
-                "models": {configured_model: {"name": configured_model}},
+                "models": {configured_model: model_entry},
             }
         }
         payload["model"] = _opencode_model_id(configured_model, channel)

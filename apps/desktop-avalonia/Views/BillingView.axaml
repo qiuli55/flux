@@ -73,6 +73,8 @@
                                  Background="{DynamicResource TnPanel3}" />
                     <ItemsControl ItemsSource="{Binding Windows}"
                                   ItemTemplate="{StaticResource WindowTemplate}" />
+                    <TextBlock Text="{Binding RiskText}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TnText4}" IsVisible="{Binding HasRiskText}" />
                     <TextBlock Text="{Binding FallbackText}" FontSize="11"
                                Foreground="{DynamicResource TnText4}" />
                 </StackPanel>

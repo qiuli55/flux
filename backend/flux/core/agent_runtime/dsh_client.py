@@ -34,7 +34,7 @@ from flux.core.agent_runtime.llm_stream_tap import (
     llm_stream_tap,
     tap_base_url,
 )
-from flux.core.agent_runtime.model_catalog import dsh_provider_for
+from flux.core.agent_runtime.model_catalog import dsh_provider_for, thinking_effort
 from flux.core.agent_runtime.protocol import build_runtime_env, compose_instruction
 from flux.core.agent_runtime.run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository, as_utc
 from flux.core.agent_runtime.runtimes.base import ModelChannel
@@ -187,6 +187,10 @@ class DshRun:
     channel: ModelChannel | None = None
     #: 本轮权限模式快照（plan / normal / full），MCP 层据此做白名单与审批闸门
     permission_mode: str = "normal"
+    #: 本轮思考档（模型目录 / 密钥库保存的模式）；空 = 模型默认
+    thinking: str = ""
+    #: 密钥库为该模型保存的思考形态（None = 按官方 / 通用规则推断）
+    thinking_spec: Any = None
     last_state_change_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -211,6 +215,7 @@ class DshRun:
             "permission_mode": self.permission_mode,
             "model": self.model,
             "model_key_id": self.channel.key_id if self.channel is not None else None,
+            "thinking": self.thinking,
             "last_state_change_at": (
                 self.last_state_change_at.isoformat() if self.last_state_change_at else None
             ),
@@ -448,6 +453,8 @@ class FluxDshClient:
         model: str | None = None,
         channel: ModelChannel | None = None,
         permission_mode: str = "normal",
+        thinking: str = "",
+        thinking_spec: Any = None,
     ) -> DshRun:
         """登记一条 Run（PENDING，落库）并把实际执行交给后台任务。
 
@@ -476,6 +483,8 @@ class FluxDshClient:
             model=(model or "").strip() or None,
             channel=channel,
             permission_mode=permission_mode,
+            thinking=(thinking or "").strip(),
+            thinking_spec=thinking_spec,
         )
         self._runs[run.run_id] = run
         await self._supervisor.create_run(
@@ -550,11 +559,17 @@ class FluxDshClient:
             tap_token = llm_stream_tap.register(run_id=run_id, upstream=upstream, bus=self._bus)
             base_url = f"{tap_base_url(self._settings.dsh_mcp_url).rstrip('/')}/{tap_token}"
         try:
+            effective_model = run.model or self._settings.dsh_model
+            # 思考档按模型目录 / 密钥库保存的形态映射；none = 不写（用模型默认）。
+            effort = (
+                thinking_effort(effective_model, run.thinking, run.thinking_spec) or None
+            )
             harness = self._harness_factory(
                 dsh_home=self._settings.dsh_home,
                 cwd=self._settings.dsh_workspace,
                 provider=provider,
-                model=run.model or self._settings.dsh_model,
+                model=effective_model,
+                reasoning_effort=effort,
                 max_tokens=self._settings.dsh_max_tokens,
                 patches=(str(patch_path),) if patch_path is not None else (),
                 initialize_timeout_seconds=self._settings.dsh_init_timeout_seconds,

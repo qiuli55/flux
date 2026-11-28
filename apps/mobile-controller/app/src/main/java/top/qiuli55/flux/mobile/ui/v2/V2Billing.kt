@@ -65,7 +65,7 @@ fun BillingSheet(
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
         SheetHeader(
             title = "套餐额度",
-            subtitle = "有官方额度的套餐显示官方占用率；没有官方接口的套餐只统计 Flux 本地调用",
+            subtitle = "只展示已登录、且能官方取回额度的账号；没有官方接口的订阅不放卡，也不做假进度",
             onClose = onDismiss,
         )
         Column(
@@ -110,7 +110,7 @@ fun BillingSheet(
                             V2Colors.ink(.46f),
                         )
                         Label(
-                            "仅本地记账：OpenCode Zen、Claude 订阅（官方暂无额度接口）。",
+                            "Claude 订阅已登录时仍可在选模里使用；官方暂无稳定额度接口，额度页不显示这张卡。",
                             10.5f,
                             V2Colors.ink(.46f),
                         )
@@ -149,7 +149,7 @@ fun BillingSheet(
                 }
             }
 
-            overview.plans.forEach { plan -> PlanCard(plan) }
+            billingVisiblePlans(overview).forEach { plan -> PlanCard(plan) }
 
             if (prices != null && prices.prices.isNotEmpty()) {
                 PriceBookCard(prices)
@@ -294,6 +294,10 @@ private fun PlanCard(plan: BillingPlan) {
             if (gateNote.isNotBlank()) {
                 Label(gateNote, 10f, levelTint(plan.gate.level), maxLines = 2)
             }
+            // Codex 走 ChatGPT 私有后端：如实标注随时可能失效，不写成官方集成授权
+            if (plan.riskNote.isNotBlank()) {
+                Label(plan.riskNote, 9.5f, V2Colors.ink(.40f), maxLines = 4)
+            }
             plan.windows.forEach { window -> WindowRow(window) }
             val others = billingOtherAccounts(plan)
             if (others.isNotEmpty()) {
@@ -317,6 +321,15 @@ private fun PlanCard(plan: BillingPlan) {
 /**
  * 多账号展示：只有一个账号时不占地方；多于一个时把非当前账号折叠到次级区域。
  */
+/**
+ * 额度页只列「已登录/已配置好凭据、且能官方取回额度」的账号卡。
+ *
+ * Claude Pro/Max 等已登录但官方暂无额度接口的订阅：选模仍可用，这里不放卡，
+ * 也不用假进度条假装能刷新。Codex 未登录时同样不占一张空卡片。
+ */
+internal fun billingVisiblePlans(overview: BillingOverview): List<BillingPlan> =
+    overview.plans.filter { it.canAutoRefresh && it.available }
+
 internal fun billingOtherAccounts(plan: BillingPlan): List<BillingAccount> =
     if (plan.accounts.size > 1) plan.accounts.filterNot { it.isCurrent } else emptyList()
 
@@ -390,7 +403,7 @@ internal data class BillingHighlight(
 
 /** 取所有套餐官方窗口里占用率最高的一条；失败/无百分比的窗口不参与。 */
 internal fun billingHighlight(overview: BillingOverview): BillingHighlight? {
-    val candidates = overview.plans.flatMap { plan ->
+    val candidates = billingVisiblePlans(overview).flatMap { plan ->
         plan.windows.mapNotNull { window ->
             val official = window.official ?: return@mapNotNull null
             if (!official.error.isNullOrBlank()) return@mapNotNull null

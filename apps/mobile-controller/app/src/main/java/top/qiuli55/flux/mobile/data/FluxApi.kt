@@ -11,6 +11,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.serializer
 import okhttp3.MediaType
@@ -89,6 +90,10 @@ class FluxApi(
         permissionMode: String = "normal",
         model: String? = null,
         keyId: String? = null,
+        /** 模型来自哪个订阅账号（与 keyId 互斥）；空 = 原生模型。 */
+        accountId: String? = null,
+        /** 思考档（模型目录 thinking 元数据）；空 = 模型默认。 */
+        thinking: String? = null,
         /** 从旧对话接手时的前情摘要；非空时后端会落成一条 kind=summary 的消息。 */
         summary: String? = null,
         summaryFrom: String? = null,
@@ -104,6 +109,8 @@ class FluxApi(
             put("permission_mode", permissionMode)
             if (!model.isNullOrBlank()) put("model", model)
             if (!keyId.isNullOrBlank()) put("key_id", keyId)
+            if (!accountId.isNullOrBlank()) put("account_id", accountId)
+            if (!thinking.isNullOrBlank()) put("thinking", thinking)
             if (!summary.isNullOrBlank()) {
                 put("summary", summary.trim())
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
@@ -242,18 +249,33 @@ class FluxApi(
         )
 
     /** 切换任务的执行模型：必须是当前 Agent runtime 支持的模型；keyId 非空表示来自密钥库。 */
-    suspend fun setTaskModel(taskId: String, model: String, keyId: String? = null): Task =
-        post(
-            "api/v1/tasks/$taskId/model",
-            buildJsonObject {
-                put("model", model)
-                if (!keyId.isNullOrBlank()) put("key_id", keyId)
-            },
-        )
+    suspend fun setTaskModel(
+        taskId: String,
+        model: String,
+        keyId: String? = null,
+        accountId: String? = null,
+        thinking: String? = null,
+    ): Task = post(
+        "api/v1/tasks/$taskId/model",
+        buildJsonObject {
+            put("model", model)
+            if (!keyId.isNullOrBlank()) put("key_id", keyId)
+            if (!accountId.isNullOrBlank()) put("account_id", accountId)
+            if (!thinking.isNullOrBlank()) put("thinking", thinking)
+        },
+    )
 
     // ---------------------------------------------------------- 密钥库
 
     suspend fun listKeys(): List<ApiKeyEntry> = get("api/v1/keys")
+
+    /** 按官方 / 公共目录预填每个模型的思考模式（纯后端计算，不请求模型）。 */
+    suspend fun thinkingDefaults(models: List<String>): Map<String, ThinkingSpec> = post(
+        "api/v1/keys/thinking-defaults",
+        buildJsonObject {
+            put("models", json.encodeToJsonElement(ListSerializer(String.serializer()), models))
+        },
+    )
 
     suspend fun createKey(
         name: String,
@@ -261,6 +283,7 @@ class FluxApi(
         baseUrl: String,
         apiKey: String,
         models: List<String>,
+        modelThinking: Map<String, ThinkingSpec>,
         wireApi: String,
         enabled: Boolean,
     ): ApiKeyEntry = post(
@@ -271,6 +294,7 @@ class FluxApi(
             put("base_url", baseUrl.trim())
             put("api_key", apiKey.trim())
             put("models", json.encodeToJsonElement(ListSerializer(String.serializer()), models))
+            put("model_thinking", thinkingBody(modelThinking))
             put("wire_api", wireApi)
             put("enabled", enabled)
         },
@@ -284,6 +308,7 @@ class FluxApi(
         baseUrl: String,
         apiKey: String?,
         models: List<String>,
+        modelThinking: Map<String, ThinkingSpec>,
         wireApi: String,
         enabled: Boolean,
     ): ApiKeyEntry = patch(
@@ -294,10 +319,17 @@ class FluxApi(
             put("base_url", baseUrl.trim())
             if (!apiKey.isNullOrBlank()) put("api_key", apiKey.trim())
             put("models", json.encodeToJsonElement(ListSerializer(String.serializer()), models))
+            put("model_thinking", thinkingBody(modelThinking))
             put("wire_api", wireApi)
             put("enabled", enabled)
         },
     )
+
+    private fun thinkingBody(values: Map<String, ThinkingSpec>): JsonElement =
+        json.encodeToJsonElement(
+            MapSerializer(String.serializer(), ThinkingSpec.serializer()),
+            values,
+        )
 
     suspend fun deleteKey(keyId: String): JsonElement = delete("api/v1/keys/$keyId")
 

@@ -492,12 +492,20 @@ public sealed class FluxApiClient : IDisposable
     public Task<ApiEnvelope<List<ApiKeyEntry>>?> ListApiKeysAsync(CancellationToken ct = default)
         => GetAsync<List<ApiKeyEntry>>("/api/v1/keys", ct);
 
+    /// <summary>按官方 / 公共目录预填一批模型的思考模式（纯后端计算，不请求模型）。</summary>
+    public Task<ApiEnvelope<Dictionary<string, ThinkingSpecDetail>>?> ThinkingDefaultsAsync(
+        string[] models,
+        CancellationToken ct = default)
+        => PostAsync<Dictionary<string, ThinkingSpecDetail>>(
+            "/api/v1/keys/thinking-defaults", new { models }, ct);
+
     public Task<ApiEnvelope<ApiKeyEntry>?> CreateApiKeyAsync(
         string name,
         string provider,
         string baseUrl,
         string apiKey,
         string[] models,
+        IReadOnlyDictionary<string, object> modelThinking,
         string wireApi,
         bool enabled,
         CancellationToken ct = default)
@@ -508,6 +516,7 @@ public sealed class FluxApiClient : IDisposable
             base_url = NormalizeUrl(baseUrl),
             api_key = apiKey,
             models,
+            model_thinking = modelThinking,
             wire_api = wireApi ?? "",
             enabled,
         }, ct);

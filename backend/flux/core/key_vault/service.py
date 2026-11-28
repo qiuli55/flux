@@ -25,10 +25,18 @@ from flux.config import Settings
 from flux.core.agent_runtime.model_catalog import (
     KEY_PROVIDERS,
     PROVIDER_TITLES,
+    THINKING_ALWAYS,
+    THINKING_LEVEL_LABELS,
+    THINKING_LEVELS,
+    THINKING_NONE,
+    THINKING_TOGGLE,
     KeyEntry,
+    ThinkingSpec,
     default_base_url,
     models_for_runtime,
     supports_provider,
+    thinking_spec_from_dict,
+    thinking_spec_to_dict,
 )
 from flux.core.agent_runtime.platforms import secure_file
 from flux.core.agent_runtime.runtimes.base import ModelChannel
@@ -145,6 +153,7 @@ class KeyVaultService:
         base_url: str = "",
         api_key: str = "",
         models: Iterable[str] = (),
+        model_thinking: object = _UNSET,
         wire_api: str = "",
         enabled: bool = True,
     ) -> ApiKey:
@@ -153,6 +162,9 @@ class KeyVaultService:
         clean_base_url = _normalize_base_url(clean_provider, base_url)
         clean_wire_api = _normalize_wire_api(wire_api)
         clean_models = _normalize_models(models)
+        clean_thinking = _normalize_model_thinking(
+            clean_models, model_thinking, required=bool(clean_models)
+        )
         secret = _require_api_key(api_key)
         row = ApiKey(
             name=clean_name,
@@ -160,6 +172,10 @@ class KeyVaultService:
             base_url=clean_base_url,
             wire_api=clean_wire_api,
             models=clean_models,
+            model_thinking={
+                model: thinking_spec_to_dict(spec)
+                for model, spec in clean_thinking.items()
+            },
             key_ciphertext=self._seal(secret),
             key_hint=_hint(secret),
             enabled=bool(enabled),
@@ -192,6 +208,7 @@ class KeyVaultService:
         base_url: object = _UNSET,
         api_key: object = _UNSET,
         models: object = _UNSET,
+        model_thinking: object = _UNSET,
         wire_api: object = _UNSET,
         enabled: object = _UNSET,
     ) -> ApiKey:
@@ -209,7 +226,28 @@ class KeyVaultService:
             if wire_api is not _UNSET:
                 row.wire_api = _normalize_wire_api(str(wire_api or ""))
             if models is not _UNSET:
-                row.models = _normalize_models(models)  # type: ignore[arg-type]
+                clean_models = _normalize_models(models)  # type: ignore[arg-type]
+                row.models = clean_models
+                # 保存模型清单时必须同时给出每个模型的思考模式，不能空着提交。
+                row.model_thinking = {
+                    model: thinking_spec_to_dict(spec)
+                    for model, spec in _normalize_model_thinking(
+                        clean_models, model_thinking, required=bool(clean_models)
+                    ).items()
+                }
+            elif model_thinking is not _UNSET:
+                # 只改思考模式：在当前模型清单上合并，未出现的模型保持原值。
+                current = [str(item) for item in (row.models or []) if str(item).strip()]
+                existing = _stored_thinking(row, current)
+                row.model_thinking = {
+                    model: thinking_spec_to_dict(spec)
+                    for model, spec in _normalize_model_thinking(
+                        current,
+                        model_thinking,
+                        required=False,
+                        previous=existing,
+                    ).items()
+                }
             if api_key is not _UNSET and str(api_key or "").strip():
                 secret = _require_api_key(str(api_key))
                 row.key_ciphertext = self._seal(secret)
@@ -279,6 +317,17 @@ class KeyVaultService:
             raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
         return await self._channel(row, model)
 
+    async def thinking_spec(
+        self, key_id: str | uuid.UUID, model: str
+    ) -> ThinkingSpec | None:
+        """该密钥库模型保存的思考模式；老数据没有时返回 None（调用方按预填规则）。"""
+        row = await self.get(key_id)
+        stored = row.model_thinking if isinstance(row.model_thinking, dict) else {}
+        raw = stored.get((model or "").strip())
+        if raw is None:
+            return None
+        return thinking_spec_from_dict(raw, model)
+
     async def _channel(self, row: ApiKey, model: str) -> ModelChannel:
         base_url = _normalize_base_url(
             row.provider, row.base_url, require=False
@@ -295,6 +344,7 @@ class KeyVaultService:
             wire_api=row.wire_api,
             label=row.name,
             key_id=str(row.id),
+            thinking=_stored_thinking(row, [model]).get(model),
         )
 
     # --- 加密 ---
@@ -359,16 +409,128 @@ class KeyVaultService:
         return self._open(ciphertext)
 
 
+def _stored_thinking(row: ApiKey, models: Iterable[str]) -> dict[str, ThinkingSpec]:
+    """读出该 key 每个模型的思考模式；老数据缺失时按预填规则补齐。"""
+    stored = row.model_thinking if isinstance(row.model_thinking, dict) else {}
+    result: dict[str, ThinkingSpec] = {}
+    for model in models:
+        clean = str(model or "").strip()
+        if clean:
+            result[clean] = thinking_spec_from_dict(stored.get(clean), clean)
+    return result
+
+
+def _coerce_thinking(model: str, raw: object) -> ThinkingSpec:
+    """严格校验用户保存的思考模式：类型与档位都必须合法，不能空着。"""
+    if isinstance(raw, ThinkingSpec):
+        spec = raw
+    elif isinstance(raw, dict):
+        kind = str(raw.get("kind") or "").strip().lower()
+        if kind not in (
+            THINKING_NONE,
+            THINKING_TOGGLE,
+            THINKING_LEVELS,
+            THINKING_ALWAYS,
+        ):
+            raise BadRequestError(
+                f"模型 {model} 的思考模式类型非法",
+                details={"model": model, "kind": kind},
+            )
+        levels = tuple(
+            str(item).strip().lower()
+            for item in raw.get("levels") or []
+            if str(item).strip()
+        )
+        default = str(raw.get("default") or "").strip().lower()
+        if kind == THINKING_LEVELS:
+            if not levels:
+                raise BadRequestError(
+                    f"模型 {model} 选择多档思考时必须给出档位",
+                    details={"model": model},
+                )
+            unknown = [item for item in levels if item not in THINKING_LEVEL_LABELS]
+            if unknown:
+                raise BadRequestError(
+                    f"模型 {model} 的思考档位不合法",
+                    details={"model": model, "levels": unknown},
+                )
+            if default not in levels:
+                raise BadRequestError(
+                    f"模型 {model} 的默认思考档必须在该模型档位里",
+                    details={"model": model, "default": default, "levels": list(levels)},
+                )
+            spec = ThinkingSpec(kind=kind, levels=levels, default=default)
+        elif kind == THINKING_TOGGLE:
+            if default not in ("on", "off"):
+                raise BadRequestError(
+                    f"模型 {model} 的默认档必须是开或关",
+                    details={"model": model, "default": default},
+                )
+            spec = ThinkingSpec(kind=kind, levels=("on", "off"), default=default)
+        elif kind == THINKING_ALWAYS:
+            spec = ThinkingSpec(kind=kind, default="always")
+        else:
+            spec = ThinkingSpec(kind=THINKING_NONE)
+    else:
+        raise BadRequestError(
+            f"模型 {model} 尚未选择思考模式",
+            details={"model": model},
+        )
+    return spec
+
+
+def _normalize_model_thinking(
+    models: Iterable[str],
+    raw: object,
+    *,
+    required: bool,
+    previous: dict[str, ThinkingSpec] | None = None,
+) -> dict[str, ThinkingSpec]:
+    """把请求里的思考模式收敛成「模型 → ThinkingSpec」。
+
+    - `required=True`（创建 / 保存模型清单）：每个模型都必须明确给出，缺一个就拒绝；
+    - `required=False`（只改个别模型）：未出现的模型沿用 [previous]。
+    """
+    clean_models = [str(item).strip() for item in models if str(item).strip()]
+    if not clean_models:
+        return {}
+    if raw is _UNSET or raw is None:
+        if required:
+            raise BadRequestError(
+                "保存模型时必须为每个模型选择思考模式",
+                details={"models": clean_models},
+            )
+        return dict(previous or {})
+    if not isinstance(raw, dict):
+        raise BadRequestError(
+            "思考模式格式不正确", details={"field": "model_thinking"}
+        )
+    result: dict[str, ThinkingSpec] = {}
+    for model in clean_models:
+        if model in raw:
+            result[model] = _coerce_thinking(model, raw[model])
+        elif required:
+            raise BadRequestError(
+                f"模型 {model} 尚未选择思考模式",
+                details={"model": model},
+            )
+        elif previous and model in previous:
+            result[model] = previous[model]
+    return result
+
+
 def _entry_of(row: ApiKey) -> KeyEntry:
+    models = tuple(str(item) for item in (row.models or []) if str(item).strip())
     return KeyEntry(
         id=str(row.id),
         name=row.name,
         provider=row.provider,
         base_url=row.base_url,
         wire_api=row.wire_api,
-        models=tuple(str(item) for item in (row.models or [])),
+        models=models,
         key_hint=row.key_hint,
         enabled=bool(row.enabled),
+        model_thinking=_stored_thinking(row, models),
     )
 
 

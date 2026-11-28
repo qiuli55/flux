@@ -98,6 +98,13 @@ data class BillingPlan(
     // 模型不带前缀时按 runtime 归因（如 codex → Codex 订阅）。
     @SerialName("runtime_ids") val runtimeIds: List<String> = emptyList(),
     @SerialName("official_source") val officialSource: String = "",
+    // 是否有官方采集器（与计费开关无关）。
+    @SerialName("can_auto_refresh") val canAutoRefresh: Boolean = false,
+    // 本机是否已登录/配置好凭据，且有可展示的账号卡。
+    val available: Boolean = false,
+    @SerialName("availability_note") val availabilityNote: String = "",
+    // 官方口径风险说明（Codex：ChatGPT 私有后端，随时可能失效）。
+    @SerialName("risk_note") val riskNote: String = "",
     // 官方返回的套餐档位（当前只有 Codex：plus / pro / …）；空 = 官方没给。
     @SerialName("plan_type") val planType: String = "",
     @SerialName("fallback_model") val fallbackModel: String = "",

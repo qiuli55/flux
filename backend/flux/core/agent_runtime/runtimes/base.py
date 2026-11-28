@@ -130,6 +130,8 @@ class ModelChannel:
     #: key 库条目的名称，用于 codex provider 块的展示名
     label: str = ""
     key_id: str = ""
+    #: 密钥库为该模型保存的思考模式（ThinkingSpec）；空 = 按模型官方能力推断。
+    thinking: Any = None
 
     def __repr__(self) -> str:  # 防止误把密钥打进日志/异常
         return (
@@ -160,6 +162,10 @@ class RuntimeLaunch:
     token_id: str | None = None
     #: 任务级模型通道（来自密钥库）；None = 用 runtime 原生模型配置
     channel: ModelChannel | None = None
+    #: 本轮思考档（任务上保存的 level）；空 = 模型默认
+    thinking: str = ""
+    #: 密钥库为该模型保存的思考形态；None = 按模型官方 / 通用规则推断
+    thinking_spec: Any = None
     #: 本轮权限模式快照（plan / normal / full）：Run 启动时从任务取值，切换模式下一轮才生效
     permission_mode: str = "normal"
     #: 本 Run 的执行时限（来自 runtime 能力表 + Settings 覆盖）；None = 看护器用全局默认

@@ -55,6 +55,8 @@ class DshRuntime:
             agent_id=getattr(agent, "id_str", None),
             model=str(getattr(task, "model", "") or ""),
             channel=channel,
+            thinking=str(getattr(task, "thinking_level", "") or ""),
+            thinking_spec=getattr(channel, "thinking", None) if channel is not None else None,
             permission_mode=normalize_mode(getattr(task, "permission_mode", None)),
         )
 
@@ -66,6 +68,8 @@ class DshRuntime:
             task_id=launch.task_id,
             model=launch.model or None,
             channel=launch.channel,
+            thinking=launch.thinking,
+            thinking_spec=launch.thinking_spec,
             permission_mode=launch.permission_mode,
         )
         return RuntimeProcess(

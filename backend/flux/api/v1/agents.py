@@ -14,10 +14,13 @@ from flux.container import Container
 from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL, AgentHandle, AgentSpec
 from flux.core.agent_runtime.model_catalog import (
     KeyEntry,
+    SubscriptionAccount,
+    build_agent_catalog,
     default_model_for_runtime,
     models_for_runtime,
     vault_models_for_runtime,
 )
+from flux.core.agent_runtime.runtimes.base import RUNTIME_CLAUDE_CODE, RUNTIME_CODEX
 from flux.core.ide_completion import ActiveAgentSelection
 from flux.errors import BadRequestError, NotFoundError
 from flux.schemas.api import ActiveAgentRequest, AgentCreateRequest, AgentTokenIssueRequest
@@ -25,20 +28,67 @@ from flux.schemas.api import ActiveAgentRequest, AgentCreateRequest, AgentTokenI
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+def _subscription_accounts(container: Container, runtime: str) -> list[SubscriptionAccount]:
+    """当前 runtime 可用的订阅账号（只含已登录；别的 runtime 的账号不混进来）。"""
+    name = (runtime or "").strip().lower()
+    if name == RUNTIME_CODEX:
+        return [
+            SubscriptionAccount(
+                account_id=str(item.get("id") or ""),
+                label=str(item.get("label") or item.get("email") or "ChatGPT 账号"),
+                vendor="OpenAI",
+                plan=str(item.get("plan") or ""),
+                detail=str(item.get("email") or ""),
+                logged_in=bool(item.get("logged_in")),
+            )
+            for item in container.codex_account.accounts()
+        ]
+    if name == RUNTIME_CLAUDE_CODE:
+        return [
+            SubscriptionAccount(
+                account_id=str(item.get("id") or ""),
+                label=str(item.get("label") or "Claude 订阅"),
+                vendor="Anthropic",
+                plan=str(item.get("plan") or ""),
+                detail=str(item.get("key_hint") or ""),
+                logged_in=bool(item.get("logged_in")),
+            )
+            for item in container.claude_account.accounts()
+        ]
+    return []
+
+
 def _agent_payload(
     handle: AgentHandle,
     container: Container,
     key_entries: tuple[KeyEntry, ...] = (),
 ) -> dict[str, object]:
-    """档案响应：附上该 Agent runtime 的可用原生模型与密钥库模型。"""
+    """档案响应：附上该 Agent runtime 的可用模型通道 + 模型目录。
+
+    `spec.models` / `spec.key_models` 保持旧结构（向后兼容）；新增
+    `spec.model_channels` 与 `spec.model_catalog` 是选模页的权威数据：
+    分栏只属于当前 Agent，每条模型带来源通道与思考能力元数据。
+    """
     data = handle.to_dict()
     spec = dict(data.get("spec") or {})
     runtime = str(spec.get("runtime") or "")
-    spec["models"] = models_for_runtime(container.settings, runtime)
+    native_models = models_for_runtime(container.settings, runtime)
+    accounts = _subscription_accounts(container, runtime)
+    channels, catalog = build_agent_catalog(
+        container.settings,
+        runtime,
+        key_entries,
+        accounts,
+        native_models=native_models,
+    )
+    spec["models"] = native_models
     spec["model"] = default_model_for_runtime(container.settings, runtime)
     spec["key_models"] = [
         option.to_dict() for option in vault_models_for_runtime(key_entries, runtime)
     ]
+    spec["subscription_accounts"] = [item.to_dict() for item in accounts]
+    spec["model_channels"] = [channel.to_dict() for channel in channels]
+    spec["model_catalog"] = [model.to_dict() for model in catalog]
     data["spec"] = spec
     return data
 
