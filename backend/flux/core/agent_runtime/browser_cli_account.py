@@ -600,7 +600,8 @@ class BrowserCliAccountService:
         logger.info("%s 账号已退出 removed=%s cli_ok=%s", self._config.runtime_id, removed, cli_ok)
         return {
             "removed": removed or cli_ok,
-            "status": self.status(probe=False),
+            # 退出后再问一次官方 CLI：如果 CLI 自己没退成功，如实返回仍已登录。
+            "status": self.status(),
         }
 
 
