@@ -509,32 +509,35 @@ def test_refresh_response_reports_session_username(
 
 
 # ---------------------------------------------------------------------------
-# P1-2：升级时从已有 cloud.json 迁移本机主人绑定
+# P1：升级时**不得**把遗留 cloud.json 会话自动升为本机主人
 # ---------------------------------------------------------------------------
+#
+# 历史事实：#41 修复**之前**，未鉴权的公网 `/cloud/exchange` 等就能把任意账号写进
+# 服务器单例 `~/.flux/cloud.json`。因此从旧版本升级时，这份残留会话不能证明它属于
+# 本机主人；启动期自动 `save_owner` 会把当时写进该文件的账号（可能是攻击者）升成
+# 持久主人。绑定只应发生在本机主人鉴权之后（回环直连或有效 FLUX_AUTH_TOKEN）。
 
 
-def test_create_app_migrates_legacy_session_to_owner(settings: Settings, db_schema: None) -> None:
-    """升级前已存在的 cloud.json 会话：启动时补绑为该用户，避免升级后登录态丢失。"""
-    configured = _cloud_settings(settings)
+def test_create_app_does_not_promote_legacy_session_to_owner(
+    settings: Settings, db_schema: None
+) -> None:
+    """启动时存在遗留会话、尚无主人文件：不得写主人文件，也不能因此放行。"""
+    configured = _cloud_settings(settings, cloud_allowed_users="")
     save_session(configured.cloud_session_path, _session_for("legacy-user", "Legacy"))
     assert load_owner(configured.cloud_owner_path) is None
 
     app = create_app(configured)
 
-    owner = load_owner(configured.cloud_owner_path)
-    assert owner is not None
-    assert owner.user_id == "legacy-user"
-    assert owner.username == "Legacy"
-    # 迁移出来的主人应立刻能通过云令牌访问 REST（无需允许名单收录）。
+    # 关键：启动期不写主人文件；残留会话仍留在磁盘上，但它不构成授权。
+    assert load_owner(configured.cloud_owner_path) is None
+    assert configured.cloud_session_path.exists()
     with TestClient(app, **PUBLIC_CLIENT) as test_client:
         response = test_client.get(HEALTH, headers=_auth(make_token(sub="legacy-user")))
-        assert response.status_code == 200
+        assert response.status_code == 401
 
 
-def test_create_app_migration_does_not_override_existing_owner(
-    settings: Settings, db_schema: None
-) -> None:
-    """已有主人绑定时，旧会话不能把他覆盖掉。"""
+def test_create_app_does_not_override_existing_owner(settings: Settings, db_schema: None) -> None:
+    """已有合法主人时，遗留会话不参与启动流程，不会被升主或覆盖。"""
     configured = _cloud_settings(settings)
     save_session(configured.cloud_session_path, _session_for("legacy-user", "Legacy"))
     save_owner(
@@ -546,11 +549,11 @@ def test_create_app_migration_does_not_override_existing_owner(
     assert owner is not None and owner.user_id == "owner-user"
 
 
-def test_create_app_does_not_migrate_session_without_user_id(
+def test_create_app_does_not_bind_session_without_user_id(
     settings: Settings, db_schema: None
 ) -> None:
-    """旧会话没有 user_id 时不产生空绑定（fail-closed）。"""
-    configured = _cloud_settings(settings)
+    """遗留会话没有 user_id 时不产生空绑定（fail-closed）。"""
+    configured = _cloud_settings(settings, cloud_allowed_users="")
     save_session(configured.cloud_session_path, _session_for("", ""))
     create_app(configured)
     assert load_owner(configured.cloud_owner_path) is None
