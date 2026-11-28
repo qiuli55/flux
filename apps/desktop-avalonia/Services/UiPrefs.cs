@@ -12,6 +12,9 @@ public sealed record UiPrefsData(bool RailWide, bool StatusBar, bool ReduceMotio
 
     /// <summary>只在 ProxyMode=custom 时使用，形如 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891。</summary>
     public string ProxyUrl { get; init; } = "";
+
+    /// <summary>粘贴长文本：file = 始终作为文件（默认），text = 始终直接粘贴。</summary>
+    public string PasteMode { get; init; } = "file";
 }
 
 /// <summary>

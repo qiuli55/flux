@@ -66,6 +66,7 @@ import top.qiuli55.flux.mobile.BuildConfig
 import top.qiuli55.flux.mobile.data.GitHubLinkBus
 import top.qiuli55.flux.mobile.data.HandoffSummary
 import top.qiuli55.flux.mobile.data.McpConnector
+import top.qiuli55.flux.mobile.data.PastePrefs
 import top.qiuli55.flux.mobile.data.ShareIntakeBus
 import top.qiuli55.flux.mobile.update.UpdateCenter
 import top.qiuli55.flux.mobile.update.UpdateKind
@@ -84,6 +85,8 @@ internal sealed interface V2Route {
     data object Profile : V2Route
     /** 「我的」二级页：连接器（GitHub + 自定义 MCP）。 */
     data object Connectors : V2Route
+    /** 「我的」二级页：技能（与桌面 / Web 共用 imported_capabilities 注册表）。 */
+    data object Skills : V2Route
     /** 「我的」二级页：统一订阅登录入口（ChatGPT / Claude Code）。 */
     data object Subscriptions : V2Route
     data object DesignCanvas : V2Route
@@ -189,6 +192,12 @@ fun FluxV2Root() {
     var memoryOpen by remember { mutableStateOf(false) }
     var billingOpen by remember { mutableStateOf(false) }
     var customConnectorOpen by remember { mutableStateOf(false) }
+    // 「我的 → 技能」二级页；从对话进入时记住来源，返回能回到输入区。
+    var skillOrigin by remember { mutableStateOf<V2Route>(V2Route.Profile) }
+    var connectorOrigin by remember { mutableStateOf<V2Route>(V2Route.Profile) }
+    var skillsAutoScan by remember { mutableStateOf(false) }
+    // 粘贴偏好只有两项，默认「始终作为文件」。
+    var pasteMode by remember(context) { mutableStateOf(PastePrefs.mode(context)) }
     var githubSheetOpen by remember { mutableStateOf(false) }
     var connectorDetail by remember { mutableStateOf<McpConnector?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
@@ -247,6 +256,7 @@ fun FluxV2Root() {
                 V2Route.Designs -> designVm.loadDesigns(quiet = true)
                 V2Route.Profile -> {
                     vm.loadMemories()
+                    vm.loadCapabilities(quiet = true)
                     // 「我的」上的入口会显示已连接数量：进页时顺手刷新一次。
                     vm.loadCodexAccount()
                     vm.loadClaudeAccount()
@@ -255,6 +265,14 @@ fun FluxV2Root() {
                 V2Route.Connectors -> {
                     vm.loadConnectors()
                     vm.loadGitHubAccount()
+                }
+                V2Route.Skills -> {
+                    vm.loadCapabilities()
+                }
+                is V2Route.TaskChat -> {
+                    // 对话里的技能 / 连接器面板用缓存清单；进对话时静默刷新一次。
+                    vm.loadCapabilities(quiet = true)
+                    vm.loadConnectors(quiet = true)
                 }
                 V2Route.Subscriptions -> {
                     vm.loadCodexAccount()
@@ -289,6 +307,20 @@ fun FluxV2Root() {
     fun openChat(taskId: String, origin: V2Route) {
         chatOrigin = origin
         route = V2Route.TaskChat(taskId)
+    }
+
+    /** 从对话进技能管理：记住来源，返回能回到输入区，不把对话永久盖掉。 */
+    fun openSkillsFromChat(add: Boolean) {
+        skillOrigin = route
+        skillsAutoScan = add
+        route = V2Route.Skills
+    }
+
+    /** 从对话进连接器管理 / 添加：复用现有连接器页与自定义 MCP 表单。 */
+    fun openConnectorsFromChat(add: Boolean) {
+        connectorOrigin = route
+        route = V2Route.Connectors
+        if (add) customConnectorOpen = true
     }
 
     // 从对话里的设计稿卡片进原生画布：记住当前对话路由，返回时回到这段对话
@@ -355,7 +387,11 @@ fun FluxV2Root() {
         createChat(agentsForDevice(chatDevice).first(), assistant = true)
     }
 
-    fun sendDraftMessage(text: String) {
+    fun sendDraftMessage(
+        text: String,
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
+    ) {
         Log.i(
             FLUX_UX_LOG_TAG,
             "sendDraftMessage invoked textLen=${text.length} " +
@@ -414,6 +450,8 @@ fun FluxV2Root() {
             summary = current.pendingSummary,
             summaryFrom = current.summaryFrom,
             attachmentIds = attachmentIds,
+            specifiedSkillIds = specifiedSkillIds,
+            specifiedConnectorIds = specifiedConnectorIds,
             origin = if (current.isAssistant) "assistant" else "chat",
             onFailed = { message ->
                 // 建任务失败：把乐观气泡回滚掉，避免用户重试后出现两条一样的消息。
@@ -430,7 +468,7 @@ fun FluxV2Root() {
             draftAttachments.clear()
             draftAttachmentError = null
             // 新对话第一次发送 = 建任务并立即交给 Agent；只建不跑会让用户以为消息没发出去。
-            vm.startTask(taskId)
+            vm.startTask(taskId, specifiedSkillIds, specifiedConnectorIds)
             chat = current.copy(
                 conversationId = taskId,
                 title = text.take(40).ifBlank { "附件对话" },
@@ -569,7 +607,7 @@ fun FluxV2Root() {
                   is V2Route.Diff -> V2Route.Changes(current.taskId)
                   is V2Route.Run -> V2Route.TaskDetail(current.taskId)
                   is V2Route.Terminal -> V2Route.Terminals
-                  V2Route.Connectors, V2Route.Subscriptions -> V2Route.Profile
+                  V2Route.Connectors, V2Route.Subscriptions, V2Route.Skills -> V2Route.Profile
                   is V2Route.Browser -> current.origin
                   is V2Route.ArtifactDetail -> {
                       artifactsVm.closeDetail()
@@ -768,13 +806,22 @@ fun FluxV2Root() {
                             },
                             version = BuildConfig.VERSION_NAME,
                             connectorCount = app.connectors.count { it.status == "connected" },
+                            skillCount = app.skills.size,
                             subscriptionCount = listOf(
                                 app.codexAccount?.loggedIn == true,
                                 app.claudeAccount?.loggedIn == true,
                             ).count { it },
                             extraTop = extraTop,
                             onOpenDevices = { vm.showDevices() },
-                            onOpenConnectors = { route = V2Route.Connectors },
+                            onOpenConnectors = {
+                                connectorOrigin = V2Route.Profile
+                                route = V2Route.Connectors
+                            },
+                            onOpenSkills = {
+                                skillOrigin = V2Route.Profile
+                                skillsAutoScan = false
+                                route = V2Route.Skills
+                            },
                             onOpenSubscriptions = { route = V2Route.Subscriptions },
                             onOpenTerminals = { route = V2Route.Terminals },
                             onOpenKeys = {
@@ -806,7 +853,7 @@ fun FluxV2Root() {
                             error = app.connectorsError,
                             extraTop = extraTop,
                             showBack = showBack,
-                            onBack = { route = V2Route.Profile },
+                            onBack = { route = connectorOrigin },
                             onReload = { vm.loadConnectors() },
                             onAdd = { customConnectorOpen = true },
                             onGitHub = { githubSheetOpen = true },
@@ -824,6 +871,49 @@ fun FluxV2Root() {
                             },
                             onOpenCustom = { connectorDetail = it },
                             onDismissMessages = { vm.clearMessages() },
+                        )
+
+                        V2Route.Skills -> SkillsScreen(
+                            capabilities = app.capabilities,
+                            loading = app.capabilitiesLoading,
+                            error = app.capabilitiesError,
+                            scanning = app.capabilityScanning,
+                            scanReport = app.capabilityScan,
+                            scanError = app.capabilityScanError,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = {
+                                skillsAutoScan = false
+                                route = skillOrigin
+                            },
+                            onReload = { vm.loadCapabilities() },
+                            onToggle = { item, enabled ->
+                                vm.setCapabilityEnabled(item.name, enabled) { failure ->
+                                    if (failure != null) {
+                                        Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            },
+                            onRemove = { item ->
+                                vm.removeCapability(item.name) { failure ->
+                                    if (failure != null) {
+                                        Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            },
+                            onScan = { vm.scanCapabilities() },
+                            onImport = { candidate ->
+                                vm.importCapability(candidate.kind, candidate.name) { failure ->
+                                    if (failure != null) {
+                                        Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            },
+                            onCloseScan = {
+                                skillsAutoScan = false
+                                vm.closeCapabilityScan()
+                            },
+                            autoScan = skillsAutoScan,
                         )
 
                         V2Route.Subscriptions -> SubscriptionsScreen(
@@ -962,6 +1052,26 @@ fun FluxV2Root() {
                                             vm.uploadDesignAsAttachment(design.id, design.name)
                                         }
                                     },
+                                    skills = app.skills,
+                                    skillsLoading = app.capabilitiesLoading,
+                                    skillsError = app.capabilitiesError,
+                                    connectors = app.connectors,
+                                    connectorsLoading = app.connectorsLoading,
+                                    connectorsError = app.connectorsError,
+                                    onManageSkills = { openSkillsFromChat(add = false) },
+                                    onAddSkill = { openSkillsFromChat(add = true) },
+                                    onManageConnectors = { openConnectorsFromChat(add = false) },
+                                    onAddConnector = { openConnectorsFromChat(add = true) },
+                                    pasteMode = pasteMode,
+                                    onPasteAsFile = { name, text ->
+                                        draftAttachmentError = null
+                                        draftAttachments.addText(name, text) {
+                                            vm.uploadPastedText(name, text)
+                                        }
+                                    },
+                                    onSendWithCapabilities = { text, skillIds, connectorIds ->
+                                        sendDraftMessage(text, skillIds, connectorIds)
+                                    },
                                     // 附件上传不算「发送中」：否则上传结束时会被误判成本轮发送成功，
                                     // 把用户已经打好的文字清空。上传状态由草稿自己表达。
                                     sending = app.busyAction == "create",
@@ -1054,6 +1164,17 @@ fun FluxV2Root() {
                             onSeedApplied = { token ->
                                 if (taskSeed?.second?.token == token) taskSeed = null
                             },
+                            skills = app.skills,
+                            skillsLoading = app.capabilitiesLoading,
+                            skillsError = app.capabilitiesError,
+                            connectors = app.connectors,
+                            connectorsLoading = app.connectorsLoading,
+                            connectorsError = app.connectorsError,
+                            onManageSkills = { openSkillsFromChat(add = false) },
+                            onAddSkill = { openSkillsFromChat(add = true) },
+                            onManageConnectors = { openConnectorsFromChat(add = false) },
+                            onAddConnector = { openConnectorsFromChat(add = true) },
+                            pasteMode = pasteMode,
                         )
 
                         is V2Route.Confirmation -> V2ConfirmationScreen(
@@ -1225,11 +1346,16 @@ fun FluxV2Root() {
                             decisionAlerts = decisionAlerts,
                             taskAlerts = taskAlerts,
                             strict = strict,
+                            pasteMode = pasteMode,
                             onHaptics = { haptics = it },
                             onReduceMotion = { reduceMotion = it },
                             onDecisionAlerts = { decisionAlerts = it },
                             onTaskAlerts = { taskAlerts = it },
                             onStrict = { strict = it },
+                            onPasteMode = { mode ->
+                                pasteMode = mode
+                                PastePrefs.setMode(context, mode)
+                            },
                             onOpenDevices = {
                                 settingsOpen = false
                                 vm.showDevices()
@@ -1612,7 +1738,7 @@ private fun RailButton(
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
-    V2Route.Connectors, V2Route.Subscriptions -> 1
+    V2Route.Connectors, V2Route.Subscriptions, V2Route.Skills -> 1
     V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2

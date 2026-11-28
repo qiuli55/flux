@@ -539,6 +539,18 @@ fun V2TaskChatScreen(
     /** 系统分享注入到这段对话：文字进输入框，附件进草稿。 */
     seed: ComposerSeed? = null,
     onSeedApplied: (Long) -> Unit = {},
+    /** 技能 / 连接器清单：与「我的」和新建对话共用同一份缓存。 */
+    skills: List<top.qiuli55.flux.mobile.data.ImportedCapability> = emptyList(),
+    skillsLoading: Boolean = false,
+    skillsError: String? = null,
+    connectors: List<top.qiuli55.flux.mobile.data.McpConnector> = emptyList(),
+    connectorsLoading: Boolean = false,
+    connectorsError: String? = null,
+    onManageSkills: () -> Unit = {},
+    onAddSkill: () -> Unit = {},
+    onManageConnectors: () -> Unit = {},
+    onAddConnector: () -> Unit = {},
+    pasteMode: PasteTextMode = PasteTextMode.DEFAULT,
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -674,6 +686,15 @@ fun V2TaskChatScreen(
                 vm.onDraftChange(text)
                 vm.send()
             },
+            onSendWithCapabilities = { text, skillIds, connectorIds ->
+                Log.i(
+                    FLUX_UX_LOG_TAG,
+                    "detail chat send invoked textLen=${text.length} " +
+                        "skills=${skillIds.size} connectors=${connectorIds.size}",
+                )
+                vm.onDraftChange(text)
+                vm.send(skillIds, connectorIds)
+            },
             attachmentDrafts = state.attachmentDrafts,
             // 上限 / 大小 / 空文件规则统一在 controller 里，和新建对话完全一致。
             onAddAttachments = { uris -> vm.addAttachments(uris, context.contentResolver) },
@@ -685,6 +706,18 @@ fun V2TaskChatScreen(
             designsLoading = designsLoading,
             onRequestDesigns = onRequestDesigns,
             onPickDesign = { design -> vm.attachDesign(design.id, design.name) },
+            skills = skills,
+            skillsLoading = skillsLoading,
+            skillsError = skillsError,
+            connectors = connectors,
+            connectorsLoading = connectorsLoading,
+            connectorsError = connectorsError,
+            onManageSkills = onManageSkills,
+            onAddSkill = onAddSkill,
+            onManageConnectors = onManageConnectors,
+            onAddConnector = onAddConnector,
+            pasteMode = pasteMode,
+            onPasteAsFile = { name, text -> vm.attachPastedText(name, text) },
             sending = state.sending,
             stream = state.stream,
             onRetryStream = { vm.retryStream() },

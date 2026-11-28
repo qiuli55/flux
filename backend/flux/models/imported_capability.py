@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, String, UniqueConstraint, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flux.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -32,6 +32,11 @@ class ImportedCapability(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     #: spec canonical JSON 的 SHA-256：内容没变则指纹不变
     fingerprint: Mapped[str] = mapped_column(String(64))
     spec: Mapped[dict] = mapped_column(JSON)
+    #: 是否启用：停用的技能不再自动进入执行指令；已导入清单仍可见、可再启用。
+    #: 连接器（kind=connector）沿用各自的连接状态，不看这一列。
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +47,7 @@ class ImportedCapability(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "version": self.version,
             "fingerprint": self.fingerprint,
             "spec": dict(self.spec or {}),
+            "enabled": bool(self.enabled),
             "created_at": _iso(self.created_at),
             "updated_at": _iso(self.updated_at),
         }

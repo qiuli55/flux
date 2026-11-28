@@ -934,6 +934,72 @@ data class ClaudeLogoutResult(
  * [status]：connected / disconnected / needs_reauth / error / coming_soon。
  */
 @Serializable
+data class ImportedCapability(
+    val id: String = "",
+    val kind: String = "skill",
+    val name: String = "",
+    val source: String = "",
+    val version: String? = null,
+    val fingerprint: String = "",
+    val spec: JsonObject = JsonObject(emptyMap()),
+    /** 启用中的技能才会自动进入执行指令；停用不影响清单可见与手动指定。 */
+    val enabled: Boolean = true,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+) {
+    /** 标准对象里的 description；缺失时退回来源目录名，列表不出现空白行。 */
+    val description: String
+        get() = (spec["description"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+}
+
+@Serializable
+data class CapabilitySourceReport(
+    val path: String = "",
+    val kind: String = "skill",
+    val status: String = "missing",
+    val candidates: Int = 0,
+)
+
+@Serializable
+data class CapabilityCandidate(
+    val kind: String = "skill",
+    val name: String = "",
+    val source: String = "",
+    val status: String = "ok",
+    val findings: List<CapabilityFinding> = emptyList(),
+)
+
+@Serializable
+data class CapabilityFinding(
+    val field: String = "",
+    val reason: String = "",
+)
+
+@Serializable
+data class CapabilityScanSummary(
+    val total: Int = 0,
+    val ok: Int = 0,
+    val blocked: Int = 0,
+)
+
+@Serializable
+data class CapabilityScanReport(
+    val candidates: List<CapabilityCandidate> = emptyList(),
+    val sources: List<CapabilitySourceReport> = emptyList(),
+    val summary: CapabilityScanSummary = CapabilityScanSummary(),
+)
+
+@Serializable
+data class CapabilityImportOutcome(
+    val outcome: String = "",
+    val id: String = "",
+    val kind: String = "",
+    val name: String = "",
+    val version: String? = null,
+    val enabled: Boolean = true,
+)
+
+@Serializable
 data class McpConnector(
     val id: String = "",
     val name: String = "",

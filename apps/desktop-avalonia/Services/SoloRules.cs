@@ -109,6 +109,52 @@ public static class SoloRules
     public static string AgentChatKey(string? taskId)
         => $"flux.solo.agent.{taskId ?? "none"}";
 
+    /// <summary>粘贴大文本阈值：与手机 / Web 同一个常量。</summary>
+    public const int LargePasteThreshold = 10_000;
+
+    /// <summary>后端单条任务消息正文上限。</summary>
+    public const int ComposerTextMax = 8_000;
+
+    /// <summary>粘贴模式取值：file = 始终作为文件（默认），text = 始终直接粘贴。</summary>
+    public static bool IsLargePaste(string? text, string? mode)
+    {
+        if (mode == "text" || string.IsNullOrEmpty(text)) return false;
+        if (text.Length < LargePasteThreshold) return false;
+        return text.Contains('\n') || text.Contains('\r');
+    }
+
+    /// <summary>用首行做安全文件名；空白时退回「粘贴.txt」。</summary>
+    public static string PasteFileName(string? text)
+    {
+        var first = (text ?? "")
+            .Split('\n')
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.Length > 0) ?? "";
+        var cleaned = new string(first
+            .Select(ch => "\\/:*?\"<>|".Contains(ch) || char.IsControl(ch) ? ' ' : ch)
+            .ToArray());
+        cleaned = string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        if (cleaned.Length > 24) cleaned = cleaned[..24];
+        return cleaned.Length == 0 ? "粘贴.txt" : cleaned + ".txt";
+    }
+
+    /// <summary>改回输入框；超上限时返回中文原因，不静默截断。</summary>
+    public static (string? Text, string? Error) RevealPastedText(string? currentText, string? pastedText)
+    {
+        var current = currentText ?? "";
+        var pasted = pastedText ?? "";
+        var merged = current.Trim().Length == 0
+            ? pasted
+            : current.TrimEnd().EndsWith(pasted.Trim(), StringComparison.Ordinal)
+                ? current
+                : current.TrimEnd() + "\n\n" + pasted;
+        if (merged.Length > ComposerTextMax)
+        {
+            return (null, $"改回输入框会超过 {ComposerTextMax} 字上限，请先精简当前输入");
+        }
+        return (merged, null);
+    }
+
     public static string ShortId(string? id)
         => string.IsNullOrEmpty(id) ? "—" : id.Length > 8 ? id[..8] : id;
 

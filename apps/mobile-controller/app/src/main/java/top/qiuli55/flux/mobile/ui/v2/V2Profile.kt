@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.NotificationsNone
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Terminal
@@ -53,10 +54,12 @@ fun V2ProfileScreen(
     billingNote: String,
     version: String,
     connectorCount: Int,
+    skillCount: Int = 0,
     subscriptionCount: Int,
     extraTop: Dp,
     onOpenDevices: () -> Unit,
     onOpenConnectors: () -> Unit,
+    onOpenSkills: () -> Unit = {},
     onOpenSubscriptions: () -> Unit,
     onOpenTerminals: () -> Unit,
     onOpenKeys: () -> Unit,
@@ -94,6 +97,13 @@ fun V2ProfileScreen(
                 title = "连接器",
                 onClick = onOpenConnectors,
                 value = if (connectorCount > 0) "$connectorCount 个" else "未连接",
+                showDivider = true,
+            )
+            V2SettingRow(
+                icon = Icons.Outlined.Psychology,
+                title = "技能",
+                onClick = onOpenSkills,
+                value = if (skillCount > 0) "$skillCount 个" else "未添加",
                 showDivider = true,
             )
             V2SettingRow(
@@ -224,6 +234,7 @@ private fun accountsInitials(name: String): String {
 internal val PROFILE_SETTINGS_TITLES = listOf(
     "设备与连接",
     "连接器",
+    "技能",
     "终端会话",
     "订阅与账号",
     "模型与密钥",

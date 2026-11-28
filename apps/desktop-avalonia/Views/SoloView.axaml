@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Flux.Desktop.ViewModels"
+             xmlns:models="using:Flux.Desktop.Models"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="900"
@@ -389,8 +390,32 @@
                         </Border>
                         <TextBlock Text="{Binding ConfirmationHint}" FontSize="10"
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{Binding PastedAttachments}"
+                                      IsVisible="{Binding HasPastedAttachments}"
+                                      Margin="0,0,0,6">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="6" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="models:PastedAttachmentRow">
+                                    <Border Classes="badge" Padding="8,4">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding Name}" FontSize="11" />
+                                            <Button Classes="mini" Content="显示"
+                                                    Command="{Binding $parent[ItemsControl].((vm:SoloViewModel)DataContext).RevealPastedAttachmentCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Classes="mini" Content="移除"
+                                                    Command="{Binding $parent[ItemsControl].((vm:SoloViewModel)DataContext).RemovePastedAttachmentCommand}"
+                                                    CommandParameter="{Binding}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                         <Grid ColumnDefinitions="*,Auto">
-                            <TextBox Classes="compose" Text="{Binding Draft, Mode=TwoWay}"
+                            <TextBox x:Name="DraftBox" Classes="compose" Text="{Binding Draft, Mode=TwoWay}"
                                      Watermark="描述需求或继续对话…" />
                             <Button Grid.Column="1" Classes="btn primary" Content="发送"
                                     Height="62" Margin="10,0,0,0" Width="88"
@@ -488,7 +513,7 @@
                         <TextBlock Text="{Binding AgentHint}" FontSize="10"
                                    Foreground="{DynamicResource TnText4}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,Auto">
-                            <TextBox Classes="compose" Text="{Binding AgentInput, Mode=TwoWay}"
+                            <TextBox x:Name="AgentBox" Classes="compose" Text="{Binding AgentInput, Mode=TwoWay}"
                                      Watermark="给 Agent 的指令…" />
                             <Button Grid.Column="1" Classes="btn primary" Content="发送"
                                     Height="62" Margin="10,0,0,0" Width="88"

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +32,15 @@ class ImportedCapabilityRepository:
         )
         async with self._session_factory() as session:
             return await session.scalar(statement)
+
+    async def get_by_id(self, capability_id: str) -> ImportedCapability | None:
+        """按 UUID 取一条记录；指定来源优先用 id，找不到再由服务层退回 name。"""
+        try:
+            parsed = uuid.UUID(str(capability_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        async with self._session_factory() as session:
+            return await session.get(ImportedCapability, parsed)
 
     async def list(self, kind: CapabilityKind | None = None) -> list[ImportedCapability]:
         statement = select(ImportedCapability).order_by(
@@ -89,6 +99,27 @@ class ImportedCapabilityRepository:
             await session.commit()
             await session.refresh(stored)
             return stored
+
+    async def set_enabled(
+        self, record: ImportedCapability, *, enabled: bool
+    ) -> ImportedCapability:
+        async with self._session_factory() as session:
+            stored = await session.get(ImportedCapability, record.id)
+            if stored is None:  # pragma: no cover - 同一进程内刚查到，不会消失
+                raise RuntimeError(f"导入记录已消失：{record.kind}/{record.name}")
+            stored.enabled = enabled
+            stored.updated_at = _utcnow()
+            await session.commit()
+            await session.refresh(stored)
+            return stored
+
+    async def delete(self, record: ImportedCapability) -> None:
+        """从注册表移除一条记录；不碰用户磁盘上的源目录。"""
+        async with self._session_factory() as session:
+            stored = await session.get(ImportedCapability, record.id)
+            if stored is not None:
+                await session.delete(stored)
+                await session.commit()
 
 
 __all__ = ["ImportedCapabilityRepository"]

@@ -549,8 +549,19 @@ export interface ImportedCapability {
   version: string | null;
   fingerprint: string;
   spec: Record<string, unknown>;
+  /** 启用中的技能会自动进入执行指令；停用不影响清单可见。 */
+  enabled: boolean;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** POST /api/v1/uploads 的返回：发送消息时只带 id。 */
+export interface UploadedAttachment {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  path: string;
 }
 
 /** 扫描候选：一个可被导入的能力（含被拦截项与拦截原因） */

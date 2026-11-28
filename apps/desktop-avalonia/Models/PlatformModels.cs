@@ -29,7 +29,14 @@ public sealed record ImportedCapability(
     string Name,
     string? Version,
     string? Source,
-    string? UpdatedAt);
+    string? UpdatedAt,
+    bool Enabled = true);
+
+/// <summary>POST /api/v1/uploads 的返回；发消息时只带 Id。</summary>
+public sealed record UploadedAttachment(string Id, string Name, long Size, string Mime, string Path);
+
+/// <summary>DELETE /api/v1/capabilities/{kind}/{name} 的返回。</summary>
+public sealed record CapabilityRemoveResult(bool Removed, string Kind, string Name);
 
 /// <summary>扫描结果汇总。</summary>
 public sealed record CapabilitySummary(int Total, int Ok, int Blocked);

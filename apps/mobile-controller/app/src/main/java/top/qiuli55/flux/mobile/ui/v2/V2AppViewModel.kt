@@ -31,6 +31,8 @@ import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.GitHubAccountStatus
 import top.qiuli55.flux.mobile.data.GitHubRepo
+import top.qiuli55.flux.mobile.data.CapabilityScanReport
+import top.qiuli55.flux.mobile.data.ImportedCapability
 import top.qiuli55.flux.mobile.data.KeyProbeResult
 import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.Task
@@ -96,6 +98,14 @@ data class V2AppState(
     val connectors: List<McpConnector> = emptyList(),
     val connectorsLoading: Boolean = false,
     val connectorsError: String? = null,
+    /** 已导入技能（与桌面 / Web 共用注册表）；电脑离线时保留上一次缓存。 */
+    val capabilities: List<ImportedCapability> = emptyList(),
+    val capabilitiesLoading: Boolean = false,
+    val capabilitiesError: String? = null,
+    /** 扫描结果（添加技能面板用）；关闭时清空。 */
+    val capabilityScan: CapabilityScanReport? = null,
+    val capabilityScanning: Boolean = false,
+    val capabilityScanError: String? = null,
     /** 套餐额度（成本中心）；进首页时加载，失败不影响任务主流程。 */
     val billing: BillingOverview? = null,
     /** 官方 API 价目表；与额度一起加载，失败只是不展示。 */
@@ -103,6 +113,13 @@ data class V2AppState(
     val billingLoading: Boolean = false,
     val billingError: String? = null,
 ) {
+    /** 已导入技能：只取 kind=skill，启用状态随记录返回。 */
+    val skills: List<ImportedCapability> get() = capabilities.filter { it.kind == "skill" }
+
+    /** 已连接且可用的连接器：指定本次发送时的候选。 */
+    val usableConnectors: List<McpConnector>
+        get() = connectors.filter { it.status == "connected" && it.available }
+
     /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
     private val chatTasks: List<Task> get() = tasks.filterNot { it.origin == "assistant" }
 
@@ -131,6 +148,7 @@ class V2AppViewModel : FluxViewModel() {
     private var codexLoginJob: Job? = null
     private var claudeLoginJob: Job? = null
     private var connectorsJob: Job? = null
+    private var capabilitiesJob: Job? = null
     private var billingJob: Job? = null
     private var foreground = true
 
@@ -413,6 +431,8 @@ class V2AppViewModel : FluxViewModel() {
         summary: String? = null,
         summaryFrom: String? = null,
         attachmentIds: List<String> = emptyList(),
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
         origin: String = "chat",
         /** 建任务失败：调用方用它在本地回滚乐观气泡，并保留草稿让用户直接重试。 */
         onFailed: (String) -> Unit = {},
@@ -442,6 +462,8 @@ class V2AppViewModel : FluxViewModel() {
                     summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
                     attachmentIds = attachmentIds,
                     origin = origin,
+                    specifiedSkillIds = specifiedSkillIds,
+                    specifiedConnectorIds = specifiedConnectorIds,
                 )
                 _state.value = _state.value.copy(busyAction = null)
                 refresh(quiet = true)
@@ -468,6 +490,16 @@ class V2AppViewModel : FluxViewModel() {
         picked: PickedAttachment,
         resolver: ContentResolver,
     ): UploadedAttachment = uploadPickedAttachment({ api() }, uri, picked, resolver)
+
+    /** 粘贴转成的文本附件：走同一条上传通道，不写临时文件。 */
+    internal suspend fun uploadPastedText(name: String, text: String): UploadedAttachment {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        return api().uploadAttachment(
+            name = name,
+            mime = "text/plain",
+            size = bytes.size.toLong(),
+        ) { ByteArrayInputStream(bytes) }
+    }
 
     /**
      * 设计稿当附件：先按设计稿 id 导出 SVG，再走同一条上传通道，不落地临时文件。
@@ -870,6 +902,107 @@ class V2AppViewModel : FluxViewModel() {
     // ------------------------------------------------------------ 连接器设置（内置 + 自定义 MCP）
 
     /** 进入连接器页 / 「我的」时读取列表；[quiet] 用于页面切换时的静默刷新。 */
+    /** 已导入技能清单：查看 / 指定 / 管理都读这一份，不另做手机本地清单。 */
+    fun loadCapabilities(quiet: Boolean = false) {
+        if (quiet && capabilitiesJob?.isActive == true) return
+        capabilitiesJob?.cancel()
+        capabilitiesJob = viewModelScope.launch {
+            if (!quiet) _state.value = _state.value.copy(capabilitiesLoading = true)
+            try {
+                val records = api().listCapabilities("skill")
+                _state.value = _state.value.copy(
+                    capabilities = records,
+                    capabilitiesLoading = false,
+                    capabilitiesError = null,
+                )
+            } catch (e: Exception) {
+                // 电脑离线：保留缓存清单，只把原因说清楚，不把列表清空。
+                _state.value = _state.value.copy(
+                    capabilitiesLoading = false,
+                    capabilitiesError = readable(e),
+                )
+            }
+        }
+    }
+
+    fun setCapabilityEnabled(name: String, enabled: Boolean, onResult: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val updated = api().setCapabilityEnabled("skill", name, enabled)
+                _state.value = _state.value.copy(
+                    capabilities = _state.value.capabilities.map {
+                        if (it.name == updated.name) updated else it
+                    },
+                    capabilitiesError = null,
+                )
+                onResult(null)
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    /** 只从注册表移除；不删除电脑上的原始技能目录。 */
+    fun removeCapability(name: String, onResult: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                api().deleteCapability("skill", name)
+                _state.value = _state.value.copy(
+                    capabilities = _state.value.capabilities.filterNot { it.name == name },
+                    notice = "已移除技能「$name」",
+                )
+                onResult(null)
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
+    /** 扫描本机默认来源：需要后端所在电脑在线；失败原因显示在面板里。 */
+    fun scanCapabilities() {
+        if (_state.value.capabilityScanning) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(capabilityScanning = true, capabilityScanError = null)
+            try {
+                val report = api().scanCapabilities()
+                _state.value = _state.value.copy(
+                    capabilityScan = report,
+                    capabilityScanning = false,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    capabilityScanning = false,
+                    capabilityScanError = readable(e),
+                )
+            }
+        }
+    }
+
+    fun closeCapabilityScan() {
+        _state.value = _state.value.copy(capabilityScan = null, capabilityScanError = null)
+    }
+
+    fun importCapability(
+        kind: String,
+        name: String,
+        decision: String? = null,
+        onResult: (String?) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            try {
+                val outcome = api().importCapability(kind, name, decision)
+                _state.value = _state.value.copy(
+                    notice = "已导入「${outcome.name}」",
+                    capabilityScanError = null,
+                )
+                loadCapabilities(quiet = true)
+                onResult(null)
+            } catch (e: Exception) {
+                onResult(readable(e))
+            }
+        }
+    }
+
     fun loadConnectors(quiet: Boolean = false) {
         if (quiet && connectorsJob?.isActive == true) return
         connectorsJob?.cancel()
@@ -1071,8 +1204,12 @@ class V2AppViewModel : FluxViewModel() {
             if (reject) "已拒绝该决策" else "已提交你的选择"
         }
 
-    fun startTask(taskId: String) = runAction("start:$taskId") {
-        api().startTask(taskId)
+    fun startTask(
+        taskId: String,
+        specifiedSkillIds: List<String> = emptyList(),
+        specifiedConnectorIds: List<String> = emptyList(),
+    ) = runAction("start:$taskId") {
+        api().startTask(taskId, specifiedSkillIds = specifiedSkillIds, specifiedConnectorIds = specifiedConnectorIds)
         "已开始执行"
     }
 

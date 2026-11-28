@@ -141,6 +141,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.qiuli55.flux.mobile.data.DesignSummary
+import top.qiuli55.flux.mobile.data.ImportedCapability
+import top.qiuli55.flux.mobile.data.McpConnector
 import top.qiuli55.flux.mobile.data.TaskContextUsage
 import top.qiuli55.flux.mobile.data.TaskRunSummary
 import top.qiuli55.flux.mobile.data.UploadedAttachment
@@ -220,6 +222,25 @@ fun V2ChatScreen(
     /** 打开设计稿选择面板前刷新一次列表。 */
     onRequestDesigns: () -> Unit = {},
     onPickDesign: (DesignSummary) -> Unit = {},
+    /** 已导入技能（与桌面 / Web 共用注册表）；电脑离线时用缓存清单。 */
+    skills: List<ImportedCapability> = emptyList(),
+    skillsLoading: Boolean = false,
+    skillsError: String? = null,
+    /** 已连接连接器目录；面板只列「已连接且可用」的项。 */
+    connectors: List<McpConnector> = emptyList(),
+    connectorsLoading: Boolean = false,
+    connectorsError: String? = null,
+    /** 打开技能 / 连接器管理页与添加流程（由外层路由负责）。 */
+    onManageSkills: () -> Unit = {},
+    onAddSkill: () -> Unit = {},
+    onManageConnectors: () -> Unit = {},
+    onAddConnector: () -> Unit = {},
+    /** 粘贴大文本时的偏好；默认「始终作为文件」。 */
+    pasteMode: PasteTextMode = PasteTextMode.DEFAULT,
+    /** 把粘贴的整段文本交给页面生成附件（沿用现有上传通道）。 */
+    onPasteAsFile: (name: String, text: String) -> Unit = { _, _ -> },
+    /** 带「本次指定」的发送；为空时退回原有 onSend，行为不变。 */
+    onSendWithCapabilities: ((String, List<String>, List<String>) -> Unit)? = null,
     /** 首条消息发出后等待 Agent 回复。 */
     sending: Boolean = false,
     /** 本轮实时流：正文、思考、工具步骤、连接状态（纯快照，最多 ~30fps 更新一次）。 */
@@ -314,6 +335,15 @@ fun V2ChatScreen(
     var headerMenuOpen by remember { mutableStateOf(false) }
     var modeSheetOpen by remember { mutableStateOf(false) }
     var designSheetOpen by remember { mutableStateOf(false) }
+    // 「本次指定」只在当前草稿生命周期内有效：发送成功即清空，不写进任务长期配置。
+    var skillsSheetOpen by remember { mutableStateOf(false) }
+    var connectorsSheetOpen by remember { mutableStateOf(false) }
+    var specifiedSkillIds by remember(chat.conversationId) { mutableStateOf(emptyList<String>()) }
+    var specifiedConnectorIds by remember(chat.conversationId) {
+        mutableStateOf(emptyList<String>())
+    }
+    val selectedSkills = specifiedSkillChips(specifiedSkillIds, skills)
+    val selectedConnectors = specifiedConnectorChips(specifiedConnectorIds, connectors)
     // 流式跟随：默认贴底；用户一旦拖动消息列表就暂停，直到自己回到底部或点「回到最新」。
     var followingStream by remember(chat.conversationId) { mutableStateOf(true) }
     var unseenWhileAway by remember(chat.conversationId) { mutableStateOf(false) }
@@ -330,6 +360,39 @@ fun V2ChatScreen(
     val canPickFiles = inputEnabled && !uploading && chat.permissionMode != "plan"
 
     val context = LocalContext.current
+    // 「+」底部面板与三种系统选择器都放在页面级：弹层才能拿到整屏高度。
+    var attachMenuOpen by remember { mutableStateOf(false) }
+    var cameraTarget by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { saved ->
+        val target = cameraTarget
+        cameraTarget = null
+        if (saved && target != null) onAddAttachments(listOf(target))
+    }
+    val imageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(UploadedAttachment.MAX_FILES),
+    ) { uris -> if (uris.isNotEmpty()) onAddAttachments(uris) }
+    val fileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris -> if (uris.isNotEmpty()) onAddAttachments(uris) }
+
+    fun launchCamera() {
+        val dir = File(context.filesDir, "camera").apply { mkdirs() }
+        val file = File(dir, "camera-${System.currentTimeMillis()}.jpg")
+        val uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }.getOrNull()
+        if (uri == null) {
+            Toast.makeText(context, "无法准备拍照文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        cameraTarget = uri
+        runCatching { cameraLauncher.launch(uri) }.onFailure {
+            cameraTarget = null
+            Toast.makeText(context, "没有可用的相机应用", Toast.LENGTH_SHORT).show()
+        }
+    }
     val haptics = LocalV2Haptics.current
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
@@ -373,7 +436,12 @@ fun V2ChatScreen(
                 "send accepted len=${text.length} attachments=${attachmentDrafts.size} " +
                     "conversationId=${chat.conversationId}",
             )
-            onSend(text)
+            val withCapabilities = onSendWithCapabilities
+            if (withCapabilities != null) {
+                withCapabilities(text, specifiedSkillIds.toList(), specifiedConnectorIds.toList())
+            } else {
+                onSend(text)
+            }
         } else {
             Log.i(FLUX_UX_LOG_TAG, "send tap ignored by debounce")
         }
@@ -391,8 +459,9 @@ fun V2ChatScreen(
         }
     }
     // 本地 Sheet / 菜单打开时，返回先交给它们；只有“裸”对话页才弹丢弃确认。
-    val localOverlayOpen = modeSheetOpen || designSheetOpen || bubbleMenu != null ||
-        headerMenuOpen || agentMenuOpen || modelMenuOpen || contextInfoOpen
+    val localOverlayOpen = modeSheetOpen || designSheetOpen || attachMenuOpen ||
+        skillsSheetOpen || connectorsSheetOpen || bubbleMenu != null || headerMenuOpen ||
+        agentMenuOpen || modelMenuOpen || contextInfoOpen
     // 预览/测试环境可能没有 Activity 的 dispatcher：有才注册，避免组合期崩溃。
     if (LocalOnBackPressedDispatcherOwner.current != null) {
         BackHandler(enabled = hasDraft && !localOverlayOpen) {
@@ -410,6 +479,16 @@ fun V2ChatScreen(
                 if (input.isNotEmpty()) {
                     Log.i(FLUX_UX_LOG_TAG, "draft cleared after successful send len=${input.length}")
                     input = ""
+                }
+                // 本次指定只随这一条消息发出：成功后清除，下一轮恢复「不指定」的自动使用。
+                if (specifiedSkillIds.isNotEmpty() || specifiedConnectorIds.isNotEmpty()) {
+                    Log.i(
+                        FLUX_UX_LOG_TAG,
+                        "specified capabilities cleared after send skills=${specifiedSkillIds.size} " +
+                            "connectors=${specifiedConnectorIds.size}",
+                    )
+                    specifiedSkillIds = emptyList()
+                    specifiedConnectorIds = emptyList()
                 }
             } else {
                 Log.i(
@@ -944,6 +1023,30 @@ fun V2ChatScreen(
 
         // 完全访问 / 免审核不再在输入框上方常驻提示条：盾牌图标仍随当前模式变化。
 
+        // 输入框上方：本次指定的技能 / 连接器；点 × 恢复不指定，仍可自动使用。
+        if (selectedSkills.isNotEmpty() || selectedConnectors.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                selectedSkills.forEach { chip ->
+                    SpecifiedCapabilityChipView(chip) {
+                        specifiedSkillIds = toggleSpecified(specifiedSkillIds, chip.id)
+                    }
+                }
+                selectedConnectors.forEach { chip ->
+                    SpecifiedCapabilityChipView(chip) {
+                        specifiedConnectorIds = toggleSpecified(specifiedConnectorIds, chip.id)
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+
         // 输入框上方：待发送附件 / 上传中 / 失败可重试；发送成功后由状态层清空
         if (attachmentDrafts.isNotEmpty()) {
             Column(Modifier.fillMaxWidth()) {
@@ -960,6 +1063,18 @@ fun V2ChatScreen(
                             draft = draft,
                             onRemove = { onRemoveAttachment(draft.localId) },
                             onRetry = { onRetryAttachment(draft.localId) },
+                            onReveal = draft.pastedText?.let { pasted ->
+                                {
+                                    // 先校验再移除：改回会超过正文上限时保留附件并说明原因。
+                                    val result = revealPastedText(input, pasted)
+                                    if (result.error != null) {
+                                        Toast.makeText(context, result.error, Toast.LENGTH_LONG).show()
+                                    } else {
+                                        input = result.text.orEmpty()
+                                        onRemoveAttachment(draft.localId)
+                                    }
+                                }
+                            },
                         )
                     }
                 }
@@ -1006,7 +1121,26 @@ fun V2ChatScreen(
                     }
                     BasicTextField(
                         value = input,
-                        onValueChange = { input = it },
+                        onValueChange = { next ->
+                            // 大文本粘贴不弹询问：达到阈值且有换行时直接转成文本附件。
+                            val pasted = largePasteToAttach(input, next, pasteMode)
+                            if (pasted == null) {
+                                input = next
+                            } else if (attachmentDrafts.size >= UploadedAttachment.MAX_FILES) {
+                                Toast.makeText(
+                                    context,
+                                    "一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件，" +
+                                        "无法把这段文字转成文件",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            } else {
+                                onPasteAsFile(pastedFileName(pasted), pasted)
+                                Log.i(
+                                    FLUX_UX_LOG_TAG,
+                                    "large paste converted to attachment chars=${pasted.length}",
+                                )
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag(V2ComposerTags.INPUT)
@@ -1029,15 +1163,7 @@ fun V2ChatScreen(
             ) {
                 AttachmentPickerButton(
                     enabled = canPickFiles,
-                    onPicked = onAddAttachments,
-                    onPickDesign = if (designOptions != null) {
-                        {
-                            onRequestDesigns()
-                            designSheetOpen = true
-                        }
-                    } else {
-                        null
-                    },
+                    onClick = { attachMenuOpen = true },
                 )
                 // 权限模式：盾牌圆钮打开四选一面板，只影响后续消息。
                 // 外层 48dp 只负责触摸目标，内层 32dp 保持原有视觉尺寸。
@@ -1173,6 +1299,39 @@ fun V2ChatScreen(
             onDismiss = { modeSheetOpen = false },
         )
     }
+    if (attachMenuOpen) {
+        ComposerPickerSheet(
+            designEnabled = designOptions != null,
+            onCamera = {
+                attachMenuOpen = false
+                launchCamera()
+            },
+            onImages = {
+                attachMenuOpen = false
+                imageLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
+            onFiles = {
+                attachMenuOpen = false
+                fileLauncher.launch(arrayOf("*/*"))
+            },
+            onDesign = {
+                attachMenuOpen = false
+                onRequestDesigns()
+                designSheetOpen = true
+            },
+            onSkills = {
+                attachMenuOpen = false
+                skillsSheetOpen = true
+            },
+            onConnectors = {
+                attachMenuOpen = false
+                connectorsSheetOpen = true
+            },
+            onDismiss = { attachMenuOpen = false },
+        )
+    }
     val pendingDesigns = designOptions
     if (designSheetOpen && pendingDesigns != null) {
         DesignPickSheet(
@@ -1183,6 +1342,47 @@ fun V2ChatScreen(
                 onPickDesign(design)
             },
             onDismiss = { designSheetOpen = false },
+        )
+    }
+    // 技能 / 连接器面板与内容平级叠放：与「+」底部面板同一套 SheetFrame。
+    if (skillsSheetOpen) {
+        SkillPickerSheet(
+            skills = skills,
+            loading = skillsLoading,
+            error = skillsError,
+            specifiedIds = specifiedSkillIds,
+            onToggle = { item ->
+                specifiedSkillIds = toggleSpecified(specifiedSkillIds, item.id.ifBlank { item.name })
+            },
+            onManage = {
+                skillsSheetOpen = false
+                onManageSkills()
+            },
+            onAdd = {
+                skillsSheetOpen = false
+                onAddSkill()
+            },
+            onDismiss = { skillsSheetOpen = false },
+        )
+    }
+    if (connectorsSheetOpen) {
+        ConnectorPickerSheet(
+            connectors = connectors,
+            loading = connectorsLoading,
+            error = connectorsError,
+            specifiedIds = specifiedConnectorIds,
+            onToggle = { item ->
+                specifiedConnectorIds = toggleSpecified(specifiedConnectorIds, item.id)
+            },
+            onManage = {
+                connectorsSheetOpen = false
+                onManageConnectors()
+            },
+            onAdd = {
+                connectorsSheetOpen = false
+                onAddConnector()
+            },
+            onDismiss = { connectorsSheetOpen = false },
         )
     }
     // 气泡长按菜单：透明遮罩关闭，菜单按气泡位置浮层显示
@@ -2335,122 +2535,39 @@ internal fun formatRunDuration(durationMs: Long?): String {
 
 // ------------------------------------------------------------------ 附件
 
-/** 共用的「+」按钮：点开选择附件来源（相机 / 图片 / 文件 / 设计稿）。 */
+/** 共用的「+」按钮：只负责打开页面级的来源底部面板。 */
 @Composable
 internal fun AttachmentPickerButton(
     enabled: Boolean,
-    onPicked: (List<Uri>) -> Unit,
-    /** 非空时菜单里出现「设计稿」，由页面弹出设计稿面板。 */
-    onPickDesign: (() -> Unit)? = null,
-) {
-    val context = LocalContext.current
-    var menuOpen by remember { mutableStateOf(false) }
-    var cameraTarget by remember { mutableStateOf<Uri?>(null) }
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicture(),
-    ) { saved ->
-        val target = cameraTarget
-        cameraTarget = null
-        if (saved && target != null) onPicked(listOf(target))
-    }
-    // 系统相册多选：一次最多 5 个（总上限），超出部分由页面的准入逻辑跳过并提示。
-    val imageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(UploadedAttachment.MAX_FILES),
-    ) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
-    val fileLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
-
-    // 拍照落盘到私有目录，经 FileProvider 交给相机应用写入
-    fun launchCamera() {
-        val dir = File(context.filesDir, "camera").apply { mkdirs() }
-        val file = File(dir, "camera-${System.currentTimeMillis()}.jpg")
-        val uri = runCatching {
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        }.getOrNull()
-        if (uri == null) {
-            Toast.makeText(context, "无法准备拍照文件", Toast.LENGTH_SHORT).show()
-            return
-        }
-        cameraTarget = uri
-        runCatching { cameraLauncher.launch(uri) }.onFailure {
-            cameraTarget = null
-            Toast.makeText(context, "没有可用的相机应用", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    Box {
-        // 外层 48dp 保证最小触摸目标，内层 32dp 保持原有视觉尺寸。
-        Box(
-            Modifier
-                .size(48.dp)
-                .testTag(V2ComposerTags.ATTACH)
-                .clip(RoundedCornerShape(12.dp))
-                .clickable(enabled = enabled) {
-                    Log.i(FLUX_UX_LOG_TAG, "attachment menu opened enabled=$enabled")
-                    menuOpen = true
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(V2Colors.surface(.55f))
-                    .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.Add,
-                    contentDescription = "添加附件",
-                    tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
-                    modifier = Modifier.size(17.dp),
-                )
-            }
-        }
-        DropdownMenu(
-            expanded = menuOpen,
-            onDismissRequest = { menuOpen = false },
-            modifier = Modifier.background(V2Colors.surface),
-        ) {
-            PlusMenuItem(Icons.Outlined.PhotoCamera, "相机") {
-                menuOpen = false
-                launchCamera()
-            }
-            PlusMenuItem(Icons.Outlined.Image, "图片") {
-                menuOpen = false
-                imageLauncher.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                )
-            }
-            PlusMenuItem(Icons.Outlined.FolderOpen, "文件") {
-                menuOpen = false
-                fileLauncher.launch(arrayOf("*/*"))
-            }
-            val pickDesign = onPickDesign
-            if (pickDesign != null) {
-                PlusMenuItem(Icons.Outlined.DesignServices, "设计稿") {
-                    menuOpen = false
-                    pickDesign()
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlusMenuItem(
-    icon: ImageVector,
-    label: String,
     onClick: () -> Unit,
 ) {
-    DropdownMenuItem(
-        text = { Label(label, 11.5f, V2Colors.ink(.82f)) },
-        leadingIcon = {
-            Icon(icon, null, tint = V2Colors.cyan700, modifier = Modifier.size(16.dp))
-        },
-        onClick = onClick,
-    )
+    Box(
+        Modifier
+            .size(48.dp)
+            .testTag(V2ComposerTags.ATTACH)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled) {
+                Log.i(FLUX_UX_LOG_TAG, "attachment menu opened enabled=$enabled")
+                onClick()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(V2Colors.surface(.55f))
+                .border(1.dp, V2Colors.ink(.08f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Add,
+                contentDescription = "添加附件",
+                tint = if (enabled) V2Colors.cyan700 else V2Colors.ink(.25f),
+                modifier = Modifier.size(17.dp),
+            )
+        }
+    }
 }
 
 /** 从 Flux 设计工作室挑一份设计稿作为附件：选中后由页面导出 SVG 走上传通道。 */
@@ -2580,6 +2697,8 @@ internal fun ComposerAttachmentChip(
     draft: ComposerAttachmentDraft,
     onRemove: () -> Unit,
     onRetry: () -> Unit,
+    /** 粘贴生成的文本附件：把正文改回输入框。 */
+    onReveal: (() -> Unit)? = null,
 ) {
     val failed = draft.status == AttachmentDraftStatus.FAILED
     val uploading = draft.status == AttachmentDraftStatus.UPLOADING
@@ -2672,6 +2791,20 @@ internal fun ComposerAttachmentChip(
                     .testTag(V2ComposerTags.attachmentRetry(draft.localId))
                     .clip(RoundedCornerShape(6.dp))
                     .clickable(onClick = onRetry)
+                    .padding(horizontal = 5.dp, vertical = 3.dp),
+            )
+        }
+        if (onReveal != null && draft.pastedText != null) {
+            Spacer(Modifier.width(5.dp))
+            Label(
+                "显示",
+                9f,
+                V2Colors.cyan700,
+                FontWeight.Medium,
+                modifier = Modifier
+                    .testTag(V2ComposerTags.attachmentReveal(draft.localId))
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onReveal)
                     .padding(horizontal = 5.dp, vertical = 3.dp),
             )
         }

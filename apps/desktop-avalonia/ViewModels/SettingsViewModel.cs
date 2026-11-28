@@ -41,6 +41,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
             case nameof(MainWindowViewModel.IsReduceMotion):
                 OnPropertyChanged(nameof(ReduceMotion));
                 break;
+            case nameof(MainWindowViewModel.PasteMode):
+                OnPropertyChanged(nameof(PasteAsFile));
+                OnPropertyChanged(nameof(PasteAsText));
+                break;
         }
     }
 
@@ -62,6 +66,19 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private bool _isResetConfirmOpen;
 
     public bool IsAppearance => SelectedTab == "appearance";
+
+    /// <summary>粘贴长文本：两项互斥，默认「始终作为文件」。</summary>
+    public bool PasteAsFile
+    {
+        get => _shell.PasteMode != "text";
+        set { if (value) _shell.PasteMode = "file"; }
+    }
+
+    public bool PasteAsText
+    {
+        get => _shell.PasteMode == "text";
+        set { if (value) _shell.PasteMode = "text"; }
+    }
 
     public bool IsWorkspace => SelectedTab == "workspace";
 

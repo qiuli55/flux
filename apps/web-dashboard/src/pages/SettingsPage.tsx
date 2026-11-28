@@ -9,6 +9,7 @@ import { toast } from "../app/toast";
 import { KeyVaultPanel } from "../components/KeyVaultPanel";
 import { Icon } from "../shell/Icon";
 import { setPref, usePrefs } from "../shell/prefs";
+import { PASTE_MODE_OPTIONS } from "../utils/pastePolicy";
 import { Button, Card, PageHead, SectionTitle, Switch } from "../shell/ui";
 import { Modal } from "../shell/Overlay";
 
@@ -84,6 +85,23 @@ export function SettingsPage() {
               <Row title="减少动效" desc="关闭淡入、脉冲等动画，适合弱设备或晕动敏感。">
                 <Switch on={prefs.reduceMotion} onChange={(v) => setPref("reduceMotion", v)} />
               </Row>
+              <Row
+                title="粘贴长文本"
+                desc="一次粘贴达到 1 万字且含换行时，默认直接作为文本文件附件。"
+              >
+                <div className="fx-row fx-gap-2">
+                  {PASTE_MODE_OPTIONS.map((option) => (
+                    <Button
+                      key={option.value}
+                      size="sm"
+                      variant={prefs.pasteMode === option.value ? "primary" : "subtle"}
+                      onClick={() => setPref("pasteMode", option.value)}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
+              </Row>
             </Card>
           ) : null}
 
@@ -142,6 +160,7 @@ export function SettingsPage() {
                 setPref("wide", false);
                 setPref("statusbar", true);
                 setPref("reduceMotion", false);
+                setPref("pasteMode", "file");
                 setConfirmReset(false);
                 toast("已恢复默认界面设置");
               }}

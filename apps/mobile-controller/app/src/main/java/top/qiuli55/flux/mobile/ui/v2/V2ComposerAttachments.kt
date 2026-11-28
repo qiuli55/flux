@@ -40,6 +40,8 @@ data class ComposerAttachmentDraft(
     val uploaded: UploadedAttachment? = null,
     /** 上传失败的给用户看的原因。 */
     val error: String? = null,
+    /** 粘贴转成的文本附件原文；非空时芯片提供「显示到输入框」。 */
+    val pastedText: String? = null,
 ) {
     val isImage: Boolean get() = isImageAttachment(name, mime)
 }
@@ -181,6 +183,35 @@ internal class ComposerAttachmentController(
     /** 设计稿导出 SVG 也走同一个草稿列表；失败后同样可重试。 */
     fun addDesign(name: String, uploader: suspend () -> UploadedAttachment) {
         scope.launch { addDesignNow(name, uploader) }
+    }
+
+    /** 大文本粘贴转成的文本附件：与设计稿一样走虚拟上传，不写临时文件。 */
+    fun addText(name: String, text: String, uploader: suspend () -> UploadedAttachment) {
+        scope.launch { addTextNow(name, text, uploader) }
+    }
+
+    internal suspend fun addTextNow(
+        name: String,
+        text: String,
+        uploader: suspend () -> UploadedAttachment,
+    ) = mutex.withLock {
+        if (_drafts.value.size >= UploadedAttachment.MAX_FILES) {
+            onProblem("一条消息最多带 ${UploadedAttachment.MAX_FILES} 个附件")
+            return@withLock
+        }
+        val id = UUID.randomUUID().toString()
+        val draft = ComposerAttachmentDraft(
+            localId = id,
+            uri = null,
+            name = name,
+            size = text.toByteArray(Charsets.UTF_8).size.toLong(),
+            mime = "text/plain",
+            status = AttachmentDraftStatus.UPLOADING,
+            pastedText = text,
+        )
+        _drafts.update { it + draft }
+        retryActions[id] = uploader
+        runUpload(id, uploader)
     }
 
     internal suspend fun addDesignNow(name: String, uploader: suspend () -> UploadedAttachment) =

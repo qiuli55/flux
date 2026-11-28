@@ -12,7 +12,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
-import type { AgentHandle, DshRun, DshStatus } from "../../api/types";
+import type { AgentHandle, DshRun, DshStatus, UploadedAttachment } from "../../api/types";
+import { usePrefs } from "../../shell/prefs";
+import { isImagePaste, isLargePaste, pastedFileName, revealPastedText } from "../../utils/pastePolicy";
 
 /** 对话里的一条：用户指令，或 Agent 的回执 */
 export interface AgentTurn {
@@ -112,6 +114,10 @@ export function AgentChatPanel({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
+  const prefs = usePrefs();
+  /** 粘贴大文本转成的附件：DSH 指令里带本机路径，和 /uploads 走同一条落盘通道。 */
+  const [pastedFiles, setPastedFiles] = useState<Array<UploadedAttachment & { text: string }>>([]);
+  const [pasteBusy, setPasteBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -195,13 +201,59 @@ export function AgentChatPanel({
   }, [turns]);
 
   /** 下发一条指令：起一次 DSH Run */
+  const handlePaste = useCallback(
+    async (event: { clipboardData: DataTransfer; preventDefault: () => void }) => {
+      const text = event.clipboardData.getData("text/plain");
+      if (isImagePaste(event.clipboardData.items)) return;
+      if (!isLargePaste(text, prefs.pasteMode)) return;
+      event.preventDefault();
+      if (pastedFiles.length >= 5) {
+        setError("一条指令最多带 5 个附件，无法把这段文字转成文件");
+        return;
+      }
+      setPasteBusy(true);
+      try {
+        const uploaded = await api.uploadTextAttachment(pastedFileName(text), text);
+        setPastedFiles((prev) => [...prev, { ...uploaded, text }]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "附件上传失败");
+      } finally {
+        setPasteBusy(false);
+      }
+    },
+    [pastedFiles.length, prefs.pasteMode],
+  );
+
+  const revealFile = useCallback(
+    (file: UploadedAttachment & { text: string }) => {
+      const result = revealPastedText(draft, file.text);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      setDraft(result.text ?? "");
+      setPastedFiles((prev) => prev.filter((item) => item.id !== file.id));
+    },
+    [draft],
+  );
+
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || busy) return;
+    if ((!text && pastedFiles.length === 0) || busy) return;
     if (!dshReady) {
       setError("DSH 运行时未启用，无法下发指令");
       return;
     }
+    if (pasteBusy) {
+      setError("附件还在上传，请稍候再发送");
+      return;
+    }
+    const attachmentNote = pastedFiles.length > 0
+      ? `\n\n附件（用户粘贴的长文本，已上传到 Flux，可直接按路径读取）：\n${pastedFiles
+          .map((file) => `- ${file.name}（${file.path}）`)
+          .join("\n")}`
+      : "";
+    const instruction = `${text || "请查看我附上的文件"}${attachmentNote}`;
     const stamp = Date.now();
     const replyId = `a-${stamp}`;
     setTurns((prev) => [
@@ -210,6 +262,7 @@ export function AgentChatPanel({
       { id: replyId, role: "agent", text: "", status: "running" },
     ]);
     setDraft("");
+    setPastedFiles([]);
     setError(null);
     setBusy(true);
     onRunStartRef.current?.();
@@ -218,7 +271,7 @@ export function AgentChatPanel({
         ? selectedModel.split("::", 2)
         : [null, selectedModel];
       const run = await api.startDshRun(
-        text,
+        instruction,
         sessionRef.current || undefined,
         agentId,
         model || undefined,
@@ -240,7 +293,7 @@ export function AgentChatPanel({
         ),
       );
     }
-  }, [draft, busy, dshReady, agentId, storageKey, selectedModel]);
+  }, [draft, pastedFiles, pasteBusy, busy, dshReady, agentId, storageKey, selectedModel]);
 
   /** 停止当前 Run（后端会先把进程树清干净再返回） */
   const stop = useCallback(async () => {
@@ -383,12 +436,31 @@ export function AgentChatPanel({
 
       <div className="ag-compose">
         {composeTop}
+        {pastedFiles.length > 0 ? (
+          <div className="fx-row fx-gap-2" style={{ flexWrap: "wrap", marginBottom: 6 }}>
+            {pastedFiles.map((file) => (
+              <span key={file.id} className="chip chip-dim" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span className="fx-ellipsis" style={{ maxWidth: 160 }} title={file.name}>{file.name}</span>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => revealFile(file)}>显示</button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  aria-label={`移除附件 ${file.name}`}
+                  onClick={() => setPastedFiles((prev) => prev.filter((item) => item.id !== file.id))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <textarea
           className="ag-input"
           value={draft}
           placeholder={dshReady ? placeholder : "DSH 运行时未启用，无法下发指令"}
           disabled={!dshReady || busy}
           onChange={(event) => setDraft(event.target.value)}
+          onPaste={(event) => void handlePaste(event)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
