@@ -277,9 +277,7 @@ def _type_label(kind: str) -> str:
     return "文档" if kind == "doc" else "页面"
 
 
-async def _publish_artifact_card(
-    container: Container, artifact: Any, task_id: uuid.UUID
-) -> str:
+async def _publish_artifact_card(container: Container, artifact: Any, task_id: uuid.UUID) -> str:
     """把提取结果写成对话里的 artifact_card，沿用 artifact.publish 的卡片载荷。"""
     data = artifact.to_dict(include_content=False)
     payload = {
@@ -302,8 +300,7 @@ async def _publish_artifact_card(
                     role=TaskMessageRole.ASSISTANT.value,
                     kind="artifact_card",
                     content=(
-                        f"已提取{_type_label(artifact.type)}「{artifact.title}」，"
-                        "点开查看完整内容"
+                        f"已提取{_type_label(artifact.type)}「{artifact.title}」，点开查看完整内容"
                     ),
                     payload=payload,
                 )
