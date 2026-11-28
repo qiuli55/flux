@@ -142,18 +142,14 @@ def test_remove_only_deletes_registry_record(container: Container, tmp_path: Pat
     assert (skill_dir / "SKILL.md").is_file()
 
 
-def test_api_can_toggle_and_remove_imported_skill(
-    client: TestClient, container: Container
-) -> None:
+def test_api_can_toggle_and_remove_imported_skill(client: TestClient, container: Container) -> None:
     _insert_skill(container, name="api-skill")
 
     listed = client.get("/api/v1/capabilities", params={"kind": "skill"}).json()["data"]
     assert listed[0]["name"] == "api-skill"
     assert listed[0]["enabled"] is True
 
-    toggled = client.patch(
-        "/api/v1/capabilities/skill/api-skill", json={"enabled": False}
-    )
+    toggled = client.patch("/api/v1/capabilities/skill/api-skill", json={"enabled": False})
     assert toggled.status_code == 200, toggled.text
     assert toggled.json()["data"]["enabled"] is False
 
@@ -204,13 +200,9 @@ def test_create_task_stores_this_send_specification_only(
         "connectors": ["github"],
     }
 
-    plain = client.post(
-        "/api/v1/tasks", json={"description": "普通对话", "start": False}
-    )
+    plain = client.post("/api/v1/tasks", json={"description": "普通对话", "start": False})
     assert plain.status_code == 200, plain.text
-    plain_task = asyncio.run(
-        container.task_repo.get(uuid.UUID(plain.json()["data"]["id"]))
-    )
+    plain_task = asyncio.run(container.task_repo.get(uuid.UUID(plain.json()["data"]["id"])))
     assert plain_task.pending_specified_capabilities is None
 
     # 清空后不残留：指定只属于这一次发送。

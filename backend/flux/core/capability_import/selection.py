@@ -113,10 +113,13 @@ def capability_instruction_sections(
             "## 本轮指定使用",
             "用户指定本轮优先使用下列能力；未列出的已启用技能与可用连接器仍可按需使用。",
         ]
-        lines += [f"- 技能：{skill.instruction_line().removeprefix('- ')}"
-                  for skill in specified_skills]
-        lines += [f"- 连接器：{connector.instruction_line().removeprefix('- ')}"
-                  for connector in specified_connectors]
+        lines += [
+            f"- 技能：{skill.instruction_line().removeprefix('- ')}" for skill in specified_skills
+        ]
+        lines += [
+            f"- 连接器：{connector.instruction_line().removeprefix('- ')}"
+            for connector in specified_connectors
+        ]
     return lines
 
 

@@ -100,9 +100,7 @@ class ImportedCapabilityRepository:
             await session.refresh(stored)
             return stored
 
-    async def set_enabled(
-        self, record: ImportedCapability, *, enabled: bool
-    ) -> ImportedCapability:
+    async def set_enabled(self, record: ImportedCapability, *, enabled: bool) -> ImportedCapability:
         async with self._session_factory() as session:
             stored = await session.get(ImportedCapability, record.id)
             if stored is None:  # pragma: no cover - 同一进程内刚查到，不会消失
