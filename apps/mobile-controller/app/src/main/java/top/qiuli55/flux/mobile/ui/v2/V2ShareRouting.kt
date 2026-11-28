@@ -25,6 +25,19 @@ internal fun resolveShareLanding(
     else -> ShareLanding.NEW_CHAT
 }
 
+/**
+ * 分享在还没进入主界面时被收下，给用户的提示语。
+ *
+ * 文案要跟当前 boot 阶段对得上：启动中说「启动完成」，登录墙说「登录」，
+ * 选设备页说「选好设备」。已就绪时不需要提示，返回 null。
+ */
+internal fun shareHeldToast(boot: V2Boot): String? = when (boot) {
+    V2Boot.READY -> null
+    V2Boot.LOADING -> "已收下，启动完成后会放入新对话输入栏"
+    V2Boot.LOGIN -> "已收下，登录后会放入新对话输入栏"
+    V2Boot.DEVICES -> "已收下，选好设备后会放入新对话输入栏"
+}
+
 /** 分享队列：进入主界面前只入队，进入后每条只消费一次。 */
 internal data class ShareIntakeState(
     val pending: List<IncomingShare> = emptyList(),

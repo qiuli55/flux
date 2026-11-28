@@ -77,7 +77,7 @@ def test_attachment_without_organize_intent_goes_to_the_computer() -> None:
         "整理成文档",
         "帮我把这张照片整理成文档",
         "把这份分享整理为 Markdown",
-        "存成文档",
+        "把这份文件存成文档",
         "汇总成一份说明文档",
     ],
 )
@@ -93,7 +93,7 @@ def test_organize_doc_with_attachment(text: str) -> None:
     [
         "整理成页面",
         "把这张图整理成网页",
-        "做成一个可交互页面",
+        "把这张截图做成网页",
         "整理为 HTML 页面",
     ],
 )
@@ -114,6 +114,38 @@ def test_organize_without_attachment_asks_for_one() -> None:
     decision = decide_turn("整理成文档")
     assert decision.route is TurnRoute.CLARIFY
     assert decision.reason is TurnReason.ORGANIZE_WITHOUT_ATTACHMENT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "做成一个可交互页面",
+        "生成一个登录页面",
+        "写成一份文档",
+    ],
+)
+def test_creation_phrases_without_attachment_do_not_ask_for_files(text: str) -> None:
+    """「做成 / 生成一个 / 写成」是从零创建，不该被当成整理去要附件。"""
+    decision = decide_turn(text)
+    assert decision.route is TurnRoute.COMPUTER_AGENT
+    assert decision.reason is not TurnReason.ORGANIZE_WITHOUT_ATTACHMENT
+    assert decision.reason is not TurnReason.ORGANIZE_NEEDS_TARGET
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "做成一个可交互页面",
+        "生成一个登录页面",
+        "写成一份文档",
+    ],
+)
+def test_creation_phrases_with_attachment_are_not_organize(text: str) -> None:
+    """带附件也一样：没有「整理已有材料」的上下文就不是整理。"""
+    decision = decide_turn(text, attachment_count=1)
+    assert decision.route is TurnRoute.COMPUTER_AGENT
+    assert decision.organize_target is None
+    assert decision.reason is not TurnReason.ORGANIZE_WITHOUT_ATTACHMENT
 
 
 def test_both_targets_ask_instead_of_guessing() -> None:

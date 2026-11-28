@@ -491,13 +491,9 @@ fun FluxV2Root() {
             if (pending.isEmpty()) return@collect
             ShareIntakeBus.consume(pending.map { it.id }.toSet())
             shareQueue = shareQueue.receive(pending.map { it.share })
-            // 登录墙 / 启动中收到分享：队列不能是静默的，明确告诉用户收下后会去哪。
-            if (bootNow != V2Boot.READY) {
-                Toast.makeText(
-                    context,
-                    "已收下，登录后会放入新对话输入栏",
-                    Toast.LENGTH_LONG,
-                ).show()
+            // 登录墙 / 启动中 / 选设备收到分享：队列不能是静默的，按阶段说清楚会去哪。
+            shareHeldToast(bootNow)?.let { message ->
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             }
         }
     }

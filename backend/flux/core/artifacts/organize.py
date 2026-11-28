@@ -234,7 +234,7 @@ def _render_page(
 ) -> str:
     safe_title = html.escape(title)
     instruction_html = (
-        f"<p class=\"note\">{html.escape(instruction.strip())}</p>" if instruction.strip() else ""
+        f'<p class="note">{html.escape(instruction.strip())}</p>' if instruction.strip() else ""
     )
     if body:
         stripped = body.strip()
@@ -271,7 +271,7 @@ def _render_page(
                     f"{html.escape(size_label(file.size))}），未内嵌。</p>"
                 )
         parts.append(
-            "<h2>说明</h2><p class=\"note\">这份页面由 Flux 服务端先保存，"
+            '<h2>说明</h2><p class="note">这份页面由 Flux 服务端先保存，'
             "未做视觉识别；图片内容尚未整理成文字，可再编辑。</p>"
         )
         content = "\n".join(parts)
@@ -355,7 +355,10 @@ async def organize_uploads_as_artifact(
         )
         try:
             result = await router.chat(
-                [ChatMessage(role="system", content=system), ChatMessage(role="user", content=prompt)]
+                [
+                    ChatMessage(role="system", content=system),
+                    ChatMessage(role="user", content=prompt),
+                ]
             )
             candidate = _strip_fence(result.content)
             if candidate:
