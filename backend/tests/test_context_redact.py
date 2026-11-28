@@ -210,6 +210,38 @@ def test_entropy_still_catches_base64_with_single_slash() -> None:
     assert result.matches[0].original == token
 
 
+def test_entropy_redacts_secret_segment_inside_absolute_path() -> None:
+    """绝对路径中间的无前缀高熵密钥段要打码，路径前缀保留。"""
+    secret = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae"
+    result = redact(f"curl /api/keys/{secret}")
+    assert result.text == "curl /api/keys/[REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    # 只记录密钥段本身，不把整条路径当作原文
+    assert result.matches[0].original == secret
+
+
+def test_entropy_keeps_path_identifiers_inside_absolute_path() -> None:
+    """路径段里的纯 hex（32/40/64）与 UUID 是标识符，不能当密钥打掉。"""
+    hex32 = "0123456789abcdef0123456789abcdef"
+    hex40 = "0123456789abcdef0123456789abcdef01234567"
+    hex64 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    uuid_like = "123e4567-e89b-12d3-a456-426614174000"
+    path = f"/var/lib/flux/objects/{hex32}/{hex40}/{hex64}/{uuid_like}/payload"
+    result = redact(f"object at {path}")
+    assert result.text == f"object at {path}"
+    assert result.matches == ()
+
+
+def test_entropy_still_redacts_secret_alongside_path_identifiers() -> None:
+    """同一路径里标识符保留、密钥段打码，两类判定互不干扰。"""
+    hex32 = "0123456789abcdef0123456789abcdef"
+    secret = "Zx9Qm2Lp7Rw4Tn8Vc3Bk6Hj1Ds5Fg0Ae"
+    path = f"/data/{hex32}/{secret}/blob"
+    result = redact(f"path {path}")
+    assert result.text == f"path /data/{hex32}/[REDACTED:key]/blob"
+    assert [m.original for m in result.matches] == [secret]
+
+
 # --- 占位符编号与复用（映射 1:1）---
 
 

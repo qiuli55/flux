@@ -73,6 +73,10 @@ _JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}
 _CRED_RE = re.compile(r"(?P<cred>[A-Za-z0-9._%+\-]+:[^\s:@/]+)(?P<host>@[A-Za-z0-9.\-]+(?::\d+)?)")
 #: 熵检测候选：无前缀的长 token（hex / base64 / urlsafe）
 _CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+#: 带连字符的 UUID：路径段里的常见目录 / 资源 id，字符集不再是纯 hex，需单独认出
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,13 @@ def redact(text: str, *, literals: Sequence[str] | None = None) -> RedactionResu
 
     def _entropy_sub(match: re.Match[str]) -> str:
         token = match.group(0)
+        # POSIX 绝对路径整体不是密钥，但路径中间可能嵌着无前缀高熵密钥
+        # （`/api/keys/<base64>`）。按 `/` 切开逐段判定：只换像密钥的段，
+        # 普通段与标识符段（32/40/64 位 hex、UUID）原样保留。
+        if _looks_like_filesystem_path(token):
+            return _redact_path_segments(
+                token, lambda secret: placeholder_for(RedactionKind.KEY, secret)
+            )
         if not _looks_like_secret(token):
             return token
         # 无前缀的密钥归到 KEY（"key"是兜底的密钥标记）
@@ -283,6 +294,42 @@ def _looks_like_secret(token: str) -> bool:
     return _entropy(token) >= _MIN_ENTROPY
 
 
+def _redact_path_segments(token: str, replace: Callable[[str], str]) -> str:
+    """把绝对路径候选按 `/` 切开，只替换像密钥的段，再原样拼回。
+
+    路径本身不是机密（附件必读路径依赖它可读），但路径中间可以夹一段无前缀的
+    高熵密钥。整段跳过会漏掉这种密钥，故逐段做与 `_looks_like_secret` 相同的判定；
+    标识符段（纯 hex 的目录名、带连字符 UUID）与普通段保留。若没有任何段被换，
+    返回原串，避免拆分后无意改写（例如重复的 `/`）。
+    """
+    parts = token.split("/")
+    changed = False
+    for index, part in enumerate(parts):
+        if part and _looks_like_secret_segment(part):
+            parts[index] = replace(part)
+            changed = True
+    return "/".join(parts) if changed else token
+
+
+def _looks_like_secret_segment(segment: str) -> bool:
+    """路径段是否像密钥；标识符段（内容寻址 id、UUID）不算。"""
+    if _looks_like_path_identifier(segment):
+        return False
+    return _looks_like_secret(segment)
+
+
+def _looks_like_path_identifier(segment: str) -> bool:
+    """路径段是否更像标识符而不是密钥：纯 hex（sha256 / 32 位目录名等）或 UUID。
+
+    纯 hex 的熵上限只有 4.0，本就进不了熵检测；这里显式保留意图，并补上带连字符
+    的 UUID（字符集含 `-`，不再满足"整串是 hex"）。两者都是常见的内容寻址 / 资源
+    id，出现在路径段里应原样保留。
+    """
+    if set(segment) <= _HEX_CHARS:
+        return True
+    return _UUID_RE.fullmatch(segment) is not None
+
+
 def _looks_like_filesystem_path(token: str) -> bool:
     """候选是否更像文件系统路径，而不是密钥。
 
@@ -294,7 +341,11 @@ def _looks_like_filesystem_path(token: str) -> bool:
 
     只含单个 `/` 的候选**不**在此列：那仍可能是夹了一个 `/` 的标准 base64 密钥，
     照常走熵检测。Windows 盘符路径里的 `\\` / `:` 不在候选字符类中，正则会在那里
-    断开；`C:/Users/...` 的 ``/Users/...`` 部分同样按绝对路径排除。
+    断开；`C:/Users/...` 的 ``/Users/...`` 部分同样按绝对路径处理。
+
+    注意：这里只回答"整串像不像路径"，**不是**"整串放过"。`_entropy_sub` 命中该
+    判定后改走 `_redact_path_segments` 逐段打码，避免 `/api/keys/<base64>` 这类
+    嵌在路径中间的无前缀密钥整段漏出。
     """
     return token.startswith("/") and token.count("/") >= 2
 
