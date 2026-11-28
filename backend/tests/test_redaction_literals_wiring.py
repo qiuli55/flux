@@ -604,10 +604,22 @@ def test_group_message_projection_redacts_configured_literal(
     """群聊消息 HTTP 投影与任务消息同口径打码（路由已下线，直接验证投影函数）。"""
     from flux.api.v1.groups import _message_dict
 
-    message = SimpleNamespace(to_dict=lambda: {"content": f"口令 {LITERAL}", "kind": "text"})
+    message = SimpleNamespace(
+        to_dict=lambda: {
+            "content": f"口令 {LITERAL}",
+            "author_name": f"Bot-{LITERAL}",
+            "kind": "text",
+            "payload": {"tool": {"output": f"stdout: {LITERAL}"}},
+        }
+    )
     data = _message_dict(SimpleNamespace(settings=literal_settings), message)
     assert LITERAL not in data["content"]
     assert PLACEHOLDER in data["content"]
+    # 整份投影都打码：author_name 与嵌套 payload 同样是下发副本。
+    assert LITERAL not in data["author_name"]
+    assert PLACEHOLDER in data["author_name"]
+    assert LITERAL not in json.dumps(data["payload"], ensure_ascii=False)
+    assert PLACEHOLDER in json.dumps(data["payload"], ensure_ascii=False)
 
 
 # --- 第四批：先打码再截断（字面量跨边界） ---
@@ -948,6 +960,122 @@ async def test_approval_and_expiry_stream_projections_redact_configured_literal(
         await container.dispose()
 
 
+async def test_approval_bus_events_redact_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """EventBus 上的审批事件是订阅者投影：meta 不得带明文，库中决策记录仍是原文。"""
+    from flux.core.task_engine.approvals import _expire, raise_approval
+
+    container = Container(literal_settings)
+    received: list[tuple[str, dict[str, object]]] = []
+
+    def handler(event: str, payload: dict[str, object]) -> None:
+        received.append((event, payload))
+
+    container.bus.subscribe(Events.APPROVAL_REQUESTED, handler)
+    container.bus.subscribe(Events.APPROVAL_RESOLVED, handler)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="审批总线投影用例",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        record = await raise_approval(
+            container,
+            task_id=task.id,
+            run_id="run-approval-bus",
+            kind="high_risk_command",
+            title=f"是否允许执行 {LITERAL}",
+            detail=f"命令：rm -rf {LITERAL}",
+            meta={"command": f"rm -rf {LITERAL}", "rule": "rm -rf"},
+        )
+        await _expire(
+            container,
+            task_id=task.id,
+            decision_id=record["id"],
+            run_id="run-approval-bus",
+        )
+
+        assert [event for event, _payload in received] == [
+            Events.APPROVAL_REQUESTED,
+            Events.APPROVAL_RESOLVED,
+        ]
+        requested = received[0][1]
+        for event, payload in received:
+            body = json.dumps(payload, ensure_ascii=False)
+            assert LITERAL not in body, event
+        # 审批请求里的 meta.command 走统一占位，订阅者拿不到明文命令。
+        requested_meta = json.dumps(requested.get("meta"), ensure_ascii=False)
+        assert PLACEHOLDER in requested_meta
+        assert str(requested.get("run_id")) == "run-approval-bus"
+
+        # 内部决策记录仍是原文：打码只发生在总线投影上。
+        stored = await container.task_repo.get(task.id)
+        stored_body = json.dumps(stored.decisions, ensure_ascii=False)
+        assert LITERAL in stored_body
+        assert "rm -rf " + LITERAL in stored_body
+    finally:
+        await container.dispose()
+
+
+async def test_supervisor_conversation_tools_redact_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """Supervisor 的对话工具把任务 / 消息交给模型前必须打码，库里仍是原文。"""
+    from flux.core.mcp.tools.supervisor_tools import (
+        assistant_conversation,
+        assistant_conversations,
+    )
+
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description=f"对话标题 {LITERAL}",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await container.task_repo.add_messages(
+            task.id,
+            [
+                MessageDraft(
+                    role="assistant",
+                    kind="text",
+                    content=f"口令是 {LITERAL}",
+                    payload={"tool": {"output": f"stdout: {LITERAL}"}},
+                )
+            ],
+        )
+        ctx = ToolContext(
+            container=container,
+            identity=_identity(),
+            tool_name="assistant.conversation",
+        )
+
+        detail = await assistant_conversation(ctx, {"task_id": str(task.id)})
+        detail_body = json.dumps(detail, ensure_ascii=False)
+        assert LITERAL not in detail_body
+        assert PLACEHOLDER in detail_body
+        for message in detail["messages"]:
+            assert LITERAL not in json.dumps(message, ensure_ascii=False)
+
+        listing = await assistant_conversations(ctx, {"include_assistant": True})
+        listing_body = json.dumps(listing, ensure_ascii=False)
+        assert LITERAL not in listing_body
+        assert PLACEHOLDER in listing_body
+
+        # 存储语义未变：库里任务描述与消息正文仍是原文。
+        stored = await container.task_repo.get(task.id)
+        assert stored.description == f"对话标题 {LITERAL}"
+        messages, _ = await container.task_repo.list_messages(task.id)
+        assert messages[0].content == f"口令是 {LITERAL}"
+    finally:
+        await container.dispose()
+
+
 async def test_plan_card_stream_projection_redacts_configured_literal(
     literal_settings: Settings,
     db_schema: None,
@@ -1151,3 +1279,59 @@ def test_task_stream_flush_releases_safe_deferred_tail(
         literal_settings, monkeypatch, ["hello", " world"]
     )
     assert "".join(deltas) == "hello world"
+
+
+def test_streaming_delta_normal_flush_drops_incomplete_secret_prefixes(
+    literal_settings: Settings,
+) -> None:
+    """正常结束也不能把字面量 / 令牌的未完成前缀当正文放：普通尾巴除外。"""
+    from flux.api.v1.tasks import _StreamingDeltaRedactor
+
+    container = Container(literal_settings)
+    try:
+        prefix = LITERAL[:11]
+        literal_tail = _StreamingDeltaRedactor(container)
+        assert literal_tail.feed(f"安全前缀 {prefix}") == "安全前缀 "
+        assert literal_tail.flush() == ""
+
+        # 正常 flush 也不放 sk- / JWT / Bearer / 未闭合 PEM 的未完成前缀。
+        for sneak in (
+            "sk-",
+            "sk-proj-abc",
+            "eyJhbGciOi",
+            "Bearer abc123",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE",
+        ):
+            redactor = _StreamingDeltaRedactor(container)
+            redactor.feed(sneak)
+            leaked = redactor.flush()
+            assert leaked == "", sneak
+            for fragment in ("sk-", "sk-proj", "eyJ", "Bearer", "BEGIN RSA"):
+                assert fragment not in leaked
+
+        # 对照：普通完整短句正常结束仍应完整流出。
+        normal = _StreamingDeltaRedactor(container)
+        assert normal.feed("hello") == ""
+        assert normal.feed(" world") == "hello "
+        assert normal.flush() == "world"
+    finally:
+        asyncio.run(container.dispose())
+
+
+def test_task_stream_normal_flush_drops_incomplete_literal_prefix(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真实 POST 正常结束：停在字面量前半段时，delta 帧与拼接文本都不放残片。"""
+    prefix = LITERAL[:11]
+    deltas, _events, _body = _drive_streamed_reply(
+        literal_settings, monkeypatch, [f"好的，口令是 {prefix}"]
+    )
+    joined = "".join(deltas)
+    assert LITERAL not in joined
+    assert prefix not in joined
+    assert LITERAL[8:] not in joined
+    for frame in deltas:
+        assert prefix not in frame
+        assert LITERAL[8:] not in frame
+    # 前半段之前的安全正文仍完整流出。
+    assert joined.strip() == "好的，口令是"

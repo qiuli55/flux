@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from flux.core.context.projection import redact_text, redacted_message, task_projection
 from flux.core.mcp.tools.base import ToolContext, ToolSpec, optional_str, reject_unknown
 from flux.enums import Capability, TaskOrigin, TaskStatus
 from flux.errors import ValidationError
@@ -70,7 +71,8 @@ async def assistant_conversations(ctx: ToolContext, params: dict[str, Any]) -> d
         "conversations": [
             {
                 "id": str(item.task.id),
-                "description": _clip(item.task.description),
+                # 列表项同样会交给模型：先对完整原文打码，再截摘录，避免跨截断边界漏片段。
+                "description": _redacted_clip(ctx.container, item.task.description),
                 "status": item.task.status,
                 "origin": item.task.origin or "chat",
                 "agent_id": (str(item.task.agent_id) if item.task.agent_id is not None else None),
@@ -81,7 +83,7 @@ async def assistant_conversations(ctx: ToolContext, params: dict[str, Any]) -> d
                 "created_at": _iso(item.task.created_at),
                 "message_count": item.message_count,
                 "last_message_at": _iso(item.last_message_at),
-                "last_message": _clip(item.last_message),
+                "last_message": _redacted_clip(ctx.container, item.last_message),
             }
             for item in summaries
         ],
@@ -98,9 +100,11 @@ async def assistant_conversation(ctx: ToolContext, params: dict[str, Any]) -> di
         limit=_limit(params),
         before=_optional_int(params.get("before"), "before"),
     )
+    # 返回给模型的是投影副本：任务 / 消息里的正文、决策记录与 payload 一并打码，
+    # 库里仍是原文（模型要细节，但不能看到配置里的密钥字面量）。
     return {
-        "task": task.to_dict(),
-        "messages": [message.to_dict() for message in messages],
+        "task": task_projection(ctx.container, task),
+        "messages": [redacted_message(ctx.container, message) for message in messages],
         "has_more": has_more,
         "count": len(messages),
     }
@@ -149,6 +153,13 @@ def _clip(text: str | None) -> str | None:
     if len(text) <= _CLIP:
         return text
     return text[:_CLIP].rstrip() + "…"
+
+
+def _redacted_clip(container: Any, text: str | None) -> str | None:
+    """先对完整原文打码再截摘录：跨过截断边界的字面量残片不会漏给模型。"""
+    if text is None:
+        return None
+    return _clip(redact_text(container, text))
 
 
 def _iso(value: Any) -> str | None:

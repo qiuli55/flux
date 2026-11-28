@@ -172,6 +172,73 @@ def _safe_cut(raw: str, literals: tuple[str, ...]) -> int:
     return max(0, cut)
 
 
+def _incomplete_literal_start(raw: str, literals: tuple[str, ...]) -> int | None:
+    """``raw`` 末尾若停在某个配置字面量的**未完成前缀**上，返回最早的前缀起点。"""
+    starts: list[int] = []
+    for literal in literals:
+        if not literal:
+            continue
+        limit = min(len(literal) - 1, len(raw))
+        for size in range(limit, 0, -1):
+            if raw.endswith(literal[:size]):
+                starts.append(len(raw) - size)
+                break
+    return min(starts) if starts else None
+
+
+def _looks_like_incomplete_token(token: str) -> bool:
+    """``token`` 是否是 `sk-` 密钥 / JWT 头这类"再长一点就是密钥"的未完成前缀。"""
+    if not token:
+        return False
+    # `sk-` / `sk-proj-…`：前缀本身已经说明它是密钥；`sk` 可能是 `sk-` 的前半段。
+    if token.startswith("sk-") or token == "sk":
+        return True
+    # JWT 头是 base64url 的 `{"`，解出来固定以 `eyJ` 开头。
+    return bool(token.startswith("eyJ"))
+
+
+def _incomplete_bearer_token(token: str) -> bool:
+    """`Bearer ` 之后这段是否像"还没写完"的令牌，而不是普通英文词（如 ``tokens``）。"""
+    if not token:
+        return True
+    if _looks_like_incomplete_token(token):
+        return True
+    if len(token) >= 16:
+        return True
+    return any(char.isdigit() or char.isupper() for char in token) or any(
+        char in "._-+/=" for char in token
+    )
+
+
+def _incomplete_secret_start(raw: str, literals: tuple[str, ...]) -> int | None:
+    """正常结束（flush）时仍不能当正文放出的未完成密钥起点；全部安全时返回 ``None``。
+
+    与流式暂缓不同：普通词尾（``world``）虽然也可能像令牌尾，但它是完整正文，正常结束
+    就该发出。这里只挑出**确实不完整**的密钥形态：配置字面量前缀、`sk-` / JWT /
+    `Bearer` / 未闭合 PEM。命中时从该起点起丢弃，之前的正文照常放出。
+    """
+    candidates: list[int] = []
+    literal_start = _incomplete_literal_start(raw, literals)
+    if literal_start is not None:
+        candidates.append(literal_start)
+
+    tail = _STREAM_PENDING_TAIL_RE.search(raw)
+    if tail is not None and _looks_like_incomplete_token(tail.group(0)):
+        candidates.append(tail.start())
+
+    bearer = raw.rfind("Bearer")
+    if bearer != -1 and _STREAM_BEARER_TAIL_RE.fullmatch(raw[bearer + len("Bearer") :]):
+        token = raw[bearer + len("Bearer") :].strip()
+        if _incomplete_bearer_token(token):
+            candidates.append(bearer)
+
+    begin = raw.rfind(_PEM_BEGIN)
+    if begin != -1 and raw.find(_PEM_END, begin) == -1:
+        candidates.append(begin)
+
+    return min(candidates) if candidates else None
+
+
 class _StreamingDeltaRedactor:
     """跨帧 `assistant_delta` 打码：对累计原文打码，只放出已确认安全的前缀。
 
@@ -199,11 +266,16 @@ class _StreamingDeltaRedactor:
         return self._release(final=False)
 
     def flush(self, *, abort: bool = False) -> str:
-        """本轮结束：正常完成放出全部暂缓文本；中途失败只放已确认安全的前缀。
+        """本轮结束：正常完成放出暂缓文本；中途失败只放已确认安全的前缀。
 
         异常 / 取消时不能按"正常结束"处理：尚未放出的尾串可能只是某个字面量或令牌的
         前半截（如 ``CUSTOM_LITE``），精确清单命中不了，整段放出就会把前缀残片漏给
         客户端。这里退到安全切点后直接丢弃剩余尾串——宁可少发一段，也不放未完成密钥。
+
+        正常结束同样不能整段照发：回复如果恰好停在字面量 / 令牌的前半截，精确清单
+        命中不了，flush 就会把残片当正文漏出。但也不能一律按 abort 截断——被暂缓的
+        普通词尾（``hello`` + `` world`` 的 ``world``）是安全正文，仍要完整发出。故
+        ``_final_cut`` 只丢弃确实不完整的密钥形态，其余照常打码后放出。
         """
         if abort:
             return self._abort()
@@ -221,12 +293,20 @@ class _StreamingDeltaRedactor:
         return text
 
     def _release(self, *, final: bool) -> str:
-        cut = len(self._raw) if final else _safe_cut(self._raw, self._literals)
+        cut = self._final_cut() if final else _safe_cut(self._raw, self._literals)
         if cut <= self._released:
             return ""
         segment = self._raw[self._released : cut]
         self._released = cut
         return redact_text(self._container, segment)
+
+    def _final_cut(self) -> int:
+        """正常结束的切点：丢开未完成的密钥尾串，其余跟着打码一起放出。"""
+        suspicious = _incomplete_secret_start(self._raw, self._literals)
+        if suspicious is None:
+            return len(self._raw)
+        # 可疑尾串之前仍可能以另一个未完成前缀结尾，继续退到真正的安全切点。
+        return _safe_cut(self._raw[:suspicious], self._literals)
 
 
 async def _record_attachments(
