@@ -219,9 +219,14 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) :
         }.toString(),
     )
 
-    /** 用当前 access token 换一次性网页登录地址（内置浏览器打开）。 */
+    /**
+     * 用当前 access token 换一次性网页登录地址（内置浏览器打开）。
+     *
+     * 账号云约定是 `POST /api/auth/web-session`（需 Bearer），不是 GET；
+     * 空 body 用 `{}` 满足 JSON 请求体校验。
+     */
     suspend fun webSession(accessToken: String): String {
-        val text = getJson("api/auth/web-session", accessToken)
+        val text = postJson("api/auth/web-session", "{}", accessToken)
         val dto = try {
             json.decodeFromString<WebSessionResponse>(text)
         } catch (_: Exception) {
@@ -278,13 +283,19 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) :
         )
     }
 
-    private suspend fun postJson(path: String, body: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
+    private suspend fun postJson(
+        path: String,
+        body: String,
+        accessToken: String = "",
+    ): String = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
             .url("${baseUrl.trimEnd('/')}/$path")
             .header("Accept", "application/json")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-        execute(request)
+        if (accessToken.isNotBlank()) {
+            builder.header("Authorization", "Bearer $accessToken")
+        }
+        execute(builder.build())
     }
 
     private suspend fun getJson(path: String, accessToken: String = ""): String =
