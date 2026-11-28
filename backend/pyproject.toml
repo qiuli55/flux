@@ -23,6 +23,7 @@ dependencies = [
     "zstandard>=0.23",
     # 读取用户 ~/.codex/config.toml 的 MCP 声明：3.11+ 用标准库 tomllib，3.10 需 tomli
     "tomli>=2.0; python_version < '3.11'",
+    "qrcode>=8.0",
 ]
 
 [project.optional-dependencies]

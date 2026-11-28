@@ -22,6 +22,8 @@ PyYAML==6.0.3
 # 上下文原文库的存储层压缩（FLUX_CONTEXT_MECHANISM §3.5），完全无损。
 # 缺失时 flux.core.context.store 自动退到标准库 lzma（同样无损），故不是硬依赖。
 zstandard>=0.23
+# 个人微信绑定二维码矩阵：服务端生成 0/1 矩阵，三端直接绘制，不依赖图片组件。
+qrcode==8.2
 
 # --- 测试与开发 ---
 pytest==9.1.1

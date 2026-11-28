@@ -343,6 +343,37 @@ class Settings(BaseSettings):
     supervisor_wechat_history_limit: int = 12
     supervisor_wechat_knowledge_limit: int = 6
 
+    # --- 连接器 · 飞书 IM（官方应用机器人，单聊）---
+    # 与上面的 Supervisor 回调是两套独立能力：连接器走飞书官方长连接（服务端主动
+    # 出站），不依赖公网入站端口，也不会把消息落成 Supervisor trigger。
+    # 凭据只从服务端环境变量读取（FLUX_FEISHU_IM_APP_ID / ..._APP_SECRET），
+    # 不写日志、不进 API 响应。留空 = 连接器显示「未配置」并给出下一步说明。
+    feishu_im_app_id: str | None = None
+    feishu_im_app_secret: str | None = None
+    feishu_im_api_base: str = "https://open.feishu.cn"
+    # 关闭后不建立飞书长连接（本地测试 / 只想用微信时用）。
+    feishu_im_enabled: bool = True
+
+    # --- 连接器 · 个人微信（腾讯官方 iLink / 微信 ClawBot）---
+    # Flux 自己在常驻服务端实现官方协议：扫码绑定、getupdates 长轮询、sendmessage。
+    # 不依赖 OpenClaw 运行时，也不为用户打开任何公网入站端口。
+    wechat_im_enabled: bool = True
+    wechat_im_api_base: str = "https://ilinkai.weixin.qq.com"
+    # iLink bot_type：官方当前使用 3。
+    wechat_im_bot_type: int = 3
+    # getupdates 单次长轮询超时（服务端会返回建议值，这里只是首轮默认值）。
+    wechat_im_poll_timeout_seconds: float = 35.0
+    # 二维码绑定状态长轮询超时（官方客户端 35 秒）。
+    wechat_im_qr_poll_timeout_seconds: float = 35.0
+    # 绑定二维码有效期（官方常见约 5 分钟；过期会按官方规则自动换码）。
+    wechat_im_qr_ttl_seconds: int = 300
+    # 观测标识：官方允许自定义 bot_agent（仅日志/监控归因，不参与鉴权路由）。
+    # channel_version 必须是三段十进制整数；Flux 用自己的产品版本，不冒充插件版本。
+    wechat_im_channel_version: str = "0.9.19"
+    wechat_im_bot_agent: str = "Flux/0.9.19"
+    # 单个连接器只处理这一条 1:1 会话，状态与游标落盘位置。
+    im_connectors_file: str | None = None
+
     # --- 密钥库（API Key Vault）---
     # 加密 API Key 的主密钥；留空 = 首次启动时在 key_vault_key_file 自动生成并 0600 落盘。
     # 主密钥丢失后已存 key 无法解密，只能重新录入（接口不会返回乱码明文）。
@@ -487,6 +518,15 @@ class Settings(BaseSettings):
             path = Path(raw).expanduser()
             return path if path.is_absolute() else (REPO_ROOT / path)
         return Path.home() / ".flux" / "mcp-connectors.json"
+
+    @property
+    def im_connectors_path(self) -> Path:
+        """飞书 / 个人微信连接器凭据与游标；未配置时为 ~/.flux/im-connectors.json。"""
+        raw = (self.im_connectors_file or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else (REPO_ROOT / path)
+        return Path.home() / ".flux" / "im-connectors.json"
 
     def agent_limits(self, runtime_id: str):
         """取某个 runtime 的生效执行时限（能力表默认值 + 本类覆盖项）。

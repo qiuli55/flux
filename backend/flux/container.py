@@ -54,6 +54,7 @@ from flux.core.ide_completion import (
     CompletionService,
     CompletionStatsStore,
 )
+from flux.core.im import ImConnectorService
 from flux.core.key_vault.service import KeyVaultService
 from flux.core.knowledge import (
     EmbeddingClient,
@@ -211,6 +212,8 @@ class Container:
     wechat_sessions: WechatSessionRepository = field(init=False)
     #: 微信入站桥：OpenClaw / 微信 ClawBot 只做传输，Flux 负责理解与回复
     supervisor_wechat: WechatBridge = field(init=False)
+    #: 连接器 · 飞书官方长连接 + 个人微信官方 iLink（均跑在 flux-server 常驻进程）
+    im_connectors: ImConnectorService = field(init=False)
     #: 助理知识库（RAG）：对话 / docs / 项目记忆的增量索引与混合检索
     knowledge_enabled: bool = field(init=False)
     knowledge_repo: KnowledgeRepository = field(init=False)
@@ -594,6 +597,17 @@ class Container:
             allow_from=self.settings.wechat_allow_from,
             source_key=self.settings.supervisor_wechat_source_key,
         )
+        # 连接器里的 IM 能力：飞书官方应用机器人（长连接）+ 个人微信官方 iLink
+        # （getupdates 长轮询）。与上面的 Supervisor 回调互不依赖；未配置/未绑定时
+        # 构造与启动都不产生网络请求。
+        self.im_connectors = ImConnectorService(
+            self.settings,
+            router=self.router,
+            tasks=self.task_repo,
+            sessions=self.wechat_sessions,
+            knowledge=self.knowledge if self.knowledge_enabled else None,
+        )
+        self.im_connectors.attach(self.bus)
 
     def set_workspace_root(self, root: str) -> str:
         """Switch the live IDE workspace root for all filesystem-bound services."""
@@ -657,6 +671,8 @@ class Container:
         from flux.core.agent_runtime.runtimes.cli import shutdown_cli_process_pool
 
         await shutdown_cli_process_pool()
+        # 连接器 IM：先停长连接 / 长轮询，再释放各自的 httpx 连接池
+        await self.im_connectors.aclose()
         # 出站通道持有 httpx 连接池，退出时一并释放
         for channel in self.supervisor_channels.values():
             await channel.aclose()

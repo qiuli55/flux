@@ -92,6 +92,10 @@ def settings(tmp_path) -> Settings:
         cursor_account_home=str(tmp_path / "cursor-account"),
         antigravity_account_home=str(tmp_path / "antigravity-account"),
         mcp_connectors_file=str(tmp_path / "mcp-connectors.json"),
+        # IM 连接器状态同样落临时目录：绝不读写开发机 ~/.flux/im-connectors.json
+        im_connectors_file=str(tmp_path / "im-connectors.json"),
+        feishu_im_app_id=None,
+        feishu_im_app_secret=None,
         # 附件默认落到临时目录：测试绝不能往真实 /opt/flux/uploads 写文件
         uploads_dir=str(tmp_path / "uploads"),
         cloud_secret_key=None,

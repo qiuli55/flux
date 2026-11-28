@@ -151,6 +151,9 @@ class TaskRunBridge:
         self._billing: Any | None = None
         #: 额度快照协程的强引用
         self._snapshot_jobs: set[asyncio.Task[Any]] = set()
+        #: 任务终态的对外事件（可选）：连接器 IM 通知等订阅者按 TASK_COMPLETED /
+        #: TASK_FAILED 消费；没 attach 总线时行为与之前完全一致。
+        self._bus: EventBus | None = None
 
     def set_billing(self, billing: Any | None) -> None:
         """注入计费服务：容器在 BillingService 装配完成后调用。"""
@@ -167,6 +170,7 @@ class TaskRunBridge:
         self._switch_handler = handler
 
     def attach(self, bus: EventBus) -> None:
+        self._bus = bus
         for event in _STATUS_BY_EVENT:
             bus.subscribe(event, self._on_run_settled)
 
@@ -270,6 +274,7 @@ class TaskRunBridge:
         await self._tasks.set_status(task.id, status)
         # 失败链已收尾：下一轮用户再发起时重新获得一次自动重试机会
         self._retry_budget.pop(str(task.id), None)
+        await self._publish_terminal(task, status)
         message = (
             await self._tasks.add_messages(
                 task.id,
@@ -307,6 +312,28 @@ class TaskRunBridge:
         await self._write_memory_card(task, run_id, status=status, body=body)
         # 无感切换：本轮已真实收尾，排队中的 Agent 切换此刻生效并生成交接卡
         await self._apply_pending_switch(task, run_id, status)
+
+    async def _publish_terminal(self, task: Any, status: TaskStatus) -> None:
+        """发布任务终态事件（仅 completed / failed），供连接器 IM 通知消费。
+
+        事件只是旁路：没有 attach 总线、或订阅者失败，都不影响任务收尾。
+        """
+        if self._bus is None:
+            return
+        if status is TaskStatus.COMPLETED:
+            event = Events.TASK_COMPLETED
+        elif status is TaskStatus.FAILED:
+            event = Events.TASK_FAILED
+        else:
+            return
+        await self._bus.publish(
+            event,
+            {
+                "task_id": str(task.id),
+                "status": str(status),
+                "description": str(getattr(task, "description", "") or ""),
+            },
+        )
 
     async def _apply_pending_switch(
         self, task: Any, run_id: str | None, status: TaskStatus
