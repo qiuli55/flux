@@ -61,9 +61,10 @@ async def update_key(
 async def probe_key(
     key_id: str, container: Container = Depends(get_container)
 ) -> dict[str, object]:
-    """用该 key 登记的模型与端点真实发起一次最小请求，校验是否可用。
+    """对该 key 登记的每个模型发起一次最小请求，校验是否可用。
 
-    保存动作本身不触网；由调用方在保存后显式触发，结果只回状态与耗时，不回密钥。
+    保存动作本身不触网；由调用方在保存后显式触发。响应按模型列出可用 / 不通与
+    稳定原因码，并把结果写回 `model_connectivity`；只回状态与耗时，绝不回密钥。
     """
     result = await probe_vault_key(container.key_vault, key_id)
     return ok(result)

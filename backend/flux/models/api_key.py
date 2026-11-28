@@ -32,6 +32,10 @@ class ApiKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     key_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     key_hint: Mapped[str] = mapped_column(String(16), default="", server_default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    #: 每个模型最近一次连通性探测结果（model -> status/reason_code/reason/checked_at）
+    model_connectivity: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, server_default="{}", nullable=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """对外表示**不含**密文：密钥库列表只回元数据与掩码。"""
@@ -44,6 +48,7 @@ class ApiKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "models": list(self.models or []),
             "key_hint": self.key_hint,
             "enabled": self.enabled,
+            "model_connectivity": dict(self.model_connectivity or {}),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

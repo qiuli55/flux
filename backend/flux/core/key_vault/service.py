@@ -16,6 +16,7 @@ import secrets
 import threading
 import uuid
 from collections.abc import Iterable
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -200,6 +201,7 @@ class KeyVaultService:
             row = await session.get(ApiKey, key_uuid)
             if row is None:
                 raise NotFoundError(f"密钥 {key_id} 不存在", details={"key_id": str(key_id)})
+            previous_config = (row.provider, row.base_url, row.wire_api, row.key_ciphertext)
             if name is not _UNSET:
                 row.name = _require_name(str(name))
             if provider is not _UNSET:
@@ -218,6 +220,12 @@ class KeyVaultService:
                 row.enabled = bool(enabled)
             # 兼容端点必须给出 base_url；改完 provider 后统一校验
             row.base_url = _normalize_base_url(row.provider, row.base_url)
+            row.model_connectivity = _refreshed_connectivity(
+                row.model_connectivity,
+                previous_config=previous_config,
+                current_config=(row.provider, row.base_url, row.wire_api, row.key_ciphertext),
+                models=row.models or [],
+            )
             try:
                 await session.commit()
             except IntegrityError as exc:
@@ -233,6 +241,39 @@ class KeyVaultService:
                 row.provider,
                 row.enabled,
             )
+            return row
+
+    async def record_connectivity(
+        self,
+        key_id: str | uuid.UUID,
+        results: Iterable[dict[str, Any]],
+    ) -> ApiKey:
+        """把一次按模型探测的结果写回 `model_connectivity`。
+
+        只覆盖本次真正探测过的模型；未检查过的模型不写入（不假装可用/不可用）。
+        写状态失败不应影响探测响应，但仍尽量落库，方便选择器持续显示。
+        """
+        key_uuid = _parse_uuid(key_id)
+        snapshot: dict[str, Any] = {}
+        for item in results:
+            model = str(item.get("model") or "")
+            if not model:
+                continue
+            snapshot[model] = {
+                "status": "available" if item.get("ok") else "unreachable",
+                "ok": bool(item.get("ok")),
+                "reason_code": str(item.get("reason_code") or ""),
+                "reason": str(item.get("reason") or ""),
+                "latency_ms": int(item.get("latency_ms") or 0),
+                "checked_at": str(item.get("checked_at") or ""),
+            }
+        async with self._session_factory() as session:
+            row = await session.get(ApiKey, key_uuid)
+            if row is None:
+                raise NotFoundError(f"密钥 {key_id} 不存在", details={"key_id": str(key_id)})
+            row.model_connectivity = snapshot
+            await session.commit()
+            await session.refresh(row)
             return row
 
     async def delete(self, key_id: str | uuid.UUID) -> None:
@@ -277,6 +318,10 @@ class KeyVaultService:
         row = await self.get(key_id)
         if not row.enabled:
             raise BadRequestError(f"密钥 {row.name!r} 已停用", details={"key_id": str(row.id)})
+        return await self._channel(row, model)
+
+    async def channel_for_model(self, row: ApiKey, model: str) -> ModelChannel:
+        """用已读取的条目解析通道（探测按模型并发时避免每个模型再查一次库）。"""
         return await self._channel(row, model)
 
     async def _channel(self, row: ApiKey, model: str) -> ModelChannel:
@@ -369,7 +414,27 @@ def _entry_of(row: ApiKey) -> KeyEntry:
         models=tuple(str(item) for item in (row.models or [])),
         key_hint=row.key_hint,
         enabled=bool(row.enabled),
+        model_connectivity=dict(row.model_connectivity or {}),
     )
+
+
+def _refreshed_connectivity(
+    existing: dict[str, Any] | None,
+    *,
+    previous_config: tuple[str, str, str, bytes],
+    current_config: tuple[str, str, str, bytes],
+    models: Iterable[object],
+) -> dict[str, Any]:
+    """配置改动后旧探测结论不再可信；模型被移除时同步丢掉它的状态。
+
+    - provider / base_url / wire_api / API Key 任一变化 → 全部清空，等下一次探测；
+    - 只改名称 / 启用开关 / 模型列表 → 保留仍登记模型的状态，不把没检查过的模型当作可用。
+    """
+    snapshot = dict(existing or {})
+    if previous_config != current_config:
+        return {}
+    allowed = {str(item) for item in models}
+    return {key: value for key, value in snapshot.items() if key in allowed}
 
 
 def _parse_uuid(value: str | uuid.UUID) -> uuid.UUID:

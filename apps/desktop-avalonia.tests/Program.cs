@@ -27,6 +27,7 @@ internal static class Program
         CheckTotals();
         CheckDesignOps();
         CheckBrowserProxy();
+        CheckModelConnectivity();
 
         if (_failed == 0)
         {
@@ -209,6 +210,32 @@ internal static class Program
         Equal("空补丁报错", "AI 给的修改无法应用", emptyError);
         Equal("越界画板不应用", 0, DesignOps.ApplyOps(design, 9, new JsonArray(), out var screenError));
         Equal("越界画板报错", "当前画板不存在", screenError);
+    }
+
+    private static void CheckModelConnectivity()
+    {
+        var connectivity = new Dictionary<string, ModelConnectivity>
+        {
+            ["good"] = new("available", true, "", "", 12, "2026-11-28T00:00:00Z"),
+            ["bad"] = new(
+                "unreachable",
+                false,
+                "model_unavailable",
+                "模型名不存在或不可用",
+                0,
+                "2026-11-28T00:00:00Z"),
+        };
+        var entry = new ApiKeyEntry(
+            "k1", "DeepSeek", "deepseek", "", "", ["good", "bad"], "••••5678", true, connectivity);
+
+        Equal("可用模型不加标记", "good", entry.ModelsText.Split(" / ")[0]);
+        Equal("不通模型带短标记", "bad（不通）", entry.ModelsText.Split(" / ")[1]);
+        True("不通原因进入提示", entry.ConnectivityTip.Contains("模型名不存在或不可用"));
+        True("只有不通的模型标记", !connectivity["good"].Unreachable);
+        True("未检查过的模型不伪造状态",
+            !new ModelConnectivity("unchecked", false, "", "", 0, null).Unreachable);
+        True("密钥库模型带不通标记", new DshKeyModel("k1", "bad", "DeepSeek", "unreachable").Unreachable);
+        True("未检查的密钥库模型不标记", !new DshKeyModel("k1", "good", "DeepSeek", "unchecked").Unreachable);
     }
 
     private static void CheckBrowserProxy()

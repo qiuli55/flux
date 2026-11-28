@@ -5,6 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
+import top.qiuli55.flux.mobile.data.KeyProbeModel
+import top.qiuli55.flux.mobile.data.KeyProbeResult
 
 /**
  * 输入栏两个小窗的副行文案。
@@ -158,6 +160,51 @@ class V2ComposerMenuTest {
         assertEquals("当前在用 · 密钥库", modelMenuSubtitle(vaultA, vaultA.model, vaultA.keyId))
         assertNull(modelMenuSubtitle(nativeA, vaultA.model, vaultA.keyId))
         assertNull(modelMenuSubtitle(optionB.models[1], nativeA.model, null))
+    }
+
+    @Test
+    fun `unreachable model shows a short mark and reason in the menu`() {
+        val bad = V2ModelOption(
+            model = "bad",
+            label = "bad · 不通 · DeepSeek",
+            keyId = "k1",
+            status = "unreachable",
+            reasonCode = "model_unavailable",
+            reason = "模型名不存在或不可用",
+        )
+        assertEquals("不通 · 模型名不存在或不可用", modelMenuSubtitle(bad, "other", null))
+        assertEquals(
+            "不通 · 模型名不存在或不可用 · 当前在用",
+            modelMenuSubtitle(bad, bad.model, bad.keyId),
+        )
+        // 原因缺失时也不能显示空文案
+        assertEquals("不通 · 其他失败", modelMenuSubtitle(bad.copy(reason = ""), "other", null))
+    }
+
+    @Test
+    fun `unchecked model is not marked unreachable`() {
+        val unchecked = V2ModelOption("m", keyId = "k1", status = "unchecked")
+        assertFalse(unchecked.unreachable)
+        assertEquals("密钥库", modelMenuSubtitle(unchecked, "other", null))
+        assertFalse(V2ModelOption("native").unreachable)
+    }
+
+    @Test
+    fun `probe summary and row reason keep failures visible`() {
+        val ok = KeyProbeModel(model = "a", ok = true, status = "available", latencyMs = 12)
+        val bad = KeyProbeModel(
+            model = "b",
+            ok = false,
+            status = "unreachable",
+            reasonCode = "model_unavailable",
+            reason = "模型名不存在或不可用",
+        )
+
+        assertEquals("全部 1 个模型连通正常", keyProbeSummary(KeyProbeResult(ok = true, models = listOf(ok))))
+        assertEquals("2 个模型中 1 个不通", keyProbeSummary(KeyProbeResult(ok = false, models = listOf(ok, bad))))
+        assertEquals("12 ms", keyProbeReasonText(ok))
+        assertEquals("模型名不存在或不可用", keyProbeReasonText(bad))
+        assertEquals("其他失败", keyProbeReasonText(bad.copy(reason = "")))
     }
 
     @Test

@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json;
 
 namespace Flux.Desktop.Models;
@@ -118,7 +119,17 @@ public sealed record DshRun(
     string? Model);
 
 /// <summary>密钥库里可选的模型（GET /dsh/models 的 key_models 元素）。</summary>
-public sealed record DshKeyModel(string KeyId, string Model, string? KeyName);
+public sealed record DshKeyModel(
+    string KeyId,
+    string Model,
+    string? KeyName,
+    string? Status = null,
+    string? ReasonCode = null,
+    string? Reason = null)
+{
+    /// <summary>只有确认过失败的模型才标记「不通」；未检查过的不伪造状态。</summary>
+    public bool Unreachable => string.Equals(Status, "unreachable", StringComparison.Ordinal);
+}
 
 /// <summary>GET /dsh/models 的 data。</summary>
 public sealed record DshModelsResponse(string[] Models, string? Model, DshKeyModel[]? KeyModels);

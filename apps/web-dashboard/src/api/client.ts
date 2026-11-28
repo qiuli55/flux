@@ -14,6 +14,7 @@ import { API_BASE } from "./base";
 import type {
   AgentCreateRequest, AgentHandle, ApplyBatch, ApiKeyCreateRequest, ApiKeyEntry,
   ApiKeyUpdateRequest, BillingOverview, BillingPlan, BillingPrices, BillingRefreshResult, BillingRunUsage,
+  KeyProbeResult,
   CapabilityImportOutcome, CapabilityKind,
   CapabilityScanReport, Change,
   ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
@@ -248,6 +249,9 @@ export const api = {
     getData<ApiKeyEntry>("PATCH", `/keys/${encodeURIComponent(keyId)}`, body),
   deleteApiKey: (keyId: string) =>
     getData<{ deleted: boolean; key_id: string }>("DELETE", `/keys/${encodeURIComponent(keyId)}`),
+  /** 保存后按模型校验端点 / 密钥 / 模型 id 是否可用；结果同时会写回密钥库状态。 */
+  probeApiKey: (keyId: string) =>
+    getData<KeyProbeResult>("POST", `/keys/${encodeURIComponent(keyId)}/probe`),
   chooseDecision: (
     taskId: string,
     body: { decision_id: string; action: "choose" | "reject"; option?: string; note?: string },

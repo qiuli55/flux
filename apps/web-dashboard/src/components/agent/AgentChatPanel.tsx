@@ -13,6 +13,12 @@ import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
 import type { AgentHandle, DshRun, DshStatus } from "../../api/types";
+import {
+  isUnreachable,
+  modelOptionSuffix,
+  modelOptionTitle,
+  modelStatusReason,
+} from "../../utils/modelConnectivity";
 
 /** 对话里的一条：用户指令，或 Agent 的回执 */
 export interface AgentTurn {
@@ -39,6 +45,9 @@ interface ModelChoice {
   value: string;
   label: string;
   keyId: string | null;
+  /** 密钥库模型的最近一次探测状态；原生模型没有这项检查 */
+  status?: string;
+  reason?: string;
 }
 
 /** 这次 Run 要展示的文本：优先终态总结，其次累积的助手片段，最后才是错误原因 */
@@ -141,8 +150,10 @@ export function AgentChatPanel({
           ...data.models.map((model) => ({ value: model, label: model, keyId: null })),
           ...data.key_models.map((item) => ({
             value: `${item.key_id}::${item.model}`,
-            label: `${item.model} · ${item.key_name}`,
+            label: `${item.model}${modelOptionSuffix(item)} · ${item.key_name}`,
             keyId: item.key_id,
+            status: item.status,
+            reason: item.reason,
           })),
         ]);
       })
@@ -168,10 +179,10 @@ export function AgentChatPanel({
     }
   }, [modelChoices, selectedModel, storageKey]);
 
-  const selectedLabel = modelChoices.find((choice) => choice.value === selectedModel)?.label;
-  const selectedFromVault = Boolean(
-    modelChoices.find((choice) => choice.value === selectedModel)?.keyId,
-  );
+  const selectedChoice = modelChoices.find((choice) => choice.value === selectedModel);
+  const selectedLabel = selectedChoice?.label;
+  const selectedFromVault = Boolean(selectedChoice?.keyId);
+  const selectedUnreachable = isUnreachable(selectedChoice);
 
   /* 切换命名空间：读回该会话的对话与上次会话 id（复用即同一会话） */
   useEffect(() => {
@@ -340,10 +351,21 @@ export function AgentChatPanel({
               默认（{dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "运行时默认"}）
             </option>
             {modelChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>{choice.label}</option>
+              <option
+                key={choice.value}
+                value={choice.value}
+                title={modelOptionTitle(choice) || undefined}
+              >
+                {choice.label}
+              </option>
             ))}
           </select>
           <span className="ap-model">{selectedFromVault ? "来自密钥库" : "原生模型"}</span>
+          {selectedUnreachable ? (
+            <span className="ap-model" style={{ color: "var(--tn-danger)" }}>
+              上次检查不通：{modelStatusReason(selectedChoice)}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

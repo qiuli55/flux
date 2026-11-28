@@ -415,15 +415,21 @@
                                     </DataTemplate>
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
-                            <ComboBox Classes="select" Width="250"
-                                      ItemsSource="{Binding ModelChoices}"
-                                      SelectedItem="{Binding SelectedModel, Mode=TwoWay}">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:ModelChoice">
-                                        <TextBlock Text="{Binding Label}" FontSize="11" />
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
+                            <StackPanel Spacing="2">
+                                <ComboBox Classes="select" Width="250"
+                                          ItemsSource="{Binding ModelChoices}"
+                                          SelectedItem="{Binding SelectedModel, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ModelChoice">
+                                            <TextBlock Text="{Binding Label}" FontSize="11"
+                                                       ToolTip.Tip="{Binding IssueTooltip}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                                <TextBlock Text="{Binding SelectedModelIssue}" FontSize="10"
+                                           IsVisible="{Binding HasSelectedModelIssue}"
+                                           Foreground="{DynamicResource TnDanger}" />
+                            </StackPanel>
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                             <Button Classes="mini" Content="{Binding AutoApplyText}"

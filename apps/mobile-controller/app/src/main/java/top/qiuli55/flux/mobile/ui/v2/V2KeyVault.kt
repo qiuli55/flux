@@ -21,12 +21,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -37,6 +40,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
+import top.qiuli55.flux.mobile.data.KeyProbeModel
+import top.qiuli55.flux.mobile.data.KeyProbeResult
 
 /** 新建/修改密钥的请求草稿；keyId 为空表示新建。 */
 data class V2KeyDraft(
@@ -64,7 +69,10 @@ fun KeyVaultSheet(
     keys: List<ApiKeyEntry>,
     loading: Boolean,
     onRefresh: () -> Unit,
-    onSave: (V2KeyDraft, (error: String, notice: String) -> Unit) -> Unit,
+    onSave: (
+        V2KeyDraft,
+        (error: String, saved: ApiKeyEntry?, probe: KeyProbeResult?) -> Unit,
+    ) -> Unit,
     onToggle: (ApiKeyEntry, Boolean, (String) -> Unit) -> Unit,
     onDelete: (ApiKeyEntry, (String) -> Unit) -> Unit,
     onDismiss: () -> Unit,
@@ -82,6 +90,30 @@ fun KeyVaultSheet(
     var error by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ApiKeyEntry?>(null) }
+    var probeResult by remember { mutableStateOf<KeyProbeResult?>(null) }
+    var probeError by remember { mutableStateOf("") }
+    var focusField by remember { mutableStateOf("") }
+    var focusTick by remember { mutableStateOf(0) }
+    val nameFocus = remember { FocusRequester() }
+    val apiKeyFocus = remember { FocusRequester() }
+    val modelsFocus = remember { FocusRequester() }
+    val baseUrlFocus = remember { FocusRequester() }
+
+    LaunchedEffect(focusTick) {
+        if (focusTick == 0) return@LaunchedEffect
+        when (focusField) {
+            "invalid_key" -> apiKeyFocus.requestFocus()
+            "model_unavailable" -> modelsFocus.requestFocus()
+            "network_unreachable" -> baseUrlFocus.requestFocus()
+            // 额度 / 其他失败没有单一字段可改，也把焦点送回表单，避免按钮看起来没反应。
+            else -> nameFocus.requestFocus()
+        }
+    }
+
+    fun requestField(reasonCode: String) {
+        focusField = reasonCode
+        focusTick += 1
+    }
 
     fun startForm(entry: ApiKeyEntry?) {
         editing = entry
@@ -96,6 +128,8 @@ fun KeyVaultSheet(
         error = ""
         notice = ""
         deleteTarget = null
+        probeResult = null
+        probeError = ""
     }
 
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .93f) {
@@ -178,6 +212,10 @@ fun KeyVaultSheet(
                                                 Spacer(Modifier.width(6.dp))
                                                 KeyPill("停用", V2Colors.ink(.42f))
                                             }
+                                            if (entry.hasUnreachable) {
+                                                Spacer(Modifier.width(6.dp))
+                                                KeyPill("有模型不通", V2Colors.rose)
+                                            }
                                         }
                                         Spacer(Modifier.height(3.dp))
                                         Label(
@@ -189,10 +227,13 @@ fun KeyVaultSheet(
                                         if (entry.models.isNotEmpty()) {
                                             Spacer(Modifier.height(2.dp))
                                             Label(
-                                                entry.models.joinToString(" / "),
+                                                entry.models.joinToString(" / ") { model ->
+                                                    val status = entry.connectivityFor(model)
+                                                    if (status?.unreachable == true) "$model（不通）" else model
+                                                },
                                                 11.5f,
                                                 V2Colors.ink(.52f),
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 mono = true,
                                             )
                                         }
@@ -251,7 +292,13 @@ fun KeyVaultSheet(
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Label(if (editing != null) "编辑密钥" else "添加密钥", 15f, V2Colors.ink(.92f), FontWeight.SemiBold)
 
-                        KeyField("名称", name, { name = it }, "DeepSeek 官方")
+                        KeyField(
+                            "名称",
+                            name,
+                            { name = it },
+                            "DeepSeek 官方",
+                            focusRequester = nameFocus,
+                        )
                         Column {
                             Label("供应商", 11f, V2Colors.ink(.45f))
                             Spacer(Modifier.height(6.dp))
@@ -288,6 +335,7 @@ fun KeyVaultSheet(
                             baseUrl,
                             { baseUrl = it },
                             if (provider == "openai_compatible") "必填，例如 https://api.siliconflow.cn/v1" else "留空使用供应商默认地址",
+                            focusRequester = baseUrlFocus,
                         )
                         KeyField(
                             "API Key",
@@ -295,6 +343,7 @@ fun KeyVaultSheet(
                             { apiKey = it },
                             if (editing != null) "留空保持原 key" else "sk-...",
                             password = true,
+                            focusRequester = apiKeyFocus,
                         )
                         KeyField(
                             "模型（每行一个）",
@@ -302,6 +351,7 @@ fun KeyVaultSheet(
                             { modelsText = it },
                             "deepseek-v4-pro\ndeepseek-flash",
                             singleLine = false,
+                            focusRequester = modelsFocus,
                         )
 
                         if (provider == "openai_compatible") {
@@ -323,6 +373,15 @@ fun KeyVaultSheet(
                             LightSwitch(enabled, onChange = { enabled = it })
                         }
 
+                        if (saving) {
+                            Label("正在保存并逐个模型检查连通性…", 11f, V2Colors.ink(.45f), maxLines = 2)
+                        }
+                        if (probeError.isNotBlank()) {
+                            Label(probeError, 11f, V2Colors.amber700, maxLines = 2)
+                        }
+                        probeResult?.let { result ->
+                            KeyProbeResultBlock(result, onEdit = ::requestField)
+                        }
                         if (error.isNotBlank()) {
                             Label(error, 11f, V2Colors.rose, maxLines = 3)
                         }
@@ -333,6 +392,8 @@ fun KeyVaultSheet(
                                     deleteTarget = keys.firstOrNull { it.id == editing?.id }
                                     formOpen = false
                                     editing = null
+                                    probeResult = null
+                                    probeError = ""
                                 }
                             }
                             Spacer(Modifier.weight(1f))
@@ -340,9 +401,15 @@ fun KeyVaultSheet(
                                 formOpen = false
                                 editing = null
                                 error = ""
+                                probeResult = null
+                                probeError = ""
                             }
                             Spacer(Modifier.width(8.dp))
-                            SmallPill(if (editing != null) "保存修改" else "创建", primary = true, enabled = !saving) {
+                            SmallPill(
+                                if (editing != null) "保存并检查" else "创建并检查",
+                                primary = true,
+                                enabled = !saving,
+                            ) {
                                 val cleanName = name.trim()
                                 val models = modelsText
                                     .split('\n', ',', '，')
@@ -355,6 +422,8 @@ fun KeyVaultSheet(
                                     editing == null && apiKey.isBlank() -> error = "请填写 API Key"
                                     else -> {
                                         error = ""
+                                        probeResult = null
+                                        probeError = ""
                                         saving = true
                                         onSave(
                                             V2KeyDraft(
@@ -367,12 +436,19 @@ fun KeyVaultSheet(
                                                 wireApi = if (provider == "openai_compatible") wireApi else "",
                                                 enabled = enabled,
                                             ),
-                                        ) { err, okNotice ->
+                                        ) { err, saved, probe ->
                                             saving = false
                                             if (err.isBlank()) {
-                                                formOpen = false
-                                                editing = null
-                                                notice = okNotice.ifBlank { "已保存" }
+                                                // 保持表单打开：下面按模型列结果，失败行可直接去修改。
+                                                editing = saved ?: editing
+                                                apiKey = ""
+                                                notice = ""
+                                                probeResult = probe
+                                                probeError = if (probe == null) {
+                                                    "已保存，但未能完成连通性检查；配置已保留，可再点一次保存并检查。"
+                                                } else {
+                                                    ""
+                                                }
                                             } else {
                                                 error = err
                                             }
@@ -388,6 +464,73 @@ fun KeyVaultSheet(
     }
 }
 
+/** 探测结果汇总句；主展示仍是逐模型列表。 */
+internal fun keyProbeSummary(result: KeyProbeResult): String {
+    val failed = result.models.count { !it.ok }
+    return when {
+        result.skipped -> result.error.ifBlank { "未发起连通性检查" }
+        result.models.isEmpty() -> result.error.ifBlank { "没有可检查的模型" }
+        failed == 0 -> "全部 ${result.models.size} 个模型连通正常"
+        else -> "${result.models.size} 个模型中 $failed 个不通"
+    }
+}
+
+/** 单行结果副文案：可用显示耗时，不通显示原因（缺失时兜底）。 */
+internal fun keyProbeReasonText(item: KeyProbeModel): String =
+    if (item.ok) "${item.latencyMs} ms" else item.reason.ifBlank { "其他失败" }
+
+/** 保存后按模型展示结果；失败行可把焦点送回现有表单字段。 */
+@Composable
+private fun KeyProbeResultBlock(result: KeyProbeResult, onEdit: (String) -> Unit) {
+    val failed = result.models.count { !it.ok }
+    val summary = keyProbeSummary(result)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("连通性检查", 12f, V2Colors.ink(.78f), FontWeight.Medium)
+            Spacer(Modifier.weight(1f))
+            Label(
+                summary,
+                10.5f,
+                if (failed > 0) V2Colors.rose else V2Colors.ink(.45f),
+                maxLines = 2,
+            )
+        }
+        result.models.forEach { item ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(V2Colors.ink(.03f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Label(
+                        item.model.ifBlank { "（空模型名）" },
+                        12f,
+                        V2Colors.ink(.78f),
+                        mono = true,
+                        maxLines = 1,
+                    )
+                    Label(
+                        keyProbeReasonText(item),
+                        10.5f,
+                        if (item.ok) V2Colors.ink(.45f) else V2Colors.rose,
+                        maxLines = 2,
+                    )
+                }
+                KeyPill(
+                    if (item.ok) "可用" else "不通",
+                    if (item.ok) V2Colors.emerald else V2Colors.rose,
+                )
+                if (!item.ok) {
+                    Spacer(Modifier.width(6.dp))
+                    SmallPill("去修改") { onEdit(item.reasonCode) }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun KeyField(
     label: String,
@@ -396,6 +539,7 @@ private fun KeyField(
     placeholder: String,
     password: Boolean = false,
     singleLine: Boolean = true,
+    focusRequester: FocusRequester? = null,
 ) {
     Column {
         Label(label, 11f, V2Colors.ink(.45f))
@@ -427,7 +571,11 @@ private fun KeyField(
                 } else {
                     VisualTransformation.None
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = if (focusRequester != null) {
+                    Modifier.fillMaxWidth().focusRequester(focusRequester)
+                } else {
+                    Modifier.fillMaxWidth()
+                },
             )
         }
     }

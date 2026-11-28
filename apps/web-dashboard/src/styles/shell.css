@@ -399,7 +399,17 @@
 .fx-key-meta { margin-top: 3px; color: var(--tn-text-4); font-size: var(--tn-fs-xs); font-family: var(--tn-mono); word-break: break-all; }
 .fx-key-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .fx-key-model { padding: 1px 6px; border: 1px solid var(--tn-line); border-radius: var(--tn-r); color: var(--tn-text-3); font-size: var(--tn-fs-xs); font-family: var(--tn-mono); }
+.fx-key-model.is-bad { border-color: rgba(255, 122, 110, 0.45); color: var(--tn-danger); }
 .fx-key-actions { display: flex; align-items: center; gap: var(--tn-s2); flex: none; }
+
+/* 保存后的按模型连通性结果（密钥库编辑表单内，不另起页面） */
+.fx-probe { border-top: 1px solid var(--tn-line-soft); padding-top: var(--tn-s3); display: flex; flex-direction: column; gap: var(--tn-s2); }
+.fx-probe-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--tn-s3); font-size: var(--tn-fs-sm); color: var(--tn-text); }
+.fx-probe-summary { color: var(--tn-text-3); font-size: var(--tn-fs-xs); }
+.fx-probe-list { display: flex; flex-direction: column; gap: 6px; }
+.fx-probe-row { display: flex; align-items: center; gap: var(--tn-s2); padding: 6px 8px; border: 1px solid var(--tn-line-soft); border-radius: var(--tn-r); background: var(--tn-bg-2); }
+.fx-probe-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--tn-mono); font-size: var(--tn-fs-xs); color: var(--tn-text-2); }
+.fx-probe-reason { color: var(--tn-text-4); font-size: var(--tn-fs-xs); max-width: 50%; text-align: right; }
 
 /* ==========================================================================
    命令面板

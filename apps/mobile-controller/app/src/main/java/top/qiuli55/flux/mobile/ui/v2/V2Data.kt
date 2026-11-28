@@ -26,7 +26,14 @@ data class V2ModelOption(
     val model: String,
     val label: String = model,
     val keyId: String? = null,
-)
+    /** 密钥库模型的最近一次探测状态；原生模型为空 */
+    val status: String = "",
+    val reasonCode: String = "",
+    val reason: String = "",
+) {
+    /** 只有确认过失败才算不通；未检查过的不伪造状态。 */
+    val unreachable: Boolean get() = status == "unreachable"
+}
 
 data class V2DeviceAgent(val agentId: String, val models: List<V2ModelOption>)
 
