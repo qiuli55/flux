@@ -8,6 +8,7 @@ import org.junit.Test
 import top.qiuli55.flux.mobile.data.Decision
 import top.qiuli55.flux.mobile.data.NotificationPrefs
 import top.qiuli55.flux.mobile.data.Task
+import top.qiuli55.flux.mobile.ui.v2.V2TaskStatus
 
 /**
  * 提醒规则全部是纯函数：开关、前台抑制、去重键、文案、权限状态。
@@ -38,6 +39,42 @@ class NotificationPolicyTest {
         assertTrue(prefs.haptics)
         assertFalse(prefs.reduceMotion)
         assertTrue(prefs.anyAlertEnabled)
+    }
+
+    // ---------------------------------------------------------- 冷启动取消
+
+    @Test
+    fun `cold start defaults never cancel posted alerts before prefs are ready`() {
+        // 冷启动初始值：decisionAlerts=true、taskAlerts=false，但 DataStore 还没读回。
+        val coldStart = NotificationPrefs()
+        assertFalse(shouldCancelPostedAlerts(AlertKind.DECISION, coldStart, prefsReady = false))
+        assertFalse(shouldCancelPostedAlerts(AlertKind.FINISHED, coldStart, prefsReady = false))
+    }
+
+    @Test
+    fun `only a ready and disabled switch cancels its posted alerts`() {
+        val allOff = NotificationPrefs(decisionAlerts = false, taskAlerts = false)
+        assertTrue(shouldCancelPostedAlerts(AlertKind.DECISION, allOff, prefsReady = true))
+        assertTrue(shouldCancelPostedAlerts(AlertKind.FINISHED, allOff, prefsReady = true))
+
+        val allOn = NotificationPrefs(decisionAlerts = true, taskAlerts = true)
+        assertFalse(shouldCancelPostedAlerts(AlertKind.DECISION, allOn, prefsReady = true))
+        assertFalse(shouldCancelPostedAlerts(AlertKind.FINISHED, allOn, prefsReady = true))
+    }
+
+    // ---------------------------------------------------------- 轮询差集
+
+    @Test
+    fun `tasks gone from the unfinished list are looked up unless already finished`() {
+        val last = mapOf(
+            "running" to V2TaskStatus.RUNNING,
+            "waiting" to V2TaskStatus.WAITING,
+            "done" to V2TaskStatus.DONE,
+        )
+        // waiting 这轮还在未结束列表里；running 不见了需要回查终态；done 已结束不再回查。
+        assertEquals(listOf("running"), goneWatchedTaskIds(setOf("waiting"), last))
+        // 服务刚启动没有上一轮状态：不会把历史任务补弹一遍。
+        assertTrue(goneWatchedTaskIds(setOf("running", "waiting"), emptyMap()).isEmpty())
     }
 
     // ---------------------------------------------------------- 开关

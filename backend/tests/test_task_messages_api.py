@@ -65,12 +65,54 @@ def test_list_tasks_filters_by_status_and_project(client: TestClient) -> None:
     assert empty["metadata"]["count"] == 0
 
 
+def test_list_tasks_filters_unfinished(client: TestClient) -> None:
+    """unfinished=true 只返回未结束任务：进行中的旧任务不会被已完成的历史挤出列表。"""
+    running = client.post(f"{PREFIX}/tasks", json={"description": "仍在跑"}).json()["data"]
+    cancelled = client.post(f"{PREFIX}/tasks", json={"description": "已取消"}).json()["data"]
+    assert client.post(f"{PREFIX}/tasks/{cancelled['id']}/cancel").status_code == 200
+
+    body = client.get(f"{PREFIX}/tasks", params={"unfinished": "true"}).json()
+    ids = [task["id"] for task in body["data"]]
+    assert ids == [running["id"]]
+    assert body["metadata"]["count"] == 1
+
+
+def test_list_tasks_paginates_unfinished_with_offset(client: TestClient) -> None:
+    """offset 分页取全未结束任务：两页无重叠、并集就是全部进行中的任务。"""
+    created = [
+        client.post(f"{PREFIX}/tasks", json={"description": f"任务 {index}"}).json()["data"]["id"]
+        for index in range(3)
+    ]
+
+    first = client.get(
+        f"{PREFIX}/tasks", params={"unfinished": "true", "limit": 2, "offset": 0}
+    ).json()
+    second = client.get(
+        f"{PREFIX}/tasks", params={"unfinished": "true", "limit": 2, "offset": 2}
+    ).json()
+
+    first_ids = [task["id"] for task in first["data"]]
+    second_ids = [task["id"] for task in second["data"]]
+    assert len(first_ids) == 2
+    assert len(second_ids) == 1
+    assert set(first_ids).isdisjoint(second_ids)
+    assert set(first_ids) | set(second_ids) == set(created)
+
+
 def test_list_tasks_rejects_bad_filters(client: TestClient) -> None:
-    """非法 status / project_id / limit 一律 400（不静默当成"没有数据"）。"""
+    """非法 status / project_id / limit / offset 一律 400（不静默当成"没有数据"）。"""
     assert client.get(f"{PREFIX}/tasks", params={"status": "已完成"}).status_code == 400
     assert client.get(f"{PREFIX}/tasks", params={"project_id": "不是-uuid"}).status_code == 400
     assert client.get(f"{PREFIX}/tasks", params={"limit": 0}).status_code == 400
     assert client.get(f"{PREFIX}/tasks", params={"limit": 500}).status_code == 400
+    assert client.get(f"{PREFIX}/tasks", params={"offset": -1}).status_code == 400
+    # status 与 unfinished 语义互斥：同时传是调用方的错，不能静默返回空列表。
+    assert (
+        client.get(
+            f"{PREFIX}/tasks", params={"status": "pending", "unfinished": "true"}
+        ).status_code
+        == 400
+    )
 
 
 # --- 任务对话 ---

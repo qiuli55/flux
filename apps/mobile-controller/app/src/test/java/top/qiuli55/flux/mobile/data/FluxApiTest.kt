@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.data
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -89,6 +90,63 @@ class FluxApiTest {
         val info = parseApiError("""{"success":false,"code":"","message":""}""", 500)
         assertEquals("http_500", info.code)
         assertEquals("服务器出错了（HTTP 500）", info.message)
+    }
+
+    // ---------------------------------------------------------- 未结束任务分页
+
+    @Test
+    fun unfinishedTasksPath_onlyAsksForUnfinishedWithPaging() {
+        assertEquals(
+            "api/v1/tasks?unfinished=true&limit=200&offset=0",
+            unfinishedTasksPath(limit = TASK_PAGE_SIZE, offset = 0),
+        )
+        assertEquals(
+            "api/v1/tasks?unfinished=true&limit=200&offset=200",
+            unfinishedTasksPath(limit = TASK_PAGE_SIZE, offset = 200),
+        )
+    }
+
+    @Test
+    fun collectPagedTasks_walksOffsetUntilShortPage() = runBlocking {
+        val offsets = mutableListOf<Int>()
+        val pages = mapOf(
+            0 to listOf(Task(id = "a"), Task(id = "b")),
+            2 to listOf(Task(id = "c")),
+        )
+        val all = collectPagedTasks(pageSize = 2) { _, offset ->
+            offsets += offset
+            pages[offset].orEmpty()
+        }
+        assertEquals(listOf("a", "b", "c"), all.map { it.id })
+        assertEquals(listOf(0, 2), offsets)
+    }
+
+    @Test
+    fun collectPagedTasks_fetchesFinalEmptyPageWhenTotalIsExactMultiple() = runBlocking {
+        val offsets = mutableListOf<Int>()
+        val pages = mapOf(
+            0 to listOf(Task(id = "a"), Task(id = "b")),
+            2 to listOf(Task(id = "c"), Task(id = "d")),
+            4 to emptyList<Task>(),
+        )
+        val all = collectPagedTasks(pageSize = 2) { _, offset ->
+            offsets += offset
+            pages[offset].orEmpty()
+        }
+        assertEquals(listOf("a", "b", "c", "d"), all.map { it.id })
+        assertEquals(listOf(0, 2, 4), offsets)
+    }
+
+    @Test
+    fun collectPagedTasks_stopsWhenServerIgnoresOffsetInsteadOfLoopingForever() = runBlocking {
+        // 老后端不认识 offset，每页都把同一批任务再返回一次：不能无限请求或重复堆积。
+        var calls = 0
+        val all = collectPagedTasks(pageSize = 2) { _, _ ->
+            calls += 1
+            listOf(Task(id = "a"), Task(id = "b"))
+        }
+        assertEquals(listOf("a", "b"), all.map { it.id })
+        assertEquals(2, calls)
     }
 
     @Test

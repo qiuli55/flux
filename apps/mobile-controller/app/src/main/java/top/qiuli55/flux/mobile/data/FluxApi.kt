@@ -71,7 +71,19 @@ class FluxApi(
     suspend fun health(): HealthData = get("api/v1/health")
     suspend fun dshStatus(): DshStatus = get("api/v1/dsh/status")
     suspend fun listAgents(): List<Agent> = get("api/v1/agents")
+
+    /** 首页 / 对话列表：全量（含已结束的历史），语义保持默认 50 条、创建时间倒序。 */
     suspend fun listTasks(): List<Task> = get("api/v1/tasks")
+
+    /**
+     * 关注服务专用：只拉未结束任务，并按 offset 分页取全。
+     *
+     * 与 [listTasks] 分开：列表页需要历史，轮询只关心「还在跑 / 等决策」的任务；
+     * 若复用无过滤的列表，进行中的旧任务会被大量已完成历史挤到 limit 之外。
+     */
+    suspend fun listUnfinishedTasks(): List<Task> = collectPagedTasks { limit, offset ->
+        get(unfinishedTasksPath(limit, offset))
+    }
 
     /** 套餐额度：本地账本 + 最近一次官方快照；不主动抓官方，避免每次进首页都打外部接口。 */
     suspend fun billingOverview(): BillingOverview = get("api/v1/billing/plans")
@@ -978,4 +990,42 @@ private fun validationDetail(element: JsonElement): String? {
         ?.joinToString(".")
         .orEmpty()
     return if (location.isBlank()) message else "$location：$message"
+}
+
+// ------------------------------------------------------------ 任务分页
+
+/** 后端 list_tasks 的单页上限（limit 只允许 1~200）。 */
+internal const val TASK_PAGE_SIZE = 200
+
+/** 分页拉取时的页数兜底：服务端若忽略 offset / 一直返回整页，不能死循环。 */
+private const val TASK_MAX_PAGES = 50
+
+/** 未结束任务列表的查询路径（关注服务轮询用）。 */
+internal fun unfinishedTasksPath(limit: Int, offset: Int): String =
+    "api/v1/tasks?unfinished=true&limit=$limit&offset=$offset"
+
+/**
+ * 按 offset 逐页拉取，直到某一页不足 [pageSize]。
+ *
+ * 按 id 去重，并在一整页全是已见过的任务（说明服务端没按 offset 前进）时停止，
+ * 避免老后端忽略新参数时重复堆积 / 无限请求。返回的顺序保持服务端顺序。
+ */
+internal suspend fun collectPagedTasks(
+    pageSize: Int = TASK_PAGE_SIZE,
+    fetch: suspend (limit: Int, offset: Int) -> List<Task>,
+): List<Task> {
+    require(pageSize > 0) { "pageSize 必须大于 0" }
+    val all = mutableListOf<Task>()
+    val seen = HashSet<String>()
+    var offset = 0
+    repeat(TASK_MAX_PAGES) {
+        val page = fetch(pageSize, offset)
+        val fresh = page.filter { seen.add(it.id) }
+        all += fresh
+        if (page.size < pageSize) return all
+        // 整页都是见过的任务：服务端没有按 offset 前进，继续请求只会重复。
+        if (fresh.isEmpty()) return all
+        offset += pageSize
+    }
+    return all
 }

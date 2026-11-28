@@ -39,6 +39,15 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+#: 尚未结束的任务状态：移动端关注服务轮询「进行中的任务」时使用。
+#: 与 _FINAL_STATUSES 互为补集，新增状态时两处要一起改。
+UNFINISHED_TASK_STATUSES: tuple[TaskStatus, ...] = (
+    TaskStatus.PENDING,
+    TaskStatus.RUNNING,
+    TaskStatus.WAITING_FOR_USER_DECISION,
+)
+
+
 class TaskOrigin(StrEnum):
     """对话来源（2026-11-03）：首页的普通对话，或助理页的助理对话。
 

@@ -66,6 +66,44 @@ fun shouldSendAlert(
     return !(appForeground && viewedTaskId == taskId)
 }
 
+// ------------------------------------------------------------------ 取消已发通知
+
+/**
+ * 关闭开关时应撤销已发出的同类通知；但偏好还没从 DataStore 读回时不能动。
+ *
+ * 冷启动的初始值里 taskAlerts 默认 false：若在 notifPrefsReady 之前就按
+ * 「开关为 false」取消，会把用户还没点的完成通知直接清掉。
+ */
+fun shouldCancelPostedAlerts(
+    kind: AlertKind,
+    prefs: NotificationPrefs,
+    prefsReady: Boolean,
+): Boolean {
+    if (!prefsReady) return false
+    val enabled = when (kind) {
+        AlertKind.DECISION -> prefs.decisionAlerts
+        AlertKind.FINISHED -> prefs.taskAlerts
+    }
+    return !enabled
+}
+
+// ------------------------------------------------------------------ 轮询状态迁移
+
+/**
+ * 上一轮还在关注、这一轮却已不在「未结束」列表里的任务：需要回查详情确认终态。
+ *
+ * 关注服务现在只轮询未结束任务（避免旧任务被 50 条截断），已完成的任务会直接
+ * 从列表消失；只有靠这份差集回查，才能发出「完成 / 失败 / 取消」提醒。
+ * 上一轮已经是终态的不再回查；进程刚启动、没有上一轮状态时也为空。
+ */
+fun goneWatchedTaskIds(
+    activeIds: Set<String>,
+    lastStatuses: Map<String, V2TaskStatus>,
+): List<String> = lastStatuses
+    .filter { (id, status) -> id !in activeIds && !status.isFinished }
+    .keys
+    .toList()
+
 // ------------------------------------------------------------------ 去重键
 
 /**

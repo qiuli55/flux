@@ -24,6 +24,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import top.qiuli55.flux.mobile.MainActivity
 import top.qiuli55.flux.mobile.R
+import top.qiuli55.flux.mobile.data.FluxApi
+import top.qiuli55.flux.mobile.data.FluxApiException
 import top.qiuli55.flux.mobile.data.FluxEnv
 import top.qiuli55.flux.mobile.data.NotificationPrefs
 import top.qiuli55.flux.mobile.data.SettingsStore
@@ -35,9 +37,10 @@ import top.qiuli55.flux.mobile.ui.v2.toV2TaskStatus
 /**
  * 应用级任务提醒服务。
  *
- * 工程没有 FCM / 云推送，所以这里用前台服务 + 轮询 `GET /tasks` 的方式，
- * 在用户离开聊天回到桌面后仍能发现「等待决策」和「任务结束」。只监听任务列表
- * （复用 FluxApi.listTasks），不为每个对话各开一条 SSE，连接与耗电都可控。
+ * 工程没有 FCM / 云推送，所以这里用前台服务 + 轮询 `GET /tasks?unfinished=true` 的方式，
+ * 在用户离开聊天回到桌面后仍能发现「等待决策」和「任务结束」。只拉未结束任务
+ * （FluxApi.listUnfinishedTasks，按 offset 分页取全），进行中的旧任务不会被
+ * 大量已完成历史挤到 limit 之外；不为每个对话各开一条 SSE，连接与耗电都可控。
  *
  * 限制写清楚：应用被系统彻底划掉后，前台服务也会停；需要重新打开 Flux 才会继续提醒。
  */
@@ -152,8 +155,9 @@ class TaskAlertService : Service() {
 
             val config = runCatching { FluxEnv.configWithFreshToken() }.getOrNull()
             if (config != null && config.isComplete) {
-                val tasks = runCatching { FluxEnv.api(config).listTasks() }.getOrNull()
-                if (tasks != null && evaluate(tasks, prefs)) break
+                val api = FluxEnv.api(config)
+                val tasks = runCatching { api.listUnfinishedTasks() }.getOrNull()
+                if (tasks != null && evaluate(tasks, prefs, api)) break
             }
             delay(POLL_INTERVAL_MS)
         }
@@ -164,12 +168,16 @@ class TaskAlertService : Service() {
      * 对比上一轮状态，发出需要发的提醒。
      *
      * - 决策：`pending_decision` 或 `waiting_for_user_decision`，同一决策只发一次；
-     * - 完成：观察到「非终态 → 终态」的转变才发，避免服务启动时把历史已完成任务
-     *   全部补弹一遍；同一轮 run 只发一次。
+     * - 完成：任务从「未结束」列表消失后回查详情，确认终态才发；避免服务启动时
+     *   把历史已完成任务全部补弹一遍，同一轮 run 只发一次。
      *
      * @return true 表示没有需要继续关注的任务，服务可以退出。
      */
-    private suspend fun evaluate(tasks: List<Task>, prefs: NotificationPrefs): Boolean {
+    private suspend fun evaluate(
+        tasks: List<Task>,
+        prefs: NotificationPrefs,
+        api: FluxApi,
+    ): Boolean {
         val watchCount = tasks.count { !it.status.toV2TaskStatus().isFinished }
         updateOngoing(watchCount)
 
@@ -178,8 +186,6 @@ class TaskAlertService : Service() {
         var changed = false
 
         tasks.forEach { task ->
-            val status = task.status.toV2TaskStatus()
-
             if (prefs.decisionAlerts) {
                 val key = decisionKey(task)
                 if (key != null &&
@@ -193,28 +199,62 @@ class TaskAlertService : Service() {
                     }
                 }
             }
+            lastStatuses[task.id] = task.status.toV2TaskStatus()
+        }
 
-            if (prefs.taskAlerts) {
-                val previous = lastStatuses[task.id]
-                val key = finishedKey(task)
-                if (key != null && previous != null && !previous.isFinished &&
-                    shouldSendAlert(AlertKind.FINISHED, prefs, task.id, foreground, viewedTaskId) &&
-                    dedupe.firstTime(key)
-                ) {
-                    changed = true
-                    if (!FluxNotificationCenter.notifyFinished(this, task, key)) {
-                        dedupe.forget(key)
+        // 只轮询未结束任务后，结束的任务会直接从列表消失。对「上一轮还在关注、
+        // 这一轮不见了」的任务回查一次详情，确认终态才能发出完成 / 失败 / 取消提醒。
+        val activeIds = tasks.mapTo(HashSet()) { it.id }
+        var unresolved = false
+        goneWatchedTaskIds(activeIds, lastStatuses).forEach { taskId ->
+            when (val found = lookupTask(api, taskId)) {
+                Lookup.Unresolved -> unresolved = true
+                Lookup.Deleted -> lastStatuses.remove(taskId)
+                is Lookup.Found -> {
+                    lastStatuses.remove(taskId)
+                    val task = found.task
+                    if (prefs.taskAlerts && task.status.toV2TaskStatus().isFinished) {
+                        val key = finishedKey(task)
+                        if (key != null &&
+                            shouldSendAlert(
+                                AlertKind.FINISHED,
+                                prefs,
+                                task.id,
+                                foreground,
+                                viewedTaskId,
+                            ) &&
+                            dedupe.firstTime(key)
+                        ) {
+                            changed = true
+                            if (!FluxNotificationCenter.notifyFinished(this, task, key)) {
+                                dedupe.forget(key)
+                            }
+                        }
                     }
                 }
             }
-
-            lastStatuses[task.id] = status
         }
 
-        // 已被删除 / 不再出现在列表里的任务不保留旧状态，避免 id 复用时误判。
-        lastStatuses.keys.retainAll(tasks.mapTo(HashSet()) { it.id })
         if (changed) saveDedupe()
-        return watchCount == 0
+        // 回查失败时先别退出：下一轮还能补发这条提醒。
+        return watchCount == 0 && !unresolved
+    }
+
+    /** 回查已从「未结束」列表消失的任务；404 视为已删除，其它失败留待下一轮重试。 */
+    private suspend fun lookupTask(api: FluxApi, taskId: String): Lookup =
+        try {
+            Lookup.Found(api.getTask(taskId))
+        } catch (e: FluxApiException) {
+            if (e.code == "not_found") Lookup.Deleted else Lookup.Unresolved
+        } catch (e: Exception) {
+            Log.w(TAG, "lookup task $taskId failed: ${e.message}")
+            Lookup.Unresolved
+        }
+
+    private sealed interface Lookup {
+        data class Found(val task: Task) : Lookup
+        object Deleted : Lookup
+        object Unresolved : Lookup
     }
 
     // ------------------------------------------------------------ 去重持久化
