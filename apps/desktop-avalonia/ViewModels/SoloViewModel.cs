@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using Avalonia.Media;
@@ -80,6 +81,26 @@ public partial class SoloViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isSending;
+
+    /// <summary>临时子任务只读：不在子任务里直接指挥 Agent。</summary>
+    [ObservableProperty]
+    private bool _isReadOnlySubtask;
+
+    /// <summary>右上角切换器：主助理 + 已创建的项目助理（不含临时子任务）。</summary>
+    public ObservableCollection<AssistantEntry> AssistantChoices { get; } = new();
+
+    [ObservableProperty]
+    private AssistantEntry? _selectedAssistant;
+
+    /// <summary>新建项目助理的确认面板：用户点「创建」前什么都不创建。</summary>
+    [ObservableProperty]
+    private bool _hasAssistantSuggestion;
+
+    [ObservableProperty]
+    private string _assistantSuggestionName = "";
+
+    private string[] _assistantSuggestionSources = [];
+    private bool _suppressAssistantChange;
 
     [ObservableProperty]
     private bool _hasPendingDecision;
@@ -238,6 +259,7 @@ public partial class SoloViewModel : ViewModelBase
         {
             await LoadProjectsAsync(api);
             await RefreshTaskListAsync(api);
+            await RefreshAssistantsAsync(api);
             if (!IsNewTask)
             {
                 var target = SelectedTask?.Id ?? Tasks.FirstOrDefault()?.Id;
@@ -301,6 +323,128 @@ public partial class SoloViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    /// <summary>加载右上角切换器：主助理 + 已创建的项目助理。</summary>
+    private async Task RefreshAssistantsAsync(FluxApiClient api)
+    {
+        try
+        {
+            var list = (await api.ListAssistantsAsync())?.Data;
+            if (list is null)
+            {
+                return;
+            }
+
+            var previous = SelectedAssistant?.Id;
+            _suppressAssistantChange = true;
+            AssistantChoices.Clear();
+            AssistantChoices.Add(list.Master);
+            foreach (var project in list.Projects)
+            {
+                AssistantChoices.Add(project);
+            }
+            SelectedAssistant = AssistantChoices.FirstOrDefault(x => x.Id == previous)
+                ?? AssistantChoices.FirstOrDefault();
+            _suppressAssistantChange = false;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("加载助理切换器失败", ex);
+        }
+    }
+
+    partial void OnSelectedAssistantChanged(AssistantEntry? value)
+    {
+        if (_suppressAssistantChange || value?.ConversationTaskId is not { Length: > 0 } id)
+        {
+            return;
+        }
+
+        _ = LoadTaskAsync(id);
+        AppLog.Info($"切换助理 · {value.Name} · 对话 {id}");
+    }
+
+    /// <summary>打开临时子任务的只读过程视图（不加入左侧对话列表）。</summary>
+    [RelayCommand]
+    private async Task OpenSubtaskAsync(string? subtaskId)
+    {
+        if (string.IsNullOrWhiteSpace(subtaskId))
+        {
+            return;
+        }
+
+        await LoadTaskAsync(subtaskId);
+    }
+
+    /// <summary>新建项目助理：先取建议并展示确认面板，用户确认前不创建。</summary>
+    [RelayCommand]
+    private async Task RequestNewAssistantAsync()
+    {
+        var api = Api();
+        if (api is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var ideas = (await api.AssistantSuggestionsAsync())?.Data ?? [];
+            var first = ideas.FirstOrDefault();
+            AssistantSuggestionName = first?.Name ?? "";
+            _assistantSuggestionSources = first?.ConversationIds ?? [];
+            HasAssistantSuggestion = true;
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"加载项目助理建议失败：{ex.Message}";
+            AppLog.Error("加载项目助理建议失败", ex);
+        }
+    }
+
+    /// <summary>用户确认创建项目助理；取消则不创建。</summary>
+    [RelayCommand]
+    private async Task ConfirmNewAssistantAsync()
+    {
+        var api = Api();
+        var name = AssistantSuggestionName.Trim();
+        if (api is null || name.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var created = (await api.CreateAssistantAsync(name, _assistantSuggestionSources, true))?.Data;
+            HasAssistantSuggestion = false;
+            _assistantSuggestionSources = [];
+            if (created is null)
+            {
+                throw new InvalidOperationException("创建项目助理没有返回数据");
+            }
+
+            ConfirmationHint = $"已创建项目助理「{created.Name}」";
+            await RefreshAssistantsAsync(api);
+            _suppressAssistantChange = true;
+            SelectedAssistant = AssistantChoices.FirstOrDefault(x => x.Id == created.Id);
+            _suppressAssistantChange = false;
+            if (created.ConversationTaskId is { Length: > 0 } conversationId)
+            {
+                await LoadTaskAsync(conversationId);
+            }
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"创建项目助理失败：{ex.Message}";
+            AppLog.Error("创建项目助理失败", ex);
+        }
+    }
+
+    [RelayCommand]
+    private void CancelNewAssistant()
+    {
+        HasAssistantSuggestion = false;
+        _assistantSuggestionSources = [];
+    }
+
     private async Task SelectTaskAsync(TaskRow? row)
     {
         if (row is null)
@@ -819,6 +963,7 @@ public partial class SoloViewModel : ViewModelBase
 
         SelectedTask = task;
         IsNewTask = false;
+        IsReadOnlySubtask = task.Origin == "subtask" || task.ParentTaskId is not null;
         TaskTitle = SoloRules.Title(task.Description);
         StatusText = SoloRules.StatusLabel(task.Status);
         StatusBrush = ToneBrush(SoloRules.StatusTone(task.Status));
@@ -903,7 +1048,7 @@ public partial class SoloViewModel : ViewModelBase
         Messages.Clear();
         foreach (var message in messages)
         {
-            Messages.Add(new MessageRow(message));
+            Messages.Add(new MessageRow(message, OpenSubtaskCommand));
         }
 
         AppLog.Info($"Solo 消息 · task={taskId} · {messages.Count} 条");
@@ -913,7 +1058,7 @@ public partial class SoloViewModel : ViewModelBase
     {
         foreach (var message in messages)
         {
-            Messages.Add(new MessageRow(message));
+            Messages.Add(new MessageRow(message, OpenSubtaskCommand));
         }
     }
 
@@ -1497,7 +1642,7 @@ public partial class ConfirmationEdit : ObservableObject
 /// <summary>对话消息行。</summary>
 public sealed class MessageRow
 {
-    public MessageRow(TaskMessage message)
+    public MessageRow(TaskMessage message, ICommand? openSubtask = null)
     {
         IsUser = message.Role == "user";
         Author = message.Role switch
@@ -1512,6 +1657,17 @@ public sealed class MessageRow
         Meta = IsSummary
             ? $"前情摘要 · {ClockText(message.CreatedAt)}"
             : $"{Author} · {ClockText(message.CreatedAt)}";
+
+        // 临时子任务：主助理对话下的条目，不是独立聊天；点开只读过程视图
+        IsSubtask = message.Kind is "subtask" or "subtask_result";
+        if (IsSubtask && message.Payload is { } payload)
+        {
+            SubtaskId = StringField(payload, "subtask_id") ?? "";
+            SubtaskTitle = StringField(payload, "title") ?? "临时子任务";
+            SubtaskStatus = StringField(payload, "status_label") ?? "";
+            SubtaskResult = StringField(payload, "result") ?? message.Content;
+            OpenSubtaskCommand = openSubtask;
+        }
     }
 
     public bool IsUser { get; }
@@ -1523,6 +1679,25 @@ public sealed class MessageRow
     public bool IsSummary { get; }
 
     public string Meta { get; }
+
+    public bool IsSubtask { get; }
+
+    public string SubtaskId { get; } = "";
+
+    public string SubtaskTitle { get; } = "";
+
+    public string SubtaskStatus { get; } = "";
+
+    public string SubtaskResult { get; } = "";
+
+    public ICommand? OpenSubtaskCommand { get; }
+
+    private static string? StringField(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static string ClockText(string? value)
         => DateTime.TryParse(value, out var time) ? time.ToLocalTime().ToString("HH:mm") : "";

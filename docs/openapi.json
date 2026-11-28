@@ -529,6 +529,22 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "ClaudeLoginCodeRequest": {
+        "description": "把 Claude 授权页显示的 `code#state` 粘回登录进程。",
+        "properties": {
+          "code": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "ClaudeLoginCodeRequest",
+        "type": "object"
+      },
       "CloudExchangeIn": {
         "properties": {
           "code": {
@@ -1525,6 +1541,29 @@
         "title": "InstallationConnectRequest",
         "type": "object"
       },
+      "McpConnectorCreateRequest": {
+        "description": "新增自定义 MCP 连接器：名称 + Streamable HTTP 端点。",
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ],
+        "title": "McpConnectorCreateRequest",
+        "type": "object"
+      },
       "MemoryLayer": {
         "description": "三层记忆边界（批次② §4.2）。\n\n- USER：跨 Workspace 的偏好与约定，用户确认后才写，可查可删；\n- PROJECT：每个 Workspace / Project 自动沉淀（底座是 Project Brain）；\n- ENVIRONMENT：Flux 运行规则，全局、由平台代码维护，优先于普通项目上下文。",
         "enum": [
@@ -1592,6 +1631,47 @@
           "mode"
         ],
         "title": "PermissionModeRequest",
+        "type": "object"
+      },
+      "ProjectAssistantCreateRequest": {
+        "description": "创建项目助理（2026-11-28）。\n\n`confirmed` 必须为 true：产品要求「用户确认前什么都不创建；取消就是不创建」。\n`source_task_ids` 只是只读上下文，不会被写入；项目助理自己的常驻对话由服务端建。",
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "source_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Source Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProjectAssistantCreateRequest",
         "type": "object"
       },
       "ProjectCreateRequest": {
@@ -2135,7 +2215,9 @@
         "description": "对话来源（2026-11-03）：首页的普通对话，或助理页的助理对话。\n\n助理对话同样是一条真实任务（能跑 Agent、选模型），只是不进首页对话列表，\n避免助理的工作会话把用户自己的对话挤下去。读取全部对话时默认也会排除它。",
         "enum": [
           "chat",
-          "assistant"
+          "assistant",
+          "subtask",
+          "project_assistant"
         ],
         "title": "TaskOrigin",
         "type": "string"
@@ -3615,6 +3697,208 @@
         ]
       }
     },
+    "/api/v1/assistants": {
+      "get": {
+        "description": "切换器的可选项：「主助理」+ 每个已创建的项目助理；不含临时子任务。",
+        "operationId": "list_assistants_api_v1_assistants_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Assistants Api V1 Assistants Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Assistants",
+        "tags": [
+          "assistants"
+        ]
+      },
+      "post": {
+        "description": "用户确认后创建项目助理（含它自己的常驻对话）；未确认时 409，什么都不创建。",
+        "operationId": "create_assistant_api_v1_assistants_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectAssistantCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Assistant Api V1 Assistants Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Assistant",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/suggestions": {
+      "get": {
+        "description": "从全部已有对话自动建议可创建的项目助理；只建议，不创建。",
+        "operationId": "suggest_assistants_api_v1_assistants_suggestions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Suggest Assistants Api V1 Assistants Suggestions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Suggest Assistants",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
+    "/api/v1/assistants/{assistant_id}": {
+      "delete": {
+        "description": "删除项目助理记录；它自己的常驻对话一并删除（来源对话不动）。",
+        "operationId": "delete_assistant_api_v1_assistants__assistant_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Assistant Api V1 Assistants  Assistant Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Assistant",
+        "tags": [
+          "assistants"
+        ]
+      },
+      "get": {
+        "operationId": "get_assistant_api_v1_assistants__assistant_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Assistant Api V1 Assistants  Assistant Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Assistant",
+        "tags": [
+          "assistants"
+        ]
+      }
+    },
     "/api/v1/billing/plans": {
       "get": {
         "operationId": "list_plans_api_v1_billing_plans_get",
@@ -3995,6 +4279,203 @@
         "summary": "Scan Capabilities",
         "tags": [
           "capabilities"
+        ]
+      }
+    },
+    "/api/v1/claude-account": {
+      "get": {
+        "description": "当前 Claude Code 订阅的登录态（不含任何令牌）。",
+        "operationId": "account_status_api_v1_claude_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Account Status Api V1 Claude Account Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Account Status",
+        "tags": [
+          "claude-account"
+        ]
+      }
+    },
+    "/api/v1/claude-account/login": {
+      "post": {
+        "description": "发起官方 setup-token 登录；返回可在手机打开的授权链接。",
+        "operationId": "start_login_api_v1_claude_account_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Login Api V1 Claude Account Login Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Start Login",
+        "tags": [
+          "claude-account"
+        ]
+      }
+    },
+    "/api/v1/claude-account/login/{login_id}": {
+      "get": {
+        "description": "轮询登录结果：starting / pending / success / failed。",
+        "operationId": "login_state_api_v1_claude_account_login__login_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "login_id",
+            "required": true,
+            "schema": {
+              "title": "Login Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Login State Api V1 Claude Account Login  Login Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Login State",
+        "tags": [
+          "claude-account"
+        ]
+      }
+    },
+    "/api/v1/claude-account/login/{login_id}/code": {
+      "post": {
+        "description": "把浏览器授权页给出的 `code#state` 粘回登录进程。",
+        "operationId": "submit_code_api_v1_claude_account_login__login_id__code_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "login_id",
+            "required": true,
+            "schema": {
+              "title": "Login Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaudeLoginCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Code Api V1 Claude Account Login  Login Id  Code Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Code",
+        "tags": [
+          "claude-account"
+        ]
+      }
+    },
+    "/api/v1/claude-account/logout": {
+      "post": {
+        "description": "退出 Claude Code 订阅：删除 Flux 隔离目录里的订阅令牌。",
+        "operationId": "logout_api_v1_claude_account_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Logout Api V1 Claude Account Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Logout",
+        "tags": [
+          "claude-account"
         ]
       }
     },
@@ -7399,6 +7880,182 @@
         "summary": "Probe Key",
         "tags": [
           "keys"
+        ]
+      }
+    },
+    "/api/v1/mcp-connectors": {
+      "get": {
+        "description": "内置连接器目录 + 用户自定义 MCP 连接器（GitHub 状态实时映射）。",
+        "operationId": "list_connectors_api_v1_mcp_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Connectors Api V1 Mcp Connectors Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Connectors",
+        "tags": [
+          "mcp-connectors"
+        ]
+      },
+      "post": {
+        "description": "探测自定义 MCP 服务器；initialize + tools/list 通过后才保存并标记已连接。",
+        "operationId": "add_connector_api_v1_mcp_connectors_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpConnectorCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Connector Api V1 Mcp Connectors Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add Connector",
+        "tags": [
+          "mcp-connectors"
+        ]
+      }
+    },
+    "/api/v1/mcp-connectors/{connector_id}": {
+      "delete": {
+        "description": "移除自定义连接器。",
+        "operationId": "delete_connector_api_v1_mcp_connectors__connector_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Connector Api V1 Mcp Connectors  Connector Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Connector",
+        "tags": [
+          "mcp-connectors"
+        ]
+      }
+    },
+    "/api/v1/mcp-connectors/{connector_id}/probe": {
+      "post": {
+        "description": "重新测试已保存的连接器，更新状态与工具清单。",
+        "operationId": "probe_connector_api_v1_mcp_connectors__connector_id__probe_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Probe Connector Api V1 Mcp Connectors  Connector Id  Probe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Probe Connector",
+        "tags": [
+          "mcp-connectors"
         ]
       }
     },
@@ -11238,7 +11895,7 @@
         ]
       },
       "post": {
-        "description": "发一条消息并取回助手的真实回复。\n\n用户消息先落库（模型调用失败时它也不会丢，刷新页面仍在），\n随后调用模型生成回复并落库——两个步骤都是真实数据，服务端不接受伪造的 assistant 消息。",
+        "description": "发一条消息并取回回复。\n\n- 普通对话（origin=chat）：助手回复 + 真实 Agent 执行，行为不变；\n- 主助理（origin=assistant）：只快聊；执行需求派临时子任务，父请求不等待执行；\n- 项目助理（origin=project_assistant）：只读已有对话汇报，不派子任务；\n- 临时子任务（origin=subtask）：拒绝用户直接发消息，只允许查看过程。",
         "operationId": "create_task_message_api_v1_tasks__task_id__messages_post",
         "parameters": [
           {
@@ -11722,6 +12379,56 @@
           }
         ],
         "summary": "Stream Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/subtasks": {
+      "get": {
+        "description": "某主助理对话下的临时子任务（按派出顺序），供卡片与只读过程视图使用。",
+        "operationId": "list_task_subtasks_api_v1_tasks__task_id__subtasks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Task Subtasks Api V1 Tasks  Task Id  Subtasks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Task Subtasks",
         "tags": [
           "tasks"
         ]

@@ -25,6 +25,7 @@ from flux.models.imported_capability import ImportedCapability
 from flux.models.knowledge import KnowledgeChunk, KnowledgeDocument
 from flux.models.memory import MemoryEntry
 from flux.models.project import Project, ProjectMemory
+from flux.models.project_assistant import ProjectAssistant
 from flux.models.run_trace import RunTraceItem
 from flux.models.runtime_session import TaskRuntimeSession
 from flux.models.supervisor import (
@@ -81,6 +82,7 @@ __all__ = [
     "Organization",
     "OrganizationMember",
     "Project",
+    "ProjectAssistant",
     "ProjectMemory",
     "ProviderAccount",
     "RunTraceItem",

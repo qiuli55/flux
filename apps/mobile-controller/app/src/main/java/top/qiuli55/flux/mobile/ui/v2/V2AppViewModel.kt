@@ -18,6 +18,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import top.qiuli55.flux.mobile.data.AccountSession
 import top.qiuli55.flux.mobile.data.Agent
 import top.qiuli55.flux.mobile.data.ApiKeyEntry
+import top.qiuli55.flux.mobile.data.AssistantEntry
+import top.qiuli55.flux.mobile.data.AssistantList
+import top.qiuli55.flux.mobile.data.AssistantSuggestion
 import top.qiuli55.flux.mobile.data.BillingOverview
 import top.qiuli55.flux.mobile.data.BillingPrices
 import top.qiuli55.flux.mobile.data.billingSyncFailure
@@ -104,9 +107,17 @@ data class V2AppState(
     val billingPrices: BillingPrices? = null,
     val billingLoading: Boolean = false,
     val billingError: String? = null,
+    /** 「对话」页右上角切换器：主助理 + 已创建的项目助理（不含临时子任务）。 */
+    val assistants: AssistantList = AssistantList(),
+    val assistantsLoading: Boolean = false,
+    /** 项目助理创建建议：只展示，用户确认后才真正创建。 */
+    val assistantSuggestions: List<AssistantSuggestion> = emptyList(),
 ) {
-    /** 助理自己的对话单独在助理页展示，不挤占首页的对话列表与统计。 */
-    private val chatTasks: List<Task> get() = tasks.filterNot { it.origin == "assistant" }
+    /**
+     * 首页对话列表排除助理空间：主助理、项目助理、临时子任务都不是普通对话。
+     * 临时子任务只挂在主助理对话下，服务端默认也不返回；这里再兜一层。
+     */
+    private val chatTasks: List<Task> get() = tasks.filter { it.isOrdinaryConversation() }
 
     val conversations: List<V2Conversation>
         get() = chatTasks.map { it.toV2Conversation(deviceLabel) }
@@ -295,6 +306,85 @@ class V2AppViewModel : FluxViewModel() {
     }
 
     // ------------------------------------------------------------ 数据
+
+    /** 右上角切换器：主助理 + 已创建的项目助理。失败只影响切换器，不阻塞对话。 */
+    fun loadAssistants(quiet: Boolean = false) {
+        viewModelScope.launch {
+            if (!quiet) _state.value = _state.value.copy(assistantsLoading = true)
+            try {
+                val api = api()
+                val assistants = api.listAssistants()
+                _state.value = _state.value.copy(
+                    assistants = assistants,
+                    assistantsLoading = false,
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    assistantsLoading = false,
+                    error = if (quiet) _state.value.error else readable(e),
+                )
+            }
+        }
+    }
+
+    /** 项目助理创建建议：只读取建议，不创建任何东西。 */
+    fun loadAssistantSuggestions(onLoaded: (List<AssistantSuggestion>) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val ideas = api().suggestAssistants()
+                _state.value = _state.value.copy(assistantSuggestions = ideas)
+                onLoaded(ideas)
+            } catch (e: Exception) {
+                onLoaded(emptyList())
+            }
+        }
+    }
+
+    /** 用户确认后创建项目助理；未确认不会走到这里（调用方必须显式传 confirmed=true）。 */
+    fun createProjectAssistant(
+        name: String,
+        sourceTaskIds: List<String> = emptyList(),
+        projectId: String? = null,
+        confirmed: Boolean,
+        onCreated: (AssistantEntry) -> Unit,
+        onFailed: (String) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            try {
+                val created = api().createAssistant(
+                    name = name,
+                    projectId = projectId,
+                    sourceTaskIds = sourceTaskIds,
+                    confirmed = confirmed,
+                )
+                loadAssistants(quiet = true)
+                onCreated(created)
+            } catch (e: Exception) {
+                onFailed(readable(e))
+            }
+        }
+    }
+
+    /**
+     * 主助理新对话的第一句话：只发消息，不在父任务上 startTask。
+     * 后端会分流——闲聊直接回，执行需求派临时子任务。
+     */
+    fun sendAssistantMessage(
+        taskId: String,
+        content: String,
+        onSent: () -> Unit = {},
+        onFailed: (String) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            try {
+                api().sendMessage(taskId, content)
+                refresh(quiet = true)
+                onSent()
+            } catch (e: Exception) {
+                onFailed(readable(e))
+            }
+        }
+    }
 
     fun refresh(quiet: Boolean = false) {
         if (quiet && refreshJob?.isActive == true) return
@@ -1417,3 +1507,10 @@ internal fun relativeTime(raw: String?): String {
         else -> SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(epoch * 1000))
     }
 }
+
+/**
+ * 「对话」列表只放普通对话：助理空间（主助理 / 项目助理）与临时子任务都不算。
+ * 临时子任务只挂在主助理对话下，不能看起来像一段独立聊天。
+ */
+internal fun Task.isOrdinaryConversation(): Boolean =
+    origin != "assistant" && origin != "subtask" && origin != "project_assistant"

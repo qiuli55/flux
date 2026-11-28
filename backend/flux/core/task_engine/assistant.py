@@ -66,6 +66,34 @@ SYSTEM_PROMPT = """你是 Flux，一个 AI 软件工程平台的执行助手，�
 不要编造事实：需求里没提到的技术细节一律进 "questions" 或把对应维度写成"待确认"。"""
 
 
+#: 主助理（调度员）的系统提示：短、克制。它只聊天和调度，不自己干活。
+DISPATCHER_PROMPT = """你是 Flux 的主助理，是用户的调度员，不是执行者。
+
+对话对象的需求：{description}
+{context}
+规则：
+- 你只负责对话：理解意图、澄清需求、汇报进度、解释结果、按用户指示调度子任务。
+- 你不写代码、不改文件、不跑终端、不查资料出成果、不操作连接器、不做创作落地。
+  需要执行的请求，系统会派一个临时子任务，你只需用一两句话说明已交出。
+- 用户说「更换」时，系统会停止/替换原任务；说「再开一个」时并行新增。你只做简短确认。
+- 不自行更换 Agent 或模型；用户没指定就沿用当前选择。
+- 回复简短、口语化，1~3 句即可；不要输出 JSON，不要假装自己执行了任何操作。
+- 电脑/执行环境不可用时，直说现在办不了、等电脑回来再继续。"""
+
+#: 项目助理的系统提示：只读已有对话、按项目汇报，不派子任务。
+PROJECT_ASSISTANT_PROMPT = """你是 Flux 的项目助理，负责跟踪一个项目的进度。
+
+项目：{description}
+只读上下文（来自已有对话，不要修改它们）：
+{context}
+
+规则：
+- 只根据上面的只读上下文和用户的话汇报进度、跟进事项、指出缺口。
+- 你没有创建临时子任务的能力，也不要建议用户在这里执行；需要动手请让用户回主助理。
+- 不要向来源对话发消息，也不要编造上下文里没有的进展。
+- 回复简洁，1~4 句中文；不要输出 JSON。"""
+
+
 @dataclass(frozen=True)
 class AssistantTurn:
     """一轮助手回复：文本 + 结构化追问/需求确认/计划 + 真实模型调用元信息。"""
@@ -116,17 +144,17 @@ class TaskAssistant:
         history: list[ChatMessage] | None = None,
         context: str | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
+        persona: str = "task",
     ) -> AssistantTurn:
         """调用模型生成一轮回复。history 为早前的对话（只含纯文本消息，升序）。
 
         `on_delta` 非空时走流式：把模型输出里用户可见的回复部分（JSON 协议的
         `reply` 字段或纯文本）按增量回调出去，前端据此逐字渲染气泡。
+
+        `persona` 决定系统提示：task（原有澄清/计划助手）、dispatcher（主助理调度员）、
+        project_assistant（项目助理，只读汇报）。
         """
-        system = SYSTEM_PROMPT.format(
-            description=description,
-            context=f"项目上下文（来自 Project Brain）：\n{context}\n" if context else "",
-            dimensions="、".join(CONFIRMATION_DIMENSIONS),
-        )
+        system = _system_prompt(persona=persona, description=description, context=context)
         messages = [ChatMessage(role="system", content=system)]
         messages.extend((history or [])[-self._max_history :])
         messages.append(ChatMessage(role="user", content=message))
@@ -221,6 +249,25 @@ class TaskAssistant:
             },
             latency_ms=latency_ms,
         )
+
+
+def _system_prompt(*, persona: str, description: str, context: str | None) -> str:
+    """按角色拼系统提示；未知角色退回原有任务助手提示（向后兼容）。"""
+    if persona == "dispatcher":
+        return DISPATCHER_PROMPT.format(
+            description=description,
+            context=f"最近对话：\n{context}\n" if context else "",
+        )
+    if persona == "project_assistant":
+        return PROJECT_ASSISTANT_PROMPT.format(
+            description=description,
+            context=context or "（暂无来源对话）",
+        )
+    return SYSTEM_PROMPT.format(
+        description=description,
+        context=f"项目上下文（来自 Project Brain）：\n{context}\n" if context else "",
+        dimensions="、".join(CONFIRMATION_DIMENSIONS),
+    )
 
 
 def visible_reply_prefix(raw: str) -> str:

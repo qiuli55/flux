@@ -538,6 +538,8 @@ fun V2TaskChatScreen(
     onOpenAssistantBoard: (() -> Unit)? = null,
     /** 对话末尾待审核卡：跳到本次任务的文件改动列表。 */
     onOpenChanges: () -> Unit = {},
+    /** 临时子任务卡片：点开只读过程视图。 */
+    onOpenSubtask: (String) -> Unit = {},
 ) {
     val vm = taskViewModel(taskId)
     val state by vm.state.collectAsState()
@@ -643,8 +645,10 @@ fun V2TaskChatScreen(
             secured
         }
     }
-    // 只在任务还没加载出来时锁输入；已结束的对话可以继续发消息（后端会把任务重开并起新一轮）。
-    val locked = task == null
+    // 临时子任务是只读过程视图：不能在里面直接指挥 Agent，要调整请回主助理对话。
+    val readOnlySubtask = task?.parentTaskId != null || task?.origin == "subtask"
+    // 只在任务还没加载出来时锁输入；已结束的普通对话可以继续发消息。
+    val locked = task == null || readOnlySubtask
     // 执行中也能切换 Agent：排队到本轮结束后生效；模型仍只在非执行中可换。
     val canSwitchAgent = canSwitchTaskAgent(task)
     val canSwitchModel = canSwitchTaskModel(task)
@@ -696,7 +700,9 @@ fun V2TaskChatScreen(
             onRetryStream = { vm.retryStream() },
             runSummaries = runSummaries,
             onOpenRunTrace = { vm.openRunTrace(it) },
+            onOpenSubtask = onOpenSubtask,
             locked = locked,
+            lockedHint = if (readOnlySubtask) "这是只读过程视图，要调整请回到助理对话" else null,
             showDelete = true,
             canSwitchAgent = canSwitchAgent,
             canSwitchModel = canSwitchModel,
@@ -812,6 +818,19 @@ private fun TaskMessage.toV2Message(): V2Message? {
             )
         }
     }
+    // 临时子任务卡片：主助理派活 / 子任务终态回写。点开是只读过程视图。
+    if (kind == "subtask" || kind == "subtask_result") {
+        parseSubtaskCard(payload)?.let { card ->
+            return V2Message(
+                mapped,
+                text,
+                clockLabel(createdAt),
+                createdAtEpoch = parseEpochSeconds(createdAt),
+                kind = kind,
+                subtaskCard = card,
+            )
+        }
+    }
     // 安全输入卡片：密钥只进本机密钥库，正文仍是助手写的「填到下面输入框」那段落
     if (kind == "secure_input") {
         parseSecureInputCard(id, payload)?.let { card ->
@@ -849,6 +868,21 @@ private fun TaskMessage.toV2Message(): V2Message? {
     // run_finished 携带 run_id：答案气泡上方据此显示「任务耗时」入口
     val runId = if (kind == "run_finished") payloadRunId(payload) else ""
     return V2Message(mapped, text, clockLabel(createdAt), createdAtEpoch = parseEpochSeconds(createdAt), kind = kind, runId = runId)
+}
+
+/** 解析 subtask / subtask_result 消息 payload → 对话里的临时子任务卡片。 */
+internal fun parseSubtaskCard(payload: JsonElement?): V2SubtaskCard? {
+    val root = payload as? JsonObject ?: return null
+    val id = root.stringField("subtask_id") ?: return null
+    return V2SubtaskCard(
+        subtaskId = id,
+        title = root.stringField("title") ?: "临时子任务",
+        status = root.stringField("status") ?: "pending",
+        statusLabel = root.stringField("status_label") ?: "已派出",
+        agentId = root.stringField("agent_id"),
+        model = root.stringField("model_name"),
+        result = root.stringField("result"),
+    )
 }
 
 /** 从消息 payload 里取 run_id（run_finished 才有）。 */

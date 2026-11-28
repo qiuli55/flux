@@ -38,8 +38,10 @@ _RESPONSE_KEYS = {
     "permission_mode",
     # 执行中切换 Agent 的排队目标（本轮 Run 收尾后生效）
     "pending_agent_id",
-    # 对话来源（chat = 首页普通对话 / assistant = 助理对话）
+    # 对话来源（chat / assistant / subtask / project_assistant）
     "origin",
+    # 临时子任务挂在哪条主助理对话下（NULL = 独立对话）
+    "parent_task_id",
     # Bot 档案（对话即 bot：名称 + 形状 × 颜色头像）
     "bot_name",
     "avatar_shape",

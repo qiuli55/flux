@@ -82,6 +82,19 @@ class TaskCreateRequest(BaseModel):
     start: bool = True
 
 
+class ProjectAssistantCreateRequest(BaseModel):
+    """创建项目助理（2026-11-28）。
+
+    `confirmed` 必须为 true：产品要求「用户确认前什么都不创建；取消就是不创建」。
+    `source_task_ids` 只是只读上下文，不会被写入；项目助理自己的常驻对话由服务端建。
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    project_id: str | None = Field(default=None, max_length=64)
+    source_task_ids: list[str] = Field(default_factory=list, max_length=200)
+    confirmed: bool = False
+
+
 class TaskMessageCreateRequest(BaseModel):
     """发一条任务消息（任务执行中心的对话输入）。
 

@@ -230,6 +230,19 @@ export const api = {
   },
   sendTaskMessage: (taskId: string, content: string) =>
     getData<TaskReplyOutcome>("POST", `/tasks/${taskId}/messages`, { content }),
+  /** 某主助理对话下的临时子任务（只读过程视图的入口） */
+  listSubtasks: (taskId: string) =>
+    getData<import("./types").SubtaskSummary[]>("GET", `/tasks/${taskId}/subtasks`),
+  /** 右上角切换器：主助理 + 已创建的项目助理（不含临时子任务） */
+  listAssistants: () => getData<import("./types").AssistantList>("GET", "/assistants"),
+  assistantSuggestions: () =>
+    getData<import("./types").AssistantSuggestion[]>("GET", "/assistants/suggestions"),
+  createAssistant: (body: {
+    name: string;
+    project_id?: string | null;
+    source_task_ids?: string[];
+    confirmed: boolean;
+  }) => getData<import("./types").AssistantEntry>("POST", "/assistants", body),
   startTask: (taskId: string, confirmation?: ConfirmationItem[]) =>
     getData<TaskStartOutcome>(
       "POST",

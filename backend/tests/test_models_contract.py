@@ -124,6 +124,9 @@ SPEC_TABLES = {
     # 分层记忆（scope=group 本群 / scope=team 跨群），同属迁移 b7d1a9c4e320。
     "chat_group_member_states",
     "chat_group_memories",
+    # 项目助理（2026-11-28）：与主助理同级的入口，有自己的常驻对话 conversation_task_id；
+    # source_task_ids 只作只读上下文，不写入来源对话。
+    "project_assistants",
 }
 
 

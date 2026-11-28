@@ -41,7 +41,42 @@ public sealed record TaskDetail(
     TaskDecision? PendingDecision,
     string? RunId,
     string? Model,
-    string? ApiKeyId);
+    string? ApiKeyId,
+    string? Origin = null,
+    string? ParentTaskId = null);
+
+/// <summary>右上角助理切换项：主助理或已创建的项目助理。</summary>
+public sealed record AssistantEntry(
+    string Id,
+    string Name,
+    string Kind,
+    string? ConversationTaskId,
+    string? ProjectId = null,
+    string[]? SourceTaskIds = null,
+    string? StatusLabel = null);
+
+public sealed record AssistantList(AssistantEntry Master, AssistantEntry[] Projects);
+
+/// <summary>项目助理创建建议：只建议，不创建。</summary>
+public sealed record AssistantSuggestion(
+    string Name,
+    string? ProjectId,
+    int ConversationCount,
+    string[] ConversationIds,
+    string[]? Titles = null);
+
+/// <summary>某主对话下的临时子任务摘要。</summary>
+public sealed record SubtaskSummary(
+    string SubtaskId,
+    string? ParentTaskId,
+    string Status,
+    string StatusLabel,
+    string? AgentId,
+    string? ModelName,
+    string? ApiKeyId,
+    string Title,
+    string? Result = null,
+    string? CreatedAt = null);
 
 /// <summary>GET/POST /tasks/{id}/messages 的单条消息。</summary>
 public sealed record TaskMessage(

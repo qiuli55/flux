@@ -66,6 +66,15 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     origin: Mapped[str] = mapped_column(
         String(16), nullable=False, default="chat", server_default="chat", index=True
     )
+    # 临时子任务（2026-11-28）：挂在主助理对话下的一次执行工作。
+    # 子任务本身是真实 Task（有 Run / 流式输出 / 产出），但只作为只读过程视图展示，
+    # 不进「对话」列表。删除父对话时级联删除子任务。
+    parent_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
     # Bot 档案（2026-11-04）：每条对话都视为一个 bot，群聊里用它展示身份。
     # 头像不允许上传图片，只由「形状 × 颜色」组合而成（取值见 flux.core.group.avatar）。
     bot_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -110,6 +119,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
                 str(self.pending_agent_id) if self.pending_agent_id is not None else None
             ),
             "origin": self.origin or "chat",
+            "parent_task_id": (
+                str(self.parent_task_id) if self.parent_task_id is not None else None
+            ),
             "bot_name": self.bot_name,
             "avatar_shape": self.avatar_shape or "circle",
             "avatar_color": self.avatar_color or "violet",

@@ -83,6 +83,7 @@ class TaskRepository:
         bot_name: str | None = None,
         avatar_shape: str = "circle",
         avatar_color: str = "violet",
+        parent_task_id: uuid.UUID | None = None,
     ) -> Task:
         """写入一条 pending 任务。project_id 指向不存在的项目时抛 NotFoundError。
 
@@ -113,6 +114,7 @@ class TaskRepository:
                 bot_name=(bot_name or "").strip()[:64] or None,
                 avatar_shape=avatar_shape,
                 avatar_color=avatar_color,
+                parent_task_id=parent_task_id,
             )
             session.add(task)
             await self._commit(session)
@@ -135,8 +137,14 @@ class TaskRepository:
         status: TaskStatus | None = None,
         origin: TaskOrigin | None = None,
         limit: int = 50,
+        parent_task_id: uuid.UUID | None = None,
+        exclude_children: bool = True,
     ) -> list[Task]:
-        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。"""
+        """按创建时间倒序列出任务；project_id / status / origin 为可选过滤条件（列表页用）。
+
+        默认排除临时子任务（`parent_task_id IS NULL`）：子任务只挂在主助理对话下，
+        不能出现在「对话」列表里像一段独立聊天。传 parent_task_id 可只取某父对话的子任务。
+        """
         statement = select(Task).order_by(Task.created_at.desc(), Task.id.desc()).limit(limit)
         if project_id is not None:
             statement = statement.where(Task.project_id == project_id)
@@ -144,8 +152,27 @@ class TaskRepository:
             statement = statement.where(Task.status == status.value)
         if origin is not None:
             statement = statement.where(Task.origin == origin.value)
+        if parent_task_id is not None:
+            statement = statement.where(Task.parent_task_id == parent_task_id)
+        elif exclude_children:
+            statement = statement.where(Task.parent_task_id.is_(None))
         async with self._session_factory() as session:
             return list(await session.scalars(statement))
+
+    async def list_children(self, parent_id: uuid.UUID) -> list[Task]:
+        """某主对话下的全部临时子任务（按创建时间升序，卡片按派出顺序展示）。"""
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(Task)
+                    .where(Task.parent_task_id == parent_id)
+                    .order_by(Task.created_at.asc(), Task.id.asc())
+                )
+            )
+
+    async def list_project_assistant_children(self, parent_id: uuid.UUID) -> list[Task]:
+        """按顺序取某父对话的子任务（别名，语义更清楚的调用点用）。"""
+        return await self.list_children(parent_id)
 
     async def list_conversations(
         self,
@@ -155,6 +182,7 @@ class TaskRepository:
         origin: TaskOrigin | None = None,
         keyword: str | None = None,
         limit: int = 50,
+        exclude_children: bool = True,
     ) -> list[ConversationSummary]:
         """对话列表 + 每条的消息条数 / 最后消息时间与摘录（助理通读全部对话用）。
 
@@ -191,6 +219,9 @@ class TaskRepository:
             statement = statement.where(Task.origin == origin.value)
         if keyword:
             statement = statement.where(Task.description.ilike(f"%{keyword.strip()}%"))
+        if exclude_children:
+            # 临时子任务不是独立对话：通读全部对话时也不该把它们当成用户的历史聊天
+            statement = statement.where(Task.parent_task_id.is_(None))
         async with self._session_factory() as session:
             rows = await session.execute(statement)
             return [
@@ -554,12 +585,20 @@ class TaskRepository:
         """
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
-            messages = await session.execute(
-                delete(TaskMessage).where(TaskMessage.task_id == task_id)
+            # 临时子任务随父对话一起删除：先收集子任务 id，再逐个清消息/运行记录。
+            # 不能只依赖数据库 ON DELETE CASCADE——SQLite 默认不开外键约束。
+            children = list(
+                await session.scalars(select(Task.id).where(Task.parent_task_id == task_id))
             )
-            runs = await session.execute(delete(AgentRun).where(AgentRun.task_id == task_id))
+            all_ids = [task_id, *children]
+            messages = await session.execute(
+                delete(TaskMessage).where(TaskMessage.task_id.in_(all_ids))
+            )
+            runs = await session.execute(delete(AgentRun).where(AgentRun.task_id.in_(all_ids)))
             # 执行轨迹（思考/命令/输出）是对话内容的一部分，随对话一起删除
-            await session.execute(delete(RunTraceItem).where(RunTraceItem.task_id == task_id))
+            await session.execute(delete(RunTraceItem).where(RunTraceItem.task_id.in_(all_ids)))
+            if children:
+                await session.execute(delete(Task).where(Task.id.in_(children)))
             await session.delete(task)
             await self._commit(session)
             return int(messages.rowcount or 0), int(runs.rowcount or 0)

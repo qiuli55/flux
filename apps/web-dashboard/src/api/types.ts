@@ -385,6 +385,49 @@ export interface Task {
   avatar_shape?: string;
   /** bot 头像颜色（见 AVATAR_COLORS） */
   avatar_color?: string;
+  /** 对话来源：chat / assistant / subtask / project_assistant */
+  origin?: string;
+  /** 临时子任务挂在哪条主助理对话下；null = 独立对话 */
+  parent_task_id?: string | null;
+}
+
+/** 右上角助理切换项：主助理或已创建的项目助理。 */
+export interface AssistantEntry {
+  id: string;
+  name: string;
+  kind: "master" | "project";
+  conversation_task_id: string | null;
+  project_id?: string | null;
+  source_task_ids?: string[];
+  status_label?: string | null;
+}
+
+export interface AssistantList {
+  master: AssistantEntry;
+  projects: AssistantEntry[];
+}
+
+/** 某主对话下的临时子任务摘要（GET /tasks/{id}/subtasks）。 */
+export interface SubtaskSummary {
+  subtask_id: string;
+  parent_task_id: string | null;
+  status: string;
+  status_label: string;
+  agent_id: string | null;
+  model_name: string | null;
+  api_key_id: string | null;
+  title: string;
+  result?: string | null;
+  created_at?: string | null;
+}
+
+/** 项目助理创建建议：只建议，不创建。 */
+export interface AssistantSuggestion {
+  name: string;
+  project_id: string | null;
+  conversation_count: number;
+  conversation_ids: string[];
+  titles: string[];
 }
 
 /** 密钥库条目（GET /api/v1/keys）：永远不含明文/密文 */
@@ -443,6 +486,16 @@ export interface TaskMessagePayload {
   /** 历史数据里的旧字段，保留兼容渲染 */
   clarify?: { label: string; value: string }[];
   steps?: string[];
+  /** 临时子任务卡片（kind = subtask / subtask_result） */
+  subtask_id?: string;
+  parent_task_id?: string | null;
+  status?: string;
+  status_label?: string;
+  agent_id?: string | null;
+  model_name?: string | null;
+  api_key_id?: string | null;
+  title?: string;
+  result?: string;
 }
 
 /** 任务对话消息（GET /api/v1/tasks/{id}/messages） */

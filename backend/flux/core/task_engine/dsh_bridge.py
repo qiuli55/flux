@@ -151,6 +151,8 @@ class TaskRunBridge:
         self._billing: Any | None = None
         #: 额度快照协程的强引用
         self._snapshot_jobs: set[asyncio.Task[Any]] = set()
+        #: 临时子任务终态 → 父对话（可选）：把结果写回主助理对话，不能只烂在子任务里
+        self._parent_notifier: Callable[[Any, TaskStatus, str], Awaitable[None]] | None = None
 
     def set_billing(self, billing: Any | None) -> None:
         """注入计费服务：容器在 BillingService 装配完成后调用。"""
@@ -165,6 +167,15 @@ class TaskRunBridge:
     ) -> None:
         """注入排队切换回调：参数是任务、本轮 run_id、任务终态。"""
         self._switch_handler = handler
+
+    def set_parent_notifier(
+        self, handler: Callable[[Any, TaskStatus, str], Awaitable[None]] | None
+    ) -> None:
+        """注入父对话通知回调：参数是子任务、终态、结果正文。
+
+        子任务不是独立对话，完成/失败必须在父对话里说一句并给出入口。
+        """
+        self._parent_notifier = handler
 
     def attach(self, bus: EventBus) -> None:
         for event in _STATUS_BY_EVENT:
@@ -234,6 +245,9 @@ class TaskRunBridge:
                     )
                 ],
             )
+            await self._notify_parent(
+                task, status, _summary(status, {"run_id": run_id, "error": error})
+            )
             await self._write_memory_card(
                 task, run_id, status=status, body={"run_id": run_id, "error": error}
             )
@@ -300,6 +314,8 @@ class TaskRunBridge:
                 },
             )
             self._stream.unbind_run(run_id)
+        # 临时子任务：终态必须回到父对话（主助理），不能只留在子任务的只读过程视图里
+        await self._notify_parent(task, status, message.content)
         # 上下文闭环：任务收尾把"这轮做了什么、结果如何"写进项目 Brain 的累积区，
         # 下一轮（可能是另一个 Agent）开工时 context.get 就能看到，不必从人审队列反推。
         await self._sediment(task, status=status, run_id=run_id, body=body)
@@ -307,6 +323,17 @@ class TaskRunBridge:
         await self._write_memory_card(task, run_id, status=status, body=body)
         # 无感切换：本轮已真实收尾，排队中的 Agent 切换此刻生效并生成交接卡
         await self._apply_pending_switch(task, run_id, status)
+
+    async def _notify_parent(self, task: Any, status: TaskStatus, result: str) -> None:
+        """子任务终态回写父对话；失败只记日志，不影响子任务自身收尾。"""
+        if self._parent_notifier is None or getattr(task, "parent_task_id", None) is None:
+            return
+        try:
+            await self._parent_notifier(task, status, result)
+        except Exception:  # noqa: BLE001 - 父对话写失败不能改写子任务终态
+            logger.warning(
+                "子任务终态回写父对话失败 task=%s", getattr(task, "id", "?"), exc_info=True
+            )
 
     async def _apply_pending_switch(
         self, task: Any, run_id: str | None, status: TaskStatus

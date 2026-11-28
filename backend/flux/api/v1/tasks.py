@@ -38,6 +38,8 @@ from flux.core.task_engine.context_usage import (
 )
 from flux.core.task_engine.decisions import build_decision, reject_decision, resolve_decision
 from flux.core.task_engine.repository import MessageDraft
+from flux.core.task_engine.subtask_dispatcher import subtask_payload
+from flux.core.task_engine.subtask_router import RouteAction, route_message
 from flux.enums import (
     DecisionMode,
     DecisionStatus,
@@ -108,6 +110,67 @@ def _task_dict(task: Task) -> dict[str, object]:
     return task.to_dict()
 
 
+#: 子任务仍在进行中的状态：更换时要停掉的就是这些。
+_ACTIVE_SUBTASK_STATUSES = {
+    TaskStatus.PENDING.value,
+    TaskStatus.RUNNING.value,
+    TaskStatus.WAITING_FOR_USER_DECISION.value,
+}
+
+
+def _is_subtask(task: Task) -> bool:
+    return task.parent_task_id is not None or task.origin == TaskOrigin.SUBTASK.value
+
+
+def _require_not_subtask(task: Task, task_id: str) -> None:
+    """子任务是只读过程视图：用户不能在里面直接指挥 Agent。"""
+    if _is_subtask(task):
+        raise ConflictError(
+            "这是临时子任务，只能查看过程；要调整请回到助理对话说，由助理转达或重新安排。",
+            details={"task_id": task_id, "parent_task_id": str(task.parent_task_id)},
+        )
+
+
+async def _active_children(container: Container, parent_id: uuid.UUID) -> list[Task]:
+    children = await container.task_repo.list_children(parent_id)
+    return [child for child in children if child.status in _ACTIVE_SUBTASK_STATUSES]
+
+
+def _resolve_agent_hint(container: Container, hint: str | None) -> uuid.UUID | None:
+    """把「换用 Codex 做」里的名字解析成注册表 Agent id；认不出就返回 None。"""
+    if not hint:
+        return None
+    wanted = hint.strip().lower()
+    if not wanted:
+        return None
+    for handle in container.agents.list():
+        name = str(getattr(handle.spec, "name", "") or "").lower()
+        if not name:
+            continue
+        if wanted == name or wanted in name or name in wanted:
+            return handle.id
+    return None
+
+
+def _dispatch_selection(
+    container: Container, parent: Task, decision: Any
+) -> tuple[uuid.UUID | None, str | None, uuid.UUID | None]:
+    """算出新子任务应快照的 agent / model / api_key_id。
+
+    默认用父对话当下的选择；只有用户明确说了「换用 X」才改，助理不得自行更换。
+    """
+    agent_id = _resolve_agent_hint(container, getattr(decision, "agent_hint", None))
+    if agent_id is not None:
+        # 换 Agent 与现有切换口径一致：模型覆盖失效，回到新 Agent 的默认模型
+        model = getattr(decision, "model_hint", None)
+        return agent_id, model, None
+    model_hint = getattr(decision, "model_hint", None)
+    if model_hint:
+        key_id = parent.api_key_id if model_hint == parent.model else None
+        return parent.agent_id, model_hint, key_id
+    return parent.agent_id, parent.model, parent.api_key_id
+
+
 async def _record_attachments(
     container: Container, task_uuid: uuid.UUID, files: list[UploadedFile]
 ) -> None:
@@ -157,6 +220,16 @@ def _task_id(value: str) -> uuid.UUID:
 async def create_task(
     payload: TaskCreateRequest, container: Container = Depends(get_container)
 ) -> dict[str, object]:
+    if payload.origin == TaskOrigin.SUBTASK:
+        raise BadRequestError(
+            "临时子任务只能由主助理派出，不能直接创建",
+            details={"origin": payload.origin.value},
+        )
+    if payload.origin == TaskOrigin.PROJECT_ASSISTANT:
+        raise BadRequestError(
+            "项目助理只能通过 /assistants 创建",
+            details={"origin": payload.origin.value},
+        )
     project_id = _parse_uuid(payload.project_id, field="project_id") if payload.project_id else None
     agent_id = _parse_uuid(payload.agent_id, field="agent_id") if payload.agent_id else None
     runtime = DEFAULT_RUNTIME
@@ -220,7 +293,12 @@ async def create_task(
         )
     await _record_attachments(container, task.id, files)
     # 建 bot 时只落对话、不启动执行：否则会拿 bot 名字当需求直接跑 Agent。
-    if payload.start:
+    # 主助理对话（origin=assistant）同样不在父任务上起 Agent：执行一律走临时子任务，
+    # 父对话只负责快聊与调度。
+    if payload.start and task.origin not in {
+        TaskOrigin.ASSISTANT.value,
+        TaskOrigin.PROJECT_ASSISTANT.value,
+    }:
         container.scheduler.submit(
             str(task.id),
             task.description,
@@ -263,8 +341,15 @@ async def list_tasks(
     if limit < 1 or limit > 200:
         raise BadRequestError("limit 必须在 1~200 之间", details={"limit": limit})
     tasks = await container.task_repo.list(
-        project_id=project_uuid, status=wanted, origin=origin_filter, limit=limit
+        project_id=project_uuid,
+        status=wanted,
+        origin=origin_filter,
+        limit=limit,
+        exclude_children=origin_filter != TaskOrigin.SUBTASK,
     )
+    if origin_filter is None:
+        # 项目助理对话只从右上角切换器进入，不在「对话」列表里当普通聊天出现
+        tasks = [task for task in tasks if task.origin != TaskOrigin.PROJECT_ASSISTANT.value]
     return ok([_task_dict(t) for t in tasks], metadata={"count": len(tasks)})
 
 
@@ -281,6 +366,24 @@ async def get_task(
 ) -> dict[str, object]:
     task = await container.task_repo.get(_task_id(task_id))
     return ok(_task_dict(task))
+
+
+@router.get("/{task_id}/subtasks")
+async def list_task_subtasks(
+    task_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """某主助理对话下的临时子任务（按派出顺序），供卡片与只读过程视图使用。"""
+    task_uuid = _task_id(task_id)
+    await container.task_repo.get(task_uuid)
+    children = await container.task_repo.list_children(task_uuid)
+    summaries = [
+        {
+            **subtask_payload(child),
+            "created_at": child.created_at.isoformat() if child.created_at else None,
+        }
+        for child in children
+    ]
+    return ok(summaries, metadata={"count": len(summaries)})
 
 
 @router.get("/{task_id}/messages")
@@ -428,24 +531,34 @@ async def create_task_message(
     payload: TaskMessageCreateRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """发一条消息并取回助手的真实回复。
+    """发一条消息并取回回复。
 
-    用户消息先落库（模型调用失败时它也不会丢，刷新页面仍在），
-    随后调用模型生成回复并落库——两个步骤都是真实数据，服务端不接受伪造的 assistant 消息。
+    - 普通对话（origin=chat）：助手回复 + 真实 Agent 执行，行为不变；
+    - 主助理（origin=assistant）：只快聊；执行需求派临时子任务，父请求不等待执行；
+    - 项目助理（origin=project_assistant）：只读已有对话汇报，不派子任务；
+    - 临时子任务（origin=subtask）：拒绝用户直接发消息，只允许查看过程。
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
+    _require_not_subtask(task, task_id)
     content = payload.content.strip()
     files = resolve_uploads(container.settings, payload.attachment_ids)
     if not content and not files:
         raise ValidationError(
             "消息内容不能为空", details={"task_id": task_id, "attachments": len(files)}
         )
+    is_assistant = task.origin in {
+        TaskOrigin.ASSISTANT.value,
+        TaskOrigin.PROJECT_ASSISTANT.value,
+    }
     if task.status in _FINAL_STATUSES:
-        raise ConflictError(
-            f"任务 {task_id} 已处于终态 {task.status}，不能再追加消息",
-            details={"task_id": task_id, "status": task.status},
-        )
+        if not is_assistant:
+            raise ConflictError(
+                f"任务 {task_id} 已处于终态 {task.status}，不能再追加消息",
+                details={"task_id": task_id, "status": task.status},
+            )
+        # 已结束的助理对话：恢复为可追加消息，但不启动父 Agent（执行一律走子任务）
+        task = await container.task_repo.reopen(task_uuid)
 
     user_message = (
         await container.task_repo.add_messages(
@@ -457,6 +570,24 @@ async def create_task_message(
     )
     await _record_attachments(container, task_uuid, files)
 
+    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
+    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
+    prompt_text = content or _attachments_brief(files)
+    if files and content:
+        prompt_text = content + "\n\n" + _attachments_brief(files)
+
+    if task.origin == TaskOrigin.PROJECT_ASSISTANT.value:
+        return await _project_assistant_reply(container, task, user_message, prompt_text)
+    if task.origin == TaskOrigin.ASSISTANT.value:
+        return await _assistant_reply(container, task, user_message, prompt_text)
+    return await _chat_reply(container, task, user_message, prompt_text)
+
+
+async def _chat_reply(
+    container: Container, task: Task, user_message: Any, prompt_text: str
+) -> dict[str, object]:
+    """普通对话：助手真实回复，并把任务推进 running（既有行为保持不变）。"""
+    task_uuid = task.id
     history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
     context = (
         await container.brain.context(task.project_id) if task.project_id is not None else None
@@ -466,11 +597,6 @@ async def create_task_message(
     async def _on_delta(text: str) -> None:
         await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
 
-    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
-    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
-    prompt_text = content or _attachments_brief(files)
-    if files and content:
-        prompt_text = content + "\n\n" + _attachments_brief(files)
     try:
         turn = await container.assistant.respond(
             description=task.description,
@@ -492,7 +618,6 @@ async def create_task_message(
             [
                 MessageDraft(
                     role=TaskMessageRole.ASSISTANT.value,
-                    # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
                     kind="secure_input" if turn.secure_input else "text",
                     content=turn.reply,
                     payload=turn.payload(),
@@ -503,21 +628,160 @@ async def create_task_message(
     await container.task_stream.publish(
         task_uuid, "assistant_message", {"message": reply.to_dict()}
     )
-
     if turn.confirmation:
-        # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
-        # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
         task = await container.task_repo.set_confirmation(
             task_uuid,
             {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
         )
-
     if task.status == TaskStatus.PENDING.value:
-        # 平台已真实开始处理这条任务：状态从 pending 进入 running（有实际动作才改状态）
         task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
     return ok(
         {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
         metadata={"provider": turn.provider, "model": turn.model},
+    )
+
+
+async def _assistant_reply(
+    container: Container, task: Task, user_message: Any, prompt_text: str
+) -> dict[str, object]:
+    """主助理：闲聊走快路径；执行需求立即派子任务，父请求不等执行。"""
+    task_uuid = task.id
+    active = await _active_children(container, task_uuid)
+    decision = route_message(prompt_text, has_active_subtask=bool(active))
+
+    if decision.action is RouteAction.CHAT:
+        history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
+        context = (
+            await container.brain.context(task.project_id) if task.project_id is not None else None
+        )
+        await container.task_stream.publish(task_uuid, "assistant_start", {})
+
+        async def _on_delta(text: str) -> None:
+            await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
+        try:
+            turn = await container.assistant.respond(
+                description=task.description,
+                message=prompt_text,
+                history=[
+                    ChatMessage(role=m.role, content=m.content)
+                    for m in history
+                    if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
+                ],
+                context=context,
+                on_delta=_on_delta,
+                persona="dispatcher",
+            )
+        except Exception as exc:  # noqa: BLE001
+            await container.task_stream.publish(
+                task_uuid, "assistant_error", {"error": str(exc)[:500]}
+            )
+            raise
+        reply = (
+            await container.task_repo.add_messages(
+                task_uuid,
+                [
+                    MessageDraft(
+                        role=TaskMessageRole.ASSISTANT.value,
+                        kind="secure_input" if turn.secure_input else "text",
+                        content=turn.reply,
+                        payload=turn.payload(),
+                    )
+                ],
+            )
+        )[0]
+        await container.task_stream.publish(
+            task_uuid, "assistant_message", {"message": reply.to_dict()}
+        )
+        # 注意：这里不改父任务状态。助理-only 的回复不代表电脑 Agent 正在执行。
+        return ok(
+            {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
+            metadata={
+                "provider": turn.provider,
+                "model": turn.model,
+                "route": decision.action.value,
+            },
+        )
+
+    agent_id, model, key_id = _dispatch_selection(container, task, decision)
+    replace = decision.action is RouteAction.REPLACE
+    if replace and not active:
+        note = "当前没有正在跑的子任务，已按你的要求派一个新的。"
+    elif decision.action is RouteAction.ADD:
+        note = "已再开一个子任务并行处理，原来那个继续跑。"
+    else:
+        note = None
+    child, messages = await container.subtask_dispatcher.dispatch(
+        task,
+        prompt_text,
+        agent_id=agent_id,
+        model=model,
+        api_key_id=key_id,
+        replace=replace,
+        note=note,
+    )
+    return ok(
+        {
+            "task": _task_dict(task),
+            "messages": [user_message.to_dict(), *[m.to_dict() for m in messages]],
+            "subtask": subtask_payload(child),
+        },
+        metadata={
+            "route": decision.action.value,
+            "subtask_id": str(child.id),
+            "reason": decision.reason,
+        },
+    )
+
+
+async def _project_assistant_reply(
+    container: Container, task: Task, user_message: Any, prompt_text: str
+) -> dict[str, object]:
+    """项目助理：只读来源对话做汇总；绝不派子任务、绝不写来源对话。"""
+    task_uuid = task.id
+    assistant = await container.project_assistants.get_by_conversation(task_uuid)
+    context = (
+        await container.project_assistant_service.read_only_context(assistant)
+        if assistant is not None
+        else "（还没有关联任何项目对话）"
+    )
+    history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
+    await container.task_stream.publish(task_uuid, "assistant_start", {})
+
+    async def _on_delta(text: str) -> None:
+        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
+    turn = await container.assistant.respond(
+        description=assistant.name if assistant is not None else task.description,
+        message=prompt_text,
+        history=[
+            ChatMessage(role=m.role, content=m.content)
+            for m in history
+            if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
+        ],
+        context=context,
+        on_delta=_on_delta,
+        persona="project_assistant",
+    )
+    reply = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    content=turn.reply,
+                    payload=turn.payload(),
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "assistant_message", {"message": reply.to_dict()}
+    )
+    # 子任务能力边界：项目助理永远不派子任务，父对话保持可聊
+    return ok(
+        {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
+        metadata={"provider": turn.provider, "model": turn.model, "route": "chat"},
     )
 
 
@@ -685,6 +949,15 @@ async def continue_task(
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
+    _require_not_subtask(task, task_id)
+    if task.origin in {
+        TaskOrigin.ASSISTANT.value,
+        TaskOrigin.PROJECT_ASSISTANT.value,
+    }:
+        raise ConflictError(
+            "助理对话不直接在父任务上续跑：请直接发消息，执行需求会派临时子任务。",
+            details={"task_id": task_id, "origin": task.origin},
+        )
     content = payload.content.strip()
     files = resolve_uploads(container.settings, payload.attachment_ids)
     if not content and not files:
@@ -828,6 +1101,7 @@ async def switch_task_agent(
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
+    _require_not_subtask(task, task_id)
     _parse_uuid(payload.agent_id, field="agent_id")
     target = container.agents.get(payload.agent_id)
     if target.spec.kind == AGENT_KIND_EXTERNAL:
@@ -866,6 +1140,7 @@ async def switch_task_model(
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
+    _require_not_subtask(task, task_id)
     if task.status == TaskStatus.RUNNING.value:
         raise ConflictError(
             f"任务 {task_id} 正在执行，先停止 Agent 再切换模型",
@@ -902,6 +1177,28 @@ async def start_task(
     """
     task_uuid = _task_id(task_id)
     task = await _require_open_task(container, task_uuid, task_id)
+    _require_not_subtask(task, task_id)
+    if task.origin == TaskOrigin.PROJECT_ASSISTANT.value:
+        raise ConflictError(
+            "项目助理没有创建临时子任务的能力；需要执行请回到主助理。",
+            details={"task_id": task_id, "origin": task.origin},
+        )
+    if task.origin == TaskOrigin.ASSISTANT.value:
+        # 旧客户端仍可能 create(start=true) 后调 /start：执行必须发生在子任务里，
+        # 绝不能把父助理对话变成执行会话。
+        child, messages = await container.subtask_dispatcher.dispatch(
+            task,
+            task.description,
+            note="已按这个需求派出临时子任务，你可以继续跟我说。",
+        )
+        return ok(
+            {
+                "task": _task_dict(task),
+                "run": {},
+                "message": messages[0].to_dict(),
+                "subtask": subtask_payload(child),
+            }
+        )
     if task.run_id:
         raise ConflictError(
             f"任务 {task_id} 已开始执行，不能重复触发",

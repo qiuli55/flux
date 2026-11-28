@@ -450,6 +450,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  /** 右上角切换器：主助理 + 已创建的项目助理（不含临时子任务） */
+  const [assistants, setAssistants] = useState<{
+    master: { id: string; name: string; conversation_task_id: string | null };
+    projects: { id: string; name: string; conversation_task_id: string | null }[];
+  } | null>(null);
+  const [activeAssistantId, setActiveAssistantId] = useState("master");
   /** 创建 Bot 弹窗（对话即 bot：名称 + 头像在创建时定） */
   const [createBotOpen, setCreateBotOpen] = useState(false);
   const [createBotSeed, setCreateBotSeed] = useState("");
@@ -544,7 +550,14 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   const engineRef = useRef<HTMLDivElement>(null);
   const enginePopRef = useRef<HTMLDivElement>(null);
 
-  const task = useMemo(() => tasks.find((item) => item.id === taskId) ?? null, [tasks, taskId]);
+  // 子任务只作为只读过程视图打开，不混进左侧对话列表（API 默认也不返回它们）
+  const [subtaskTask, setSubtaskTask] = useState<Task | null>(null);
+  const task = useMemo(
+    () => tasks.find((item) => item.id === taskId) ?? (subtaskTask?.id === taskId ? subtaskTask : null),
+    [tasks, taskId, subtaskTask],
+  );
+  // 临时子任务只读：不能在子任务里直接指挥 Agent，要调整请回主助理对话。
+  const readOnlySubtask = task?.origin === "subtask" || Boolean(task?.parent_task_id);
   const pendingChanges = useMemo(() => changes.filter((c) => c.status === "pending"), [changes]);
   const appliedChanges = useMemo(() => changes.filter((c) => c.status === "applied"), [changes]);
   const reviewChange = useMemo(
@@ -788,6 +801,10 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
   // --- 操作 ---
 
   const send = useCallback(async () => {
+    if (readOnlySubtask) {
+      toast("这是只读过程视图，要调整请回到助理对话");
+      return;
+    }
     const content = draft.trim();
     if (!content) {
       toast("请输入内容后再发送");
@@ -818,7 +835,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [draft, quote, sending, taskId]);
+  }, [draft, quote, sending, taskId, readOnlySubtask]);
 
   const runReview = useCallback(
     async (approved: boolean) => {
@@ -1331,6 +1348,90 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
     setMScreen("task");
   };
 
+  /** 加载右上角切换器：主助理 + 已创建的项目助理。 */
+  const loadAssistants = useCallback(async () => {
+    try {
+      const data = await api.listAssistants();
+      setAssistants(data);
+    } catch {
+      // 切换器失败不影响主流程
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAssistants();
+  }, [loadAssistants]);
+
+  /** 切换助理：回到它自己的对话；临时子任务不在切换器里。 */
+  const selectAssistant = (id: string) => {
+    setActiveAssistantId(id);
+    const entry =
+      id === "master"
+        ? assistants?.master
+        : assistants?.projects.find((item) => item.id === id);
+    if (!entry?.conversation_task_id) {
+      toast("这个助理还没有常驻对话，先新建一条对话");
+      return;
+    }
+    setSubtaskTask(null);
+    setTaskId(entry.conversation_task_id);
+    setQuote(null);
+    setMScreen("task");
+  };
+
+  /**
+   * 新建项目助理：先给出建议，用户确认后才创建；取消不创建。
+   * 建议只是「从已有对话」的候选，来源对话保持只读。
+   */
+  const createProjectAssistant = async () => {
+    let ideas: { name: string; conversation_ids: string[] }[] = [];
+    try {
+      ideas = await api.assistantSuggestions();
+    } catch {
+      ideas = [];
+    }
+    const suggested = ideas[0];
+    const name = window.prompt("项目助理名称（例如：登录改造）", suggested?.name ?? "");
+    if (!name || !name.trim()) return; // 取消 = 不创建
+    const ok = window.confirm(
+      `创建项目助理「${name.trim()}」？\n\n` +
+        `会新建它自己的常驻对话；${
+          suggested ? `${suggested.conversation_ids.length} 段已有对话只作只读上下文` : "暂不关联已有对话"
+        }。`,
+    );
+    if (!ok) return; // 用户拒绝 = 不创建
+    try {
+      const created = await api.createAssistant({
+        name: name.trim(),
+        source_task_ids: suggested?.conversation_ids ?? [],
+        confirmed: true,
+      });
+      toast(`已创建项目助理「${created.name}」`);
+      await loadAssistants();
+      setActiveAssistantId(created.id);
+      if (created.conversation_task_id) {
+        setSubtaskTask(null);
+        setTaskId(created.conversation_task_id);
+        setMScreen("task");
+      }
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  };
+
+  /** 打开临时子任务的只读过程视图：不加入左侧对话列表。 */
+  const openSubtask = useCallback(async (subtaskId: string) => {
+    try {
+      const child = await api.getTask(subtaskId);
+      setSubtaskTask(child);
+      setTaskId(subtaskId);
+      setQuote(null);
+      setMScreen("task");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }, []);
+
   const startNewTask = () => {
     pendingSendRef.current = null;
     setCreateBotSeed("");
@@ -1453,6 +1554,26 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           </svg>
           {M_SCREEN_TITLES[mScreen] ? <b className="m-top-title">{M_SCREEN_TITLES[mScreen]}</b> : null}
           <span className="m-top-gap" />
+          <select
+            className="fx-select"
+            title="切换助理"
+            value={activeAssistantId}
+            onChange={(event) => {
+              if (event.target.value === "__new") {
+                void createProjectAssistant();
+                return;
+              }
+              selectAssistant(event.target.value);
+            }}
+          >
+            <option value="master">主助理</option>
+            {assistants?.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+            <option value="__new">＋ 项目助理</option>
+          </select>
           <button type="button" className="icon-btn" title="搜索" onClick={openCommandPalette}>
             <svg viewBox="0 0 16 16" className="ic">
               <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
@@ -1497,6 +1618,27 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
           <kbd>⌘K</kbd>
         </button>
         <div className="s-top-right">
+          {/* 对话页右上角：主助理 / 已创建的项目助理切换（临时子任务不在这里） */}
+          <select
+            className="fx-select"
+            title="切换助理"
+            value={activeAssistantId}
+            onChange={(event) => {
+              if (event.target.value === "__new") {
+                void createProjectAssistant();
+                return;
+              }
+              selectAssistant(event.target.value);
+            }}
+          >
+            <option value="master">主助理</option>
+            {assistants?.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+            <option value="__new">＋ 新建项目助理</option>
+          </select>
           {task?.status === "running" ? (
             <span className="pill pill-run">
               <i className="dot" />
@@ -2174,6 +2316,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
                 onLoadOlder={() => void loadOlder()}
                 onCopy={(text) => void copyMessage(text)}
                 onQuote={quoteMessage}
+                onOpenSubtask={(subtaskId) => void openSubtask(subtaskId)}
               />
             </section>
           </div>
@@ -2329,7 +2472,12 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
             <input
               ref={inputRef}
               value={draft}
-              placeholder="有新的需求或补充说明吗？可以继续告诉我…"
+              disabled={readOnlySubtask}
+              placeholder={
+                readOnlySubtask
+                  ? "这是只读过程视图，要调整请回到助理对话"
+                  : "有新的需求或补充说明吗？可以继续告诉我…"
+              }
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void send();
@@ -2355,7 +2503,7 @@ export function SoloPage({ onOpenWorkspace }: { onOpenWorkspace: () => void }) {
               <button
                 type="button"
                 className="btn btn-primary btn-send"
-                disabled={sending}
+                disabled={sending || readOnlySubtask}
                 onClick={() => void send()}
               >
                 ↑

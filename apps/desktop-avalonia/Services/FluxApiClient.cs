@@ -328,6 +328,36 @@ public sealed class FluxApiClient : IDisposable
             $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/messages?limit={limit}",
             ct);
 
+    /// <summary>GET /tasks/{id}/subtasks：某主助理对话下的临时子任务。</summary>
+    public Task<ApiEnvelope<List<SubtaskSummary>>?> ListSubtasksAsync(
+        string taskId,
+        CancellationToken ct = default)
+        => GetAsync<List<SubtaskSummary>>(
+            $"/api/v1/tasks/{Uri.EscapeDataString(taskId)}/subtasks",
+            ct);
+
+    /// <summary>GET /assistants：右上角切换器（主助理 + 已创建的项目助理）。</summary>
+    public Task<ApiEnvelope<AssistantList>?> ListAssistantsAsync(CancellationToken ct = default)
+        => GetAsync<AssistantList>("/api/v1/assistants", ct);
+
+    /// <summary>GET /assistants/suggestions：从已有对话建议项目助理，只读不创建。</summary>
+    public Task<ApiEnvelope<List<AssistantSuggestion>>?> AssistantSuggestionsAsync(
+        CancellationToken ct = default)
+        => GetAsync<List<AssistantSuggestion>>("/api/v1/assistants/suggestions", ct);
+
+    /// <summary>POST /assistants：用户确认后创建项目助理。</summary>
+    public Task<ApiEnvelope<AssistantEntry>?> CreateAssistantAsync(
+        string name,
+        string[]? sourceTaskIds,
+        bool confirmed,
+        CancellationToken ct = default)
+        => PostAsync<AssistantEntry>("/api/v1/assistants", new
+        {
+            name,
+            source_task_ids = sourceTaskIds ?? Array.Empty<string>(),
+            confirmed,
+        }, ct);
+
     public Task<ApiEnvelope<TaskMessageResult>?> CreateTaskMessageAsync(
         string taskId,
         string content,

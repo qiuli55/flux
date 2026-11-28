@@ -48,6 +48,12 @@ class TaskOrigin(StrEnum):
 
     CHAT = "chat"
     ASSISTANT = "assistant"
+    #: 临时子任务（2026-11-28）：挂在一条主助理对话下的执行任务，只读过程视图，
+    #: 不进「对话」列表，也不出现在项目助理切换器里。
+    SUBTASK = "subtask"
+    #: 项目助理对话（2026-11-28）：项目助理自己的常驻对话，用于按项目跟进度。
+    #: 与主助理同级入口，但没有派子任务的能力。
+    PROJECT_ASSISTANT = "project_assistant"
 
 
 class DecisionMode(StrEnum):
