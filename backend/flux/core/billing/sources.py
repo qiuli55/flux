@@ -1,7 +1,8 @@
 """官方额度采集器。
 
 两个事实来源（2026-10 实测）：
-- **OpenCode Go**：`GET https://opencode.ai/zen/go/v1/usage`，Bearer 鉴权。
+- **OpenCode Go**：`GET https://opencode.ai/inference/go/v1/usage`，Bearer 鉴权；
+  旧路径 `/zen/go/v1/usage` 只作兼容回退（新路径失败时才尝试）。
   必须带浏览器式 User-Agent，否则 Cloudflare 直接 1010 拒绝（urllib 默认 UA 就会中招）。
   返回 `usage.rolling / weekly / monthly` 的 `{status, percent, resetsAt}`。
 - **火山 Agent Plan**：官方 OpenAPI 只认 AK/SK 签名（Bearer 实测 404），本机只有
@@ -47,8 +48,14 @@ from flux.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Go 额度接口；Cloudflare 会按 UA 判定，缺 UA 返回 403/1010
-OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+#: Go 额度接口（2026-11 现行文档）：`GET https://opencode.ai/inference/go/v1/usage`。
+#: 旧路径 `/zen/go/v1/usage` 只作兼容回退；新路径优先，回退原因会如实写进错误信息。
+OPENCODE_GO_USAGE_URL = "https://opencode.ai/inference/go/v1/usage"
+OPENCODE_GO_LEGACY_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+OPENCODE_GO_USAGE_URLS: tuple[str, ...] = (
+    OPENCODE_GO_USAGE_URL,
+    OPENCODE_GO_LEGACY_USAGE_URL,
+)
 #: 伪装成 opencode 自己的客户端（不要用 python-urllib 默认 UA）
 OPENCODE_UA = "opencode/1.0 (flux-billing)"
 
@@ -190,6 +197,10 @@ def resolve_default_model(settings: Settings, runtime_id: str) -> str:
 # --- OpenCode Go ---
 
 
+def _go_url_label(url: str) -> str:
+    return "新路径" if url == OPENCODE_GO_USAGE_URL else "旧路径（兼容回退）"
+
+
 class OpenCodeGoUsageSource:
     """Go 套餐的官方额度（5h / 周 / 月 三个滚动窗口）。"""
 
@@ -213,16 +224,28 @@ class OpenCodeGoUsageSource:
             "User-Agent": OPENCODE_UA,
             "Accept": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(OPENCODE_GO_USAGE_URL, headers=headers)
-        except httpx.HTTPError as exc:
-            return SourceResult(source=self.name, error=f"请求 Go 额度接口失败：{exc}")
-        if response.status_code != 200:
-            detail = response.text.strip().replace("\n", " ")[:160]
+        response = None
+        failures: list[str] = []
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for index, url in enumerate(OPENCODE_GO_USAGE_URLS):
+                try:
+                    attempt = await client.get(url, headers=headers)
+                except httpx.HTTPError as exc:
+                    failures.append(f"{_go_url_label(url)} 请求失败：{exc}")
+                    continue
+                if attempt.status_code == 200:
+                    response = attempt
+                    if index:
+                        logger.info("OpenCode Go 额度回退到旧路径 %s", url)
+                    break
+                detail = attempt.text.strip().replace("\n", " ")[:160]
+                failures.append(
+                    f"{_go_url_label(url)} 返回 HTTP {attempt.status_code}：{detail}"
+                )
+        if response is None:
             return SourceResult(
                 source=self.name,
-                error=f"Go 额度接口返回 HTTP {response.status_code}：{detail}",
+                error="Go 额度接口不可用：" + "；".join(failures),
             )
         try:
             payload = response.json()
@@ -744,7 +767,9 @@ def build_sources(
 __all__ = [
     "CHATGPT_USAGE_URL",
     "DEFAULT_ARKCLI_CMD",
+    "OPENCODE_GO_LEGACY_USAGE_URL",
     "OPENCODE_GO_USAGE_URL",
+    "OPENCODE_GO_USAGE_URLS",
     "ArkCliUsageSource",
     "ChatGptCodexUsageSource",
     "CommandUsageSource",

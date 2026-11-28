@@ -38,6 +38,15 @@ async def plan_usage(
     return ok(await container.billing.plan_view(plan, refresh=refresh), metadata={"plan": plan})
 
 
+@router.get("/plan-catalog")
+async def plan_catalog(container: Container = Depends(get_container)) -> dict[str, object]:
+    """兼容名单（只读）：plan_key、展示名、口径、能否自动刷新、鉴权方式与限制。
+
+    给「以后让 AI 读取」预留的数据源；不能官方取数的套餐如实标记，不假装能刷新。
+    """
+    return ok(container.billing.plan_catalog())
+
+
 @router.get("/prices")
 async def list_prices(
     container: Container = Depends(get_container),

@@ -69,7 +69,12 @@ public sealed record BillingPlan(
     // 本机当前账号指纹（Gate / Windows 都是它的口径）。
     string? AccountKey = null,
     // 该套餐出现过的所有账号（当前账号排第一）。
-    BillingAccount[]? Accounts = null);
+    BillingAccount[]? Accounts = null,
+    // 是否有官方采集器 / 本机是否已具备展示条件 / 官方口径风险说明。
+    bool? CanAutoRefresh = null,
+    bool? Available = null,
+    string? AvailabilityNote = null,
+    string? RiskNote = null);
 
 /// <summary>GET /api/v1/billing/plans 的 data。</summary>
 public sealed record BillingOverview(

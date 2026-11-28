@@ -57,6 +57,12 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), nullable=True, index=True
     )
+    # 任务级订阅账号（多账号）：走订阅登录态时记住用的是哪个账号。
+    # 与 api_key_id 互斥：选密钥库时不带账号；切换 Agent 时一并清空。
+    subscription_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 任务级思考档（随模型一起记住，下一轮 Run 生效）。
+    # 取值来自模型目录的 thinking 元数据（levels 档位 / on/off / always），空 = 模型默认。
+    thinking_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 排队切换的目标 Agent（2026-10-27）：任务执行中切换 Agent 时只记在这里，
     # 等本轮 Run 真正收尾后再应用，避免中途换人把当前进度交给另一个 Agent。
     pending_agent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
@@ -106,6 +112,8 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "run_id": self.run_id,
             "model": self.model,
             "api_key_id": str(self.api_key_id) if self.api_key_id is not None else None,
+            "subscription_account_id": self.subscription_account_id,
+            "thinking_level": self.thinking_level,
             "pending_agent_id": (
                 str(self.pending_agent_id) if self.pending_agent_id is not None else None
             ),

@@ -1,5 +1,5 @@
 /**
- * 成本中心：把本地账本（每次模型调用的 token 用量）与官方额度快照并排展示。
+ * 套餐额度：把本地账本（每次模型调用的 token 用量）与官方额度快照并排展示。
  *
  * 三个口径：
  * - 本地账本：usage_records 逐次调用累加，能做任务级归因（唯一来源：Flux 自己记的账）；
@@ -181,6 +181,11 @@ function PlanCard({ plan, refreshSeconds, accountKey, onAccountChange }: {
       <div style={{ marginTop: 6 }}>
         {windows.map((window) => <WindowRow key={window.key} window={window} refreshSeconds={refreshSeconds} />)}
       </div>
+      {plan.risk_note ? (
+        <div className="fx-dim" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>
+          {plan.risk_note}
+        </div>
+      ) : null}
       <div className="fx-dim" style={{ fontSize: 11, marginTop: 6 }}>超额回退模型 {plan.fallback_model || "未配置"}</div>
     </Card>
   );
@@ -341,10 +346,14 @@ export function BillingPage() {
 
   const totals = totalsOf(overview);
   const enforce = overview?.enforce ?? false;
+  // 额度页只列已登录/已配置凭据、且能官方取回额度的账号；没有官方接口的订阅不放卡。
+  const visiblePlans = (overview?.plans ?? []).filter(
+    (plan) => plan.can_auto_refresh && plan.available,
+  );
 
   return (
     <>
-      <PageHead title="成本中心" desc="本地账本逐次记账，官方接口按套餐对账；默认仅告警，不拦截任务。">
+      <PageHead title="套餐额度" desc="本地账本逐次记账，官方接口按套餐对账；默认仅告警，不拦截任务。">
         <Button variant="subtle" icon="refresh" onClick={load} busy={loading}>刷新</Button>
         <Button icon="globe" onClick={sync} busy={syncing}>立即对账</Button>
       </PageHead>
@@ -360,10 +369,12 @@ export function BillingPage() {
       </div>
 
       {loading && overview === null ? <Empty icon="clock" title="正在读取计费数据" /> : null}
-      {overview !== null && overview.plans.length === 0 ? <Empty icon="credit" title="还没有配置任何套餐" /> : null}
+      {overview !== null && visiblePlans.length === 0 ? (
+        <Empty icon="credit" title="还没有可展示的官方额度账号" />
+      ) : null}
 
       <div className="fx-grid fx-auto">
-        {(overview?.plans ?? []).map((plan) => (
+        {visiblePlans.map((plan) => (
           <PlanCard
             key={plan.key}
             plan={plan}

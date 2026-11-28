@@ -115,7 +115,10 @@ class TaskRunService:
         billing = getattr(container, "billing", None)
         if billing is not None:
             await billing.ensure_can_start(
-                model=str(getattr(task, "model", "") or ""), runtime_id=runtime_id
+                model=str(getattr(task, "model", "") or ""),
+                runtime_id=runtime_id,
+                # 密钥库通道显式不使用订阅登录态：不计入、也不被订阅额度闸门误拦
+                via_key=getattr(task, "api_key_id", None) is not None,
             )
         runtime = self._runtime(runtime_id)
 

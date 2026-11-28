@@ -566,9 +566,11 @@ fun V2TaskChatScreen(
     val effectiveAgentId = task?.pendingAgentId ?: agentId
     // 任务级模型覆盖优先（带 key 归属）；没有覆盖时用该 Agent 的第一个可用模型。
     val currentKeyId = task?.apiKeyId?.takeIf { it.isNotBlank() }
+    val currentAccountId = task?.subscriptionAccountId?.takeIf { it.isNotBlank() }
     val selectedModel = task?.model?.takeIf { it.isNotBlank() }?.let { modelId ->
-        models.firstOrNull { it.model == modelId && it.keyId == currentKeyId }
-            ?: V2ModelOption(modelId, modelId, currentKeyId)
+        models.firstOrNull {
+            it.model == modelId && it.keyId == currentKeyId && it.accountId == currentAccountId
+        } ?: V2ModelOption(modelId, modelId, currentKeyId, currentAccountId)
     } ?: models.firstOrNull()
     val chat = V2ChatState(
         conversationId = taskId,
@@ -577,6 +579,8 @@ fun V2TaskChatScreen(
         agentId = agentId,
         model = selectedModel?.model ?: "默认模型",
         modelKeyId = selectedModel?.keyId,
+        modelAccountId = task?.subscriptionAccountId?.takeIf { it.isNotBlank() },
+        thinkingLevel = task?.thinkingLevel?.takeIf { it.isNotBlank() },
         permissionMode = task?.permissionMode ?: "normal",
         isAssistant = task?.origin == "assistant",
     )
@@ -715,7 +719,13 @@ fun V2TaskChatScreen(
             onSwitchAgent = { vm.switchAgent(it) },
             // 当前 Agent 支持的模型下拉（原生模型 + 密钥库模型），跟随待切换 Agent。
             modelOptions = if (canSwitchModel) modelsForAgent(agentOptionsForChat, effectiveAgentId) else emptyList(),
-            onSwitchModel = { vm.switchModel(it.model, it.keyId) },
+            modelChannels = if (canSwitchModel) channelsForAgent(effectiveAgentId) else emptyList(),
+            modelFavorites = V2Registry.favorites[effectiveAgentId].orEmpty(),
+            onToggleModelFavorite = { option -> toggleModelFavorite(effectiveAgentId, option) },
+            onSwitchModel = { vm.switchModel(it.model, it.keyId, it.accountId, it.thinking.default.ifBlank { null }) },
+            onThinkingChange = { option, level ->
+                vm.setThinking(option.model, option.keyId, option.accountId, level)
+            },
             contextUsage = usage,
             contextPromptVisible = contextPromptVisible,
             onContinueContext = { vm.continueInCurrentChat() },

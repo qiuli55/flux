@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
@@ -362,10 +363,95 @@ class V2ComposerControlsTest {
 
         rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON).performClick()
         rule.onNodeWithTag(V2ComposerTags.MODEL_MENU).assertIsDisplayed()
+        // 第一层是当前模型卡片：只显示当前选中模型，其余模型进第二层
         rule.onNodeWithText("Claude Sonnet 4.6").assertIsDisplayed()
+        rule.onNodeWithText("当前在用").assertDoesNotExist()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_MORE).performClick()
+        // 第二层是大标题「切换模型」，不是整页新导航，也没有左上角返回栈。
+        rule.onNodeWithText("切换模型").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_SEARCH).assertIsDisplayed()
         rule.onNodeWithText("DeepSeek V4.1 Flash").assertIsDisplayed()
         rule.onNodeWithText("当前在用").assertIsDisplayed()
-        rule.onNodeWithText("密钥库").assertIsDisplayed()
+
+        // 搜索只过滤当前 Agent 的模型（可按模型名 / 通道名）
+        rule.onNodeWithTag(V2ComposerTags.MODEL_SEARCH).performTextInput("deepseek")
+        rule.onNodeWithText("DeepSeek V4.1 Flash").assertIsDisplayed()
+        rule.onNodeWithText("Claude Sonnet 4.6").assertDoesNotExist()
+    }
+
+    @Test
+    fun `switch model sheet keeps two accounts and each key as separate chips`() {
+        val options = listOf(
+            V2ModelOption(
+                "kimi-k2",
+                "kimi-k2",
+                accountId = "a1",
+                channelId = "subscription:a1",
+                channelKind = "subscription",
+                channelLabel = "Kimi 订阅 · qiuli",
+                thinking = V2Thinking(kind = "toggle", levels = listOf("on", "off"), labels = listOf("开", "关"), default = "on", canDisable = true),
+            ),
+            V2ModelOption(
+                "kimi-k2-thinking",
+                "kimi-k2-thinking",
+                accountId = "a2",
+                channelId = "subscription:a2",
+                channelKind = "subscription",
+                channelLabel = "Kimi 订阅 · qiuli1",
+                thinking = V2Thinking(kind = "always", default = "always"),
+            ),
+            V2ModelOption(
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                keyId = "k1",
+                channelId = "key:k1",
+                channelKind = "key",
+                channelLabel = "密钥库 · opencode",
+                thinking = V2Thinking(kind = "levels", levels = listOf("none", "low", "high", "max"), labels = listOf("无思考", "低", "高", "最高"), default = "low", canDisable = true),
+            ),
+        )
+        val channels = listOf(
+            V2ModelChannel("subscription:a1", "subscription", "Kimi 订阅 · qiuli", chipLabel = "qiuli"),
+            V2ModelChannel("subscription:a2", "subscription", "Kimi 订阅 · qiuli1", chipLabel = "qiuli1"),
+            V2ModelChannel("key:k1", "key", "密钥库 · opencode", chipLabel = "opencode"),
+        )
+        rule.setContent {
+            V2ChatScreen(
+                chat = V2ChatState(
+                    conversationId = "task-2",
+                    title = "选模",
+                    device = "本机",
+                    agentId = agentA.id,
+                    model = "kimi-k2",
+                    modelAccountId = "a1",
+                ),
+                messages = emptyList(),
+                extraTop = 0.dp,
+                showBack = false,
+                onBack = {},
+                onDelete = {},
+                onOpenAgentPicker = {},
+                onSend = {},
+                modelOptions = options,
+                modelChannels = channels,
+                suggestions = emptyList(),
+                showHandoff = false,
+            )
+        }
+        rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON).performClick()
+        // 小卡片显示来源与思考档
+        rule.onNodeWithText("Kimi 订阅 · qiuli").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_MORE).performClick()
+        // 两个同厂订阅账号是两个分栏，不会合并
+        rule.onNodeWithTag(V2ComposerTags.MODEL_CHANNEL_PREFIX + "subscription:a1").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_CHANNEL_PREFIX + "subscription:a2").assertIsDisplayed()
+        rule.onNodeWithTag(V2ComposerTags.MODEL_CHANNEL_PREFIX + "key:k1").assertIsDisplayed()
+        rule.onNodeWithText("qiuli").assertIsDisplayed()
+        rule.onNodeWithText("qiuli1").assertIsDisplayed()
+        rule.onNodeWithText("opencode").assertIsDisplayed()
+        // 来源行
+        rule.onNodeWithText("Kimi 订阅 · qiuli1", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("密钥库 · opencode", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -423,6 +509,8 @@ class V2ComposerControlsTest {
 
         rule.onNodeWithTag(V2ComposerTags.MODEL_BUTTON).performClick()
         rule.onNodeWithText("gpt-native").assertIsDisplayed()
+        // 其余模型在第二层「更多模型」里
+        rule.onNodeWithTag(V2ComposerTags.MODEL_MORE).performClick()
         rule.onNodeWithText("gpt-mini").assertIsDisplayed()
         rule.onNodeWithText("claude-native").assertDoesNotExist()
     }

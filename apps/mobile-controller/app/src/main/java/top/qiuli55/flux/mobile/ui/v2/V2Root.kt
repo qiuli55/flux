@@ -303,6 +303,8 @@ fun FluxV2Root() {
             agentId = option.agent.id,
             model = firstModel?.model ?: V2Registry.models.firstOrNull() ?: "",
             modelKeyId = firstModel?.keyId,
+            modelAccountId = firstModel?.accountId,
+            thinkingLevel = firstModel?.thinking?.default?.takeIf { it.isNotBlank() },
             isAssistant = assistant,
         )
         chatMessages.clear()
@@ -389,6 +391,8 @@ fun FluxV2Root() {
             current.permissionMode,
             current.model,
             current.modelKeyId,
+            current.modelAccountId,
+            current.thinkingLevel,
             // 从旧对话接手：摘要随首条消息落库，新对话只带摘要、不搬旧消息
             summary = current.pendingSummary,
             summaryFrom = current.summaryFrom,
@@ -925,6 +929,14 @@ fun FluxV2Root() {
                                         agentsForDevice(active.device),
                                         active.agentId,
                                     ),
+                                    modelChannels = channelsForAgent(active.agentId),
+                                    modelFavorites = V2Registry.favorites[active.agentId].orEmpty(),
+                                    onToggleModelFavorite = { option ->
+                                        toggleModelFavorite(active.agentId, option)
+                                    },
+                                    onThinkingChange = { option, level ->
+                                        chat = chat?.copy(thinkingLevel = level)
+                                    },
                                     onSwitchAgent = { agentId ->
                                         val nextOptions = agentsForDevice(active.device)
                                         val firstModel = modelsForAgent(nextOptions, agentId).firstOrNull()
@@ -932,12 +944,17 @@ fun FluxV2Root() {
                                             agentId = agentId,
                                             model = firstModel?.model.orEmpty(),
                                             modelKeyId = firstModel?.keyId,
+                                            modelAccountId = firstModel?.accountId,
+                                            thinkingLevel = firstModel?.thinking?.default?.takeIf { it.isNotBlank() },
                                         )
                                     },
                                     onSwitchModel = { option ->
                                         chat = chat?.copy(
                                             model = option.model,
                                             modelKeyId = option.keyId,
+                                            modelAccountId = option.accountId,
+                                            // 换模型后思考档落到新模型的默认档
+                                            thinkingLevel = option.thinking.default.takeIf { it.isNotBlank() },
                                         )
                                     },
                                     onDecisionModeChange = { mode -> chat = chat?.copy(decisionMode = mode) },
@@ -1249,6 +1266,9 @@ fun FluxV2Root() {
                             keys = app.keys,
                             loading = app.keysLoading,
                             onRefresh = { vm.loadKeys() },
+                            onThinkingDefaults = { models, onResult ->
+                                vm.thinkingDefaults(models, onResult)
+                            },
                             onSave = { draft, onResult ->
                                 vm.saveKey(
                                     keyId = draft.keyId,
@@ -1257,6 +1277,7 @@ fun FluxV2Root() {
                                     baseUrl = draft.baseUrl,
                                     apiKey = draft.apiKey.takeIf { it.isNotBlank() },
                                     models = draft.models,
+                                    modelThinking = draft.modelThinking,
                                     wireApi = draft.wireApi,
                                     enabled = draft.enabled,
                                     onResult = onResult,

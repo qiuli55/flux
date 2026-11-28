@@ -16,6 +16,13 @@ from flux.core.key_vault.probe import probe_channel
 PREFIX = "/api/v1"
 
 
+def _thinking(models: list[str]) -> dict[str, dict[str, object]]:
+    return {
+        model: {"kind": "levels", "levels": ["none", "low", "high", "max"], "default": "low"}
+        for model in models
+    }
+
+
 def _create_key(client: TestClient, **overrides: object) -> dict:
     body = {
         "name": "DeepSeek 官方",
@@ -25,6 +32,8 @@ def _create_key(client: TestClient, **overrides: object) -> dict:
         "models": ["deepseek-v4-pro"],
     }
     body.update(overrides)
+    if "model_thinking" not in body:
+        body["model_thinking"] = _thinking(list(body["models"]))  # type: ignore[arg-type]
     response = client.post(f"{PREFIX}/keys", json=body)
     assert response.status_code == 200, response.text
     return response.json()["data"]
@@ -62,9 +71,84 @@ def test_duplicate_name_conflicts(client: TestClient) -> None:
             "provider": "deepseek",
             "api_key": "sk-another-9999",
             "models": ["deepseek-chat"],
+            "model_thinking": _thinking(["deepseek-chat"]),
         },
     )
     assert response.status_code == 409, response.text
+
+
+def test_models_require_thinking_mode_on_create_and_update(client: TestClient) -> None:
+    # 创建时登记了模型却没选思考模式：拒绝，不能空着落库
+    rejected = client.post(
+        f"{PREFIX}/keys",
+        json={
+            "name": "缺思考",
+            "provider": "deepseek",
+            "api_key": "sk-missing-thinking",
+            "models": ["deepseek-v4-pro"],
+        },
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert "思考" in rejected.text
+
+    created = _create_key(client)
+    # 保存模型清单时缺一个模型的思考模式也要拒绝
+    missing = client.patch(
+        f"{PREFIX}/keys/{created['id']}",
+        json={
+            "models": ["deepseek-v4-pro", "deepseek-chat"],
+            "model_thinking": _thinking(["deepseek-v4-pro"]),
+        },
+    )
+    assert missing.status_code == 400, missing.text
+
+    # 每个模型都明确给出时保存成功，并能读回同一形态
+    ok = client.patch(
+        f"{PREFIX}/keys/{created['id']}",
+        json={
+            "models": ["deepseek-v4-pro", "deepseek-chat"],
+            "model_thinking": {
+                "deepseek-v4-pro": {
+                    "kind": "toggle",
+                    "levels": ["on", "off"],
+                    "default": "off",
+                },
+                "deepseek-chat": {
+                    "kind": "levels",
+                    "levels": ["none", "low", "high", "max"],
+                    "default": "high",
+                },
+            },
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    data = ok.json()["data"]
+    assert data["model_thinking"]["deepseek-v4-pro"]["kind"] == "toggle"
+    assert data["model_thinking"]["deepseek-v4-pro"]["default"] == "off"
+    assert data["model_thinking"]["deepseek-chat"]["default"] == "high"
+
+
+def test_thinking_defaults_are_prefilled_without_calling_models(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        f"{PREFIX}/keys/thinking-defaults",
+        json={"models": ["deepseek-v4-pro", "gpt-5.5", "mystery-model"]},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["deepseek-v4-pro"]["levels"] == ["none", "low", "high", "max"]
+    assert data["gpt-5.5"]["levels"] == ["minimal", "low", "medium", "high"]
+    # 对不上官方模型时：无思考 + 5 档
+    assert data["mystery-model"]["levels"] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
+    assert data["mystery-model"]["kind"] == "levels"
 
 
 def test_invalid_provider_and_missing_base_url_are_rejected(client: TestClient) -> None:

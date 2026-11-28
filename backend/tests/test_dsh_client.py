@@ -150,6 +150,25 @@ async def test_start_run_completes_and_maps_events(tmp_path: Path) -> None:
     client.close()
 
 
+async def test_start_run_maps_thinking_level_to_reasoning_effort(tmp_path: Path) -> None:
+    factory = FakeDshHarnessFactory()
+    client = FluxDshClient(_settings(tmp_path), harness_factory=factory)
+
+    run = await client.start_run("hi", thinking="high")
+    await _wait_terminal(client, run.run_id)
+    assert factory.created[0].kwargs["reasoning_effort"] == "high"
+    assert run.thinking == "high"
+
+    # 「无思考」不写参数，交给模型默认
+    factory2 = FakeDshHarnessFactory()
+    client2 = FluxDshClient(_settings(tmp_path), harness_factory=factory2)
+    run2 = await client2.start_run("hi", thinking="none")
+    await _wait_terminal(client2, run2.run_id)
+    assert factory2.created[0].kwargs["reasoning_effort"] is None
+    client.close()
+    client2.close()
+
+
 async def test_start_run_defaults_session_id_from_run_id(tmp_path: Path) -> None:
     client = FluxDshClient(_settings(tmp_path), harness_factory=FakeDshHarnessFactory())
     run = await client.start_run("hi")

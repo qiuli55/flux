@@ -65,6 +65,61 @@ data class KeyModelOption(
     val model: String = "",
 )
 
+/** 思考能力元数据：前端按 kind / levels 渲染，不在客户端写死。 */
+@Serializable
+data class ThinkingSpec(
+    /** none / toggle / levels / always */
+    val kind: String = "none",
+    val levels: List<String> = emptyList(),
+    val labels: List<String> = emptyList(),
+    val default: String = "",
+    @SerialName("can_disable") val canDisable: Boolean = false,
+)
+
+/** 选模页的一条模型（来源通道 + 能力 + 思考元数据）。 */
+@Serializable
+data class CatalogModel(
+    val id: String = "",
+    val label: String = "",
+    @SerialName("channel_id") val channelId: String = "",
+    /** subscription / key / native */
+    @SerialName("channel_kind") val channelKind: String = "native",
+    @SerialName("channel_label") val channelLabel: String = "",
+    @SerialName("account_id") val accountId: String = "",
+    @SerialName("key_id") val keyId: String = "",
+    val provider: String = "",
+    @SerialName("context_window") val contextWindow: Int? = null,
+    val capabilities: List<String> = emptyList(),
+    val thinking: ThinkingSpec = ThinkingSpec(),
+)
+
+/** 选模页顶部的一个分栏：订阅账号 / 密钥 / runtime 原生配置。 */
+@Serializable
+data class ModelChannel(
+    val id: String = "",
+    /** subscription / key / native */
+    val kind: String = "native",
+    val label: String = "",
+    val vendor: String = "",
+    @SerialName("account_id") val accountId: String = "",
+    @SerialName("key_id") val keyId: String = "",
+    val detail: String = "",
+    val enabled: Boolean = true,
+    /** 分栏 chip 的短名（订阅账号名 / 密钥名）；列表来源仍用 [label]。 */
+    @SerialName("chip_label") val chipLabel: String = "",
+)
+
+/** 已登录的订阅账号（选模与套餐额度共用；不含任何令牌）。 */
+@Serializable
+data class SubscriptionAccount(
+    @SerialName("account_id") val accountId: String = "",
+    val label: String = "",
+    val vendor: String = "",
+    val plan: String = "",
+    val detail: String = "",
+    @SerialName("logged_in") val loggedIn: Boolean = true,
+)
+
 @Serializable
 data class AgentSpec(
     val name: String = "",
@@ -83,6 +138,12 @@ data class AgentSpec(
     val models: List<String> = emptyList(),
     /** 密钥库中该 runtime 可用的模型。 */
     @SerialName("key_models") val keyModels: List<KeyModelOption> = emptyList(),
+    /** 该 Agent 的模型分栏（订阅账号 + 兼容密钥 + 原生）；选模页的权威数据。 */
+    @SerialName("model_channels") val modelChannels: List<ModelChannel> = emptyList(),
+    /** 该 Agent 的完整模型目录（带通道与思考能力）。 */
+    @SerialName("model_catalog") val modelCatalog: List<CatalogModel> = emptyList(),
+    /** 该 Agent 已登录可用的订阅账号。 */
+    @SerialName("subscription_accounts") val subscriptionAccounts: List<SubscriptionAccount> = emptyList(),
 )
 
 @Serializable
@@ -159,6 +220,10 @@ data class Task(
     val model: String? = null,
     /** 任务级模型来自哪条 key 库条目；null = 原生模型。 */
     @SerialName("api_key_id") val apiKeyId: String? = null,
+    /** 任务级模型来自哪个订阅账号（多账号）；与 apiKeyId 互斥。 */
+    @SerialName("subscription_account_id") val subscriptionAccountId: String? = null,
+    /** 任务级思考档；null = 模型默认档。 */
+    @SerialName("thinking_level") val thinkingLevel: String? = null,
     /** 执行中切换 Agent 的排队目标：非空表示本轮结束后自动换人。 */
     @SerialName("pending_agent_id") val pendingAgentId: String? = null,
     /** 对话来源：chat = 首页普通对话；assistant = 助理页的助理对话（不进首页列表）。 */
@@ -193,6 +258,8 @@ data class ApiKeyEntry(
     @SerialName("base_url") val baseUrl: String = "",
     @SerialName("wire_api") val wireApi: String = "",
     val models: List<String> = emptyList(),
+    /** 模型 id → 密钥库里保存的思考模式（类型 + 档位 + 默认档）。 */
+    @SerialName("model_thinking") val modelThinking: Map<String, ThinkingSpec> = emptyMap(),
     @SerialName("key_hint") val keyHint: String = "",
     val enabled: Boolean = true,
     @SerialName("created_at") val createdAt: String? = null,

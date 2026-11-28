@@ -952,11 +952,26 @@ class TaskDetailViewModel(private val taskId: String) : FluxViewModel() {
         if (!queued) refresh(quiet = true)
     }
 
-    /** 对话页切换模型：必须是当前 Agent 支持的模型，后续 Run 用它执行；keyId 非空表示来自密钥库。 */
-    fun switchModel(model: String, keyId: String? = null) = runAction("switch-model") { api ->
-        val task = api.setTaskModel(taskId, model, keyId)
+    /** 对话页切换模型：必须是当前 Agent 支持的模型，后续 Run 用它执行。
+
+    `keyId` 非空 = 密钥库通道；`accountId` 非空 = 某个订阅账号；`thinking` 随模型一起保存。
+    */
+    fun switchModel(
+        model: String,
+        keyId: String? = null,
+        accountId: String? = null,
+        thinking: String? = null,
+    ) = runAction("switch-model") { api ->
+        val task = api.setTaskModel(taskId, model, keyId, accountId, thinking)
         _state.value = _state.value.copy(task = task, notice = "已切换模型：$model")
     }
+
+    /** 只改当前模型的思考档：随任务保存，下一轮 Run 生效。 */
+    fun setThinking(model: String, keyId: String?, accountId: String?, level: String) =
+        runAction("thinking") { api ->
+            val task = api.setTaskModel(taskId, model, keyId, accountId, level)
+            _state.value = _state.value.copy(task = task, notice = "思考档已更新，下一轮生效")
+        }
 
     /** 切换对话权限模式：只影响后续消息，正在跑的一轮按原模式跑完。 */
     fun setPermissionMode(mode: String) = runAction("permission-mode") { api ->

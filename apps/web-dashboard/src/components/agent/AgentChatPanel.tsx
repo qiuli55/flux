@@ -12,7 +12,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
-import type { AgentHandle, DshRun, DshStatus } from "../../api/types";
+import type { AgentHandle, AgentSpec, DshRun, DshStatus } from "../../api/types";
+import {
+  ALL_MODELS,
+  buildChannels,
+  buildModelChoices,
+  choicesForChannel,
+  modelDetailLine,
+  type ModelChoice,
+} from "./modelCatalog";
 
 /** 对话里的一条：用户指令，或 Agent 的回执 */
 export interface AgentTurn {
@@ -32,13 +40,6 @@ function isRunSettled(run: DshRun): boolean {
 /** Run 是否成功结束 */
 function isRunOk(run: DshRun): boolean {
   return String(run.status).toLowerCase() === "completed";
-}
-
-/** 模型下拉的一项：value 编码 keyId::model（原生模型只有 model）。 */
-interface ModelChoice {
-  value: string;
-  label: string;
-  keyId: string | null;
 }
 
 /** 这次 Run 要展示的文本：优先终态总结，其次累积的助手片段，最后才是错误原因 */
@@ -121,28 +122,63 @@ export function AgentChatPanel({
   onRunStartRef.current = onRunStart;
 
   const dshReady = Boolean(dsh?.enabled);
+  const [agentSpec, setAgentSpec] = useState<AgentSpec | null>(null);
   const [modelChoices, setModelChoices] = useState<ModelChoice[]>([]);
+  const [channelFilter, setChannelFilter] = useState<string>(ALL_MODELS);
   const [selectedModel, setSelectedModel] = useState<string>(
     () => window.localStorage.getItem(`${storageKey}.model`) ?? "",
   );
 
-  /* 可用模型 = dsh 原生模型 + 密钥库中 DeepSeek 协议的模型 */
+  /* 可用模型 = 当前 Agent 的 model_catalog（订阅通道 + 兼容密钥 + 原生）。
+     DSH 模型目录只在老服务端没有 model_catalog 时兜底，不再当权威。 */
   useEffect(() => {
     if (!dshReady) {
+      setAgentSpec(null);
       setModelChoices([]);
       return;
     }
     let alive = true;
     void api
-      .getDshModels()
-      .then((data) => {
+      .listAgents()
+      .then(async (list) => {
+        if (!alive) return;
+        const found =
+          list.find((item) => item.id === agentId) ?? (agentId ? null : list[0] ?? null);
+        const spec = found?.spec ?? null;
+        setAgentSpec(spec);
+        const choices = buildModelChoices(spec);
+        if (choices.length > 0) {
+          setModelChoices(choices);
+          return;
+        }
+        const data = await api.getDshModels();
         if (!alive) return;
         setModelChoices([
-          ...data.models.map((model) => ({ value: model, label: model, keyId: null })),
+          ...data.models.map((model) => ({
+            value: model,
+            model,
+            label: model,
+            keyId: null,
+            accountId: null,
+            channelId: "native",
+            channelKind: "native" as const,
+            channelLabel: "本机默认",
+            contextWindow: null,
+            capabilities: [],
+            thinking: { kind: "none" as const, levels: [], labels: [], default: "", can_disable: false },
+          })),
           ...data.key_models.map((item) => ({
             value: `${item.key_id}::${item.model}`,
-            label: `${item.model} · ${item.key_name}`,
+            model: item.model,
+            label: item.model,
             keyId: item.key_id,
+            accountId: null,
+            channelId: `key:${item.key_id}`,
+            channelKind: "key" as const,
+            channelLabel: `密钥库 · ${item.key_name}`,
+            contextWindow: null,
+            capabilities: [],
+            thinking: { kind: "none" as const, levels: [], labels: [], default: "", can_disable: false },
           })),
         ]);
       })
@@ -152,7 +188,10 @@ export function AgentChatPanel({
     return () => {
       alive = false;
     };
-  }, [dshReady]);
+  }, [dshReady, agentId]);
+
+  const channels = buildChannels(agentSpec);
+  const visibleChoices = choicesForChannel(modelChoices, channelFilter);
 
   /* 切换命名空间：模型选择也按会话恢复 */
   useEffect(() => {
@@ -168,10 +207,10 @@ export function AgentChatPanel({
     }
   }, [modelChoices, selectedModel, storageKey]);
 
-  const selectedLabel = modelChoices.find((choice) => choice.value === selectedModel)?.label;
-  const selectedFromVault = Boolean(
-    modelChoices.find((choice) => choice.value === selectedModel)?.keyId,
-  );
+  const selectedChoice = modelChoices.find((choice) => choice.value === selectedModel);
+  const selectedLabel = selectedChoice?.label;
+  const selectedFromVault = Boolean(selectedChoice?.keyId);
+  const selectedFromAccount = Boolean(selectedChoice?.accountId);
 
   /* 切换命名空间：读回该会话的对话与上次会话 id（复用即同一会话） */
   useEffect(() => {
@@ -323,6 +362,7 @@ export function AgentChatPanel({
       ) : null}
 
       {dshReady && modelChoices.length > 0 ? (
+        <>
         <div className="agent-pick">
           <span className="ap-label">模型</span>
           <select
@@ -339,12 +379,40 @@ export function AgentChatPanel({
             <option value="">
               默认（{dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "运行时默认"}）
             </option>
-            {modelChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>{choice.label}</option>
+            {visibleChoices.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}{modelDetailLine(choice) ? ` · ${modelDetailLine(choice)}` : ""}
+              </option>
             ))}
           </select>
-          <span className="ap-model">{selectedFromVault ? "来自密钥库" : "原生模型"}</span>
+          <span className="ap-model">
+            {selectedFromVault ? "来自密钥库" : selectedFromAccount ? "订阅账号" : "原生模型"}
+          </span>
         </div>
+        {channels.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[
+              { id: ALL_MODELS, label: "全部" },
+              ...channels.map((item) => ({ id: item.id, label: item.chip_label || item.label })),
+            ].map(
+              (item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`rounded-full border px-2.5 py-1 text-xs ${
+                    channelFilter === item.id
+                      ? "border-neutral-900 bg-neutral-900 text-white"
+                      : "border-neutral-200 bg-white text-neutral-600"
+                  }`}
+                  onClick={() => setChannelFilter(item.id)}
+                >
+                  {item.label}
+                </button>
+              ),
+            )}
+          </div>
+        ) : null}
+        </>
       ) : null}
 
       <div className="ag-chat" ref={scrollRef}>

@@ -25,7 +25,7 @@ import type {
   SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
   SupervisorTicket, SupervisorTimelineItem, SupervisorTrigger, SupervisorWatchdogResult, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
-  TerminalEvent, TerminalSession,
+  TerminalEvent, TerminalSession, ThinkingSpecDetail,
 } from "./types";
 
 export { API_BASE } from "./base";
@@ -243,6 +243,9 @@ export const api = {
   cancelTask: (taskId: string) => getData<Task>("POST", `/tasks/${taskId}/cancel`),
   /** 密钥库：列表只含掩码与元数据，明文只进 create/update 的请求体 */
   listApiKeys: () => getData<ApiKeyEntry[]>("GET", "/keys"),
+  /** 按官方 / 公共目录预填思考模式（纯后端计算，不请求模型）。 */
+  thinkingDefaults: (models: string[]) =>
+    getData<Record<string, ThinkingSpecDetail>>("POST", "/keys/thinking-defaults", { models }),
   createApiKey: (body: ApiKeyCreateRequest) => getData<ApiKeyEntry>("POST", "/keys", body),
   updateApiKey: (keyId: string, body: ApiKeyUpdateRequest) =>
     getData<ApiKeyEntry>("PATCH", `/keys/${encodeURIComponent(keyId)}`, body),

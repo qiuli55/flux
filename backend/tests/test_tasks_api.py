@@ -34,6 +34,9 @@ _RESPONSE_KEYS = {
     "run_id",
     "model",
     "api_key_id",
+    # 订阅多账号 + 思考档（选模的一部分，随任务记住）
+    "subscription_account_id",
+    "thinking_level",
     # 对话权限三模式（plan / normal / full）
     "permission_mode",
     # 执行中切换 Agent 的排队目标（本轮 Run 收尾后生效）

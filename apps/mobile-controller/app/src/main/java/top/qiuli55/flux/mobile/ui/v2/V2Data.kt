@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import top.qiuli55.flux.mobile.data.DesignPreview
+import top.qiuli55.flux.mobile.data.FluxEnv
 
 // ------------------------------------------------------------------ 模型
 
@@ -21,12 +22,49 @@ data class V2Agent(
     val runtime: String = "",
 )
 
-/** 一个可选模型：keyId 非空表示来自密钥库。 */
+/** 思考能力元数据（来自后端 model_catalog，不在客户端写死）。 */
+data class V2Thinking(
+    /** none / toggle / levels / always */
+    val kind: String = "none",
+    val levels: List<String> = emptyList(),
+    val labels: List<String> = emptyList(),
+    val default: String = "",
+    val canDisable: Boolean = false,
+) {
+    val supported: Boolean get() = kind != "none"
+}
+
+/** 选模页里的一个分栏：订阅账号 / 密钥 / runtime 原生配置。 */
+data class V2ModelChannel(
+    val id: String,
+    /** subscription / key / native */
+    val kind: String,
+    val label: String,
+    val vendor: String = "",
+    val accountId: String = "",
+    val keyId: String = "",
+    val detail: String = "",
+    val enabled: Boolean = true,
+    /** 分栏 chip 的短名（订阅账号名 / 密钥名）；列表来源仍用 [label]。 */
+    val chipLabel: String = "",
+)
+
+/** 一个可选模型：keyId 非空表示来自密钥库，accountId 非空表示来自某个订阅账号。 */
 data class V2ModelOption(
     val model: String,
     val label: String = model,
     val keyId: String? = null,
-)
+    val accountId: String? = null,
+    val channelId: String = "",
+    val channelKind: String = "native",
+    val channelLabel: String = "",
+    val contextWindow: Int? = null,
+    val capabilities: List<String> = emptyList(),
+    val thinking: V2Thinking = V2Thinking(),
+) {
+    /** 收藏键按通道区分：同一个模型 id 在不同通道上是不同选项。 */
+    val favoriteKey: String get() = "${channelId.ifBlank { channelKind }}|$model"
+}
 
 data class V2DeviceAgent(val agentId: String, val models: List<V2ModelOption>)
 
@@ -276,6 +314,10 @@ object V2Registry {
     var models: List<String> by mutableStateOf(emptyList())
     /** 后端每个 Agent 的可用模型（原生 + key 库）；空 = 回落到全局模型。 */
     var agentModels: Map<String, List<V2ModelOption>> by mutableStateOf(emptyMap())
+    /** 每个 Agent 的模型分栏（订阅账号 + 兼容密钥 + 原生），只属于该 Agent。 */
+    var agentChannels: Map<String, List<V2ModelChannel>> by mutableStateOf(emptyMap())
+    /** 本机收藏（按 Agent 隔离）：模型 favoriteKey 集合；只影响排序/筛选。 */
+    var favorites: Map<String, Set<String>> by mutableStateOf(emptyMap())
 }
 
 private val unknownAgent = V2Agent("unknown", "Flux Agent", "未配置", 0, 0, V2Colors.accent)
@@ -331,6 +373,78 @@ fun agentsForDevice(deviceName: String): List<V2AgentOption> {
  */
 fun modelsForAgent(options: List<V2AgentOption>, agentId: String?): List<V2ModelOption> =
     options.firstOrNull { it.agent.id == agentId }?.models.orEmpty()
+
+/** 该 Agent 的分栏；没有后端目录时退回「全部」一个概念（由 UI 处理）。 */
+fun channelsForAgent(agentId: String?): List<V2ModelChannel> =
+    V2Registry.agentChannels[agentId.orEmpty()].orEmpty()
+
+/**
+ * 按分栏筛选模型；`ALL_MODELS`（或空）表示当前 Agent 下的全部通道。
+ *
+ * 「全部」仍只含当前 Agent：传进来的 [options] 已经是该 Agent 的目录。
+ */
+fun modelsForChannel(options: List<V2ModelOption>, channelId: String): List<V2ModelOption> =
+    if (channelId.isBlank() || channelId == ALL_MODELS) options
+    else options.filter { it.channelId == channelId }
+
+/**
+ * 搜索模型：只在这份**当前 Agent 的模型清单**里过滤。
+ *
+ * 可按模型名、通道来源名（订阅账号名 / 密钥名）搜索；调用方传进来的
+ * [options] 已经按当前 Agent 组装，因此不会搜出别的 Agent 的模型。
+ */
+fun filterModelOptions(options: List<V2ModelOption>, query: String): List<V2ModelOption> {
+    val keyword = query.trim().lowercase()
+    if (keyword.isEmpty()) return options
+    return options.filter { option ->
+        option.model.lowercase().contains(keyword) ||
+            option.label.lowercase().contains(keyword) ||
+            option.channelLabel.lowercase().contains(keyword)
+    }
+}
+
+/** 收藏置顶（只影响排序，不改通道）。 */
+fun sortedModelOptions(
+    options: List<V2ModelOption>,
+    favorites: Set<String>,
+): List<V2ModelOption> {
+    if (favorites.isEmpty()) return options
+    val (starred, rest) = options.partition { it.favoriteKey in favorites }
+    return starred + rest
+}
+
+/** 上下文长度的展示串（1M ctx / 256k ctx）；未知返回 null，不写假数据。 */
+fun contextWindowLabel(window: Int?): String? = when {
+    window == null || window <= 0 -> null
+    window >= 1_000_000 && window % 1_000_000 == 0 -> "${window / 1_000_000}M ctx"
+    window >= 1_000 && window % 1_000 == 0 -> "${window / 1_000}k ctx"
+    else -> "$window ctx"
+}
+
+/** 当前模型的思考档；任务未存时落到模型默认档。 */
+fun thinkingLevelOf(option: V2ModelOption, stored: String?): String {
+    val value = stored.orEmpty().trim()
+    if (value.isNotEmpty()) return value
+    return option.thinking.default
+}
+
+/** 分栏标签：订阅账号显示账号名，密钥显示密钥名；没有短名时退回完整来源。 */
+fun channelChipLabel(channel: V2ModelChannel): String =
+    channel.chipLabel.takeIf { it.isNotBlank() } ?: channel.label
+
+const val ALL_MODELS = "all"
+
+/**
+ * 切换收藏：按 Agent 隔离存在本机；只影响排序/筛选，不改通道。
+ * 没有 Android 环境（单元测试）时只更新内存，不抛错。
+ */
+fun toggleModelFavorite(agentId: String, option: V2ModelOption) {
+    val current = V2Registry.favorites[agentId].orEmpty()
+    val next = if (option.favoriteKey in current) current - option.favoriteKey
+    else current + option.favoriteKey
+    V2Registry.favorites = V2Registry.favorites + (agentId to next)
+    runCatching { FluxEnv.settings.saveModelFavorites(V2Registry.favorites) }
+}
 
 fun deviceKind(name: String): V2DeviceKind =
     V2Registry.devices.firstOrNull { it.name == name }?.kind ?: V2DeviceKind.LAPTOP

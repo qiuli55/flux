@@ -373,14 +373,24 @@ def resolve_plan(
     model: str,
     runtime_id: str = "",
     plans: dict[str, PlanDefinition] | None = None,
+    *,
+    via_key: bool = False,
 ) -> PlanDefinition | None:
-    """按「模型前缀 → runtime」解析套餐；未登记返回 None（只记账、不限额）。"""
+    """按「模型前缀 → runtime」解析套餐；未登记返回 None（只记账、不限额）。
+
+    `via_key=True` 表示本轮走的是密钥库通道（显式不使用订阅登录态）：
+    模型 id 没带套餐前缀时**不再按 runtime 归因**，否则「在 Codex runtime 上用
+    密钥库的无前缀模型」会被记进 Codex 订阅并被订阅额度闸门误拦。
+    带明确套餐前缀的模型仍按前缀归因（前缀是调用方显式声明的通道）。
+    """
     registry = plans if plans is not None else PLANS
     prefix = model_prefix(model)
     if prefix:
         for plan in registry.values():
             if prefix in plan.model_prefixes:
                 return plan
+    if via_key:
+        return None
     runtime = (runtime_id or "").strip().lower()
     if runtime:
         for plan in registry.values():

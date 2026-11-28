@@ -144,6 +144,8 @@ def sync_account_auth(source_home: Path | str, target_home: Path | str) -> bool:
 class _LoginSession:
     login_id: str
     process: Any
+    #: 本次登录要写入的账号 id（多账号：每个账号一个独立目录）
+    account_id: str = ""
     created_at: float = field(default_factory=time.monotonic)
     status: str = "starting"
     url: str = ""
@@ -206,8 +208,83 @@ class CodexAccountService:
         return codex_account_home(self._settings)
 
     @property
+    def accounts_root(self) -> Path:
+        """多账号目录：`<home>/accounts/<account_id>/auth.json`。
+
+        兼容旧版：`<home>/auth.json` 视为 account_id="default" 的账号，不迁移、不改写。
+        """
+        return self.home / "accounts"
+
+    @property
     def auth_path(self) -> Path:
         return self.home / "auth.json"
+
+    def account_home_for(self, account_id: str) -> Path:
+        """账号 id → 登录态目录；空 / default 指向旧版根目录（向后兼容）。"""
+        value = (account_id or "").strip()
+        if value in ("", "default"):
+            return self.home
+        safe = "".join(ch for ch in value if ch.isalnum() or ch in "-_")
+        if safe != value or not safe:
+            raise ConfigurationError(
+                "非法的 ChatGPT 账号标识", details={"account_id": account_id}
+            )
+        return self.accounts_root / safe
+
+    def accounts(self) -> list[dict[str, Any]]:
+        """列出本机已登录的 ChatGPT 账号（旧版单账号 + 多账号目录）。"""
+        found: list[tuple[str, Path]] = []
+        if self.auth_path.is_file():
+            found.append(("default", self.home))
+        root = self.accounts_root
+        try:
+            children = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError:
+            children = []
+        for child in children:
+            if child.is_dir() and (child / "auth.json").is_file():
+                found.append((child.name, child))
+        items: list[dict[str, Any]] = []
+        for account_id, home in found:
+            auth = self._read_auth_file(home / "auth.json")
+            if auth is None:
+                continue
+            items.append(self._account_view(account_id, home, auth))
+        return items
+
+    def default_account_id(self) -> str:
+        """默认账号：旧版单账号优先，其次按目录名排序的第一个。"""
+        items = self.accounts()
+        if not items:
+            return ""
+        default = next((item for item in items if item["id"] == "default"), None)
+        return str((default or items[0])["id"])
+
+    def get_account(self, account_id: str) -> dict[str, Any] | None:
+        wanted = (account_id or "").strip()
+        for item in self.accounts():
+            if item["id"] == wanted:
+                return item
+        return None
+
+    def _account_view(self, account_id: str, home: Path, auth: dict[str, Any]) -> dict[str, Any]:
+        tokens = auth.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
+        claims = decode_jwt_claims(str(tokens.get("id_token") or ""))
+        auth_claims = claims.get("https://api.openai.com/auth")
+        auth_claims = auth_claims if isinstance(auth_claims, dict) else {}
+        profile = claims.get("https://api.openai.com/profile")
+        profile = profile if isinstance(profile, dict) else {}
+        email = str(profile.get("email") or claims.get("email") or "").strip()
+        label = email or (f"账号 {account_id}" if account_id != "default" else "ChatGPT 账号")
+        return {
+            "id": account_id,
+            "label": label,
+            "email": email or None,
+            "plan": str(auth_claims.get("chatgpt_plan_type") or "").strip() or None,
+            "logged_in": True,
+            "home": str(home),
+        }
 
     def binary_path(self) -> str:
         """codex 可执行文件：`FLUX_CODEX_CLI_BINARY` 覆盖优先，否则查 PATH。"""
@@ -218,8 +295,10 @@ class CodexAccountService:
 
     # --- 状态 ---
 
-    def status(self) -> dict[str, Any]:
+    def status(self, account_id: str | None = None) -> dict[str, Any]:
         binary = self.binary_path()
+        selected = (account_id or "").strip() or self.default_account_id()
+        home = self.account_home_for(selected) if selected else self.home
         payload: dict[str, Any] = {
             "logged_in": False,
             "auth_mode": None,
@@ -227,12 +306,15 @@ class CodexAccountService:
             "plan": None,
             "account_id": None,
             "expires_at": None,
-            "home": str(self.home),
+            "home": str(home),
+            #: 当前选中的账号 id（多账号下前端据此区分卡片）
+            "selected_account_id": selected or None,
+            "accounts": self.accounts(),
             "binary": binary,
             "binary_found": shutil.which(binary) is not None,
             "pending_login": None,
         }
-        auth = self._read_auth()
+        auth = self._read_auth(selected)
         if auth is None:
             payload["pending_login"] = self._latest_pending()
             return payload
@@ -262,8 +344,13 @@ class CodexAccountService:
         payload["pending_login"] = self._latest_pending()
         return payload
 
-    def _read_auth(self) -> dict[str, Any] | None:
-        path = self.auth_path
+    def _read_auth(self, account_id: str = "") -> dict[str, Any] | None:
+        value = (account_id or "").strip() or self.default_account_id()
+        home = self.account_home_for(value) if value else self.home
+        return self._read_auth_file(home / "auth.json")
+
+    @staticmethod
+    def _read_auth_file(path: Path) -> dict[str, Any] | None:
         try:
             if not path.is_file() or path.stat().st_size > _MAX_AUTH_BYTES:
                 return None
@@ -292,7 +379,10 @@ class CodexAccountService:
         if existing is not None:
             return existing
 
-        home = self.home
+        # 多账号：首个账号沿用旧版根目录（向后兼容），之后每次登录都新增一个账号目录；
+        # 再登录同一个厂家 = 新增，不覆盖已有号。
+        account_id = "default" if not self.accounts() else uuid.uuid4().hex[:12]
+        home = self.account_home_for(account_id)
         try:
             home.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(OSError):
@@ -302,7 +392,7 @@ class CodexAccountService:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=self._login_env(),
+                env=self._login_env(home),
                 cwd=str(home),
                 **popen_kwargs(),
             )
@@ -312,7 +402,9 @@ class CodexAccountService:
                 details={"binary": binary},
             ) from exc
 
-        session = _LoginSession(login_id=uuid.uuid4().hex[:12], process=process)
+        session = _LoginSession(
+            login_id=uuid.uuid4().hex[:12], process=process, account_id=account_id
+        )
         self._logins[session.login_id] = session
         logger.info(
             "codex 账号登录开始 login=%s home=%s pid=%s",
@@ -343,8 +435,9 @@ class CodexAccountService:
             return None
         return max(pending, key=lambda item: item.created_at).public()
 
-    def _login_env(self) -> dict[str, str]:
-        env = {**os.environ, "CODEX_HOME": str(self.home), "TERM": "dumb", "NO_COLOR": "1"}
+    def _login_env(self, home: Path | None = None) -> dict[str, str]:
+        target = home if home is not None else self.home
+        env = {**os.environ, "CODEX_HOME": str(target), "TERM": "dumb", "NO_COLOR": "1"}
         # 设备码流程不需要本地浏览器；禁掉防止 CLI 调起桌面浏览器
         env.setdefault("BROWSER", "/bin/false")
         env.update(codex_proxy_env(self._settings))
@@ -387,7 +480,8 @@ class CodexAccountService:
     def _settle(self, session: _LoginSession, returncode: int | None) -> None:
         if session.status not in _PENDING_STATUSES:
             return
-        if returncode == 0 and self.auth_path.is_file():
+        home = self.account_home_for(session.account_id) if session.account_id else self.home
+        if returncode == 0 and (home / "auth.json").is_file():
             session.status = "success"
             session.message = ""
             logger.info("codex 账号登录成功 login=%s", session.login_id)
@@ -428,27 +522,39 @@ class CodexAccountService:
 
     # --- 退出 ---
 
-    async def logout(self) -> dict[str, Any]:
-        """删除账号目录里的 auth.json；进行中的登录一并终止。"""
+    async def logout(self, account_id: str | None = None) -> dict[str, Any]:
+        """退出一个 ChatGPT 账号；不传 account_id 时退回默认账号（兼容旧调用）。
+
+        多账号下只移除指定账号，其它账号与密钥库不受影响。
+        """
+        target = (account_id or "").strip() or self.default_account_id()
         for session in list(self._logins.values()):
-            if session.status in _PENDING_STATUSES:
+            if session.status in _PENDING_STATUSES and (
+                not target or session.account_id == target
+            ):
                 with contextlib.suppress(ProcessLookupError, OSError):
                     session.process.terminate()
                 session.status = "cancelled"
                 session.message = "已退出登录"
         removed = False
-        path = self.auth_path
-        try:
-            if path.exists():
-                path.unlink()
-                removed = True
-        except OSError as exc:
-            raise ConfigurationError(
-                "删除 ChatGPT 登录态失败",
-                details={"path": str(path)},
-            ) from exc
-        logger.info("codex 账号已退出 removed=%s path=%s", removed, path)
-        return {"removed": removed, "status": self.status()}
+        if target:
+            home = self.account_home_for(target)
+            path = home / "auth.json"
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed = True
+                # 多账号目录整体删掉；旧版根目录只删 auth.json，不碰别的文件
+                if target != "default" and home.parent == self.accounts_root:
+                    with contextlib.suppress(OSError):
+                        shutil.rmtree(home)
+            except OSError as exc:
+                raise ConfigurationError(
+                    "删除 ChatGPT 登录态失败",
+                    details={"path": str(path)},
+                ) from exc
+            logger.info("codex 账号已退出 account=%s removed=%s path=%s", target, removed, path)
+        return {"removed": removed, "account_id": target or None, "status": self.status()}
 
 
 def _iso_or_none(value: Any) -> str | None:

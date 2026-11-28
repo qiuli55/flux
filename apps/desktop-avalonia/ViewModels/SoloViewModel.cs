@@ -753,6 +753,68 @@ public partial class SoloViewModel : ViewModelBase
 
     private FluxApiClient? Api() => _api();
 
+    private bool _suppressAgentReload;
+
+    /// <summary>切换执行 Agent 后，模型清单立刻换成该 Agent 的通道（订阅 / 密钥 / 原生）。</summary>
+    partial void OnSelectedAgentChanged(AgentChoice? value)
+    {
+        if (_suppressAgentReload)
+        {
+            return;
+        }
+        var api = Api();
+        if (api is null)
+        {
+            return;
+        }
+        _ = ReloadModelsForAgentAsync(api, value?.Id);
+    }
+
+    private async Task ReloadModelsForAgentAsync(FluxApiClient api, string? agentId)
+    {
+        try
+        {
+            var agents = (await api.ListAgentDetailsAsync())?.Data ?? [];
+            var selected = agents.FirstOrDefault(agent => agent.Id == agentId);
+            var fallback = (await api.DshModelsAsync())?.Data;
+            ApplyModelChoices(selected?.Spec, fallback);
+            AppLog.Info($"Solo 切换 Agent 后重载模型 · agent={agentId ?? "dsh"} · {ModelChoices.Count} 个");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Solo 切换 Agent 后重载模型失败 · agent={agentId ?? "dsh"}", ex);
+        }
+    }
+
+    private void ApplyModelChoices(AgentSpecDetail? spec, DshModelsResponse? fallback)
+    {
+        var choices = SoloModelCatalog.Build(spec, fallback);
+        var previous = SelectedModel?.Model;
+        ModelChoices.Clear();
+        ModelChoices.Add(new ModelChoice(null, null, "默认模型"));
+        foreach (var choice in choices)
+        {
+            var detail = SoloModelCatalog.DetailLine(choice);
+            var label = string.IsNullOrWhiteSpace(detail)
+                ? choice.Label
+                : $"{choice.Label} · {detail}";
+            ModelChoices.Add(new ModelChoice(
+                choice.KeyId,
+                choice.Model,
+                label,
+                choice.AccountId,
+                choice.ChannelId,
+                choice.ChannelLabel,
+                SoloModelCatalog.ContextLabel(choice.ContextWindow),
+                choice.ThinkingKind,
+                choice.ThinkingLevels,
+                choice.ThinkingDefault));
+        }
+        // 切换 Agent 后旧模型可能不存在：回落到第一个可用项（与手机/Web 同口径）。
+        SelectedModel = ModelChoices.FirstOrDefault(item => item.Model == previous)
+            ?? ModelChoices.FirstOrDefault();
+    }
+
     private async Task LoadProjectsAsync(FluxApiClient api)
     {
         var projects = (await api.ListProjectsAsync())?.Data ?? [];
@@ -1163,24 +1225,7 @@ public partial class SoloViewModel : ViewModelBase
 
     private async Task LoadAgentOptionsAsync(FluxApiClient api)
     {
-        var models = (await api.DshModelsAsync())?.Data;
-        ModelChoices.Clear();
-        ModelChoices.Add(new ModelChoice(null, null, "默认模型"));
-        foreach (var model in models?.Models ?? [])
-        {
-            ModelChoices.Add(new ModelChoice(null, model, model));
-        }
-
-        foreach (var keyModel in models?.KeyModels ?? [])
-        {
-            var label = string.IsNullOrWhiteSpace(keyModel.KeyName)
-                ? keyModel.Model
-                : $"{keyModel.Model} · {keyModel.KeyName}";
-            ModelChoices.Add(new ModelChoice(keyModel.KeyId, keyModel.Model, label));
-        }
-
-        SelectedModel ??= ModelChoices.FirstOrDefault();
-
+        _suppressAgentReload = true;
         var agents = (await api.ListAgentDetailsAsync())?.Data ?? [];
         AgentChoices.Clear();
         AgentChoices.Add(new AgentChoice(null, "内置 DSH"));
@@ -1196,6 +1241,14 @@ public partial class SoloViewModel : ViewModelBase
         }
 
         SelectedAgent ??= AgentChoices.FirstOrDefault();
+
+        // 选模数据源 = 当前 Agent 的 model_catalog（订阅通道 + 兼容密钥 + 原生）；
+        // DSH 目录只在老服务端没有该字段时兜底，不再当权威。
+        var selected = agents.FirstOrDefault(agent => agent.Id == SelectedAgent?.Id);
+        var fallback = (await api.DshModelsAsync())?.Data;
+        ApplyModelChoices(selected?.Spec, fallback);
+        SelectedModel ??= ModelChoices.FirstOrDefault();
+        _suppressAgentReload = false;
         AppLog.Info($"Solo Agent 选项 · {agents.Count} 个 · 模型 {ModelChoices.Count} 个");
     }
 
@@ -1715,4 +1768,14 @@ public sealed class DiffLineRow
 public sealed record AgentChoice(string? Id, string Label);
 
 /// <summary>模型下拉项；KeyId 为空表示使用原生模型名。</summary>
-public sealed record ModelChoice(string? KeyId, string? Model, string Label);
+public sealed record ModelChoice(
+    string? KeyId,
+    string? Model,
+    string Label,
+    string? AccountId = null,
+    string? ChannelId = null,
+    string? ChannelLabel = null,
+    string? ContextLabel = null,
+    string? ThinkingKind = null,
+    string[]? ThinkingLevels = null,
+    string? ThinkingDefault = null);

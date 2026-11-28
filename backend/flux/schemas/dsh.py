@@ -18,6 +18,8 @@ class DshRunCreateRequest(BaseModel):
     #: 任务级模型选择（Web Solo 对话用）：key_id 非空 = 使用密钥库中的模型
     model: str | None = Field(default=None, max_length=128)
     key_id: str | None = Field(default=None, max_length=64)
+    #: 思考档；空 = 密钥库保存的默认档 / 模型官方默认档
+    thinking: str | None = Field(default=None, max_length=32)
 
 
 __all__ = ["DshRunCreateRequest"]

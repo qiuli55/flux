@@ -35,7 +35,9 @@ public sealed record BillingPlanView(
     double GatePercent,
     bool HasGatePercent,
     string FallbackText,
-    ObservableCollection<BillingWindowView> Windows);
+    ObservableCollection<BillingWindowView> Windows,
+    string? RiskText = null,
+    bool HasRiskText = false);
 
 /// <summary>官方价目行。</summary>
 public sealed record BillingPriceRow(
@@ -200,7 +202,8 @@ public sealed partial class BillingViewModel : ViewModelBase
         GateTone = overview.Enforce ? Orange : Brand;
         PlansFileText = $"新增套餐（Codex / Claude / 任意订阅）写进 {overview.PlansFile ?? "~/.flux/billing-plans.json"} 即可生效；未登记前缀的模型只记账、不限额。";
 
-        foreach (var plan in overview.Plans)
+        // 额度页只列已登录/已配置凭据、且能官方取回额度的账号。
+        foreach (var plan in overview.Plans.Where(p => p.CanAutoRefresh == true && p.Available == true))
         {
             var (levelText, levelTone) = LevelOf(plan.Gate.Level);
             var windows = new ObservableCollection<BillingWindowView>(
@@ -218,7 +221,9 @@ public sealed partial class BillingViewModel : ViewModelBase
                 plan.Gate.Percent ?? 0,
                 plan.Gate.Percent is not null,
                 $"超额回退模型 {plan.FallbackModel ?? "未配置"}",
-                windows));
+                windows,
+                plan.RiskNote,
+                !string.IsNullOrWhiteSpace(plan.RiskNote)));
         }
 
         HasPlans = Plans.Count > 0;

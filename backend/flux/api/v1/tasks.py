@@ -22,8 +22,20 @@ from flux.api.deps import get_container
 from flux.api.response import ok
 from flux.container import Container
 from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL
+from flux.core.agent_runtime.model_catalog import (
+    THINKING_ALWAYS,
+    ThinkingSpec,
+    default_model_for_runtime,
+    default_thinking_for_models,
+    default_thinking_level,
+    model_meta,
+)
 from flux.core.agent_runtime.run_repository import as_utc, utcnow
-from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
+from flux.core.agent_runtime.runtimes.base import (
+    DEFAULT_RUNTIME,
+    RUNTIME_CLAUDE_CODE,
+    RUNTIME_CODEX,
+)
 from flux.core.agent_runtime.trace import summarize_trace
 from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
@@ -153,6 +165,93 @@ def _task_id(value: str) -> uuid.UUID:
         raise NotFoundError(f"任务 {value} 不存在", details={"task_id": value}) from exc
 
 
+def _require_subscription_account(container: Container, runtime: str, account_id: str) -> str:
+    """校验任务选中的订阅账号确实属于该 runtime；不属于或未登录一律 400。"""
+    wanted = (account_id or "").strip()
+    if not wanted:
+        return ""
+    service = None
+    if (runtime or "").strip().lower() == RUNTIME_CODEX:
+        service = container.codex_account
+    elif (runtime or "").strip().lower() == RUNTIME_CLAUDE_CODE:
+        service = container.claude_account
+    if service is None:
+        raise BadRequestError(
+            f"当前 Agent 的 runtime（{runtime or DEFAULT_RUNTIME}）没有订阅账号通道",
+            details={"runtime": runtime, "account_id": wanted},
+        )
+    account = service.get_account(wanted)
+    if account is None or not account.get("logged_in"):
+        raise BadRequestError(
+            "订阅账号不存在或已退出登录",
+            details={"runtime": runtime, "account_id": wanted},
+        )
+    return wanted
+
+
+def _normalize_thinking(
+    model: str, raw: str | None, spec: ThinkingSpec | None = None
+) -> str | None:
+    """把思考档收敛到该模型支持的取值；未给时落到该模型的默认档。
+
+    密钥库模型以密钥里保存的思考模式为准（[spec]）；其余按官方 / 通用规则。
+    """
+    resolved = spec if spec is not None else model_meta(model).thinking
+    default = default_thinking_level(model, resolved) or None
+    level = (raw or "").strip().lower()
+    if not level:
+        return default
+    allowed = set(resolved.levels)
+    if resolved.kind == THINKING_ALWAYS:
+        allowed = {"always"}
+    if level not in allowed:
+        raise BadRequestError(
+            f"模型 {model} 不支持思考档 {level}",
+            details={"model": model, "thinking": level, "allowed": sorted(allowed)},
+        )
+    return level
+
+
+async def _resolve_model_selection(
+    container: Container,
+    *,
+    runtime: str,
+    model: str | None,
+    key_id: str | None,
+    account_id: str | None,
+    thinking: str | None,
+) -> tuple[str | None, uuid.UUID | None, str | None, str | None]:
+    """把请求里的 model / key_id / account_id / thinking 收敛成可落库的任务选择。
+
+    - 密钥库通道（key_id）与订阅通道（account_id）互斥；
+    - 订阅通道走该账号的登录态，不带 key_id；
+    - 密钥库通道显式不使用订阅登录态（计费归因按 key 通道，不占订阅额度）。
+    """
+    if key_id and account_id:
+        raise BadRequestError(
+            "模型来源不能同时是密钥库和订阅账号",
+            details={"key_id": key_id, "account_id": account_id},
+        )
+    resolved_model, resolved_key = await container.key_vault.resolve_selection(
+        runtime=runtime, model=model or "", key_id=key_id
+    )
+    resolved_account = ""
+    if account_id:
+        resolved_account = _require_subscription_account(container, runtime, account_id)
+        resolved_key = None
+        if not resolved_model:
+            resolved_model = default_model_for_runtime(container.settings, runtime) or None
+    key_spec: ThinkingSpec | None = None
+    if resolved_key is not None and resolved_model:
+        key_spec = await container.key_vault.thinking_spec(resolved_key, resolved_model)
+    level = (
+        _normalize_thinking(resolved_model or "", thinking, key_spec)
+        if resolved_model
+        else None
+    )
+    return resolved_model, resolved_key, (resolved_account or None), level
+
+
 @router.post("")
 async def create_task(
     payload: TaskCreateRequest, container: Container = Depends(get_container)
@@ -169,8 +268,13 @@ async def create_task(
                 details={"agent_id": payload.agent_id, "kind": agent.spec.kind},
             )
         runtime = str(getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME))
-    model, key_id = await container.key_vault.resolve_selection(
-        runtime=runtime, model=payload.model or "", key_id=payload.key_id
+    model, key_id, account_id, thinking = await _resolve_model_selection(
+        container,
+        runtime=runtime,
+        model=payload.model,
+        key_id=payload.key_id,
+        account_id=payload.account_id,
+        thinking=payload.thinking,
     )
     avatar_shape, avatar_color = normalize_avatar(payload.avatar_shape, payload.avatar_color)
 
@@ -186,6 +290,8 @@ async def create_task(
         permission_mode=payload.permission_mode,
         model=model,
         api_key_id=key_id,
+        subscription_account_id=account_id,
+        thinking_level=thinking,
         origin=payload.origin,
         bot_name=payload.bot_name,
         avatar_shape=avatar_shape,
@@ -565,10 +671,16 @@ async def submit_secure_input(
         raise ValidationError("密钥不能为空", details={"field": "value"})
 
     name = str(spec.get("name") or spec.get("title") or "API key")[:128]
+    model_ids = [str(item) for item in spec.get("models") or []]
     fields = {
         "provider": str(spec.get("provider") or ""),
         "base_url": str(spec.get("base_url") or ""),
-        "models": [str(item) for item in spec.get("models") or []],
+        "models": model_ids,
+        # 安全输入卡片没有思考选择 UI：按官方 / 通用规则预填，仍满足「不能空着」。
+        "model_thinking": {
+            model: item.to_dict()
+            for model, item in default_thinking_for_models(model_ids).items()
+        },
         "wire_api": str(spec.get("wire_api") or ""),
     }
     # 同名密钥视为「重新填一次」：覆盖凭据与用途，而不是报 409 让用户去密钥库手动合并。
@@ -880,10 +992,21 @@ async def switch_task_model(
                 details={"agent_id": str(task.agent_id), "kind": agent.spec.kind},
             )
         runtime = getattr(getattr(agent, "spec", None), "runtime", DEFAULT_RUNTIME)
-    model, key_id = await container.key_vault.resolve_selection(
-        runtime=runtime, model=payload.model, key_id=payload.key_id
+    model, key_id, account_id, thinking = await _resolve_model_selection(
+        container,
+        runtime=runtime,
+        model=payload.model,
+        key_id=payload.key_id,
+        account_id=payload.account_id,
+        thinking=payload.thinking,
     )
-    task = await container.task_repo.set_model(task_uuid, model, key_id)
+    task = await container.task_repo.set_model(
+        task_uuid,
+        model,
+        key_id,
+        subscription_account_id=account_id,
+        thinking_level=thinking,
+    )
     return ok(_task_dict(task))
 
 

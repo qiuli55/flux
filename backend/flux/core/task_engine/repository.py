@@ -79,6 +79,8 @@ class TaskRepository:
         permission_mode: PermissionMode = PermissionMode.NORMAL,
         model: str | None = None,
         api_key_id: uuid.UUID | None = None,
+        subscription_account_id: str | None = None,
+        thinking_level: str | None = None,
         origin: TaskOrigin = TaskOrigin.CHAT,
         bot_name: str | None = None,
         avatar_shape: str = "circle",
@@ -109,6 +111,8 @@ class TaskRepository:
                 permission_mode=str(permission_mode),
                 model=(model or "").strip() or None,
                 api_key_id=api_key_id,
+                subscription_account_id=(subscription_account_id or "").strip() or None,
+                thinking_level=(thinking_level or "").strip() or None,
                 origin=str(origin),
                 bot_name=(bot_name or "").strip()[:64] or None,
                 avatar_shape=avatar_shape,
@@ -240,6 +244,8 @@ class TaskRepository:
             task.agent_id = agent_id
             task.model = None
             task.api_key_id = None
+            task.subscription_account_id = None
+            task.thinking_level = None
             task.pending_agent_id = None
             await self._commit(session)
             return task
@@ -275,6 +281,8 @@ class TaskRepository:
             task.pending_agent_id = None
             task.model = None
             task.api_key_id = None
+            task.subscription_account_id = None
+            task.thinking_level = None
             await self._commit(session)
             return task, pending
 
@@ -283,12 +291,22 @@ class TaskRepository:
         task_id: uuid.UUID,
         model: str | None,
         api_key_id: uuid.UUID | None = None,
+        subscription_account_id: str | None = None,
+        thinking_level: str | None = None,
     ) -> Task:
-        """设置任务级模型选择；`api_key_id=None` 表示原生模型，`model=None` 表示回默认。"""
+        """设置任务级模型选择；`api_key_id=None` 表示原生/订阅通道，`model=None` 表示回默认。
+
+        `subscription_account_id` 与 `api_key_id` 互斥：选密钥库时不带订阅账号。
+        思考档随模型一起写入，`thinking_level=None` 表示该模型的默认档。
+        """
         async with self._session_factory() as session:
             task = await self._require(session, task_id)
             task.model = (model or "").strip() or None
             task.api_key_id = api_key_id if task.model else None
+            task.subscription_account_id = (
+                (subscription_account_id or "").strip() or None
+            ) if task.model and api_key_id is None else None
+            task.thinking_level = (thinking_level or "").strip() or None
             await self._commit(session)
             return task
 

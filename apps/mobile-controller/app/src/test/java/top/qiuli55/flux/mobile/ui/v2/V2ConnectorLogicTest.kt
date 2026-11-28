@@ -145,6 +145,10 @@ class V2ConnectorLogicTest {
     fun `github moved from profile settings into connectors`() {
         assertTrue(PROFILE_SETTINGS_TITLES.contains("连接器"))
         assertTrue(PROFILE_SETTINGS_TITLES.contains("订阅与账号"))
+        // 用户可见名称统一：密钥库 / 套餐额度（不再叫「模型与密钥」「成本中心」）
+        assertTrue(PROFILE_SETTINGS_TITLES.contains("密钥库"))
+        assertTrue(PROFILE_SETTINGS_TITLES.contains("套餐额度"))
+        assertFalse(PROFILE_SETTINGS_TITLES.contains("模型与密钥"))
         assertFalse(PROFILE_SETTINGS_TITLES.any { it.contains("GitHub") })
         assertFalse(PROFILE_SETTINGS_TITLES.any { it.contains("ChatGPT") })
 

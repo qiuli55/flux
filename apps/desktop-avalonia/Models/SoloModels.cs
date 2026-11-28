@@ -123,6 +123,40 @@ public sealed record DshKeyModel(string KeyId, string Model, string? KeyName);
 /// <summary>GET /dsh/models 的 data。</summary>
 public sealed record DshModelsResponse(string[] Models, string? Model, DshKeyModel[]? KeyModels);
 
+/// <summary>思考能力元数据（后端 model_catalog.thinking）。</summary>
+public sealed record ThinkingSpecDetail(
+    string? Kind,
+    string[]? Levels,
+    string[]? Labels,
+    string? Default,
+    bool? CanDisable);
+
+/// <summary>选模页的一条模型（后端 model_catalog 元素）。</summary>
+public sealed record CatalogModelDetail(
+    string Id,
+    string? Label,
+    string? ChannelId,
+    string? ChannelKind,
+    string? ChannelLabel,
+    string? AccountId,
+    string? KeyId,
+    string? Provider,
+    int? ContextWindow,
+    string[]? Capabilities,
+    ThinkingSpecDetail? Thinking);
+
+/// <summary>选模页顶部的一个分栏（订阅账号 / 密钥 / 原生）。</summary>
+public sealed record ModelChannelDetail(
+    string Id,
+    string? Kind,
+    string? Label,
+    string? Vendor,
+    string? AccountId,
+    string? KeyId,
+    string? Detail,
+    bool? Enabled,
+    string? ChipLabel = null);
+
 /// <summary>Agent 规格（含可执行模型目录）。</summary>
 public sealed record AgentSpecDetail(
     string Name,
@@ -131,7 +165,9 @@ public sealed record AgentSpecDetail(
     string[]? Models,
     string? Model,
     DshKeyModel[]? KeyModels,
-    bool? NativeStreaming = null);
+    bool? NativeStreaming = null,
+    ModelChannelDetail[]? ModelChannels = null,
+    CatalogModelDetail[]? ModelCatalog = null);
 
 /// <summary>GET /agents/{id} 的完整 Agent 档案。</summary>
 public sealed record AgentDetail(string Id, string State, AgentSpecDetail Spec);

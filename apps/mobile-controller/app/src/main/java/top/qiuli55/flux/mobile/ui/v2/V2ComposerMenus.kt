@@ -5,12 +5,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,20 +21,32 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.List as ListIcon
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -40,6 +54,7 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -332,7 +347,15 @@ internal fun FluxAgentMenu(
 
 // ------------------------------------------------------------------ 模型小窗
 
-/** 模型立方体点开的小窗：只列当前 Agent 的可用模型，主行是可读 label。 */
+/**
+ * 模型立方体点开的底部面板：两层。
+ *
+ * 第一层是「当前模型」小卡片（`SheetFrame(wrapContent = true)`，贴着输入栏上沿）；
+ * 点「更多模型」打开第二层「切换模型」大面板，按通道筛选并支持搜索。
+ * 只列**当前 Agent** 的模型；通道集合由后端按当前 Agent 的 runtime 组装。
+ *
+ * 两层都复用 [SheetFrame] 的遮罩、拖动条、下拉 / 点遮罩关闭，不另做一套手势。
+ */
 @Composable
 internal fun FluxModelMenu(
     expanded: Boolean,
@@ -340,34 +363,407 @@ internal fun FluxModelMenu(
     options: List<V2ModelOption>,
     currentModel: String,
     currentModelKeyId: String?,
+    channels: List<V2ModelChannel> = emptyList(),
+    favorites: Set<String> = emptySet(),
+    currentModelAccountId: String? = null,
+    currentThinking: String? = null,
+    thinkingEnabled: Boolean = true,
+    /** 小卡片底部让出的输入栏高度：输入区仍然露在面板下方可见。 */
+    bottomInset: Dp = 0.dp,
+    onToggleFavorite: (V2ModelOption) -> Unit = {},
+    onThinkingChange: (V2ModelOption, String) -> Unit = { _, _ -> },
     onPick: (V2ModelOption) -> Unit,
 ) {
-    FluxPickerMenu(
-        expanded = expanded,
-        onDismissRequest = onDismissRequest,
-        width = 240.dp,
-        testTag = V2ComposerTags.MODEL_MENU,
-        alignToAnchorEnd = true,
-        maxHeight = 320.dp,
-    ) {
-        options.forEach { option ->
-            val selected = option.model == currentModel && option.keyId == currentModelKeyId
-            val subtitle = modelMenuSubtitle(option, currentModel, currentModelKeyId)
-            FluxPickerRow(
-                selected = selected,
-                testTag = V2ComposerTags.MODEL_MENU_ROW_PREFIX +
-                    option.model + "|" + (option.keyId ?: "native"),
-                onClick = {
-                    onDismissRequest()
-                    onPick(option)
-                },
+    var showAll by remember(expanded) { mutableStateOf(false) }
+    var channelFilter by remember(expanded) { mutableStateOf(ALL_MODELS) }
+    var query by remember(expanded) { mutableStateOf("") }
+    val current = options.firstOrNull {
+        it.model == currentModel &&
+            it.keyId == currentModelKeyId &&
+            it.accountId == currentModelAccountId
+    } ?: options.firstOrNull { it.model == currentModel && it.keyId == currentModelKeyId }
+        ?: options.firstOrNull()
+
+    LaunchedEffect(expanded) {
+        if (!expanded) {
+            showAll = false
+            channelFilter = ALL_MODELS
+            query = ""
+        }
+    }
+    if (!expanded) return
+
+    if (!showAll) {
+        Box(Modifier.fillMaxSize().padding(bottom = bottomInset)) {
+            SheetFrame(
+                onDismiss = onDismissRequest,
+                maxHeightFraction = .5f,
+                wrapContent = true,
+                expandable = false,
             ) {
-                Label(option.label, 13f, V2Colors.ink(.90f), mono = true, maxLines = 1)
-                if (subtitle != null) {
-                    Spacer(Modifier.height(2.dp))
-                    Label(subtitle, 10.5f, V2Colors.ink(.44f), maxLines = 1)
+                CurrentModelCard(
+                    current = current,
+                    currentModel = currentModel,
+                    currentThinking = currentThinking,
+                    thinkingEnabled = thinkingEnabled,
+                    onThinkingChange = onThinkingChange,
+                    onMore = { showAll = true },
+                )
+            }
+        }
+    } else {
+        ModelSwitchSheet(
+            options = options,
+            channels = channels,
+            favorites = favorites,
+            channelFilter = channelFilter,
+            query = query,
+            onQuery = { query = it },
+            onFilter = { channelFilter = it },
+            currentModel = currentModel,
+            currentModelKeyId = currentModelKeyId,
+            currentModelAccountId = currentModelAccountId,
+            onToggleFavorite = onToggleFavorite,
+            onPick = {
+                onDismissRequest()
+                onPick(it)
+            },
+            onDismiss = onDismissRequest,
+        )
+    }
+}
+
+/** 第一层：当前通道 + 当前模型 + 思考控制 + 更多模型入口。 */
+@Composable
+private fun CurrentModelCard(
+    current: V2ModelOption?,
+    currentModel: String,
+    currentThinking: String?,
+    thinkingEnabled: Boolean,
+    onThinkingChange: (V2ModelOption, String) -> Unit,
+    onMore: () -> Unit,
+) {
+    val channelLabel = current?.channelLabel.orEmpty().ifBlank {
+        when (current?.channelKind) {
+            "key" -> "密钥库"
+            "subscription" -> "订阅账号"
+            else -> "本机默认"
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .testTag(V2ComposerTags.MODEL_MENU)
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 20.dp),
+    ) {
+        Label(
+            channelLabel,
+            10f,
+            V2Colors.ink(.46f),
+            FontWeight.SemiBold,
+            mono = true,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(6.dp))
+        val selected = current
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(V2Colors.ink(.06f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Check,
+                contentDescription = "当前模型",
+                tint = V2Colors.ink(.78f),
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Label(
+                    selected?.label ?: currentModel,
+                    13.5f,
+                    V2Colors.ink(.92f),
+                    FontWeight.Medium,
+                    maxLines = 1,
+                )
+            }
+        }
+        // 不支持思考的模型不展示思考控制；不做「不保证支持」之类的脚注。
+        if (selected != null && selected.thinking.supported) {
+            Spacer(Modifier.height(6.dp))
+            ThinkingControl(
+                option = selected,
+                level = currentThinking,
+                enabled = thinkingEnabled,
+                onLevel = { onThinkingChange(selected, it) },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        FluxPickerRow(
+            selected = false,
+            testTag = V2ComposerTags.MODEL_MORE,
+            onClick = onMore,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.ListIcon,
+                    contentDescription = null,
+                    tint = V2Colors.ink(.55f),
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Label("更多模型", 12.5f, V2Colors.ink(.80f), modifier = Modifier.weight(1f))
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = V2Colors.ink(.42f),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 思考控制：按模型元数据渲染，不写死同一套开关。
+ * - none：不展示可点击控件，只说明不支持；
+ * - toggle：开 / 关；
+ * - levels：官方档位原样展示；
+ * - always：只读说明，不提供 Off。
+ */
+@Composable
+private fun ThinkingControl(
+    option: V2ModelOption,
+    level: String?,
+    enabled: Boolean,
+    onLevel: (String) -> Unit,
+) {
+    val thinking = option.thinking
+    Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Label("思考", 10f, V2Colors.ink(.44f), FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        when (thinking.kind) {
+            "always" -> Label(
+                "始终思考（不可关闭）",
+                11f,
+                V2Colors.ink(.58f),
+                maxLines = 1,
+            )
+            "toggle", "levels" -> {
+                val levels = if (thinking.kind == "toggle") listOf("on", "off") else thinking.levels
+                val labels = if (thinking.kind == "toggle") listOf("开", "关") else thinking.labels
+                val active = level?.takeIf { it.isNotBlank() } ?: thinking.default
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    levels.forEachIndexed { index, value ->
+                        val label = labels.getOrNull(index) ?: value
+                        val selected = value == active
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(
+                                    if (selected) V2Colors.ink(.82f) else V2Colors.ink(.06f)
+                                )
+                                .clickable(enabled = enabled) { onLevel(value) }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                .testTag(V2ComposerTags.MODEL_THINKING_PREFIX + value),
+                        ) {
+                            Label(
+                                label,
+                                10.5f,
+                                if (selected) V2Colors.surface else V2Colors.ink(.62f),
+                                FontWeight.Medium,
+                            )
+                        }
+                    }
+                }
+            }
+            // none：不展示任何控件（调用方已按 supported 过滤），不留按了无效的开关。
+            else -> Unit
+        }
+    }
+}
+
+/**
+ * 第二层「切换模型」：左对齐大标题 + 搜索 + 通道 chips + 完整模型列表。
+ *
+ * 从底部升起，maxHeightFraction 不接近全屏，上方仍能看到对话标题与气泡；
+ * 下拉或点遮罩关闭都交给 [SheetFrame]。
+ */
+@Composable
+private fun ModelSwitchSheet(
+    options: List<V2ModelOption>,
+    channels: List<V2ModelChannel>,
+    favorites: Set<String>,
+    channelFilter: String,
+    query: String,
+    onQuery: (String) -> Unit,
+    onFilter: (String) -> Unit,
+    currentModel: String,
+    currentModelKeyId: String?,
+    currentModelAccountId: String?,
+    onToggleFavorite: (V2ModelOption) -> Unit,
+    onPick: (V2ModelOption) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(onDismiss = onDismiss, maxHeightFraction = .72f) {
+        Column(
+            Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+        ) {
+            Spacer(Modifier.height(2.dp))
+            Label("切换模型", 21f, V2Colors.ink(.95f), FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            // 搜索框：按模型名 / 通道名过滤；options 已限定在当前 Agent。
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .background(V2Colors.ink(.05f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (query.isEmpty()) {
+                    Label("搜索模型或提供商…", 12.5f, V2Colors.ink(.30f))
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQuery,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = V2Colors.ink(.90f),
+                        fontSize = 12.5.sp,
+                    ),
+                    cursorBrush = SolidColor(V2Colors.accent),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(V2ComposerTags.MODEL_SEARCH),
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ChannelChip(
+                    label = "全部",
+                    selected = channelFilter == ALL_MODELS || channelFilter.isBlank(),
+                    tag = V2ComposerTags.MODEL_CHANNEL_PREFIX + ALL_MODELS,
+                    onClick = { onFilter(ALL_MODELS) },
+                )
+                channels.filter { it.enabled }.forEach { channel ->
+                    ChannelChip(
+                        label = channelChipLabel(channel),
+                        selected = channelFilter == channel.id,
+                        tag = V2ComposerTags.MODEL_CHANNEL_PREFIX + channel.id,
+                        onClick = { onFilter(channel.id) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(V2Colors.ink(.07f)))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 2.dp, bottom = 18.dp),
+            ) {
+                val visible = filterModelOptions(
+                    modelsForChannel(options, channelFilter),
+                    query,
+                )
+                if (visible.isEmpty()) {
+                    Label(
+                        if (query.isBlank()) "这个通道还没有可用模型" else "没有匹配的模型",
+                        11f,
+                        V2Colors.ink(.40f),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                    )
+                }
+                sortedModelOptions(visible, favorites).forEach { option ->
+                    val selected = option.model == currentModel &&
+                        option.keyId == currentModelKeyId &&
+                        option.accountId == currentModelAccountId
+                    FluxPickerRow(
+                        selected = selected,
+                        testTag = V2ComposerTags.MODEL_MENU_ROW_PREFIX +
+                            option.model + "|" + (option.keyId ?: option.accountId ?: "native"),
+                        onClick = { onPick(option) },
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Label(option.label, 12.5f, V2Colors.ink(.90f), maxLines = 1)
+                                modelDetailLine(option, selected)?.let { detail ->
+                                    Spacer(Modifier.height(2.dp))
+                                    Label(detail, 10f, V2Colors.ink(.42f), maxLines = 1)
+                                }
+                            }
+                            IconButton(
+                                onClick = { onToggleFavorite(option) },
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .testTag(V2ComposerTags.MODEL_STAR_PREFIX + option.favoriteKey),
+                            ) {
+                                val starred = option.favoriteKey in favorites
+                                Icon(
+                                    if (starred) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                                    contentDescription = if (starred) "取消收藏" else "收藏",
+                                    tint = if (starred) V2Colors.amber700 else V2Colors.ink(.30f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun ChannelChip(
+    label: String,
+    selected: Boolean,
+    tag: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) V2Colors.ink(.84f) else V2Colors.ink(.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .testTag(tag),
+    ) {
+        Label(
+            label,
+            10.5f,
+            if (selected) V2Colors.surface else V2Colors.ink(.62f),
+            FontWeight.Medium,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 列表副行：来源 · 上下文 · 能力标签；没有的项不写。 */
+internal fun modelDetailLine(option: V2ModelOption, selected: Boolean): String? {
+    val parts = buildList {
+        option.channelLabel.takeIf { it.isNotBlank() }?.let { add(it) }
+        contextWindowLabel(option.contextWindow)?.let { add(it) }
+        option.capabilities.forEach { add(it) }
+        if (selected) add("当前在用")
+    }
+    return parts.joinToString(" · ").takeIf { it.isNotBlank() }
+}
+
+/** 订阅账号的展示名：邮箱已由后端给出；没有邮箱时用账号 id 的短标识。 */
+private fun accountLabel(accountId: String): String =
+    if (accountId == "default") "默认账号" else "账号 ${accountId.take(8)}"

@@ -121,7 +121,7 @@ fun V2ProfileScreen(
         V2SettingsCard {
             V2SettingRow(
                 icon = Icons.Outlined.Key,
-                title = "模型与密钥",
+                title = "密钥库",
                 onClick = onOpenKeys,
                 showDivider = true,
             )
@@ -226,7 +226,7 @@ internal val PROFILE_SETTINGS_TITLES = listOf(
     "连接器",
     "终端会话",
     "订阅与账号",
-    "模型与密钥",
+    "密钥库",
     "套餐额度",
     "用户记忆",
     "通知与偏好",

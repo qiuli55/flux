@@ -18,9 +18,12 @@ router = APIRouter(prefix="/claude-account", tags=["claude-account"])
 
 
 @router.get("")
-async def account_status(container: Container = Depends(get_container)) -> dict[str, object]:
-    """当前 Claude Code 订阅的登录态（不含任何令牌）。"""
-    return ok(container.claude_account.status())
+async def account_status(
+    account_id: str = "",
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """当前 Claude Code 订阅的登录态（不含任何令牌）。`accounts` 是多账号列表。"""
+    return ok(container.claude_account.status(account_id or None))
 
 
 @router.post("/login")
@@ -52,9 +55,15 @@ async def submit_code(
 
 
 @router.post("/logout")
-async def logout(container: Container = Depends(get_container)) -> dict[str, object]:
-    """退出 Claude Code 订阅：删除 Flux 隔离目录里的订阅令牌。"""
-    return ok(await container.claude_account.logout())
+async def logout(
+    account_id: str = "",
+    container: Container = Depends(get_container),
+) -> dict[str, object]:
+    """退出一个 Claude Code 订阅账号；不传 account_id 时退出默认账号。
+
+    多账号下只移除这一个账号，不影响同一厂家的其它账号。
+    """
+    return ok(await container.claude_account.logout(account_id or None))
 
 
 __all__ = ["router"]

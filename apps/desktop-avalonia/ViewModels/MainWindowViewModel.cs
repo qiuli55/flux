@@ -362,7 +362,7 @@ public partial class MainWindowViewModel : ViewModelBase
         NavItems.Add(new NavItem("skills", "Skills", GroupPlatform, new SkillsViewModel(() => _api), "puzzle") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("designs", "设计", GroupPlatform, new DesignsViewModel(() => _api), "design") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("browser", "浏览器", GroupPlatform, new BrowserViewModel(), "globe") { ActivateCommand = ActivateCommand });
-        NavItems.Add(new NavItem("billing", "成本中心", GroupPlatform, new BillingViewModel(() => _api), "credit") { ActivateCommand = ActivateCommand });
+        NavItems.Add(new NavItem("billing", "套餐额度", GroupPlatform, new BillingViewModel(() => _api), "credit") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("diagnostics", "系统诊断", GroupPlatform, new DiagnosticsViewModel(() => _api), "activity") { ActivateCommand = ActivateCommand });
         NavItems.Add(new NavItem("settings", "设置", GroupPlatform, new SettingsViewModel(() => _api, this), "settings") { ActivateCommand = ActivateCommand });
     }

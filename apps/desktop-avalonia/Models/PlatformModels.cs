@@ -77,7 +77,8 @@ public sealed record ApiKeyEntry(
     string WireApi,
     string[] Models,
     string KeyHint,
-    bool Enabled)
+    bool Enabled,
+    Dictionary<string, ThinkingSpecDetail>? ModelThinking = null)
 {
     public string ToggleText => Enabled ? "停用" : "启用";
     public string BaseUrlText => string.IsNullOrWhiteSpace(BaseUrl) ? "默认地址" : BaseUrl;
