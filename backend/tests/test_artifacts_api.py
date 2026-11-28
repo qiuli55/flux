@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Iterator
 
 import httpx
@@ -15,6 +16,7 @@ from flux.core.artifacts.content import (
     ASSET_MAX_TOTAL_BYTES,
     MAX_CONTENT_BYTES,
 )
+from flux.core.artifacts.extract import ExtractFetchError
 from flux.main import create_app
 
 PREFIX = "/api/v1"
@@ -415,3 +417,213 @@ def test_asset_rejects_unsupported_type_and_empty_file(artifacts_client) -> None
     )
     assert empty.status_code == 422
     assert empty.json()["data"]["reason"] == "empty_file"
+
+
+# ---------------------------------------------------------------- 网页提取
+
+
+ARTICLE_HTML = """<!doctype html>
+<html><head>
+  <title>可维护的提取器</title>
+  <meta name="description" content="一篇关于正文提取的文章" />
+</head><body>
+  <nav>首页 / 分类 / 关于</nav>
+  <article>
+    <h1>可维护的提取器</h1>
+    <p>这是文章的第一段正文，内容足够长，用来确认提取器选中的是 article 而不是导航或页脚。</p>
+    <p>第二段包含<a href="/docs/extract">一个相对链接</a>和 <strong>加粗文字</strong>。</p>
+    <ul><li>保留列表</li><li>保留代码</li></ul>
+    <pre><code class="language-python">print("hello")</code></pre>
+  </article>
+  <footer>版权所有</footer>
+</body></html>
+"""
+
+
+def _long_article_html() -> str:
+    paragraph = (
+        "这是文章的第一段正文，内容足够长，用来确认提取器选中的是 article 而不是导航或页脚。" * 2
+    )
+    return ARTICLE_HTML.replace(
+        "这是文章的第一段正文，内容足够长，用来确认提取器选中的是 article 而不是导航或页脚。",
+        paragraph,
+    ).replace("<script>alert(1)</script>", "")
+
+
+def test_extract_doc_from_client_html(artifacts_client) -> None:
+    client, _ = artifacts_client
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={
+            "url": "https://example.com/posts/1?utm=x#frag",
+            "type": "doc",
+            "html": _long_article_html(),
+            "title": "客户端标题只作兜底",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fallback"] is False
+    artifact = data["artifact"]
+    assert artifact["type"] == "doc"
+    assert artifact["title"] == "可维护的提取器"
+    assert "这是文章的第一段正文" in artifact["content"]
+    assert "[一个相对链接](https://example.com/docs/extract)" in artifact["content"]
+    assert "```python" not in artifact["content"]  # 轻量提取只保留代码块，不猜语言
+    assert artifact["metadata"]["source_url"] == "https://example.com/posts/1?utm=x"
+    assert data["excerpt"].startswith("一篇关于正文提取的文章")
+
+    listed = client.get(f"{PREFIX}/artifacts", params={"type": "doc"}).json()["data"]
+    assert any(item["id"] == artifact["id"] for item in listed)
+
+
+def test_extract_page_is_single_file_and_strips_scripts(artifacts_client) -> None:
+    client, _ = artifacts_client
+    html = _long_article_html().replace(
+        "<article>", '<article><script>alert("x")</script><p onclick="bad()">正文</p>'
+    )
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={"url": "https://example.com/page", "type": "page", "html": html},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fallback"] is False
+    content = data["artifact"]["content"]
+    assert content.startswith("<!doctype html>")
+    assert "<title>可维护的提取器</title>" in content
+    assert "alert(\"x\")" not in content
+    assert "onclick" not in content
+    assert "https://example.com/page" in content
+
+
+def test_extract_falls_back_to_link_and_excerpt_when_content_is_thin(artifacts_client) -> None:
+    client, _ = artifacts_client
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={
+            "url": "https://example.com/thin",
+            "type": "doc",
+            "html": "<html><head><title>空白页</title></head><body><p>太短</p></body></html>",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fallback"] is True
+    assert data["artifact"]["title"] == "空白页"
+    assert "https://example.com/thin" in data["artifact"]["content"]
+    assert data["note"]
+    assert "已改为保存链接" in data["note"]
+
+
+def test_extract_fetch_failure_falls_back_instead_of_error(artifacts_client, monkeypatch) -> None:
+    client, _ = artifacts_client
+
+    async def boom(url: str) -> str:
+        raise ExtractFetchError("目标网站返回 HTTP 403，已改为保存链接与标题")
+
+    monkeypatch.setattr("flux.api.v1.artifacts.fetch_page_html", boom)
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={"url": "https://blocked.example/a", "type": "page", "title": "被挡住的页面"},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fallback"] is True
+    assert data["artifact"]["title"] == "被挡住的页面"
+    assert "blocked.example/a" in data["artifact"]["content"]
+    assert data["note"] == "目标网站返回 HTTP 403，已改为保存链接与标题"
+
+
+def test_extract_fetches_when_client_html_is_missing(artifacts_client, monkeypatch) -> None:
+    client, _ = artifacts_client
+    fetched: list[str] = []
+
+    async def fake_fetch(url: str) -> str:
+        fetched.append(url)
+        return _long_article_html()
+
+    monkeypatch.setattr("flux.api.v1.artifacts.fetch_page_html", fake_fetch)
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={"url": "https://example.com/fetched", "type": "doc"},
+    )
+    assert response.status_code == 200
+    assert fetched == ["https://example.com/fetched"]
+    assert response.json()["data"]["fallback"] is False
+    assert response.json()["data"]["artifact"]["title"] == "可维护的提取器"
+
+
+def test_extract_rejects_unsafe_or_invalid_urls(artifacts_client) -> None:
+    client, _ = artifacts_client
+    for url in (
+        "",
+        "javascript:alert(1)",
+        "ftp://example.com/a",
+        "http://127.0.0.1/private",
+        "http://localhost:8000/admin",
+        "http://192.168.1.10/",
+    ):
+        response = client.post(
+            f"{PREFIX}/artifacts/extract",
+            json={"url": url, "type": "doc", "html": "<p>x</p>"},
+        )
+        assert response.status_code == 400, url
+        assert response.json()["message"], url
+
+
+def test_extract_rejects_design_type_and_invalid_task_id(artifacts_client) -> None:
+    client, _ = artifacts_client
+    assert (
+        client.post(
+            f"{PREFIX}/artifacts/extract",
+            json={"url": "https://example.com", "type": "design"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            f"{PREFIX}/artifacts/extract",
+            json={
+                "url": "https://example.com",
+                "type": "doc",
+                "task_id": "not-a-uuid",
+            },
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            f"{PREFIX}/artifacts/extract",
+            json={
+                "url": "https://example.com",
+                "type": "doc",
+                "task_id": str(uuid.uuid4()),
+            },
+        ).status_code
+        == 404
+    )
+
+
+def test_extract_optional_send_back_to_conversation(artifacts_client) -> None:
+    client, _ = artifacts_client
+    task_id = client.post(f"{PREFIX}/tasks", json={"description": "收集资料"}).json()["data"]["id"]
+    response = client.post(
+        f"{PREFIX}/artifacts/extract",
+        json={
+            "url": "https://example.com/posts/1",
+            "type": "doc",
+            "html": _long_article_html(),
+            "task_id": task_id,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["task_id"] == task_id
+    assert data["message_id"]
+    assert data["artifact"]["metadata"]["task_id"] == task_id
+
+    messages = client.get(f"{PREFIX}/tasks/{task_id}/messages").json()["data"]
+    card = next(item for item in messages if item["kind"] == "artifact_card")
+    assert card["payload"]["artifact_id"] == data["artifact"]["id"]
+    assert card["payload"]["type"] == "doc"

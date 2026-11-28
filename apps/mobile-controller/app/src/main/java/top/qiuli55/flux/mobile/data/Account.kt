@@ -26,6 +26,8 @@ data class AccountSession(
     val cloudUrl: String = DEFAULT_CLOUD_URL,
     val accessToken: String = "",
     val refreshToken: String = "",
+    /** 账号云里的稳定用户 id；WebView 数据目录优先用它做隔离键（旧账号可能为 0）。 */
+    val userId: Long = 0,
     val username: String = "",
     val displayName: String = "",
     val email: String = "",
@@ -163,6 +165,7 @@ class CloudApi(private val baseUrl: String = AccountSession.DEFAULT_CLOUD_URL) {
             cloudUrl = baseUrl,
             accessToken = dto.accessToken,
             refreshToken = dto.refreshToken,
+            userId = dto.user.id.toLong(),
             username = dto.user.username,
             displayName = dto.user.displayName ?: dto.user.username,
             email = dto.user.email ?: "",

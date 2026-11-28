@@ -34,6 +34,12 @@ class SettingsStore(context: Context) {
         appContext.getSharedPreferences("flux_oauth", Context.MODE_PRIVATE)
     }
 
+    /**
+     * WebView 数据目录按 Flux 账号隔离：账号存 DataStore（异步），但 Application
+     * 启动时必须在任何 WebView 初始化前同步拿到账号键，所以这里另存一份同步键。
+     */
+    private val webViewProfileStore by lazy { WebViewProfileStore(appContext) }
+
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
         val TOKEN = stringPreferencesKey("token")
@@ -44,6 +50,7 @@ class SettingsStore(context: Context) {
         val CLOUD_URL = stringPreferencesKey("account_cloud_url")
         val ACCESS = stringPreferencesKey("account_access")
         val REFRESH = stringPreferencesKey("account_refresh")
+        val USER_ID = longPreferencesKey("account_user_id")
         val USERNAME = stringPreferencesKey("account_username")
         val DISPLAY = stringPreferencesKey("account_display")
         val EMAIL = stringPreferencesKey("account_email")
@@ -65,6 +72,7 @@ class SettingsStore(context: Context) {
                     cloudUrl = prefs[AccountKeys.CLOUD_URL] ?: AccountSession.DEFAULT_CLOUD_URL,
                     accessToken = access,
                     refreshToken = decodeStoredToken(prefs[AccountKeys.REFRESH]),
+                    userId = prefs[AccountKeys.USER_ID] ?: 0L,
                     username = prefs[AccountKeys.USERNAME].orEmpty(),
                     displayName = prefs[AccountKeys.DISPLAY].orEmpty(),
                     email = prefs[AccountKeys.EMAIL].orEmpty(),
@@ -80,11 +88,17 @@ class SettingsStore(context: Context) {
             prefs[AccountKeys.CLOUD_URL] = session.cloudUrl.trim()
             prefs[AccountKeys.ACCESS] = encryptToken(session.accessToken)
             prefs[AccountKeys.REFRESH] = encryptToken(session.refreshToken)
+            prefs[AccountKeys.USER_ID] = session.userId
             prefs[AccountKeys.USERNAME] = session.username
             prefs[AccountKeys.DISPLAY] = session.displayName
             prefs[AccountKeys.EMAIL] = session.email
             prefs[AccountKeys.EXPIRES] = session.expiresAtEpochSec
         }
+        // 账号键变化 = 下次启动换 WebView 数据目录；token 续期时键不变，不会触发重启。
+        // 身份字段全缺时退回 guest，宁可清空也不能沿用上一个账号的站点登录态。
+        webViewProfileStore.saveCurrentKey(
+            webViewProfileKey(session.userId, session.username, session.email),
+        )
     }
 
     suspend fun saveDevice(deviceId: String, deviceName: String) {
@@ -107,6 +121,7 @@ class SettingsStore(context: Context) {
                 AccountKeys.CLOUD_URL,
                 AccountKeys.ACCESS,
                 AccountKeys.REFRESH,
+                AccountKeys.USER_ID,
                 AccountKeys.USERNAME,
                 AccountKeys.DISPLAY,
                 AccountKeys.EMAIL,
@@ -115,6 +130,21 @@ class SettingsStore(context: Context) {
                 AccountKeys.DEVICE_NAME,
             ).forEach { prefs.remove(it) }
         }
+        // 退出账号后游客 / 下一个账号必须使用独立的 WebView profile，不能继承上一个账号的站点登录态。
+        webViewProfileStore.saveCurrentKey(WEBVIEW_GUEST_PROFILE)
+    }
+
+    /**
+     * 启动时按已登录账号补写 WebView profile 键。
+     *
+     * DataStore 是异步的，Application.onCreate 读不到；但账号加载完成后必须把
+     * 同步键对齐，否则从旧版本升级上来的账号会一直留在 guest 目录。
+     */
+    fun syncWebViewProfile(session: AccountSession?) {
+        val key = session?.let {
+            webViewProfileKey(it.userId, it.username, it.email)
+        } ?: WEBVIEW_GUEST_PROFILE
+        webViewProfileStore.saveCurrentKey(key)
     }
 
     val config: Flow<ConnectionConfig> = appContext.fluxSettingsStore.data

@@ -96,6 +96,8 @@ fun FluxRoot() {
                     }
                     ?: account
             }
+            // 账号加载完成后对齐 WebView profile 键，避免升级后仍停在 guest 目录。
+            FluxEnv.settings.syncWebViewProfile(account)
             ConfigLoadState.Ready(config, account)
         } catch (e: CancellationException) {
             throw e
