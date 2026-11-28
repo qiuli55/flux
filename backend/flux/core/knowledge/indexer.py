@@ -153,7 +153,9 @@ class KnowledgeIndexer:
         if not messages:
             return False
 
-        title = _clip(_one_line(task.description if task is not None else ""), _MAX_TITLE_CHARS)
+        # 标题也会入库并可被检索：与正文同口径，先打码再截断
+        raw_title = _one_line(task.description if task is not None else "")
+        title = _clip(redact(raw_title, literals=self._literals).text, _MAX_TITLE_CHARS)
         converted: list[ConversationMessage] = []
         for message in messages:
             content = redact(message.content or "", literals=self._literals).text.strip()

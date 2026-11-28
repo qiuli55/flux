@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from flux.core.agent_runtime.run_repository import AgentRunRepository, as_utc, is_terminal, utcnow
-from flux.core.context.redact import redact
+from flux.core.context.redact import redact, redact_then_clip
 from flux.core.event.bus import EventBus, Events
 from flux.core.task_engine.repository import MessageDraft, TaskRepository
 from flux.core.task_engine.work_memory import build_memory_card
@@ -228,7 +228,11 @@ class TaskRunBridge:
                     MessageDraft(
                         role=TaskMessageRole.ASSISTANT.value,
                         kind="run_finished",
-                        content=_summary(status, {"run_id": run_id, "error": error}),
+                        content=_summary(
+                            status,
+                            {"run_id": run_id, "error": error},
+                            literals=self._literals,
+                        ),
                         payload={
                             "run_id": run_id,
                             "status": str(status),
@@ -281,7 +285,7 @@ class TaskRunBridge:
                     MessageDraft(
                         role=TaskMessageRole.ASSISTANT.value,
                         kind="run_finished",
-                        content=_summary(status, body),
+                        content=_summary(status, body, literals=self._literals),
                         payload={
                             "run_id": run_id,
                             "status": str(status),
@@ -557,7 +561,10 @@ class TaskRunBridge:
         self, task: Any, *, status: TaskStatus, run_id: str, body: dict[str, Any]
     ) -> str:
         """沉淀正文：任务、结果、失败原因、提案统计（改了什么），控制在短记长度内。"""
-        description = " ".join((task.description or "").split())
+        # 任务描述与错误都可能夹带密钥：先对完整原文打码，再按原有语义截断
+        description = redact(
+            " ".join((task.description or "").split()), literals=self._literals
+        ).text
         lines = [
             "任务收尾（平台自动沉淀）",
             f"- 任务：{description[:SEDIMENT_TASK_CHARS]}",
@@ -568,8 +575,8 @@ class TaskRunBridge:
             lines.append(f"- 结束原因：{finish_reason}")
         error = body.get("error")
         if error:
-            # 沉淀是长期记忆：错误里可能夹着密钥/令牌，落库前必须脱敏
-            error_text = redact(str(error)[-SEDIMENT_ERROR_CHARS:], literals=self._literals).text
+            # 沉淀是长期记忆：错误里可能夹着密钥/令牌，先打码再取尾部
+            error_text = redact_then_clip(str(error), SEDIMENT_ERROR_CHARS, literals=self._literals)
             lines.append(f"- 错误：{error_text}")
         if self._workspace is not None:
             changes = await self._workspace.list(task_id=task.id)
@@ -581,18 +588,22 @@ class TaskRunBridge:
         return "\n".join(lines)[:SEDIMENT_MAX_CHARS]
 
 
-def _summary(status: TaskStatus, body: dict[str, Any]) -> str:
-    """结果消息正文：优先用 Agent 的最终回复原文，没有才用状态兜底文案。"""
+def _summary(status: TaskStatus, body: dict[str, Any], *, literals: Sequence[str] = ()) -> str:
+    """结果消息正文：优先用 Agent 的最终回复原文，没有才用状态兜底文案。
+
+    最终答复与失败原因都会写进对话消息（用户可见、可能长期保留）：落库前按配置
+    清单统一打码，`FLUX_REDACTION_LITERALS` 里的字面量不得以明文出现。
+    """
     if status is TaskStatus.COMPLETED:
         response = body.get("final_response")
         if isinstance(response, str) and response.strip():
-            return response.strip()
+            return redact(response.strip(), literals=literals).text
         # 空正文说明模型这轮只做了工具动作/推理，没产出可读文字；别再报「执行完成」糊弄用户
         return "Agent 本轮没有生成文字回复（工具调用与耗时可在「执行过程」查看）。"
     if status is TaskStatus.FAILED:
         error = body.get("error")
         if error:
-            return f"Agent 执行失败：{error}"
+            return f"Agent 执行失败：{redact(str(error), literals=literals).text}"
         timeout_kind = body.get("timeout_kind")
         if timeout_kind:
             return f"Agent 执行超时（{timeout_kind}），已终止。"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -40,9 +41,24 @@ def _passing_command() -> str:
     return python_command("print('ok')")
 
 
+#: 本文件手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_CREATED_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_created_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _CREATED_CONTAINERS:
+            asyncio.run(_CREATED_CONTAINERS.pop().dispose())
+
+
 def _container(apply_settings, test_command: str | None = None) -> Container:
     updates = {"test_command": test_command or _passing_command()}
-    return Container(apply_settings.model_copy(update=updates))
+    container = Container(apply_settings.model_copy(update=updates))
+    _CREATED_CONTAINERS.append(container)
+    return container
 
 
 def _apply_one(container: Container, path: str, original: str, proposed: str):

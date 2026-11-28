@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -35,6 +36,18 @@ from flux.enums import (
 )
 from flux.errors import ConflictError, NotFoundError, ValidationError
 from tests.test_context_redact import _JWT
+
+#: 本文件手动创建的容器：teardown 统一 dispose，避免 aiosqlite 线程活过事件循环
+_EXTRA_CONTAINERS: list[Container] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_extra_containers() -> Iterator[None]:
+    try:
+        yield
+    finally:
+        while _EXTRA_CONTAINERS:
+            asyncio.run(_EXTRA_CONTAINERS.pop().dispose())
 
 
 def _py(code: str) -> str:
@@ -179,6 +192,7 @@ async def test_terminal_command_custom_literal_is_redacted_on_all_projections(
     """
     literal = "CUSTOM_LITERAL_SMOKE_XYZ"
     container = Container(apply_settings.model_copy(update={"redaction_literals": literal}))
+    _EXTRA_CONTAINERS.append(container)
     session = await container.terminal.create_session()
     command = f"echo {literal}"
 

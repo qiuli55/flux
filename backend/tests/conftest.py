@@ -132,14 +132,28 @@ def db_schema(settings: Settings) -> Iterator[None]:
 
 
 @pytest.fixture()
-def container(settings: Settings, db_schema: None) -> Container:
-    return Container(settings)
+def container(settings: Settings, db_schema: None) -> Iterator[Container]:
+    """函数级容器；teardown 显式 dispose，避免 aiosqlite 连接线程活过事件循环。
+
+    不 dispose 时连接会留在池里，最终在某个已关闭的事件循环上被 GC 回收，
+    aiosqlite 的工作线程就会 `call_soon_threadsafe` 到关闭的 loop，冒
+    `PytestUnhandledThreadExceptionWarning: Event loop is closed`。
+    """
+    instance = Container(settings)
+    try:
+        yield instance
+    finally:
+        asyncio.run(instance.dispose())
 
 
 @pytest.fixture()
-def apply_container(apply_settings: Settings, db_schema: None) -> Container:
+def apply_container(apply_settings: Settings, db_schema: None) -> Iterator[Container]:
     """配好工作区根目录的容器，供真正会落盘的 Apply 用例使用。"""
-    return Container(apply_settings)
+    instance = Container(apply_settings)
+    try:
+        yield instance
+    finally:
+        asyncio.run(instance.dispose())
 
 
 @pytest.fixture()

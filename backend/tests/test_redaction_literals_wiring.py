@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import logging
@@ -19,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from flux.config import Settings
@@ -26,12 +28,26 @@ from flux.container import Container
 from flux.core.event.bus import Events
 from flux.core.knowledge.indexer import BRAIN, CONVERSATION, DOC
 from flux.core.mcp.auth import AgentIdentity
-from flux.core.mcp.context_packager import package_context
+from flux.core.mcp.context_packager import (
+    APPLY_ERROR_CONTEXT_CHARS,
+    RUN_ERROR_CONTEXT_CHARS,
+    package_context,
+)
 from flux.core.mcp.tools.base import ToolContext
 from flux.core.mcp.tools.read_tools import context_steps
+from flux.core.task_engine.dsh_bridge import SEDIMENT_ERROR_CHARS
 from flux.core.task_engine.repository import MessageDraft
-from flux.core.task_engine.work_memory import build_memory_card
-from flux.enums import BrainSection, Capability, DshRunStatus, StepKind, StepStatus, TaskStatus
+from flux.core.task_engine.work_memory import MEMORY_ERROR_CHARS, build_memory_card
+from flux.enums import (
+    BrainSection,
+    Capability,
+    DshRunStatus,
+    StepKind,
+    StepStatus,
+    TaskStatus,
+    VirtualChangeStatus,
+)
+from flux.main import create_app
 from flux.models.knowledge import KnowledgeChunk
 
 LITERAL = "CUSTOM_LITERAL_SMOKE_XYZ"
@@ -362,3 +378,298 @@ async def test_container_assembled_stream_redacts_configured_literal_everywhere(
         assert PLACEHOLDER in message["text"]
     finally:
         await container.dispose()
+
+
+# --- 第四批：claude_account 统一打码 ---
+
+
+def test_claude_account_settle_redacts_literal_and_token_via_container(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """经 Container 装配的 ClaudeAccountService：失败摘要走统一 redact + 配置清单。"""
+    container = Container(literal_settings)
+    try:
+        service = container.claude_account
+        session = SimpleNamespace(
+            login_id="login-literal",
+            status="starting",
+            token_captured=False,
+            output=f"setup failed: {LITERAL} and also padding",
+            message="",
+        )
+        service._settle(session, 1)  # noqa: SLF001 - 验证明文不进入用户可见摘要
+        assert LITERAL not in session.message
+        assert PLACEHOLDER in session.message
+
+        # 官方订阅令牌形态也必须继续被挡住（统一规则改为 [REDACTED:key]）
+        token_session = SimpleNamespace(
+            login_id="login-token",
+            status="starting",
+            token_captured=False,
+            output="token: sk-ant-oat01-abcdefghij",
+            message="",
+        )
+        service._settle(token_session, 1)  # noqa: SLF001
+        assert "sk-ant" not in token_session.message
+        assert PLACEHOLDER in token_session.message
+    finally:
+        asyncio.run(container.dispose())
+
+
+# --- 第四批：任务流 / HTTP 投影打码 ---
+
+
+def test_task_message_http_and_stream_redact_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """POST /messages 的推流与 HTTP 响应投影都不得带明文；落库对象保持原文。"""
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "修复登录"}).json()["data"]
+        response = client.post(
+            f"/api/v1/tasks/{created['id']}/messages",
+            json={"content": f"我的口令是 {LITERAL}"},
+        )
+        assert response.status_code == 200, response.text
+        body = json.dumps(response.json(), ensure_ascii=False)
+        assert LITERAL not in body
+        assert PLACEHOLDER in body
+
+        events = container.task_stream.poll(created["id"])
+        streamed = json.dumps([event.to_dict() for event in events], ensure_ascii=False)
+        assert LITERAL not in streamed
+        assert PLACEHOLDER in streamed
+
+
+def test_task_assistant_error_event_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """assistant_error 必须先对完整异常打码再截断，字面量不得进 SSE。"""
+    from flux.core.task_engine.assistant import TaskAssistant
+
+    async def boom(self: TaskAssistant, **_kwargs: object) -> None:
+        raise RuntimeError(f"provider rejected {LITERAL}")
+
+    monkeypatch.setattr(TaskAssistant, "respond", boom)
+    app = create_app(literal_settings)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        created = client.post("/api/v1/tasks", json={"description": "修复登录"}).json()["data"]
+        response = client.post(f"/api/v1/tasks/{created['id']}/messages", json={"content": "hi"})
+        assert response.status_code == 500
+        events = container.task_stream.poll(created["id"])
+        error = next(event for event in events if event.type == "assistant_error")
+        assert LITERAL not in error.data["error"]
+        assert PLACEHOLDER in error.data["error"]
+
+
+# --- 第四批：先打码再截断（字面量跨边界） ---
+
+
+def _split_window_error(limit: int, cut_into: int = 8) -> tuple[str, str]:
+    """构造让完整字面量跨过截断边界的错误文本，返回 (error, 会漏出的片段)。"""
+    fragment = LITERAL[cut_into:]
+    prefix_len = limit - (len(LITERAL) - cut_into)
+    return "P" * prefix_len + LITERAL + "TAIL", fragment
+
+
+def test_memory_card_redacts_literal_crossing_truncation_boundary() -> None:
+    """失败原因先打码再取尾：跨边界的片段也不能漏出。"""
+    error, fragment = _split_window_error(MEMORY_ERROR_CHARS)
+    task = SimpleNamespace(id=uuid.uuid4(), description="修复登录", confirmation=None)
+    run = SimpleNamespace(
+        id="run-1",
+        instruction="## 本轮任务\n修复登录",
+        status="failed",
+        finish_reason="error",
+        error=error,
+    )
+
+    card = build_memory_card(task=task, run=run, status="failed", literals=(LITERAL,))
+    assert LITERAL not in card
+    assert fragment not in card
+    assert PLACEHOLDER in card
+
+
+def test_memory_card_redacts_goal_and_final_response() -> None:
+    """本轮目标与上一轮最终答复同样要打码，不能只打失败原因。"""
+    task = SimpleNamespace(id=uuid.uuid4(), description=f"目标 {LITERAL}", confirmation=None)
+    card = build_memory_card(
+        task=task,
+        run=None,
+        instruction=f"## 本轮任务\n{LITERAL}",
+        final_response=f"答复 {LITERAL}",
+        status="completed",
+        literals=(LITERAL,),
+    )
+    assert LITERAL not in card
+    assert PLACEHOLDER in card
+
+
+async def test_dsh_sediment_redacts_literal_crossing_truncation_boundary(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """DSH 沉淀的任务描述与错误都要先打码再截断。"""
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description=f"任务 {LITERAL}",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        error, fragment = _split_window_error(SEDIMENT_ERROR_CHARS)
+        text = await container.task_runs._sediment_text(  # noqa: SLF001
+            task, status=TaskStatus.FAILED, run_id="run-boundary", body={"error": error}
+        )
+        assert LITERAL not in text
+        assert fragment not in text
+        assert PLACEHOLDER in text
+    finally:
+        await container.dispose()
+
+
+async def test_context_packager_run_error_crossing_truncation_boundary(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """近期 Run 错误先对完整原文打码再取尾，跨边界片段不漏出。"""
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description="修复登录",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        run_id = uuid.uuid4().hex
+        await container.run_repo.create(
+            run_id=run_id,
+            session_id="s",
+            instruction="修复登录",
+            status=DshRunStatus.RUNNING,
+            task_id=task.id,
+        )
+        error, fragment = _split_window_error(RUN_ERROR_CONTEXT_CHARS)
+        await container.run_repo.set_status(
+            run_id,
+            DshRunStatus.FAILED,
+            error=error,
+            finish_reason="error",
+            finished=True,
+        )
+
+        pack = await package_context(container, task_id=str(task.id))
+        assert LITERAL not in pack["content"]
+        assert fragment not in pack["content"]
+        assert PLACEHOLDER in pack["content"]
+    finally:
+        await container.dispose()
+
+
+async def test_context_packager_redacts_task_description_and_proposal_fields(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """任务描述、提案说明与 apply_error 都要打码，且 apply_error 先打码再截断。"""
+    container = Container(literal_settings)
+    try:
+        task = await container.task_repo.create(
+            task_id=uuid.uuid4(),
+            description=f"任务描述 {LITERAL}",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        change = await container.workspace.propose(
+            file_path="todo_service/store.py",
+            original_content="def list_todos():\n    return None\n",
+            proposed_content="def list_todos():\n    return []\n",
+            task_id=task.id,
+            agent_source="developer-agent",
+            summary=f"改动说明 {LITERAL}",
+        )
+        error, fragment = _split_window_error(APPLY_ERROR_CONTEXT_CHARS)
+        await container.proposal_repo.set_apply_result(
+            change.id,
+            status=VirtualChangeStatus.FAILED,
+            apply_error=error,
+        )
+
+        pack = await package_context(container, task_id=str(task.id))
+        content = pack["content"]
+        assert LITERAL not in content
+        assert fragment not in content
+        assert PLACEHOLDER in content
+        # 任务描述与提案说明都真的走了打码（各自贡献一个占位符）
+        assert content.count(PLACEHOLDER) >= 2
+    finally:
+        await container.dispose()
+
+
+# --- 第四批：知识索引标题 / HTTP handoff ---
+
+
+async def test_knowledge_conversation_title_is_redacted_before_storage(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """对话标题也会入库并可被检索：入库前要按清单打码。"""
+    container = Container(literal_settings)
+    try:
+        task_id = uuid.uuid4()
+        await container.task_repo.create(
+            task_id=task_id,
+            description=f"标题 {LITERAL}",
+            priority=0,
+            project_id=None,
+            agent_id=None,
+        )
+        await container.task_repo.add_messages(
+            task_id, [MessageDraft(role="user", content="正文不敏感")]
+        )
+        assert await container.knowledge_indexer.index_conversations() == 1
+        documents = await container.knowledge_repo.list_documents(CONVERSATION)
+        assert documents and documents[0].title
+        assert LITERAL not in documents[0].title
+        assert PLACEHOLDER in documents[0].title
+    finally:
+        await container.dispose()
+
+
+def test_http_handoff_redacts_configured_literal(
+    literal_settings: Settings, db_schema: None
+) -> None:
+    """HTTP handoff 不再把 task_messages 原文交给摘要并回传。"""
+    seed = Container(literal_settings)
+    task_id = uuid.uuid4()
+    try:
+        asyncio.run(
+            seed.task_repo.create(
+                task_id=task_id,
+                description=f"任务描述 {LITERAL}",
+                priority=0,
+                project_id=None,
+                agent_id=None,
+            )
+        )
+        asyncio.run(
+            seed.task_repo.add_messages(
+                task_id,
+                [
+                    MessageDraft(role="user", content=f"用户消息 {LITERAL}"),
+                    MessageDraft(role="assistant", content="助手回复"),
+                ],
+            )
+        )
+    finally:
+        asyncio.run(seed.dispose())
+
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/tasks/{task_id}/handoff")
+        assert response.status_code == 200, response.text
+        body = json.dumps(response.json(), ensure_ascii=False)
+        assert LITERAL not in body
+        assert LITERAL[8:] not in body  # 截断片段也不得漏出
+        assert PLACEHOLDER in body

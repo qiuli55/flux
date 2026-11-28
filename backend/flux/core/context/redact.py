@@ -167,6 +167,18 @@ def redact_for_settings(text: str, settings: object) -> RedactionResult:
     return redact(text, literals=literals)
 
 
+def redact_then_clip(text: str, limit: int, *, literals: Sequence[str] | None = None) -> str:
+    """先对**完整原文**打码，再取尾部 ``limit`` 个字符。
+
+    直接 ``redact(text[-limit:], literals=...)`` 会让跨截断边界的字面量只剩片段：
+    精确清单匹配不到，片段就会原样漏出（验收探针的 ``ITERAL_SMOKE_XYZ``）。
+    这里先打码，占位符整体落进窗口，再按调用方原有语义取尾。
+    """
+    if limit <= 0:
+        return ""
+    return redact(text, literals=literals).text[-limit:]
+
+
 def _ordered_literals(literals: Sequence[str] | None) -> list[str]:
     """去空、去重、按长度倒序——长字面量先替换，短字面量不会把它拆成碎片。"""
     unique = {literal for literal in literals or () if literal}

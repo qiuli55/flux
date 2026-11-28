@@ -27,6 +27,7 @@ from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.agent_runtime.trace import summarize_trace
 from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
+from flux.core.context.redact import redact_for_settings
 from flux.core.event.bus import Events
 from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
@@ -108,6 +109,33 @@ def _task_dict(task: Task) -> dict[str, object]:
     return task.to_dict()
 
 
+def _redact_text(container: Container, text: str) -> str:
+    """按进程配置（`FLUX_REDACTION_LITERALS`）给准备下发的文本打码。"""
+    return redact_for_settings(text, container.settings).text
+
+
+def _redact_projection(container: Container, value: Any) -> Any:
+    """对投影做深拷贝式打码，不改动 ORM / 已落库对象。
+
+    任务流与 HTTP 响应都只是"给人看"的投影：密钥不该随着 `to_dict()` 的原文
+    离开进程。这里逐层复制字符串再打码，数据库里的原文保持不动。
+    """
+    if isinstance(value, str):
+        return _redact_text(container, value)
+    if isinstance(value, list):
+        return [_redact_projection(container, item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_projection(container, item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_projection(container, item) for key, item in value.items()}
+    return value
+
+
+def _redacted_message(container: Container, message: Any) -> dict[str, Any]:
+    """消息投影（副本）：推流 / HTTP 响应统一走这里，落库对象保持原文。"""
+    return _redact_projection(container, message.to_dict())
+
+
 async def _record_attachments(
     container: Container, task_uuid: uuid.UUID, files: list[UploadedFile]
 ) -> None:
@@ -127,7 +155,9 @@ async def _record_attachments(
             ],
         )
     )[0]
-    await container.task_stream.publish(task_uuid, "user_message", {"message": message.to_dict()})
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": _redacted_message(container, message)}
+    )
 
 
 def _attachments_brief(files: list[UploadedFile]) -> str:
@@ -403,13 +433,15 @@ async def create_task_handoff(
             details={"task_id": task_id, "status": task.status},
         )
     messages, _ = await container.task_repo.list_messages(task_uuid, limit=_HANDOFF_MESSAGE_LIMIT)
+    # 交接摘要会把消息原文交给模型并回传；进入摘要前先按配置清单打码，
+    # 避免 task_messages 里的密钥以明文形式穿过 handoff（也不让截断边界漏片段）。
     pairs = [
-        (message.role, message.content)
+        (message.role, _redact_text(container, message.content))
         for message in messages
         if message.kind in CONTEXT_MESSAGE_KINDS and message.content.strip()
     ]
     summary = await container.conversation_summarizer.summarize(
-        description=task.description, messages=pairs
+        description=_redact_text(container, task.description or ""), messages=pairs
     )
     logger.info(
         "生成对话交接摘要 task=%s 来源消息=%d 截断=%s",
@@ -418,6 +450,8 @@ async def create_task_handoff(
         summary.truncated,
     )
     data = summary.to_dict()
+    # 模型可能原样复述输入：返回前再对摘要做一次统一打码（模型输出也走同一口径）。
+    data["summary"] = _redact_text(container, str(data.get("summary") or ""))
     data["from_task_id"] = str(task_uuid)
     return ok(data)
 
@@ -453,7 +487,7 @@ async def create_task_message(
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "user_message", {"message": user_message.to_dict()}
+        task_uuid, "user_message", {"message": _redacted_message(container, user_message)}
     )
     await _record_attachments(container, task_uuid, files)
 
@@ -464,7 +498,9 @@ async def create_task_message(
     await container.task_stream.publish(task_uuid, "assistant_start", {})
 
     async def _on_delta(text: str) -> None:
-        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+        await container.task_stream.publish(
+            task_uuid, "assistant_delta", {"text": _redact_text(container, text)}
+        )
 
     # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
     # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
@@ -484,7 +520,12 @@ async def create_task_message(
             on_delta=_on_delta,
         )
     except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
-        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
+        # 先对完整异常文本打码，再截断：反序会把跨边界的字面量切成片段漏出。
+        await container.task_stream.publish(
+            task_uuid,
+            "assistant_error",
+            {"error": _redact_text(container, str(exc))[:500]},
+        )
         raise
     reply = (
         await container.task_repo.add_messages(
@@ -501,7 +542,7 @@ async def create_task_message(
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "assistant_message", {"message": reply.to_dict()}
+        task_uuid, "assistant_message", {"message": _redacted_message(container, reply)}
     )
 
     if turn.confirmation:
@@ -516,7 +557,13 @@ async def create_task_message(
         # 平台已真实开始处理这条任务：状态从 pending 进入 running（有实际动作才改状态）
         task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
     return ok(
-        {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
+        {
+            "task": _task_dict(task),
+            "messages": [
+                _redacted_message(container, user_message),
+                _redacted_message(container, reply),
+            ],
+        },
         metadata={"provider": turn.provider, "model": turn.model},
     )
 
@@ -600,7 +647,9 @@ async def submit_secure_input(
             ],
         )
     )[0]
-    await container.task_stream.publish(task_uuid, "user_message", {"message": stored.to_dict()})
+    await container.task_stream.publish(
+        task_uuid, "user_message", {"message": _redacted_message(container, stored)}
+    )
     logger.info(
         "安全输入已保存 task=%s message=%s key=%s provider=%s",
         task_uuid,
@@ -612,7 +661,7 @@ async def submit_secure_input(
         {
             "task": _task_dict(task),
             "key": key.to_dict(),
-            "message": stored.to_dict(),
+            "message": _redacted_message(container, stored),
         }
     )
 
@@ -705,7 +754,7 @@ async def continue_task(
         )
     )[0]
     await container.task_stream.publish(
-        task_uuid, "user_message", {"message": user_message.to_dict()}
+        task_uuid, "user_message", {"message": _redacted_message(container, user_message)}
     )
     await _record_attachments(container, task_uuid, files)
     followup = content or _attachments_brief(files)
@@ -724,7 +773,7 @@ async def continue_task(
     return ok(
         {
             "task": _task_dict(result.task),
-            "messages": [user_message.to_dict()],
+            "messages": [_redacted_message(container, user_message)],
         }
     )
 

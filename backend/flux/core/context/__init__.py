@@ -34,6 +34,7 @@ from flux.core.context.redact import (
     RedactionStore,
     redact,
     redact_for_settings,
+    redact_then_clip,
 )
 from flux.core.context.repository import ContextStepRepository
 from flux.core.context.secretbox import SecretBox
@@ -69,6 +70,7 @@ __all__ = [
     "normalize_token",
     "redact",
     "redact_for_settings",
+    "redact_then_clip",
     "render_catalog",
     "tier_of",
     "tier_rank",

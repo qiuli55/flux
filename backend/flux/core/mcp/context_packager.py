@@ -20,12 +20,13 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from flux.core.context.budget import DEFAULT_BUDGET_CHARS, Level, Zone
 from flux.core.context.compress import extract, select, verify
 from flux.core.context.metrics import FeedMetrics
-from flux.core.context.redact import redact
+from flux.core.context.redact import redact, redact_then_clip
 from flux.core.context.tiers import Tier, tier_rank
 from flux.errors import ValidationError
 from flux.logging import get_logger
@@ -110,12 +111,15 @@ async def package_context(
 
     entries: list[dict[str, Any]] = []
     query = ""
+    literals = container.settings.redaction_literal_list
     if task_uuid is not None:
         task = await container.task_repo.get(task_uuid)
         # 任务自带项目归属时自动带上该项目的 Brain，省掉调用方一次显式传参
         if project_uuid is None and task.project_id is not None:
             project_uuid = task.project_id
         query = task.description
+        # 任务描述会整段进上下文（长期投喂）：进包前按配置清单打码
+        description = redact(task.description, literals=literals).text
         entries.append(
             _entry(
                 kind="task",
@@ -128,7 +132,7 @@ async def package_context(
                         f"- 优先级：{task.priority}",
                         f"- 项目：{task.project_id or '未关联'}",
                         "",
-                        task.description,
+                        description,
                     ]
                 ),
                 ref=f"task:{task.id}",
@@ -169,7 +173,7 @@ async def package_context(
     if recent:
         lines = ["# 近期提案（P1 可压区，人审队列）"]
         for change in recent:
-            lines.append(_proposal_line(change))
+            lines.append(_proposal_line(change, literals=literals))
         failed = sum(1 for change in recent if (getattr(change, "apply_error", None) or ""))
         if failed:
             logger.info("上下文回灌失败原因 task=%s failed=%d/%d", task_uuid, failed, len(recent))
@@ -226,11 +230,13 @@ async def _recent_runs_entry(container: Container, task_id: uuid.UUID) -> dict[s
         )
         error = (run.error or "").strip()
         if error:
-            # Run 的错误可能带出模型输出里的密钥；进上下文前统一过脱敏
-            error_text = redact(
-                error[-RUN_ERROR_CONTEXT_CHARS:],
+            # Run 的错误可能带出模型输出里的密钥；先对完整原文打码再截尾，
+            # 否则跨截断边界的字面量只剩片段、精确清单匹配不到。
+            error_text = redact_then_clip(
+                error,
+                RUN_ERROR_CONTEXT_CHARS,
                 literals=container.settings.redaction_literal_list,
-            ).text
+            )
             lines.append(f"  错误：{error_text}")
     return _entry(
         kind="runs",
@@ -255,21 +261,23 @@ def _verify_entry(gate: str, *, task_id: uuid.UUID | None, project_id: uuid.UUID
     return _entry(kind="verify", title="验证命令（提交前自检）", text=text, ref=f"verify:{scope}")
 
 
-def _proposal_line(change: Any) -> str:
+def _proposal_line(change: Any, *, literals: Sequence[str] = ()) -> str:
     """一条提案的单行摘要；失败提案额外带上 Apply 的失败原因。
 
     这是「反馈回灌」的入口：上一轮挂在测试上的提案，下一轮 agent 一读上下文就能看到
-    失败输出，而不是在同一个坑里重犯。输出按字符截断，避免一条长栈把预算吃光。
+    失败输出，而不是在同一个坑里重犯。说明与失败原因都可能夹带密钥，进包前统一打码；
+    失败原因先对完整原文打码再截尾，避免跨截断边界漏出字面量片段。
     """
+    summary = redact(str(change.summary), literals=literals).text if change.summary else ""
     line = (
         f"- [{change.status}] {change.file_path}"
         f"（+{change.added_lines}/-{change.removed_lines}，{change.hunks} 个改动块）"
-        f" id={change.id}" + (f" 说明：{change.summary}" if change.summary else "")
+        f" id={change.id}" + (f" 说明：{summary}" if summary else "")
     )
     error = (getattr(change, "apply_error", None) or "").strip()
     if not error:
         return line
-    tail = error[-APPLY_ERROR_CONTEXT_CHARS:]
+    tail = redact_then_clip(error, APPLY_ERROR_CONTEXT_CHARS, literals=literals)
     return f"{line}\n  失败原因：{tail}"
 
 

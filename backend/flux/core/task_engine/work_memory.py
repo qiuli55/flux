@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from flux.core.context.redact import redact
+from flux.core.context.redact import redact, redact_then_clip
 
 #: 记忆卡总字符上限
 MEMORY_CARD_CHARS = 1200
@@ -136,15 +136,19 @@ def build_memory_card(
     lines = ["## 上一轮工作记忆（平台自动生成，下一轮开工先读）"]
     if run_id:
         lines.append(f"- 轮次：run={run_id}")
-    lines.append(f"- 本轮目标：{_clip(goal, MEMORY_GOAL_CHARS)}")
+    # 目标来自执行指令 / 任务描述，可能夹带密钥：先打码再截断
+    goal_text = redact(goal, literals=literals).text
+    lines.append(f"- 本轮目标：{_clip(goal_text, MEMORY_GOAL_CHARS)}")
     lines.append(f"- 结果：{state or '未知'}")
     finish_reason = str(getattr(run, "finish_reason", "") or "").strip()
     if finish_reason:
         lines.append(f"- 结束原因：{finish_reason}")
     error = str(getattr(run, "error", "") or "").strip()
     if error:
-        # 错误里可能夹着密钥/令牌，落指令前统一脱敏
-        lines.append(f"- 失败原因：{redact(error[-MEMORY_ERROR_CHARS:], literals=literals).text}")
+        # 错误里可能夹着密钥/令牌：先对完整原文打码再取尾部，避免跨边界漏片段
+        lines.append(
+            f"- 失败原因：{redact_then_clip(error, MEMORY_ERROR_CHARS, literals=literals)}"
+        )
 
     paths = _changed_paths(rows, change_rows)
     if paths:
@@ -167,7 +171,9 @@ def build_memory_card(
 
     response = (final_response or "").strip()
     if response:
-        tail = _clip(response[-MEMORY_RESPONSE_CHARS:], MEMORY_RESPONSE_CHARS)
+        # 答复同样可能复述密钥：先对完整原文打码，再取尾并归一空白
+        redacted_response = redact(response, literals=literals).text
+        tail = _clip(redacted_response[-MEMORY_RESPONSE_CHARS:], MEMORY_RESPONSE_CHARS)
         lines.append(f"- 上一轮最终答复（尾部）：{tail}")
 
     lines.append("- 下一轮先核对上面的事实与最终答复，不要重做已完成的步骤。")

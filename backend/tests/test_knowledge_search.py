@@ -51,7 +51,11 @@ def knowledge(
             }
         )
     )
-    yield container, docs
+    try:
+        yield container, docs
+    finally:
+        # 用完显式 dispose：避免 aiosqlite 工作线程活过事件循环
+        asyncio.run(container.dispose())
 
 
 def _write_doc(docs: Path, name: str, content: str) -> Path:
