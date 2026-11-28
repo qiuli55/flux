@@ -27,6 +27,7 @@ internal static class Program
         CheckTotals();
         CheckDesignOps();
         CheckBrowserProxy();
+        CheckImConnector();
 
         if (_failed == 0)
         {
@@ -209,6 +210,36 @@ internal static class Program
         Equal("空补丁报错", "AI 给的修改无法应用", emptyError);
         Equal("越界画板不应用", 0, DesignOps.ApplyOps(design, 9, new JsonArray(), out var screenError));
         Equal("越界画板报错", "当前画板不存在", screenError);
+    }
+
+    private static void CheckImConnector()
+    {
+        var owner = new Flux.Desktop.ViewModels.SkillsViewModel(() => null);
+        var wechat = new Flux.Desktop.ViewModels.ImConnectorView("wechat", owner);
+        var capabilities = new ImConnectorCapabilities(true, true, false, "提醒会保留");
+        var status = new ImConnectorStatus(
+            "wechat", true, true, false, true, false, false, false, false, 0,
+            null, null, "尚未连接。", capabilities);
+        wechat.Apply(status);
+        Equal("微信未连接文案", "未连接", wechat.StatusText);
+        True("未连接时不显示断开按钮", !wechat.IsConnected);
+
+        wechat.Apply(new WechatLoginSession(
+            "login-1", "pending", "等待扫码", "https://weixin.example/qr",
+            new[] { "101", "010" }, "https://weixin.example/qr", 0, false, null));
+        True("二维码矩阵被渲染成半块字符", wechat.QrText.Contains('█') || wechat.QrText.Contains('▀') || wechat.QrText.Contains('▄'));
+        Equal("备份链接保留", "https://weixin.example/qr", wechat.BackupUrl);
+
+        wechat.Apply(new WechatLoginSession(
+            "login-1", "confirmed", "已连接", "", Array.Empty<string>(), null, 0, false, null));
+        True("确认后不再显示二维码", !wechat.HasQr);
+        True("确认后标记已连接", wechat.IsConnected);
+
+        var feishu = new Flux.Desktop.ViewModels.ImConnectorView("feishu", owner);
+        feishu.Apply(new ImConnectorStatus(
+            "feishu", true, true, false, true, false, true, false, false, 0,
+            null, null, "长连接已启动。", capabilities));
+        Equal("飞书等待第一条消息", "等待你在飞书发第一条消息", feishu.StatusText);
     }
 
     private static void CheckBrowserProxy()

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../../api/client";
 import { AgentConnectorsCard } from "../AgentConnectorsCard";
+import { ImConnectorsCard } from "../ImConnectorsCard";
 import type {
   CapabilityCandidate,
   CapabilityScanReport,
@@ -444,6 +445,7 @@ export function SoloSidePanel({
   const connectorsPage = (
     <>
       <AgentConnectorsCard onChanged={onScan} />
+      <ImConnectorsCard />
       <section className="card side-card">
       <div className="side-head">
         <b>连接器市场</b>

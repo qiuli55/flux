@@ -161,6 +161,207 @@ public sealed partial class AgentConnectorView : ObservableObject
     }
 }
 
+/// <summary>
+/// 连接器 · 飞书单聊 / 个人微信（官方微信 ClawBot）卡片。
+///
+/// 两条连接都跑在 Flux 常驻服务端；这里只展示状态、扫码（半块字符二维码）与断开。
+/// </summary>
+public sealed partial class ImConnectorView : ObservableObject
+{
+    private readonly SkillsViewModel _owner;
+
+    public ImConnectorView(string id, SkillsViewModel owner)
+    {
+        Id = id;
+        _owner = owner;
+        ConnectCommand = new AsyncRelayCommand(() => _owner.ConnectImAsync(this));
+        DisconnectCommand = new AsyncRelayCommand(() => _owner.DisconnectImAsync(this));
+        SubmitCodeCommand = new AsyncRelayCommand(() => _owner.SubmitImCodeAsync(this));
+        OpenUrlCommand = new RelayCommand(OpenUrl);
+    }
+
+    public string Id { get; }
+
+    public string Title => Id == "feishu" ? "飞书" : "个人微信";
+
+    public bool IsWechat => Id == "wechat";
+
+    public string ConnectLabel => Id == "feishu" ? "连接飞书" : "连接个人微信";
+
+    [ObservableProperty]
+    private string _statusText = "未连接";
+
+    [ObservableProperty]
+    private string _detail = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasMessage))]
+    private string _message = "";
+
+    public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasQr))]
+    private string _qrText = "";
+
+    public bool HasQr => !string.IsNullOrWhiteSpace(QrText);
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasBackupUrl))]
+    private string _backupUrl = "";
+
+    public bool HasBackupUrl => !string.IsNullOrWhiteSpace(BackupUrl);
+
+    [ObservableProperty]
+    private bool _needsCode;
+
+    [ObservableProperty]
+    private string _code = "";
+
+    [ObservableProperty]
+    private string _loginId = "";
+
+    [ObservableProperty]
+    private bool _isConnected;
+
+    [ObservableProperty]
+    private bool _isBusy;
+
+    public ICommand ConnectCommand { get; }
+
+    public ICommand DisconnectCommand { get; }
+
+    public ICommand SubmitCodeCommand { get; }
+
+    public ICommand OpenUrlCommand { get; }
+
+    public void Apply(ImConnectorStatus status, WechatLoginSession? login = null)
+    {
+        // 飞书长连接已启动但还没收到第一条消息时，按钮应显示「断开」而不是重复「连接」。
+        IsConnected = status.Connected || (Id == "feishu" && status.WaitingForMessage);
+        Message = status.Message;
+        if (Id == "feishu")
+        {
+            StatusText = status.Connected
+                ? "已连接 · 飞书单聊"
+                : status.WaitingForMessage
+                    ? "等待你在飞书发第一条消息"
+                    : !status.Configured
+                        ? "未配置飞书应用"
+                        : status.NeedsReauth
+                            ? "连接异常，需要处理"
+                            : "未连接";
+            Detail =
+                "在飞书开放平台创建企业自建应用，开启「长连接接收事件」并订阅 im.message.receive_v1，" +
+                "只处理单聊。服务端需配置 FLUX_FEISHU_IM_APP_ID / FLUX_FEISHU_IM_APP_SECRET。";
+            QrText = "";
+            BackupUrl = "";
+            NeedsCode = false;
+            return;
+        }
+
+        StatusText = status.Connected
+            ? status.HasContextToken
+                ? "已连接 · 微信 ClawBot"
+                : "已连接 · 请先在 ClawBot 会话里发一句话"
+            : status.NeedsReauth
+                ? "登录已过期，需要重新扫码"
+                : login is not null && login.State is not ("failed" or "confirmed")
+                    ? "等待扫码确认"
+                    : "未连接";
+        Detail =
+            "需要 iOS 微信 8.0.70+ 或 Android 8.0.69+，并在「我 → 设置 → 插件」启用「微信 ClawBot」。" +
+            "绑定成功后请先在会话里发一句话；没有 context_token 时回复发不出去。" +
+            "同一个微信号不要再绑定到另一个后端，否则消息可能被分流。" +
+            "微信只在你最近互动后允许主动消息；推不出去时会保留，下次对话补发。";
+        Apply(login);
+        if (status.PendingNotices > 0)
+        {
+            Message = $"{Message} 有 {status.PendingNotices} 条提醒等你下次开口后补发。";
+        }
+    }
+
+    public void Apply(WechatLoginSession? login)
+    {
+        if (login is null)
+        {
+            QrText = "";
+            BackupUrl = "";
+            NeedsCode = false;
+            LoginId = "";
+            return;
+        }
+        LoginId = login.LoginId;
+        Message = string.IsNullOrWhiteSpace(login.Message) ? Message : login.Message;
+        BackupUrl = login.BackupUrl ?? "";
+        NeedsCode = login.NeedsVerifyCode;
+        QrText = RenderQr(login.QrcodeMatrix);
+        if (login.State == "confirmed")
+        {
+            IsConnected = true;
+            StatusText = "已连接 · 请先在微信 ClawBot 会话里发一句话";
+            NeedsCode = false;
+            QrText = "";
+        }
+        else if (login.State == "failed")
+        {
+            IsConnected = false;
+            StatusText = "绑定失败，请重新扫码";
+            NeedsCode = false;
+            QrText = "";
+        }
+    }
+
+    /// <summary>把 0/1 矩阵压成半块字符，直接放进等宽 TextBlock 就能扫。</summary>
+    private static string RenderQr(string[] rows)
+    {
+        if (rows.Length == 0 || rows[0].Length == 0)
+        {
+            return "";
+        }
+
+        const int quiet = 2;
+        var width = rows[0].Length + quiet * 2;
+        var builder = new System.Text.StringBuilder();
+        for (var y = -quiet; y < rows.Length + quiet; y += 2)
+        {
+            for (var x = -quiet; x < width - quiet; x += 1)
+            {
+                var top = Bit(rows, x, y);
+                var bottom = Bit(rows, x, y + 1);
+                builder.Append(top && bottom ? '█' : top ? '▀' : bottom ? '▄' : ' ');
+            }
+            builder.Append('\n');
+        }
+        return builder.ToString();
+    }
+
+    private static bool Bit(string[] rows, int x, int y)
+    {
+        if (y < 0 || y >= rows.Length || x < 0 || x >= rows[y].Length)
+        {
+            return false;
+        }
+        return rows[y][x] == '1';
+    }
+
+    private void OpenUrl()
+    {
+        if (string.IsNullOrWhiteSpace(BackupUrl))
+        {
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(BackupUrl) { UseShellExecute = true });
+        }
+        catch (Exception)
+        {
+            _owner.StatusText = "打开备份链接失败，请复制链接到微信里打开。";
+        }
+    }
+}
+
 /// <summary>扫描候选行（web 端 CandidateRow）。</summary>
 public sealed record ScanCandidateView(
     string Name,
@@ -199,6 +400,17 @@ public sealed partial class SkillsViewModel : ViewModelBase
     public ObservableCollection<AgentConnectorView> AgentConnectors { get; } = new();
 
     private readonly Dictionary<string, AgentConnectorView> _agentViews = new();
+
+    /// <summary>「连接器」里的飞书 / 个人微信入口。</summary>
+    public ObservableCollection<ImConnectorView> ImConnectors { get; } = new();
+
+    private readonly Dictionary<string, ImConnectorView> _imViews = new();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNoImConnectors))]
+    private bool _hasImConnectors;
+
+    public bool HasNoImConnectors => !HasImConnectors;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasNoAgentConnectors))]
@@ -275,6 +487,7 @@ public sealed partial class SkillsViewModel : ViewModelBase
             _capabilities = caps?.Data ?? [];
             RebuildCards();
             await RefreshAgentConnectorsAsync().ConfigureAwait(true);
+            await RefreshImConnectorsAsync().ConfigureAwait(true);
         }
         finally
         {
@@ -518,6 +731,200 @@ public sealed partial class SkillsViewModel : ViewModelBase
                 StatusText = $"已退出 {view.Title} 账号";
             }
             await RefreshAgentConnectorsAsync().ConfigureAwait(true);
+        }
+        catch (Exception exc)
+        {
+            view.Message = exc.Message;
+        }
+        finally
+        {
+            view.IsBusy = false;
+        }
+    }
+
+    private async Task RefreshImConnectorsAsync()
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+
+        var result = await api.ImConnectorsAsync().ConfigureAwait(true);
+        if (result?.Data is not { } overview)
+        {
+            if (!string.IsNullOrWhiteSpace(result?.Message))
+            {
+                StatusText = result.Message;
+            }
+            return;
+        }
+
+        EnsureImView("feishu", overview.Feishu, null);
+        EnsureImView("wechat", overview.Wechat, overview.Wechat.PendingLogin);
+        HasImConnectors = ImConnectors.Count > 0;
+
+        var pending = overview.Wechat.PendingLogin;
+        if (pending is not null && pending.State is "pending" or "scaned" or "need_verifycode")
+        {
+            _ = PollWechatLoginAsync(_imViews["wechat"], pending.LoginId);
+        }
+    }
+
+    private void EnsureImView(string id, ImConnectorStatus status, WechatLoginSession? login)
+    {
+        if (!_imViews.TryGetValue(id, out var view))
+        {
+            view = new ImConnectorView(id, this);
+            _imViews[id] = view;
+            ImConnectors.Add(view);
+        }
+        view.Apply(status, login);
+    }
+
+    public async Task ConnectImAsync(ImConnectorView view)
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+
+        view.IsBusy = true;
+        view.Message = "";
+        try
+        {
+            if (view.Id == "feishu")
+            {
+                var result = await api.ConnectFeishuAsync().ConfigureAwait(true);
+                if (result?.Data is { } status)
+                {
+                    view.Apply(status);
+                    StatusText = "飞书长连接已启动，请在飞书里给机器人发第一条单聊消息";
+                }
+                else
+                {
+                    view.Message = result?.Message ?? "启动飞书连接失败。";
+                }
+                view.IsBusy = false;
+                return;
+            }
+
+            var login = (await api.ConnectWechatAsync().ConfigureAwait(true))?.Data;
+            if (login is null)
+            {
+                view.Message = "申请微信绑定二维码失败。";
+                view.IsBusy = false;
+                return;
+            }
+            view.Apply((await api.ImConnectorsAsync().ConfigureAwait(true))?.Data?.Wechat
+                ?? new ImConnectorStatus("wechat", true, true, false, false, false, false, false, false, 0, null, null, "等待扫码确认…", new ImConnectorCapabilities(true, true, false, null)),
+                login);
+            _ = PollWechatLoginAsync(view, login.LoginId);
+        }
+        catch (Exception exc)
+        {
+            view.Message = exc.Message;
+            view.IsBusy = false;
+        }
+    }
+
+    private async Task PollWechatLoginAsync(ImConnectorView view, string loginId)
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+        view.IsBusy = true;
+        for (var attempt = 0; attempt < 160; attempt += 1)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(true);
+            var login = (await api.WechatLoginStatusAsync(loginId).ConfigureAwait(true))?.Data;
+            if (login is null)
+            {
+                view.IsBusy = false;
+                return;
+            }
+            view.Apply(login);
+            if (login.State == "confirmed")
+            {
+                view.IsBusy = false;
+                StatusText = "个人微信已连接；请先在微信 ClawBot 会话里发一句话";
+                await RefreshImConnectorsAsync().ConfigureAwait(true);
+                return;
+            }
+            if (login.State == "failed")
+            {
+                view.IsBusy = false;
+                StatusText = login.Message;
+                return;
+            }
+        }
+        view.IsBusy = false;
+        view.Message = "扫码绑定超时，请重新获取二维码。";
+    }
+
+    public async Task SubmitImCodeAsync(ImConnectorView view)
+    {
+        var api = _api();
+        if (api is null || string.IsNullOrWhiteSpace(view.Code) || string.IsNullOrWhiteSpace(view.LoginId))
+        {
+            view.Message = "请先填写手机微信显示的数字。";
+            return;
+        }
+
+        view.IsBusy = true;
+        try
+        {
+            var login = (await api.SubmitWechatCodeAsync(view.LoginId, view.Code).ConfigureAwait(true))?.Data;
+            if (login is null)
+            {
+                view.Message = "提交数字失败。";
+                view.IsBusy = false;
+                return;
+            }
+            view.Code = "";
+            view.Apply(login);
+            _ = PollWechatLoginAsync(view, login.LoginId);
+        }
+        catch (Exception exc)
+        {
+            view.Message = exc.Message;
+            view.IsBusy = false;
+        }
+    }
+
+    public async Task DisconnectImAsync(ImConnectorView view)
+    {
+        var api = _api();
+        if (api is null)
+        {
+            return;
+        }
+
+        view.IsBusy = true;
+        try
+        {
+            if (view.Id == "feishu")
+            {
+                var result = await api.DisconnectFeishuAsync().ConfigureAwait(true);
+                if (result?.Data is { } status)
+                {
+                    view.Apply(status);
+                }
+                StatusText = "已断开飞书单聊";
+            }
+            else
+            {
+                var result = await api.DisconnectWechatAsync().ConfigureAwait(true);
+                if (result?.Data is { } status)
+                {
+                    view.Apply(status, null);
+                }
+                StatusText = "已断开个人微信";
+            }
+            await RefreshImConnectorsAsync().ConfigureAwait(true);
         }
         catch (Exception exc)
         {

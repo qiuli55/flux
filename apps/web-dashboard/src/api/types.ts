@@ -323,6 +323,49 @@ export interface McpConnectorList {
   items: McpConnector[];
 }
 
+/** 连接器 · 飞书单聊 / 个人微信（官方微信 ClawBot）；后端不返回 token / 原始二维码值。 */
+export interface ImConnectorCapabilities {
+  chat: boolean;
+  notifications: boolean;
+  group: boolean;
+  proactive_window_note?: string | null;
+}
+
+export interface ImConnectorStatus {
+  id: string;
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  running: boolean;
+  bound: boolean;
+  waiting_for_message: boolean;
+  needs_reauth: boolean;
+  has_context_token: boolean;
+  pending_notices: number;
+  pending_login?: WechatLoginSession | null;
+  error?: string | null;
+  message: string;
+  capabilities: ImConnectorCapabilities;
+}
+
+export interface ImConnectorOverview {
+  feishu: ImConnectorStatus;
+  wechat: ImConnectorStatus;
+}
+
+export interface WechatLoginSession {
+  login_id: string;
+  /** pending / scaned / need_verifycode / confirmed / failed */
+  state: string;
+  message: string;
+  qrcode_image: string;
+  qrcode_matrix: string[];
+  backup_url?: string | null;
+  expires_at: number;
+  needs_verify_code: boolean;
+  error?: string | null;
+}
+
 /** Cursor / Antigravity 官方 CLI 登录态；后端不返回任何令牌。 */
 export interface AgentCliAccountStatus {
   logged_in: boolean;

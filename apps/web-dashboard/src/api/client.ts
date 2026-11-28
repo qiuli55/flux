@@ -20,14 +20,14 @@ import type {
   ChatMessageIn, ChatResult, ConfirmationItem, DecisionMode,
   DecisionOutcome, DshModels, DshRun, DshStatus, Envelope, FileContent, FileTree, GitCommit, GitStatus, HealthData,
   IdeCatalog, IdeInstallResult, IdeSession,
-  ImportedCapability, Installation, McpConnectorList, Project, ReadyData,
+  ImportedCapability, Installation, ImConnectorOverview, ImConnectorStatus, McpConnectorList, Project, ReadyData,
   RecoveryItem, ScanOutcome, SearchHit,
   SupervisorAssessResult, SupervisorDispatchOutcome, SupervisorDispatchThreadResult,
   SupervisorOverview, SupervisorPlanResult, SupervisorProcessResult, SupervisorProjectOverview,
   SupervisorReport, SupervisorSearchHit, SupervisorSettings, SupervisorStopResult,
   SupervisorTicket, SupervisorTimelineItem, SupervisorTrigger, SupervisorWatchdogResult, Task,
   TaskConfirmationOutcome, TaskMessage, TaskMessagePage, TaskReplyOutcome, TaskStartOutcome,
-  TerminalEvent, TerminalSession,
+  TerminalEvent, TerminalSession, WechatLoginSession,
 } from "./types";
 
 export { API_BASE } from "./base";
@@ -200,6 +200,19 @@ export const api = {
     getData<AgentCliLoginSession>("POST", `/${kind}-account/login/${encodeURIComponent(loginId)}/code`, { code }),
   logoutAgentAccount: (kind: "cursor" | "antigravity") =>
     getData<AgentCliLogoutResult>("POST", `/${kind}-account/logout`, {}),
+  imConnectors: () => getData<ImConnectorOverview>("GET", "/im-connectors"),
+  connectFeishu: () => getData<ImConnectorStatus>("POST", "/im-connectors/feishu/connect", {}),
+  disconnectFeishu: () => getData<ImConnectorStatus>("POST", "/im-connectors/feishu/disconnect", {}),
+  connectWechat: () => getData<WechatLoginSession>("POST", "/im-connectors/wechat/connect", {}),
+  wechatLoginStatus: (loginId: string) =>
+    getData<WechatLoginSession>("GET", `/im-connectors/wechat/login/${encodeURIComponent(loginId)}`),
+  submitWechatCode: (loginId: string, code: string) =>
+    getData<WechatLoginSession>(
+      "POST",
+      `/im-connectors/wechat/login/${encodeURIComponent(loginId)}/verify-code`,
+      { code },
+    ),
+  disconnectWechat: () => getData<ImConnectorStatus>("POST", "/im-connectors/wechat/disconnect", {}),
   scanInstallations: () => getData<Installation[]>("POST", "/installations/scan"),
   connectInstallation: (body: { agent?: string; all?: boolean }) => getData<Installation | Installation[]>("POST", "/installations/connect", body),
   removeInstallation: (name: string) => getData<{ agent: string; removed: boolean }>("DELETE", `/installations/${name}`),
