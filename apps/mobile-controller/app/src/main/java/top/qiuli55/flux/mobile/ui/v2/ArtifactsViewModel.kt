@@ -57,7 +57,7 @@ class ArtifactsViewModel : FluxViewModel() {
 <body>
   <main>
     <h1>新页面</h1>
-    <p>在右侧源码里直接改 HTML，保存后即成为可分享的产物。</p>
+    <p>在右侧源码里直接改 HTML，保存后即成为可分享的可交互页面。</p>
   </main>
 </body>
 </html>
@@ -121,7 +121,7 @@ class ArtifactsViewModel : FluxViewModel() {
                     "doc" -> DOC_TEMPLATE
                     else -> PAGE_TEMPLATE
                 }
-                val artifact = api().createArtifact(type, title.ifBlank { "未命名产物" }, content)
+                val artifact = api().createArtifact(type, title.ifBlank { "未命名创作" }, content)
                 _state.value = _state.value.copy(creating = false, notice = "已创建")
                 load(quiet = true)
                 onCreated(artifact.id)

@@ -46,7 +46,6 @@ import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.SystemUpdate
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Verified
 import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.Waves
@@ -92,7 +91,6 @@ fun SettingsSheet(
     onTaskAlerts: (Boolean) -> Unit,
     onStrict: (Boolean) -> Unit,
     onOpenDevices: () -> Unit,
-    onOpenTerminals: () -> Unit,
     onOpenKeyVault: () -> Unit,
     onOpenMemories: () -> Unit,
     onManualConnect: () -> Unit,
@@ -220,14 +218,6 @@ fun SettingsSheet(
                     )
                     ThinDivider(V2Colors.ink(.05f))
                 }
-                SettingsActionRow(
-                    icon = Icons.Outlined.Terminal,
-                    title = "终端会话",
-                    description = "在工作区执行命令，查看实时输出",
-                    danger = false,
-                    onClick = onOpenTerminals,
-                )
-                ThinDivider(V2Colors.ink(.05f))
                 SettingsActionRow(
                     icon = Icons.Outlined.Key,
                     title = "密钥库",

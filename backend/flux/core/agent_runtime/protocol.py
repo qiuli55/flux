@@ -22,37 +22,19 @@ RUNTIME_RULES: tuple[str, ...] = (
     "changes to a throwaway copy and run the project's configured test command; running "
     "terminal.execute instead tests the old on-disk code. Iterate until it passes.",
     "A proposal you have not tested is not a finished change.",
-    "For any page, UI or visual design task, use the design studio tools "
-    "(design.list / design.get / design.create / design.update / design.patch / "
-    "design.layout / design.ai) to produce the design. "
-    "Do not substitute hand-written HTML, screenshots or static images for the design studio.",
-    "Icon nodes take an icon name. If the built-in set has nothing that fits, call "
-    "design.icon_create to draw the missing icon from SVG-style parts (path / circle / line / "
-    "rect / polyline), then reference it by that name in icon nodes — it renders in the canvas, "
-    "generated code and SVG export.",
-    "To revise an existing design, prefer design.patch for exact per-node style changes, "
-    "design.layout for align / distribute / stack, or design.ai with a specific instruction "
-    "(optionally selected_ids) so only the touched layers change; avoid reading the whole "
-    "design and rewriting it with design.update. Use design.revisions / design.revert to "
-    "inspect or roll back history when a change goes wrong.",
-    "When the user is looking at the canvas, call design.view before a visual tweak: it returns "
-    "the current zoom, viewport, selection, visible node ids and each selected layer's gaps to "
-    "its neighbours, so you can micro-adjust with design.patch instead of rewriting the screen.",
-    "To actually see a design, call design.preview: it returns a local PNG URL and a ready-made "
-    "curl command. Run the curl into the workspace, then read the image file to judge the "
-    "result. MCP tool output is text-only, so the image itself must come from that HTTP URL.",
-    "For standard blocks, call design.component_list and prefer design.component_insert or "
-    "design.template_apply (search-bar, bot-card, bottom-nav, list-item, stat-card, chat-bubble) "
-    "over hand-building every layer; design.component_update changes an instance's params or "
-    "variant in place.",
-    "When a design is ready, call design.share so the user gets a tappable card in the chat; "
-    "before changing an existing design, read it with design.get first.",
+    "Route by deliverable: interactive HTML / clickable web page / demo / full page prototype -> "
+    "artifact.publish (type=page); visual mockups or canvas layout/style/component changes -> "
+    "design studio tools (design.*), then design.share; Markdown docs -> artifact.publish "
+    "(type=doc). If the user names a type, follow it. If it is genuinely unclear, ask once "
+    "(interactive page vs design canvas mockup) instead of guessing. Never pass off a "
+    "non-clickable canvas as an interactive page, or hand-written HTML as a design.",
     "When the task produces files the user should take away (reports, images, PDFs, exports, "
     "archives), call file.deliver with workspace-relative paths so they get a file card in "
     "the chat; deliver finished outputs only, not intermediate artifacts or logs.",
-    "When you produce a standalone web page or Markdown document the user should keep, publish "
+    "When you produce an interactive web page or Markdown document the user should keep, publish "
     "it with artifact.publish (type page/doc) so it appears as a card in the chat. Artifacts are "
-    "private to the user: never paste the full content or a raw URL into your reply.",
+    "private to the user: never paste the full content or a raw URL into your reply. Say plainly "
+    "whether the user got an interactive page, a design or a document.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -94,13 +76,15 @@ FULL_RULES: tuple[str, ...] = (
     "via systemctl / service / reboot) still require explicit per-use user approval. Ask "
     "yourself twice whether you really need them; if so, explain why and wait for the user. "
     "A previous approval never carries over to the next command.",
-    "For page, UI or visual design tasks, use the design studio tools (design.create / "
-    "design.update / design.ai) and share the result with design.share; revise existing "
-    "designs with design.ai instead of rewriting them.",
+    "Route by deliverable: interactive HTML / clickable web page / demo / full page prototype -> "
+    "artifact.publish (type=page); visual mockups or canvas layout/style/component changes -> "
+    "design studio tools (design.*), then design.share; Markdown docs -> artifact.publish "
+    "(type=doc). Follow an explicit user choice; ask once if it is genuinely unclear.",
     "Deliver finished files the user should take away with file.deliver (workspace-relative "
     "paths); skip intermediate artifacts and logs.",
-    "Publish standalone pages or Markdown documents with artifact.publish so the user gets a "
-    "card in the chat; artifacts are private, so never paste their full content or a URL.",
+    "Publish standalone interactive pages or Markdown documents with artifact.publish so the "
+    "user gets a card in the chat; artifacts are private, so never paste their full content or "
+    "a URL. Say plainly whether the user got an interactive page, a design or a document.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",
 )
@@ -111,13 +95,15 @@ UNATTENDED_RULES: tuple[str, ...] = (
     "conservative: avoid destructive operations, never read or copy secrets unless the task "
     "explicitly requires it, never restart the host, and never push to a shared branch "
     "without a clear reason.",
-    "For page, UI or visual design tasks, use the design studio tools (design.create / "
-    "design.update / design.ai) and share the result with design.share; revise existing "
-    "designs with design.ai instead of rewriting them.",
+    "Route by deliverable: interactive HTML / clickable web page / demo / full page prototype -> "
+    "artifact.publish (type=page); visual mockups or canvas layout/style/component changes -> "
+    "design studio tools (design.*), then design.share; Markdown docs -> artifact.publish "
+    "(type=doc). Follow an explicit user choice; ask once if it is genuinely unclear.",
     "Deliver finished files the user should take away with file.deliver (workspace-relative "
     "paths); skip intermediate artifacts and logs.",
-    "Publish standalone pages or Markdown documents with artifact.publish; artifacts are "
-    "private, so never paste their full content or a URL.",
+    "Publish standalone interactive pages or Markdown documents with artifact.publish; "
+    "artifacts are private, so never paste their full content or a URL. Say plainly whether "
+    "the user got an interactive page, a design or a document.",
     "When you finish, report every risky action you took and anything you could not verify.",
     "If the Flux MCP server is unavailable, fall back to the Flux Server CLI: "
     "flux tools call <tool> --params '<json>'.",

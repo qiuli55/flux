@@ -87,13 +87,7 @@ private const val FILTER_DESIGN = "design"
 private const val FILTER_PAGE = "page"
 private const val FILTER_DOC = "doc"
 
-private fun artifactTypeLabel(type: String): String = when (type) {
-    "design" -> "设计"
-    "doc" -> "文档"
-    "page" -> "页面"
-    // 后端将来新增类型时不要崩，也不要误标成「页面」：用通用标签兜底。
-    else -> "产物"
-}
+private fun artifactTypeLabel(type: String): String = artifactKindUi(type).label
 
 private fun artifactTypeIcon(type: String): ImageVector = when (type) {
     "design" -> Icons.Outlined.Layers
@@ -133,12 +127,14 @@ fun ArtifactsScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             V2PageTitle(
-                title = "Artifacts",
+                title = "创作",
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = when {
-                    state.loading && state.artifacts.isEmpty() -> "正在读取产物…"
-                    state.artifacts.isEmpty() -> "对话里产出的成品会出现在这里"
-                    else -> "${state.artifacts.size} 个产物 · 设计、页面与文档"
+                    state.loading && state.artifacts.isEmpty() -> "正在读取创作…"
+                    state.artifacts.isEmpty() ->
+                        "对话里产出的可交互页面、设计稿与文档会出现在这里"
+                    else ->
+                        "${state.artifacts.size} 个创作 · 可交互页面 / 设计稿 / 文档"
                 },
                 trailing = {
                     if (showBack) {
@@ -177,14 +173,14 @@ fun ArtifactsScreen(
                 }
                 item {
                     ArtifactFilterChip(
-                        "设计",
+                        "设计稿",
                         state.countOf(FILTER_DESIGN),
                         state.filter == FILTER_DESIGN,
                     ) { onFilter(FILTER_DESIGN) }
                 }
                 item {
                     ArtifactFilterChip(
-                        "页面",
+                        "可交互页面",
                         state.countOf(FILTER_PAGE),
                         state.filter == FILTER_PAGE,
                     ) { onFilter(FILTER_PAGE) }
@@ -200,13 +196,13 @@ fun ArtifactsScreen(
 
             when {
                 state.loading && state.artifacts.isEmpty() ->
-                    ArtifactEmpty("正在读取产物…") {}
+                    ArtifactEmpty("正在读取创作…") {}
                 visible.isEmpty() -> ArtifactEmpty(
                     when (state.filter) {
-                        FILTER_DESIGN -> "还没有设计稿\n进设计工作室新建或导入一份"
-                        FILTER_PAGE -> "还没有页面\n点右下角 + 新建一个"
-                        FILTER_DOC -> "还没有文档\n点右下角 + 新建一篇"
-                        else -> "还没有产物\n点右下角 + 新建页面或文档"
+                        FILTER_DESIGN -> "还没有设计稿\n视觉稿会出现在这里，点开进画布"
+                        FILTER_PAGE -> "还没有可交互页面\n点右下角 + 新建，或让 Agent 发布"
+                        FILTER_DOC -> "还没有文档\n点右下角 + 新建 Markdown 文档"
+                        else -> "还没有创作\n可交互页面、设计稿与文档都会出现在这里"
                     },
                     onReload,
                 )
@@ -246,7 +242,7 @@ fun ArtifactsScreen(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 20.dp, bottom = 24.dp),
-            contentDescription = "新建产物",
+            contentDescription = "新建创作",
         )
 
         if (newOpen) {
@@ -300,7 +296,7 @@ private fun ArtifactGridCard(artifact: Artifact, onClick: () -> Unit) {
         ArtifactCover(artifact)
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Label(
-                artifact.title.ifBlank { "未命名产物" },
+                artifact.title.ifBlank { "未命名创作" },
                 12.5f,
                 V2Colors.ink(.92f),
                 FontWeight.SemiBold,
@@ -439,7 +435,7 @@ private fun ArtifactCover(artifact: Artifact) {
             Modifier.align(Alignment.BottomStart).padding(8.dp),
         )
         Label(
-            if (type == "design") "${artifact.screenCount} 屏" else artifactTypeLabel(type),
+            if (type == "design") "${artifact.screenCount} 屏 · 设计稿" else artifactTypeLabel(type),
             9f,
             V2Colors.ink(.62f),
             modifier = Modifier
@@ -688,14 +684,14 @@ private fun ArtifactCreateSheet(
     var title by remember { mutableStateOf("") }
     SheetFrame(onDismiss = onDismiss, maxHeightFraction = .58f) {
         SheetHeader(
-            "新建产物",
-            "页面是单文件 HTML；文档是 Markdown。设计稿请进设计工作室。",
+            "新建创作",
+            "可交互页面是单文件 HTML；文档是 Markdown。视觉稿请进设计工作室。",
             onClose = onDismiss,
         )
         Column(Modifier.padding(horizontal = 20.dp).imePadding()) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ArtifactTypeOption(
-                    "页面", Icons.Outlined.Language, type == "page", Modifier.weight(1f),
+                    "可交互页面", Icons.Outlined.Language, type == "page", Modifier.weight(1f),
                 ) { type = "page" }
                 ArtifactTypeOption(
                     "文档", Icons.Outlined.Description, type == "doc", Modifier.weight(1f),
@@ -818,7 +814,7 @@ fun ArtifactDetailScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             V2PageTitle(
-                title = artifact?.title?.ifBlank { "未命名产物" } ?: "产物详情",
+                title = artifact?.title?.ifBlank { "未命名创作" } ?: "创作详情",
                 modifier = Modifier.padding(top = extraTop),
                 subtitle = artifact?.let {
                     if (it.summary.isBlank() && it.description.isNotBlank()) {
@@ -874,8 +870,8 @@ fun ArtifactDetailScreen(
 
             when {
                 artifact == null && state.detailLoading ->
-                    ArtifactEmpty("正在读取产物…") {}
-                artifact == null -> ArtifactEmpty("产物不存在或已被删除", {})
+                    ArtifactEmpty("正在读取创作…") {}
+                artifact == null -> ArtifactEmpty("创作不存在或已被删除", {})
                 else -> Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
                     ArtifactModeSwitch(
                         typeLabel = artifactTypeLabel(artifact.type),
@@ -1249,7 +1245,7 @@ private fun SourceConversationRow(taskId: String, onOpen: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Label("打开来源对话", 12f, V2Colors.ink(.82f), FontWeight.Medium)
             Spacer(Modifier.height(2.dp))
-            Label("这段产物由对话发布 · ${taskId.take(8)}", 9.5f, V2Colors.ink(.38f), maxLines = 1)
+            Label("这段创作由对话发布 · ${taskId.take(8)}", 9.5f, V2Colors.ink(.38f), maxLines = 1)
         }
         Icon(
             Icons.Outlined.KeyboardArrowRight,

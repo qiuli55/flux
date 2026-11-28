@@ -96,6 +96,11 @@ class FluxApi(
         attachmentIds: List<String> = emptyList(),
         /** 对话来源：首页普通对话传 chat（默认），助理页传 assistant。 */
         origin: String = "chat",
+        /**
+         * 首轮由谁接：默认 "auto" 交给服务端判定（助手 / 整理 / 电脑 Agent）。
+         * 客户端不再自己判完再决定要不要 start。
+         */
+        start: String = "auto",
     ): Task {
         val body = buildJsonObject {
             put("description", description.trim())
@@ -109,6 +114,7 @@ class FluxApi(
                 if (!summaryFrom.isNullOrBlank()) put("summary_from", summaryFrom)
             }
             put("origin", origin)
+            if (start.isNotBlank()) put("start", start)
             putAttachmentIds(attachmentIds)
         }
         return post("api/v1/tasks", body)
@@ -135,27 +141,35 @@ class FluxApi(
     suspend fun getRunTrace(taskId: String, runId: String): RunTrace =
         get("api/v1/tasks/$taskId/runs/$runId/trace")
 
+    /**
+     * 发一条消息。`start="auto"` 让服务端决定这一轮走助手 / 整理 / 电脑 Agent；
+     * 客户端只展示结果，不再自己判。
+     */
     suspend fun sendMessage(
         taskId: String,
         content: String,
         attachmentIds: List<String> = emptyList(),
+        start: String = "auto",
     ): TaskReplyOutcome = post(
         "api/v1/tasks/$taskId/messages",
         buildJsonObject {
             put("content", content)
+            if (start.isNotBlank()) put("start", start)
             putAttachmentIds(attachmentIds)
         },
     )
 
-    /** 终态对话续跑：新消息作为新一轮 Agent 指令，历史消息保留。 */
+    /** 终态对话续跑：服务端按 `start="auto"` 决定是否重开电脑 Agent。 */
     suspend fun continueTask(
         taskId: String,
         content: String,
         attachmentIds: List<String> = emptyList(),
+        start: String = "auto",
     ): TaskReplyOutcome = post(
         "api/v1/tasks/$taskId/continue",
         buildJsonObject {
             put("content", content)
+            if (start.isNotBlank()) put("start", start)
             putAttachmentIds(attachmentIds)
         },
     )
@@ -934,6 +948,7 @@ internal fun fallbackApiMessage(status: Int): String = when (status) {
     404 -> "未找到接口或资源（HTTP 404）"
     409 -> "资源已被更新，请刷新后重试"
     422 -> "请求参数校验失败"
+    503 -> "电脑未开机或暂时连不上。手机仍可查看已有创作、整理分享或拍照稿、调整设置。"
     429 -> "请求过于频繁，请稍后再试"
     in 200..299 -> "服务端请求失败"
     in 500..599 -> "服务器出错了（HTTP $status）"

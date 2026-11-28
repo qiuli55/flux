@@ -98,9 +98,13 @@ def test_post_message_creates_user_and_assistant_messages(client: TestClient) ->
     assert reply["payload"]["model"]["provider"] == "local"
     assert reply["payload"]["model"]["model"] == "local-echo"
 
-    # 首次真实处理把任务从 pending 推进到 running
-    assert body["data"]["task"]["status"] == "running"
-    assert client.get(f"{PREFIX}/tasks/{task['id']}").json()["data"]["status"] == "running"
+    # 助手回复只是对话，不是电脑 Agent 在跑：状态保持 pending
+    assert body["data"]["task"]["status"] == "pending"
+    assert client.get(f"{PREFIX}/tasks/{task['id']}").json()["data"]["status"] == "pending"
+    # 诚实标记：这一轮没有启动电脑上的 Agent
+    assert reply["payload"]["assistant_only"] is True
+    assert "needs_execution" not in reply["payload"]
+    assert body["data"]["turn_route"] == "server_assistant"
 
 
 def test_messages_survive_app_restart(settings: Settings, db_schema: None) -> None:
@@ -259,3 +263,33 @@ def test_parse_turn_falls_back_to_plain_text() -> None:
         {"label": "风险", "value": "低"},
         {"label": "需人工审核的环节", "value": CONFIRMATION_UNKNOWN},
     ]
+
+
+def test_auto_message_reports_computer_unavailable_honestly(client: TestClient) -> None:
+    """需要电脑但电脑不可用：给明确说明，不假装已经在跑。"""
+    task = client.post(f"{PREFIX}/tasks", json={"description": "改造待办服务"}).json()["data"]
+    replied = client.post(
+        f"{PREFIX}/tasks/{task['id']}/messages",
+        json={"content": "帮我加一个过滤参数", "start": "auto"},
+    )
+    assert replied.status_code == 200, replied.text
+    data = replied.json()["data"]
+    assert data["turn_route"] == "computer_agent"
+    assert data["task"]["status"] == "pending"
+    assert data["task"]["run_id"] is None
+    notice = data["messages"][-1]
+    assert notice["role"] == "assistant"
+    assert "没有可用的电脑 Agent" in notice["content"]
+    assert "手机仍可以做" in notice["content"]
+
+
+def test_auto_message_clarifies_organize_without_attachment(client: TestClient) -> None:
+    task = client.post(f"{PREFIX}/tasks", json={"description": "整理东西"}).json()["data"]
+    replied = client.post(
+        f"{PREFIX}/tasks/{task['id']}/messages",
+        json={"content": "帮我整理成文档", "start": "auto"},
+    )
+    assert replied.status_code == 200, replied.text
+    data = replied.json()["data"]
+    assert data["turn_route"] == "clarify"
+    assert "请先添加" in data["messages"][-1]["content"]

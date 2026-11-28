@@ -203,7 +203,11 @@ fun V2LoginScreen(
     }
 }
 
-/** v2 设备列表：账号下在线设备可直接切入，离线设备给出提示。 */
+/**
+ * 设备列表：用来绑定电脑 Agent，不是进入 App 的闸门。
+ *
+ * 离线设备也能选（请求失败时再给可读说明）；不想绑定可以直接回主界面。
+ */
 @Composable
 fun V2DeviceScreen(
     state: V2AppState,
@@ -211,6 +215,7 @@ fun V2DeviceScreen(
     onSelect: (DeviceInfo) -> Unit,
     onLogout: () -> Unit,
     onManualConnect: () -> Unit,
+    onSkip: () -> Unit,
 ) {
     val account = state.account
     Column(
@@ -276,7 +281,8 @@ fun V2DeviceScreen(
                         Label("这个账号下还没有设备", 13f, V2Colors.ink(.72f), FontWeight.Medium)
                         Spacer(Modifier.height(6.dp))
                         Label(
-                            "在电脑上打开 Flux 桌面端并登录同一账号，设备就会出现在这里。",
+                            "在电脑上打开 Flux 桌面端并登录同一账号，设备就会出现在这里。" +
+                                "也可以先不绑定，直接使用手机上的浏览与整理功能。",
                             11f,
                             V2Colors.ink(.40f),
                         )
@@ -292,6 +298,12 @@ fun V2DeviceScreen(
             }
         }
 
+        GhostButton(
+            text = "先不绑定，直接使用",
+            onClick = onSkip,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
         GhostButton(
             text = "使用其他账号登录",
             onClick = onLogout,

@@ -79,7 +79,8 @@ class TaskCreateRequest(BaseModel):
     avatar_shape: str | None = Field(default=None, max_length=32)
     avatar_color: str | None = Field(default=None, max_length=32)
     # 建 bot 时先落一条空对话、不把它当成需求去跑 Agent；第一条消息再走正常对话链路。
-    start: bool = True
+    # "auto" 表示让服务端判定这一轮由服务端助手回答、整理附件，还是交给电脑 Agent。
+    start: bool | Literal["auto"] = True
 
 
 class TaskMessageCreateRequest(BaseModel):
@@ -92,6 +93,22 @@ class TaskMessageCreateRequest(BaseModel):
 
     content: str = Field(default="", max_length=8000)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    # False（默认，兼容旧客户端）= 只让服务端助手回话；True = 直接交给电脑 Agent；
+    # "auto" = 由服务端分流。新客户端一律传 "auto"，不自己判定。
+    start: bool | Literal["auto"] = False
+
+
+class TaskContinueRequest(BaseModel):
+    """终态对话续跑（`POST /tasks/{id}/continue`）。
+
+    `start=True` 沿用原行为：重开对话并起一轮电脑 Agent；
+    `start=False` 只重开对话、取一轮服务端助手回复，不启动 Agent；
+    `start="auto"` 让服务端按本轮内容分流。
+    """
+
+    content: str = Field(default="", max_length=8000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
+    start: bool | Literal["auto"] = True
 
 
 class SecureInputRequest(BaseModel):
@@ -202,9 +219,14 @@ class DecisionChooseRequest(BaseModel):
 
 
 class TaskStartRequest(BaseModel):
-    """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。"""
+    """开始执行（P0-05）。confirmation 留空表示直接使用任务上已保存的确认内容。
+
+    `followup` 用于「服务端助手没能直接回答，自动交给电脑 Agent」的回退：消息已经
+    落在对话里，这里只把同一句作为本轮执行指令，不再重复写一条用户消息。
+    """
 
     confirmation: list[ConfirmationItem] | None = None
+    followup: str | None = Field(default=None, max_length=8000)
 
 
 class ChangeIdsRequest(BaseModel):

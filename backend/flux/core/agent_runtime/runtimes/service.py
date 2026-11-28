@@ -360,9 +360,11 @@ def _mode_constraints(mode: str) -> list[str]:
             "没有人会在这轮执行中拦下你。",
             "- 越是没有把关，越要保守：不要执行 rm -rf、格式化、重启主机这类破坏性操作；"
             "不要读取或复制密钥内容，除非任务明确要求；不要凭空猜测后直接改生产数据。",
-            "- 设计任务仍必须用 design.* 工具产出，完成后 design.share 发进对话。",
-            "- 单文件页面 / Markdown 文档用 artifact.publish 发布进对话；产物默认私有，"
-            "回复里不要粘贴整段内容或链接。",
+            "- 页面 / UI 分流：可交互 HTML / 能点的网页 / demo / 完整页面原型 → "
+            "artifact.publish（type=page）；视觉稿或在画布上改布局 / 样式 / 组件 → "
+            "design.*，完成后 design.share；Markdown 文档 → artifact.publish（type=doc）。"
+            "用户明确指定就按指定，说不清先问一句，不要猜。",
+            "- 交付时直接说清拿到的是可交互页面、设计稿还是文档，不要用含糊的「产物 / 作品」。",
             "- 结束时如实汇报做了哪些有风险的操作、改了哪些文件、还有哪些没验证。",
         ]
     if mode == "full":
@@ -371,9 +373,11 @@ def _mode_constraints(mode: str) -> list[str]:
             "- 受保护对象（.env / *.pem / SSH 私钥等敏感文件，systemctl / service / reboot 等"
             "系统服务操作）仍会逐次请求用户确认；先自问两次是否真的需要，再说明理由申请，"
             "不要假设上一次允许继续有效，也不要尝试绕过闸门。",
-            "- 设计任务仍必须用 design.* 工具产出，完成后 design.share 发进对话。",
-            "- 单文件页面 / Markdown 文档用 artifact.publish 发布进对话；产物默认私有，"
-            "回复里不要粘贴整段内容或链接。",
+            "- 页面 / UI 分流：可交互 HTML / 能点的网页 / demo / 完整页面原型 → "
+            "artifact.publish（type=page）；视觉稿或在画布上改布局 / 样式 / 组件 → "
+            "design.*，完成后 design.share；Markdown 文档 → artifact.publish（type=doc）。"
+            "用户明确指定就按指定，说不清先问一句，不要猜。",
+            "- 交付时直接说清拿到的是可交互页面、设计稿还是文档，不要用含糊的「产物 / 作品」。",
             "- 结束时如实汇报改了哪些文件、跑了什么验证、还有哪些风险。",
         ]
     return [
@@ -384,6 +388,10 @@ def _mode_constraints(mode: str) -> list[str]:
         "预演通过后必须再调用 proposal.create 提交同一份 payload，才算交卷。",
         "- 高风险命令（删除、git commit/push、安装依赖、联网、改系统服务）会先请求用户允许；"
         "低风险只读命令自动执行，不要试图绕过审批。",
+        "- 页面 / UI 分流：可交互 HTML / 能点的网页 / demo / 完整页面原型 → "
+        "artifact.publish（type=page）；视觉稿或在画布上改布局 / 样式 / 组件 → design.*，"
+        "完成后 design.share；Markdown 文档 → artifact.publish（type=doc）。"
+        "用户明确指定就按指定，说不清先问一句，不要猜。",
     ]
 
 

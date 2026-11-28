@@ -1730,20 +1730,18 @@ fun V2TerminalListScreen(
 
     Column(Modifier.fillMaxSize()) {
         DetailHeader(
-            title = "终端会话",
-            subtitle = "在服务端工作区执行命令",
+            title = "终端会话（只读）",
+            subtitle = "查看电脑上已有的会话；电脑离线时不可用",
             extraTop = extraTop,
             showBack = showBack,
             onBack = onBack,
             onRefresh = { vm.refresh() },
         )
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-            PrimaryButton(
-                text = if (state.creating) "正在创建…" else "新建终端会话",
-                onClick = { if (!state.creating) vm.createSession(onOpenSession) },
-                modifier = Modifier.fillMaxWidth(),
-                icon = Icons.Outlined.Add,
-                enabled = !state.creating,
+            Label(
+                "手机不再新建或操作终端。这里只读展示已有会话；电脑离线时不可用。",
+                11.5f,
+                V2Colors.ink(.45f),
             )
         }
         LazyColumn(
@@ -1763,7 +1761,11 @@ fun V2TerminalListScreen(
                     WhiteCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Label("还没有终端会话", 15f, V2Colors.ink(.90f), FontWeight.Medium)
-                            Label("点上面的「新建终端会话」开一个，命令输出会实时回流到这里。", 11.5f, V2Colors.ink(.40f))
+                            Label(
+                                "请先在电脑上打开会话。手机只读查看，电脑离线时不可用。",
+                                11.5f,
+                                V2Colors.ink(.40f),
+                            )
                         }
                     }
                 }
@@ -1856,7 +1858,6 @@ fun V2TerminalSessionScreen(
     val vm = terminalViewModel(sessionId)
     val state by vm.state.collectAsState()
     val listState = rememberLazyListState()
-    var stopMode by remember(sessionId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.lines.size) {
         if (state.lines.isNotEmpty()) {
@@ -1880,7 +1881,7 @@ fun V2TerminalSessionScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().imePadding()) {
             DetailHeader(
-                title = "终端会话",
+                title = "终端会话（只读）",
                 subtitle = state.session?.id?.take(12) ?: sessionId.take(12),
                 extraTop = extraTop,
                 showBack = showBack,
@@ -1906,7 +1907,7 @@ fun V2TerminalSessionScreen(
                 if (!state.loading && state.lines.isEmpty()) {
                     item {
                         Label(
-                            "这里还没有输出。在下面输入一条命令（例如 pwd），输出会实时出现。",
+                            "这里还没有输出。手机只读查看已有会话；电脑离线时不可用。",
                             11f,
                             V2Colors.ink(.35f),
                         )
@@ -1940,88 +1941,18 @@ fun V2TerminalSessionScreen(
                 val streamError = state.streamError
                 if (streamError != null) V2Banner(streamError, V2Colors.amber700)
 
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(V2Colors.surface(.72f))
-                        .border(1.dp, V2Colors.line, RoundedCornerShape(14.dp))
-                        .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.weight(1f)) {
-                        if (state.command.isEmpty()) {
-                            Label("命令（在工作区里执行）", 11f, V2Colors.ink(.26f), mono = true)
-                        }
-                        BasicTextField(
-                            value = state.command,
-                            onValueChange = vm::onCommandChange,
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = active && !state.running,
-                            textStyle = TextStyle(
-                                fontSize = 11.sp,
-                                color = V2Colors.ink(.85f),
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            ),
-                            cursorBrush = SolidColor(V2Colors.accent),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = { vm.runCommand() }),
+                WhiteCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Label("只读", 12f, V2Colors.ink(.78f), FontWeight.Medium)
+                        Label(
+                            "手机不再新建或操作终端会话。要执行命令，请在电脑上打开 Flux。",
+                            11f,
+                            V2Colors.ink(.42f),
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    // 与对话输入区共用同一个主操作按钮；停止仍走下方 Stop / Force Stop
-                    V2ComposerActionButton(
-                        running = false,
-                        onSend = { vm.runCommand() },
-                        onStop = {},
-                        sendEnabled = active && !state.running && state.command.isNotBlank(),
-                        size = 34.dp,
-                        corner = 11.dp,
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    GhostButton(
-                        text = "Stop",
-                        onClick = { stopMode = "stop" },
-                        modifier = Modifier.weight(1f),
-                        enabled = active,
-                    )
-                    GhostButton(
-                        text = "Force Stop",
-                        onClick = { stopMode = "force" },
-                        modifier = Modifier.weight(1f),
-                        contentColor = V2Colors.rose,
-                        enabled = active,
-                    )
                 }
                 Spacer(Modifier.height(12.dp))
             }
-        }
-
-        when (stopMode) {
-            "stop" -> V2ActionConfirm(
-                title = "停止会话",
-                message = "会向正在运行的命令发送停止请求，已经产生的输出会保留。",
-                confirmText = "停止",
-                onConfirm = {
-                    vm.stop(force = false)
-                    stopMode = null
-                },
-                onDismiss = { stopMode = null },
-            )
-            "force" -> V2ActionConfirm(
-                title = "强制停止",
-                message = "会直接终止工作区里的进程，未保存的中间结果可能丢失。",
-                confirmText = "强制停止",
-                danger = true,
-                onConfirm = {
-                    vm.stop(force = true)
-                    stopMode = null
-                },
-                onDismiss = { stopMode = null },
-            )
         }
     }
 }
