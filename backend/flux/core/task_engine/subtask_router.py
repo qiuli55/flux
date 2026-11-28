@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import StrEnum
+
+from flux.enums import StrEnum
 
 
 class RouteAction(StrEnum):
