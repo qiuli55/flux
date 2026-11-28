@@ -445,15 +445,18 @@ def artifact_tools() -> tuple[ToolSpec, ...]:
             name="artifact.publish",
             title="发布页面 / 文档产物",
             description=(
-                "把完成的单文件页面（type=page，完整 HTML）或 Markdown 文档（type=doc）"
-                "发布成 Artifacts 里的成品，并在当前对话写一张可点开的卡片。"
+                "把完成的可交互页面（type=page，完整 HTML，用户能点按操作）或 Markdown 文档"
+                "（type=doc）发布成 Artifacts 里的成品，并在当前对话写一张可点开的卡片。"
+                "若用户要的是画布上的视觉稿、或要改布局 / 样式 / 组件，请用 design.*，"
+                "完成后 design.share；不要把设计画布当页面发布。"
                 "产物默认私有、只有用户能在 App 内查看：不要在回复正文里粘贴整段 HTML、"
                 "文档全文或任何链接。改已有产物时传 artifact_id，并先 artifact.get 取当前"
                 "内容与 version；带 base_version 冲突时工具会把当前正文交回，请合并后重发，"
                 "只有用户明确要求丢弃新版本时才带 force=true。title 可省略：page 从正文"
                 "前 8KB 的 <title> 取，doc 从首个 Markdown 标题回退；有 <title> 时参数不覆盖。"
                 "capabilities 是运行时能力声明（空对象清空，省略沿用），contract 是运行时版本，"
-                "只存储声明、不执行。设计稿不要用本工具，仍用 design.share。"
+                "只存储声明、不执行。type=page 是可交互页面，type=doc 是 Markdown 文档；"
+                "设计稿不要用本工具，仍用 design.share。"
             ),
             input_schema={
                 "type": "object",
@@ -567,8 +570,8 @@ def artifact_tools() -> tuple[ToolSpec, ...]:
             name="artifact.list_types",
             title="列出产物类型",
             description=(
-                "列出支持的产物类型：page=单文件 HTML，doc=Markdown，"
-                "design=Luma 设计稿投影（只读聚合，创建仍走设计工作室）。"
+                "列出支持的产物类型：page=可交互的单文件 HTML 页面，doc=Markdown 文档，"
+                "design=Luma 设计稿投影（只读聚合；视觉稿的创建仍走 design.*）。"
             ),
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             capability=Capability.FILE_READ,

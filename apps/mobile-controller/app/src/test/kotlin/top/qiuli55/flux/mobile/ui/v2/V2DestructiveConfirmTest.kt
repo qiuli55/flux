@@ -51,7 +51,6 @@ class V2DestructiveConfirmTest {
                 onTaskAlerts = {},
                 onStrict = {},
                 onOpenDevices = {},
-                onOpenTerminals = {},
                 onOpenKeyVault = {},
                 onOpenMemories = {},
                 onManualConnect = {},

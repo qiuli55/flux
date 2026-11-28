@@ -169,6 +169,16 @@ data class Task(
     @SerialName("avatar_shape") val avatarShape: String = "circle",
     /** bot 头像颜色（12 选一，顺序与后端 avatar.py 一致）。 */
     @SerialName("avatar_color") val avatarColor: String = "violet",
+    /**
+     * 服务端对首轮/本轮的分流结果（只在 create / messages / continue 的响应里出现）：
+     * server_assistant / organize_document / organize_page / computer_agent / clarify。
+     * 客户端只展示结果，不把它当成自己判定的依据。
+     */
+    @SerialName("turn_route") val turnRoute: String? = null,
+    /** create 响应里附带的已落库消息（首轮用户消息 / 助手回复 / 整理卡片）。 */
+    val messages: List<TaskMessage> = emptyList(),
+    /** create 响应里整理出来的创作（文档 / 页面）。 */
+    val artifact: JsonElement? = null,
 ) {
     /** 对话列表里展示的 bot 名称（历史数据可能带 bot_name）。 */
     val displayName: String
@@ -326,6 +336,10 @@ data class UploadedAttachment(
 data class TaskReplyOutcome(
     val task: Task = Task(),
     val messages: List<TaskMessage> = emptyList(),
+    /** 服务端本轮分流结果：服务端助手 / 整理成文档或页面 / 电脑 Agent / 需要澄清。 */
+    @SerialName("turn_route") val turnRoute: String? = null,
+    /** 整理路线的产物（type=doc/page）。 */
+    val artifact: JsonElement? = null,
 )
 
 @Serializable

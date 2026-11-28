@@ -25,12 +25,13 @@ from flux.core.agent_runtime.manager import AGENT_KIND_EXTERNAL
 from flux.core.agent_runtime.run_repository import as_utc, utcnow
 from flux.core.agent_runtime.runtimes.base import DEFAULT_RUNTIME
 from flux.core.agent_runtime.trace import summarize_trace
+from flux.core.artifacts.organize import artifact_card_payload, organize_uploads_as_artifact
 from flux.core.attachment_store import UploadedFile, resolve_uploads, size_label
 from flux.core.context.budget import history_message_limit
 from flux.core.event.bus import Events
 from flux.core.group.avatar import normalize_avatar
 from flux.core.model_gateway.base import ChatMessage
-from flux.core.task_engine.assistant import validate_confirmation_items
+from flux.core.task_engine.assistant import AssistantTurn, validate_confirmation_items
 from flux.core.task_engine.context_usage import (
     CONTEXT_MESSAGE_KINDS,
     context_message_limit,
@@ -38,6 +39,13 @@ from flux.core.task_engine.context_usage import (
 )
 from flux.core.task_engine.decisions import build_decision, reject_decision, resolve_decision
 from flux.core.task_engine.repository import MessageDraft
+from flux.core.task_engine.turn_router import (
+    ORGANIZE_CLARIFY_QUESTION,
+    TurnDecision,
+    TurnReason,
+    TurnRoute,
+    decide_turn,
+)
 from flux.enums import (
     DecisionMode,
     DecisionStatus,
@@ -46,7 +54,7 @@ from flux.enums import (
     TaskOrigin,
     TaskStatus,
 )
-from flux.errors import BadRequestError, ConflictError, NotFoundError, ValidationError
+from flux.errors import AIOSError, BadRequestError, ConflictError, NotFoundError, ValidationError
 from flux.logging import get_logger
 from flux.models.task import Task
 from flux.schemas.api import (
@@ -57,6 +65,7 @@ from flux.schemas.api import (
     PermissionModeRequest,
     SecureInputRequest,
     TaskAgentRequest,
+    TaskContinueRequest,
     TaskCreateRequest,
     TaskMessageCreateRequest,
     TaskModelRequest,
@@ -141,6 +150,265 @@ def _attachments_brief(files: list[UploadedFile]) -> str:
     )
 
 
+#: 电脑 Agent 不可用时给用户的诚实说明。手机端仍能做什么必须写清楚。
+COMPUTER_UNAVAILABLE_NOTICE = (
+    "这一步需要在电脑上执行，但当前没有可用的电脑 Agent（电脑可能未开机，"
+    "或还没有绑定设备）。手机仍可以做：打开已有创作并预览 / 轻改、"
+    "把分享或拍照稿整理成文档或页面、浏览网页、调整通知设置。"
+    "等电脑开机并连上后再点「开始执行」。"
+)
+
+_CLARIFY_EMPTY = "想让我做什么？可以直接问问题，也可以把分享或相册里的图片整理成文档或页面。"
+
+
+def _is_auto(start: object) -> bool:
+    return isinstance(start, str) and start == "auto"
+
+
+def _clarify_text(decision: TurnDecision) -> str:
+    """分流不确定时给用户的一句中文问话（固定文案，不调用模型）。"""
+    if decision.reason is TurnReason.ORGANIZE_NEEDS_TARGET:
+        return ORGANIZE_CLARIFY_QUESTION
+    if decision.reason is TurnReason.ORGANIZE_WITHOUT_ATTACHMENT:
+        return "要整理成文档或页面，请先添加一张图片或一个文件；我会读取附件后整理。"
+    return _CLARIFY_EMPTY
+
+
+def _agent_busy(task: Task) -> bool:
+    """当前是否已有一轮电脑 Agent 在跑（不能再起第二个 Run）。"""
+    return task.run_id is not None or task.status in {
+        TaskStatus.RUNNING.value,
+        TaskStatus.WAITING_FOR_USER_DECISION.value,
+    }
+
+
+def _assistant_only(task: Task) -> bool:
+    """这条回复是否只来自服务端助手（当前没有任何电脑 Agent 在跑）。
+
+    只用于给消息打一个可展示的诚实标记：有 run_id / 正在执行时不能声称
+    「未启动电脑 Agent」。
+    """
+    return task.run_id is None and task.status not in {
+        TaskStatus.RUNNING.value,
+        TaskStatus.WAITING_FOR_USER_DECISION.value,
+    }
+
+
+def _turn_decision(
+    content: str,
+    files: list[UploadedFile],
+    *,
+    explicit_start: bool = False,
+    task_description: str = "",
+) -> TurnDecision:
+    return decide_turn(
+        content,
+        attachment_count=len(files),
+        explicit_start=explicit_start,
+        task_description=task_description,
+    )
+
+
+async def _add_assistant_text(
+    container: Container,
+    task_uuid: uuid.UUID,
+    content: str,
+    *,
+    assistant_only: bool = True,
+) -> object:
+    """落一条服务端助手文本消息并推流（固定文案，不调用模型）。"""
+    payload: dict[str, Any] = {"assistant_only": True} if assistant_only else {}
+    message = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="text",
+                    content=content,
+                    payload=payload,
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "assistant_message", {"message": message.to_dict()}
+    )
+    return message
+
+
+async def _respond_with_assistant(
+    container: Container,
+    task: Task,
+    task_uuid: uuid.UUID,
+    content: str,
+    files: list[UploadedFile],
+    user_message: Any,
+    *,
+    assistant_only: bool = True,
+) -> tuple[Task, Any, AssistantTurn]:
+    """用户消息已落库后，取一轮服务端助手回复并落库 / 推流。"""
+    history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
+    context = (
+        await container.brain.context(task.project_id) if task.project_id is not None else None
+    )
+    await container.task_stream.publish(task_uuid, "assistant_start", {})
+
+    async def _on_delta(text: str) -> None:
+        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
+
+    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问。
+    prompt_text = content or _attachments_brief(files)
+    if files and content:
+        prompt_text = content + "\n\n" + _attachments_brief(files)
+    try:
+        turn = await container.assistant.respond(
+            description=task.description,
+            message=prompt_text,
+            history=[
+                ChatMessage(role=m.role, content=m.content)
+                for m in history
+                if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
+            ],
+            context=context,
+            on_delta=_on_delta,
+        )
+    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
+        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
+        raise
+
+    payload = turn.payload()
+    # 诚实标记：这一轮确实没有启动电脑上的 Agent。模型同时要求实际执行时
+    # 不这么标记——这条回复马上会被交给 Agent，再说「未启动」会与事实相反。
+    if assistant_only and _assistant_only(task) and not turn.needs_execution and not turn.steps:
+        payload["assistant_only"] = True
+    reply = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="secure_input" if turn.secure_input else "text",
+                    content=turn.reply,
+                    payload=payload,
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(
+        task_uuid, "assistant_message", {"message": reply.to_dict()}
+    )
+
+    if turn.confirmation:
+        task = await container.task_repo.set_confirmation(
+            task_uuid,
+            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
+        )
+    return task, reply, turn
+
+
+async def _organize_for_turn(
+    container: Container,
+    task: Task,
+    task_uuid: uuid.UUID,
+    files: list[UploadedFile],
+    target: str,
+    instruction: str,
+) -> tuple[Task, list[dict[str, Any]], Any]:
+    """把本轮附件整理成文档 / 页面，并把结果卡片发回当前对话。"""
+    try:
+        result = await organize_uploads_as_artifact(
+            artifacts=container.artifacts,
+            router=getattr(container, "router", None),
+            files=files,
+            target=target,
+            instruction=instruction,
+        )
+    except AIOSError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 整理失败要给用户中文原因，不能只回 500 空壳
+        logger.warning("整理附件失败 target=%s files=%d: %s", target, len(files), exc)
+        raise AIOSError(
+            f"整理失败：{exc}"[:300],
+            code="organize_failed",
+            http_status=500,
+            details={"target": target, "files": len(files)},
+        ) from exc
+    label = "文档" if target == "doc" else "页面"
+    messages: list[dict[str, Any]] = []
+    note_message = await _add_assistant_text(
+        container,
+        task_uuid,
+        f"已整理成{label}「{result.artifact.title}」。{result.note}",
+    )
+    messages.append(note_message.to_dict())
+    card = (
+        await container.task_repo.add_messages(
+            task_uuid,
+            [
+                MessageDraft(
+                    role=TaskMessageRole.ASSISTANT.value,
+                    kind="artifact_card",
+                    content=f"已整理成{label}「{result.artifact.title}」，点开查看完整内容",
+                    payload=artifact_card_payload(result.artifact),
+                )
+            ],
+        )
+    )[0]
+    await container.task_stream.publish(task_uuid, "assistant_message", {"message": card.to_dict()})
+    messages.append(card.to_dict())
+    return task, messages, result.artifact
+
+
+async def _try_start_agent(
+    container: Container, task: Task, followup: str
+) -> tuple[Task, str | None]:
+    """尝试起一轮电脑 Agent；失败时返回可展示的中文原因，不假装已经在跑。"""
+    try:
+        result = await container.task_run_service.start(task, followup=followup)
+        return result.task, None
+    except Exception as exc:  # noqa: BLE001 - 运行时不可用要变成给用户看的说明
+        logger.warning("启动电脑 Agent 失败 task=%s: %s", task.id, exc)
+        return task, str(exc)[:300]
+
+
+async def _computer_unavailable(
+    container: Container, task: Task, task_uuid: uuid.UUID, detail: str = ""
+) -> tuple[Task, Any]:
+    content = COMPUTER_UNAVAILABLE_NOTICE
+    if detail:
+        content = f"{content}\n\n原因：{detail}"
+    message = await _add_assistant_text(container, task_uuid, content)
+    return task, message
+
+
+async def _handoff_after_assistant(
+    container: Container,
+    task: Task,
+    task_uuid: uuid.UUID,
+    turn: AssistantTurn,
+    followup: str,
+) -> tuple[Task, list[dict[str, Any]]]:
+    """助手明确说「只能实际执行」时，按服务端判定回退给电脑 Agent。
+
+    助手失败 / 需要执行且电脑可用：起一轮 Agent 并如实说明「没能直接回答，已交给
+    电脑上的 Agent」。电脑不可用：给出原因与手机仍能做什么，不假装在跑。
+    """
+    if not turn.needs_execution or _agent_busy(task):
+        return task, []
+    task, failure = await _try_start_agent(container, task, followup)
+    if failure is not None:
+        task, notice = await _computer_unavailable(container, task, task_uuid, failure)
+        return task, [notice.to_dict()]
+    notice = await _add_assistant_text(
+        container,
+        task_uuid,
+        "没能直接回答，已交给电脑上的 Agent 继续处理。",
+        assistant_only=False,
+    )
+    return task, [notice.to_dict()]
+
+
 def _parse_uuid(value: str, *, field: str) -> uuid.UUID:
     """请求体里的标识串必须是合法 UUID，否则按 400 拒绝。"""
     try:
@@ -223,6 +491,68 @@ async def create_task(
             len(summary),
         )
     await _record_attachments(container, task.id, files)
+
+    # "auto"：服务端判定首轮由谁接。手机端只传 auto，不自己判。
+    if _is_auto(payload.start):
+        decision = _turn_decision(
+            payload.description, files, task_description=payload.description
+        )
+        user_message = (
+            await container.task_repo.add_messages(
+                task.id,
+                [
+                    MessageDraft(
+                        role=TaskMessageRole.USER.value,
+                        content=payload.description.strip(),
+                    )
+                ],
+            )
+        )[0]
+        await container.task_stream.publish(
+            task.id, "user_message", {"message": user_message.to_dict()}
+        )
+        messages: list[dict[str, Any]] = [user_message.to_dict()]
+        artifact_data: dict[str, Any] | None = None
+        if decision.route in {TurnRoute.ORGANIZE_DOCUMENT, TurnRoute.ORGANIZE_PAGE}:
+            task, organized, artifact = await _organize_for_turn(
+                container,
+                task,
+                task.id,
+                files,
+                decision.organize_target or "doc",
+                payload.description,
+            )
+            messages.extend(organized)
+            artifact_data = artifact.to_dict(include_content=False)
+        elif decision.route in {TurnRoute.SERVER_ASSISTANT, TurnRoute.CLARIFY}:
+            if decision.route is TurnRoute.CLARIFY:
+                reply = await _add_assistant_text(
+                    container, task.id, _clarify_text(decision)
+                )
+                messages.append(reply.to_dict())
+            else:
+                task, reply, _turn = await _respond_with_assistant(
+                    container, task, task.id, payload.description, files, user_message
+                )
+                messages.append(reply.to_dict())
+                task, extra = await _handoff_after_assistant(
+                    container, task, task.id, _turn, payload.description.strip()
+                )
+                messages.extend(extra)
+        else:
+            task, failure = await _try_start_agent(container, task, payload.description.strip())
+            if failure is not None:
+                task, notice = await _computer_unavailable(container, task, task.id, failure)
+                messages.append(notice.to_dict())
+        result = _task_dict(task)
+        result["turn_route"] = decision.route.value
+        result["turn_reason"] = decision.reason.value
+        result["messages"] = messages
+        if artifact_data is not None:
+            result["artifact"] = artifact_data
+        await container.bus.publish(Events.TASK_CREATED, result)
+        return ok(result)
+
     # 建 bot 时只落对话、不启动执行：否则会拿 bot 名字当需求直接跑 Agent。
     if payload.start:
         container.scheduler.submit(
@@ -461,68 +791,72 @@ async def create_task_message(
     )
     await _record_attachments(container, task_uuid, files)
 
-    history, _ = await container.task_repo.list_messages(task_uuid, limit=_HISTORY_LIMIT)
-    context = (
-        await container.brain.context(task.project_id) if task.project_id is not None else None
+    # start=True 也不再是客户端权威：简单问题 / 整理附件仍按服务端判定走，
+    # 只有判定为 computer_agent 才真正提交给电脑 Agent。
+    decision = (
+        _turn_decision(content, files, task_description=task.description)
+        if (_is_auto(payload.start) or payload.start is True)
+        else None
     )
-    await container.task_stream.publish(task_uuid, "assistant_start", {})
+    messages = [user_message.to_dict()]
+    metadata: dict[str, Any] = {}
+    artifact_data: dict[str, Any] | None = None
 
-    async def _on_delta(text: str) -> None:
-        await container.task_stream.publish(task_uuid, "assistant_delta", {"text": text})
-
-    # 附件消息不进助手历史（kind=attachments），所以把附件清单拼进本轮提问，
-    # 否则用户「文字 + 附件」一起发时助手只看到文字、不知道有文件。
-    prompt_text = content or _attachments_brief(files)
-    if files and content:
-        prompt_text = content + "\n\n" + _attachments_brief(files)
-    try:
-        turn = await container.assistant.respond(
-            description=task.description,
-            message=prompt_text,
-            history=[
-                ChatMessage(role=m.role, content=m.content)
-                for m in history
-                if m.kind in CONTEXT_MESSAGE_KINDS and m.id != user_message.id
-            ],
-            context=context,
-            on_delta=_on_delta,
-        )
-    except Exception as exc:  # noqa: BLE001 - 先通知正在看的客户端，再按原样抛给调用方
-        await container.task_stream.publish(task_uuid, "assistant_error", {"error": str(exc)[:500]})
-        raise
-    reply = (
-        await container.task_repo.add_messages(
+    if decision is not None and decision.route in {
+        TurnRoute.ORGANIZE_DOCUMENT,
+        TurnRoute.ORGANIZE_PAGE,
+    }:
+        task, organized, artifact = await _organize_for_turn(
+            container,
+            task,
             task_uuid,
-            [
-                MessageDraft(
-                    role=TaskMessageRole.ASSISTANT.value,
-                    # 需要用户填密钥时，气泡本身就是那张安全输入卡（正文仍是回复文案）
-                    kind="secure_input" if turn.secure_input else "text",
-                    content=turn.reply,
-                    payload=turn.payload(),
-                )
-            ],
+            files,
+            decision.organize_target or "doc",
+            content,
         )
-    )[0]
-    await container.task_stream.publish(
-        task_uuid, "assistant_message", {"message": reply.to_dict()}
-    )
-
-    if turn.confirmation:
-        # 助手每给出一次确认，就刷新任务上的确认卡（P0-06）。用户在"开始执行"前改过的那份
-        # 是执行依据；这里覆盖的是"又有了新信息"的情况——新一轮结论比旧结论更接近最终需求。
-        task = await container.task_repo.set_confirmation(
-            task_uuid,
-            {"items": turn.confirmation, "actor": "assistant", "updated_at": _now_iso()},
+        messages.extend(organized)
+        artifact_data = artifact.to_dict(include_content=False)
+    elif decision is not None and decision.route is TurnRoute.CLARIFY:
+        reply = await _add_assistant_text(container, task_uuid, _clarify_text(decision))
+        messages.append(reply.to_dict())
+    elif decision is not None and decision.route is TurnRoute.COMPUTER_AGENT:
+        if _agent_busy(task):
+            # 已有一轮在跑：不重复起 Run，让服务端助手接住这句追问。
+            task, reply, turn = await _respond_with_assistant(
+                container, task, task_uuid, content, files, user_message
+            )
+            messages.append(reply.to_dict())
+            metadata = {"provider": turn.provider, "model": turn.model}
+        else:
+            followup = content or _attachments_brief(files)
+            task, failure = await _try_start_agent(container, task, followup)
+            if failure is not None:
+                task, notice = await _computer_unavailable(container, task, task_uuid, failure)
+                messages.append(notice.to_dict())
+    else:
+        # 默认（start=False）与 auto 的服务端助手路线：只让服务端助手回话。
+        task, reply, turn = await _respond_with_assistant(
+            container, task, task_uuid, content, files, user_message
         )
+        messages.append(reply.to_dict())
+        metadata = {"provider": turn.provider, "model": turn.model}
+        if decision is not None:
+            # 只有服务端 auto 判定才自动回退；旧客户端显式 start=False 保持「只回话」。
+            task, extra = await _handoff_after_assistant(
+                container, task, task_uuid, turn, content or _attachments_brief(files)
+            )
+            messages.extend(extra)
 
-    if task.status == TaskStatus.PENDING.value:
-        # 平台已真实开始处理这条任务：状态从 pending 进入 running（有实际动作才改状态）
-        task = await container.task_repo.set_status(task_uuid, TaskStatus.RUNNING)
-    return ok(
-        {"task": _task_dict(task), "messages": [user_message.to_dict(), reply.to_dict()]},
-        metadata={"provider": turn.provider, "model": turn.model},
+    body: dict[str, Any] = {"task": _task_dict(task), "messages": messages}
+    route_value = (
+        decision.route.value
+        if decision is not None
+        else ("computer_agent" if payload.start is True else "server_assistant")
     )
+    body["turn_route"] = route_value
+    if artifact_data is not None:
+        body["artifact"] = artifact_data
+    return ok(body, metadata=metadata)
 
 
 @router.post("/{task_id}/secure-input")
@@ -679,13 +1013,14 @@ async def poll_task_events(
 @router.post("/{task_id}/continue")
 async def continue_task(
     task_id: str,
-    payload: TaskMessageCreateRequest,
+    payload: TaskContinueRequest,
     container: Container = Depends(get_container),
 ) -> dict[str, object]:
-    """同一对话续跑：终态对话收到新消息时，重开任务并起一轮新 Run。
+    """终态对话续跑：重开任务，并按服务端判定决定这一轮由谁接。
 
-    与 `/messages` 的区别：那个只让助手回话；续跑把新消息当作本轮 Agent 指令，
-    让同一个对话接着执行（历史消息、项目关联与标题都保留）。
+    - ``start=True``（旧客户端默认）：新消息作为本轮 Agent 指令，起一轮电脑 Agent；
+    - ``start=False``：只取一轮服务端助手回复，不启动 Agent；
+    - ``start="auto"``：由服务端分流（助手 / 整理附件 / 电脑 Agent）。
     """
     task_uuid = _task_id(task_id)
     task = await container.task_repo.get(task_uuid)
@@ -712,25 +1047,70 @@ async def continue_task(
         task_uuid, "user_message", {"message": user_message.to_dict()}
     )
     await _record_attachments(container, task_uuid, files)
-    followup = content or _attachments_brief(files)
-    try:
-        result = await container.task_run_service.start(task, followup=followup)
-    except Exception:
-        # 起不来时退回原终态：用户消息保留，修好 runtime 后可以直接重试，
-        # 不留下一个没有 Run 支撑的 running 僵尸。
-        current = await container.task_repo.get(task_uuid)
-        if current.run_id is None and current.status in {
-            TaskStatus.PENDING.value,
-            TaskStatus.RUNNING.value,
-        }:
-            await container.task_repo.set_status(task_uuid, TaskStatus(previous_status))
-        raise
-    return ok(
-        {
-            "task": _task_dict(result.task),
-            "messages": [user_message.to_dict()],
-        }
+
+    # 新客户端传 auto：由服务端判定这一轮是否值得重开电脑 Agent。
+    # start=True 沿用旧语义（显式续跑即起 Agent），避免破坏旧客户端。
+    decision = (
+        _turn_decision(content, files, task_description=task.description)
+        if _is_auto(payload.start)
+        else None
     )
+    messages = [user_message.to_dict()]
+    metadata: dict[str, Any] = {}
+    artifact_data: dict[str, Any] | None = None
+
+    if decision is not None and decision.route in {
+        TurnRoute.ORGANIZE_DOCUMENT,
+        TurnRoute.ORGANIZE_PAGE,
+    }:
+        task, organized, artifact = await _organize_for_turn(
+            container,
+            task,
+            task_uuid,
+            files,
+            decision.organize_target or "doc",
+            content,
+        )
+        messages.extend(organized)
+        artifact_data = artifact.to_dict(include_content=False)
+    elif decision is not None and decision.route is TurnRoute.CLARIFY:
+        reply = await _add_assistant_text(container, task_uuid, _clarify_text(decision))
+        messages.append(reply.to_dict())
+    elif payload.start is True or (
+        decision is not None and decision.route is TurnRoute.COMPUTER_AGENT
+    ):
+        task, failure = await _try_start_agent(
+            container, task, content or _attachments_brief(files)
+        )
+        if failure is not None:
+            if not _is_auto(payload.start):
+                # 旧行为：明确 start=True 却起不来时退回原终态，不留下 running 僵尸。
+                current = await container.task_repo.get(task_uuid)
+                if current.run_id is None and current.status == TaskStatus.PENDING.value:
+                    await container.task_repo.set_status(task_uuid, TaskStatus(previous_status))
+            task, notice = await _computer_unavailable(container, task, task_uuid, failure)
+            messages.append(notice.to_dict())
+    else:
+        task, reply, turn = await _respond_with_assistant(
+            container, task, task_uuid, content, files, user_message
+        )
+        messages.append(reply.to_dict())
+        metadata = {"provider": turn.provider, "model": turn.model}
+        if decision is not None:
+            task, extra = await _handoff_after_assistant(
+                container, task, task_uuid, turn, content or _attachments_brief(files)
+            )
+            messages.extend(extra)
+
+    body: dict[str, Any] = {"task": _task_dict(task), "messages": messages}
+    body["turn_route"] = (
+        decision.route.value
+        if decision is not None
+        else ("computer_agent" if payload.start is True else "server_assistant")
+    )
+    if artifact_data is not None:
+        body["artifact"] = artifact_data
+    return ok(body, metadata=metadata)
 
 
 @router.put("/{task_id}/confirmation")
@@ -917,7 +1297,11 @@ async def start_task(
             details={"task_id": task_id},
         )
 
-    result = await container.task_run_service.start(task, payload.confirmation)
+    result = await container.task_run_service.start(
+        task,
+        payload.confirmation,
+        followup=(payload.followup or "").strip() or None,
+    )
     return ok(
         {
             "task": _task_dict(result.task),

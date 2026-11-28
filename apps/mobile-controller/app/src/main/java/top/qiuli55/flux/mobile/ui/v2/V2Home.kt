@@ -613,7 +613,7 @@ private fun SwipeDeleteAction(onClick: () -> Unit) {
 private fun QuickActionStack(visible: Boolean, hover: Int, modifier: Modifier = Modifier) {
     val actions = listOf(
         Triple(Icons.Outlined.AddComment, "新建对话", "直接开一段新对话"),
-        Triple(Icons.Outlined.Dashboard, "Artifacts", "设计、页面与文档"),
+        Triple(Icons.Outlined.Dashboard, "创作", "可交互页面、设计稿与文档"),
     )
     Column(
         modifier,

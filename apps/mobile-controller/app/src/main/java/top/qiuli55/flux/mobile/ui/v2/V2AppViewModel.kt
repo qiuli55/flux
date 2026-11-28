@@ -163,21 +163,28 @@ class V2AppViewModel : FluxViewModel() {
                     }.getOrElse { session }
                 }
                 val config = FluxEnv.settings.config.first()
-                val boot = when {
-                    session?.hasDevice == true -> V2Boot.READY
-                    session != null -> V2Boot.DEVICES
-                    config.isComplete -> V2Boot.READY
-                    else -> V2Boot.LOGIN
-                }
+                // 登录成功就进主界面：没有设备、设备离线都不再挡住整站。
+                val boot = resolveV2Boot(session, config)
+                val hasUsableTarget = session?.hasDevice == true || config.isComplete
                 _state.value = _state.value.copy(
                     boot = boot,
                     account = session,
                     deviceLabel = session?.deviceName?.takeIf { it.isNotBlank() }
-                        ?: hostLabel(config.baseUrl),
+                        ?: if (session != null) "未绑定电脑" else hostLabel(config.baseUrl),
+                    notice = if (session != null && !hasUsableTarget) {
+                        "还没有绑定电脑，先进入主界面。可在「我的 → 设备与连接」里选择；" +
+                            "手机仍可浏览、整理分享或拍照稿和调整设置。"
+                    } else {
+                        _state.value.notice
+                    },
                 )
-                when (boot) {
-                    V2Boot.DEVICES -> loadDevices()
-                    V2Boot.READY -> refresh()
+                when {
+                    session != null -> {
+                        // 后台拉设备列表；没有绑定过就自动挑一台在线设备，不阻塞主界面。
+                        loadDevices(autoBind = !session.hasDevice)
+                        if (hasUsableTarget) refresh()
+                    }
+                    boot == V2Boot.READY -> refresh()
                     else -> Unit
                 }
             } catch (e: Exception) {
@@ -192,11 +199,24 @@ class V2AppViewModel : FluxViewModel() {
     // ------------------------------------------------------------ 账号与设备
 
     fun onSignedIn(session: AccountSession) {
-        _state.value = _state.value.copy(boot = V2Boot.DEVICES, account = session, error = null)
-        loadDevices()
+        // 登录成功即可进 App：设备选择放到「我的」，不再当成整站闸门。
+        _state.value = _state.value.copy(
+            boot = V2Boot.READY,
+            account = session,
+            error = null,
+            notice = if (!session.hasDevice) {
+                "已登录。还没有绑定电脑，可先在「我的 → 设备与连接」里选择；" +
+                    "手机仍可浏览、整理分享或拍照稿和调整设置。"
+            } else {
+                null
+            },
+            deviceLabel = session.deviceName.takeIf { it.isNotBlank() } ?: "未绑定电脑",
+        )
+        loadDevices(autoBind = !session.hasDevice)
+        if (session.hasDevice) refresh()
     }
 
-    fun loadDevices() {
+    fun loadDevices(autoBind: Boolean = false) {
         val session = _state.value.account ?: return
         if (devicesJob?.isActive == true) return
         devicesJob = viewModelScope.launch {
@@ -212,12 +232,32 @@ class V2AppViewModel : FluxViewModel() {
                     active = merged
                     cloud.devices(merged.accessToken)
                 }
+                // 从未选过设备：优先在线的 server 设备，其次任意在线设备。
+                // 一台都没有也不拦主界面，只是暂时没有电脑可执行。
+                var bound = active
+                var boundNow = false
+                if (autoBind && !active.hasDevice) {
+                    val best = pickDeviceForBinding(list)
+                    if (best != null) {
+                        bound = active.copy(
+                            deviceId = best.deviceId,
+                            deviceName = best.name,
+                        )
+                        FluxEnv.settings.saveDevice(best.deviceId, best.name)
+                        FluxEnv.settings.saveAccount(bound)
+                        FluxEnv.settings.save(bound.proxyBaseUrl, bound.accessToken)
+                        boundNow = true
+                    }
+                }
                 _state.value = _state.value.copy(
                     loadingDevices = false,
-                    account = active,
+                    account = bound,
                     devices = list,
+                    deviceLabel = bound.deviceName.takeIf { it.isNotBlank() }
+                        ?: if (bound.hasDevice) hostLabel(bound.proxyBaseUrl) else "未绑定电脑",
                     error = null,
                 )
+                if (boundNow) refresh()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(loadingDevices = false, error = readable(e))
             }
@@ -226,12 +266,6 @@ class V2AppViewModel : FluxViewModel() {
 
     fun selectDevice(device: DeviceInfo) {
         val session = _state.value.account ?: return
-        if (!device.isOnline) {
-            _state.value = _state.value.copy(
-                error = "设备离线：先在 ${device.name} 上打开 Flux 并登录同一账号",
-            )
-            return
-        }
         if (_state.value.busyAction != null) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busyAction = "device:${device.deviceId}", error = null)
@@ -244,14 +278,26 @@ class V2AppViewModel : FluxViewModel() {
                     account = next,
                     boot = V2Boot.READY,
                     busyAction = null,
-                    deviceLabel = device.name.ifBlank { "本机" },
+                    deviceLabel = device.name.ifBlank { "电脑" },
                     tasks = emptyList(),
+                    // 离线也允许进入：请求失败时再给可读说明，不拿离线挡住整站。
+                    notice = if (device.isOnline) null else offlineDeviceNotice(device),
                 )
-                refresh()
+                if (device.isOnline) refresh()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(busyAction = null, error = readable(e))
             }
         }
+    }
+
+    /** 设备列表里选择「先不绑定」：直接回主界面，本地能力仍可用。 */
+    fun skipDeviceSelection() {
+        _state.value = _state.value.copy(
+            boot = V2Boot.READY,
+            error = null,
+            deviceLabel = _state.value.deviceLabel.takeIf { it.isNotBlank() } ?: "未绑定电脑",
+            notice = "未绑定电脑也能使用：浏览、整理分享或拍照稿、调整设置。",
+        )
     }
 
     /** 手动连接保存成功后进入主界面。 */
@@ -442,8 +488,14 @@ class V2AppViewModel : FluxViewModel() {
                     summaryFrom = summaryFrom?.takeIf { it.isNotBlank() },
                     attachmentIds = attachmentIds,
                     origin = origin,
+                    start = "auto",
                 )
-                _state.value = _state.value.copy(busyAction = null)
+                val notice = when (task.turnRoute) {
+                    "organize_document" -> "已整理成文档，可在「创作」里查看和继续编辑。"
+                    "organize_page" -> "已整理成页面，可在「创作」里查看和继续编辑。"
+                    else -> null
+                }
+                _state.value = _state.value.copy(busyAction = null, notice = notice)
                 refresh(quiet = true)
                 onCreated(task.id)
             } catch (e: Exception) {

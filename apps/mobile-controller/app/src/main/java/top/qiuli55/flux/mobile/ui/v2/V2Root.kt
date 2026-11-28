@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
@@ -429,8 +430,8 @@ fun FluxV2Root() {
             // 发送成功才清空附件；失败时保留在页面本地状态里等用户重试
             draftAttachments.clear()
             draftAttachmentError = null
-            // 新对话第一次发送 = 建任务并立即交给 Agent；只建不跑会让用户以为消息没发出去。
-            vm.startTask(taskId)
+            // 首轮路由由服务端决定（start=auto）：助手回答 / 整理成文档或页面 / 电脑 Agent。
+            // 客户端不再自己判断后补一次 startTask。
             chat = current.copy(
                 conversationId = taskId,
                 title = text.take(40).ifBlank { "附件对话" },
@@ -483,11 +484,21 @@ fun FluxV2Root() {
     }
 
     // 系统分享：先收进本地队列。登录墙 / 选设备期间只暂存，进入主界面后一条一条落地。
+    // 用 rememberUpdatedState 读当前 boot：LaunchedEffect(Unit) 的闭包不能捕获首次组合的旧值。
+    val bootNow by rememberUpdatedState(app.boot)
     LaunchedEffect(Unit) {
         ShareIntakeBus.pending.collect { pending ->
             if (pending.isEmpty()) return@collect
             ShareIntakeBus.consume(pending.map { it.id }.toSet())
             shareQueue = shareQueue.receive(pending.map { it.share })
+            // 登录墙 / 启动中收到分享：队列不能是静默的，明确告诉用户收下后会去哪。
+            if (bootNow != V2Boot.READY) {
+                Toast.makeText(
+                    context,
+                    "已收下，登录后会放入新对话输入栏",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
     // 落地规则：正在看的任务 → 该任务；新对话草稿 → 当前草稿；其它页面 → 新开对话。
@@ -630,6 +641,7 @@ fun FluxV2Root() {
                 onSelect = { vm.selectDevice(it) },
                 onLogout = { vm.logout() },
                 onManualConnect = { manualConnectOpen = true },
+                onSkip = { vm.skipDeviceSelection() },
             )
 
             V2Boot.READY -> BoxWithConstraints(Modifier.fillMaxSize().shellBackground()) {
@@ -776,7 +788,6 @@ fun FluxV2Root() {
                             onOpenDevices = { vm.showDevices() },
                             onOpenConnectors = { route = V2Route.Connectors },
                             onOpenSubscriptions = { route = V2Route.Subscriptions },
-                            onOpenTerminals = { route = V2Route.Terminals },
                             onOpenKeys = {
                                 keyVaultOpen = true
                                 vm.loadKeys()
@@ -1234,10 +1245,6 @@ fun FluxV2Root() {
                                 settingsOpen = false
                                 vm.showDevices()
                             },
-                            onOpenTerminals = {
-                                settingsOpen = false
-                                route = V2Route.Terminals
-                            },
                             onOpenKeyVault = {
                                 settingsOpen = false
                                 keyVaultOpen = true
@@ -1507,7 +1514,7 @@ private fun V2NavRail(
         Spacer(Modifier.height(4.dp))
         RailButton(
             icon = Icons.Outlined.Dashboard,
-            label = "Artifacts",
+            label = "创作",
             selected = selected == V2RailItem.ARTIFACTS,
         ) { onSelect(V2RailItem.ARTIFACTS) }
         Spacer(Modifier.height(4.dp))

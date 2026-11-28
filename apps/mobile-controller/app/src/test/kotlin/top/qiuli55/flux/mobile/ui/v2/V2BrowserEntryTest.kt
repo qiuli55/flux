@@ -45,7 +45,6 @@ class V2BrowserEntryTest {
                 onOpenDevices = {},
                 onOpenConnectors = {},
                 onOpenSubscriptions = {},
-                onOpenTerminals = {},
                 onOpenKeys = {},
                 onOpenBilling = {},
                 onOpenMemories = {},
