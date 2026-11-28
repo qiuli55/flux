@@ -15,7 +15,8 @@ from flux.api.errors import register_exception_handlers
 from flux.api.internal_tap import router as llm_tap_router
 from flux.api.v1 import api_v1_router, ide, supervisor_webhook, terminal
 from flux.api.v1 import cloud as cloud_api
-from flux.cloud.owner import load_owner
+from flux.cloud.owner import CloudOwner, load_owner, save_owner
+from flux.cloud.session import load_session
 from flux.cloud.uploader import upload_previous_run
 from flux.config import Settings, get_settings
 from flux.container import Container
@@ -28,11 +29,39 @@ from flux.version import VERSION
 logger = get_logger(__name__)
 
 
+def _migrate_legacy_owner(settings: Settings) -> None:
+    """把升级前就存在的 `cloud.json` 会话用户迁移成本机主人。
+
+    修复前，公网登录只写客户端 cookie、不绑定主人；升级后要求「允许名单或本机主人」
+    才授权，否则原本已登录的实例会被锁在门外。这里在启动期把已有会话的 user_id
+    补绑为主人（保留 username），让升级不丢登录态。
+    """
+    if load_owner(settings.cloud_owner_path) is not None:
+        return
+    session = load_session(settings.cloud_session_path)
+    if session is None:
+        return
+    user_id = (session.user_id or "").strip()
+    if not user_id:
+        return
+    save_owner(
+        settings.cloud_owner_path,
+        CloudOwner(user_id=user_id, username=session.username),
+    )
+    logger.info(
+        "已从已有账号云会话迁移本机主人绑定：user_id=%s（%s）",
+        user_id,
+        settings.cloud_owner_path,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     # 启动闸门：server / 非回环监听下空 FLUX_AUTH_TOKEN 直接拒绝启动（P1-1）。
     validate_auth_configuration(app_settings)
     configure_logging(app_settings.log_level, app_settings.log_dir_path)
+    # 升级迁移：已有 cloud.json 会话但尚未绑定主人时，补绑为该账号。
+    _migrate_legacy_owner(app_settings)
     container = Container(app_settings)
     log_upload_task: asyncio.Task[None] | None = None
     memory_sync_task: asyncio.Task[None] | None = None
@@ -131,7 +160,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 在配置 FLUX_CLOUD_ALLOWED_USERS 或完成本机绑定之前，云令牌不能授权 /api/v1。
         logger.warning(
             "已配置 FLUX_CLOUD_SECRET_KEY，但既没有 FLUX_CLOUD_ALLOWED_USERS，"
-            "也还没有绑定本机主人（%s）：云令牌在完成其一之前不能授权 /api/v1",
+            "也还没有绑定本机主人（%s）：云令牌在完成其一之前不能授权 /api/v1。"
+            "公网官方 Web 无法自行完成首次绑定——请先在本机回环（或带 FLUX_AUTH_TOKEN）"
+            "登录一次绑定主人，或配置 FLUX_CLOUD_ALLOWED_USERS。",
             app_settings.cloud_owner_path,
         )
     app = FastAPI(

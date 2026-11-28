@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     # 两者都拿不到时：env=local/test 按回环处理，其余（尤其 server）按"非回环"处理。
     # 它决定"没配 FLUX_AUTH_TOKEN 时能不能 fail-open"（见 auth_required）。
     host: str | None = None
-    # REST 面单用户令牌（公网暴露前置，见 flux.api.auth）。留空 = 关闭鉴权，
-    # 本地开发与桌面端（同机直连）零配置可用；公网部署必须显式设置。
+    # REST 面单用户令牌（公网暴露前置，见 flux.api.auth）。与启动闸门一致：
+    # 只有 env 不是 server 且监听回环地址时才允许留空（本地开发 / 测试 / 桌面同机直连）；
+    # env=server 或监听非回环地址时留空会直接拒绝启动，请求期也不会 fail-open。
     auth_token: str | None = None
     # Electron 桌面端用于“打开文件夹”的一次运行期能力令牌；普通 Web 客户端不能使用。
     desktop_control_token: str | None = None
