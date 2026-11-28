@@ -56,6 +56,21 @@ data class DshStatus(
     val workspace: String? = null,
 )
 
+/** 单个模型最近一次连通性探测状态（api_keys.model_connectivity）。 */
+@Serializable
+data class ModelConnectivity(
+    val status: String = "",
+    val ok: Boolean = false,
+    @SerialName("reason_code") val reasonCode: String = "",
+    val reason: String = "",
+    @SerialName("latency_ms") val latencyMs: Int = 0,
+    @SerialName("checked_at") val checkedAt: String = "",
+) {
+    /** 只有确认过失败才算不通；未检查过的不伪造状态。 */
+    val unreachable: Boolean get() = status == "unreachable"
+    val available: Boolean get() = status == "available"
+}
+
 @Serializable
 data class KeyModelOption(
     @SerialName("key_id") val keyId: String = "",
@@ -63,7 +78,15 @@ data class KeyModelOption(
     val provider: String = "",
     @SerialName("provider_title") val providerTitle: String = "",
     val model: String = "",
-)
+    /** available / unreachable / unchecked；只有确认过的才写前两者 */
+    val status: String = "",
+    @SerialName("reason_code") val reasonCode: String = "",
+    val reason: String = "",
+    @SerialName("checked_at") val checkedAt: String = "",
+    @SerialName("latency_ms") val latencyMs: Int = 0,
+) {
+    val unreachable: Boolean get() = status == "unreachable"
+}
 
 @Serializable
 data class AgentSpec(
@@ -195,6 +218,8 @@ data class ApiKeyEntry(
     val models: List<String> = emptyList(),
     @SerialName("key_hint") val keyHint: String = "",
     val enabled: Boolean = true,
+    /** 每个模型最近一次探测结果；没有条目的模型表示尚未检查 */
+    @SerialName("model_connectivity") val modelConnectivity: Map<String, ModelConnectivity> = emptyMap(),
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
 ) {
@@ -206,9 +231,29 @@ data class ApiKeyEntry(
             "anthropic" -> "Anthropic"
             else -> provider
         }
+
+    fun connectivityFor(model: String): ModelConnectivity? = modelConnectivity[model]
+
+    /** 有模型确认不通时，列表里给一个可见短标记。 */
+    val hasUnreachable: Boolean
+        get() = models.any { connectivityFor(it)?.unreachable == true }
 }
 
-/** 保存后校验 key 的模型端点是否可用（POST /keys/{id}/probe）。 */
+/** 单个模型的探测结果。 */
+@Serializable
+data class KeyProbeModel(
+    val model: String = "",
+    val ok: Boolean = false,
+    val status: String = "",
+    @SerialName("reason_code") val reasonCode: String = "",
+    val reason: String = "",
+    @SerialName("latency_ms") val latencyMs: Int = 0,
+    @SerialName("checked_at") val checkedAt: String = "",
+    val error: String = "",
+    @SerialName("error_code") val errorCode: String = "",
+)
+
+/** 保存后按模型校验 key 的端点是否可用（POST /keys/{id}/probe）。 */
 @Serializable
 data class KeyProbeResult(
     val ok: Boolean = false,
@@ -221,6 +266,8 @@ data class KeyProbeResult(
     val error: String = "",
     @SerialName("error_code") val errorCode: String = "",
     val detail: String = "",
+    /** 主展示按模型列出；兼容旧服务端时可能为空 */
+    val models: List<KeyProbeModel> = emptyList(),
 )
 
 /** 账号级用户长期记忆：云端权威，本机只做缓存与编辑。 */

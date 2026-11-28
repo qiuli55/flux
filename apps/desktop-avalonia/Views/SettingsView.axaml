@@ -179,7 +179,7 @@
                         <StackPanel Spacing="14">
                             <StackPanel>
                                 <TextBlock Classes="section-title" Text="密钥库" />
-                                <TextBlock Text="密钥加密保存，接口只回末 4 位掩码；保存时会用该 key 的模型真实请求一次端点，确认可用。"
+                                <TextBlock Text="密钥加密保存，接口只回末 4 位掩码；保存后逐个模型做一次轻量连通检查，不通的会列出原因并可直接修改。"
                                            FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"
                                            Foreground="{DynamicResource TnText3}" />
                             </StackPanel>
@@ -200,7 +200,8 @@
                                           RowSpacing="8">
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" FontSize="12"
                                                    VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
-                                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding KeyName, Mode=TwoWay}"
+                                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="KeyNameBox"
+                                                 Text="{Binding KeyName, Mode=TwoWay}"
                                                  FontSize="12" Watermark="DeepSeek 官方" />
 
                                         <TextBlock Grid.Row="1" Grid.Column="0" Text="供应商" FontSize="12"
@@ -211,18 +212,21 @@
 
                                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Base URL" FontSize="12"
                                                    VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
-                                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding KeyBaseUrl, Mode=TwoWay}"
+                                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="KeyBaseUrlBox"
+                                                 Text="{Binding KeyBaseUrl, Mode=TwoWay}"
                                                  FontSize="12" Watermark="留空使用供应商默认地址" />
 
                                         <TextBlock Grid.Row="3" Grid.Column="0" Text="API Key" FontSize="12"
                                                    VerticalAlignment="Center" Foreground="{DynamicResource TnText3}" />
-                                        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding KeyApiKey, Mode=TwoWay}"
+                                        <TextBox Grid.Row="3" Grid.Column="1" x:Name="KeyApiKeyBox"
+                                                 Text="{Binding KeyApiKey, Mode=TwoWay}"
                                                  FontSize="12" PasswordChar="●"
                                                  Watermark="留空表示修改时保持原 key" />
 
                                         <TextBlock Grid.Row="4" Grid.Column="0" Text="模型" FontSize="12"
                                                    VerticalAlignment="Top" Foreground="{DynamicResource TnText3}" />
-                                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding KeyModelsText, Mode=TwoWay}"
+                                        <TextBox Grid.Row="4" Grid.Column="1" x:Name="KeyModelsBox"
+                                                 Text="{Binding KeyModelsText, Mode=TwoWay}"
                                                  FontSize="12" Height="88" AcceptsReturn="True"
                                                  TextWrapping="Wrap" Watermark="每行一个模型 id" />
 
@@ -240,10 +244,41 @@
                                     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                                         <Button Classes="btn" Content="取消" Command="{Binding CancelKeyEditCommand}"
                                                 IsVisible="{Binding IsEditingKey}" />
-                                        <Button Classes="btn primary" Content="保存"
+                                        <Button Classes="btn primary" Content="保存并检查"
                                                 Command="{Binding SaveKeyCommand}"
                                                 IsEnabled="{Binding !IsKeysBusy}" />
                                     </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 保存后按模型列出连通性结果；失败行可直接回到上面的现有表单修改 -->
+                            <Border Classes="card" Padding="12" Background="{DynamicResource TnBg2}">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="连通性检查结果" FontSize="12" FontWeight="SemiBold" />
+                                    <ItemsControl ItemsSource="{Binding KeyProbeRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:KeyProbeRow">
+                                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,3">
+                                                    <TextBlock Grid.Column="0" Text="{Binding Model}" Classes="mono"
+                                                               FontSize="11" VerticalAlignment="Center"
+                                                               Foreground="{DynamicResource TnText2}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                                Spacing="8" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                                   FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding DetailText}" FontSize="11"
+                                                                   Foreground="{DynamicResource TnText3}" />
+                                                    </StackPanel>
+                                                    <Button Grid.Column="2" Classes="btn" Content="去修改"
+                                                            Margin="10,0,0,0"
+                                                            IsVisible="{Binding CanEdit}"
+                                                            Command="{Binding DataContext.EditProbeFieldCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
                             </Border>
 
@@ -283,7 +318,8 @@
                                                     <TextBlock Text="{Binding BaseUrlText}" Classes="mono" FontSize="11"
                                                                Foreground="{DynamicResource TnText4}" />
                                                     <TextBlock Text="{Binding ModelsText}" Classes="mono" FontSize="11"
-                                                               TextWrapping="Wrap" Foreground="{DynamicResource TnText3}" />
+                                                               TextWrapping="Wrap" Foreground="{DynamicResource TnText3}"
+                                                               ToolTip.Tip="{Binding ConnectivityTip}" />
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                                                             VerticalAlignment="Center">

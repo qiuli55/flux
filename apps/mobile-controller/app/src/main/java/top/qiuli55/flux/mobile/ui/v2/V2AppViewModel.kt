@@ -318,7 +318,17 @@ class V2AppViewModel : FluxViewModel() {
                     agent.id to buildList {
                         spec?.models?.forEach { add(V2ModelOption(it, it)) }
                         spec?.keyModels?.forEach {
-                            add(V2ModelOption(it.model, "${it.model} · ${it.keyName}", it.keyId))
+                            val suffix = if (it.unreachable) " · 不通" else ""
+                            add(
+                                V2ModelOption(
+                                    model = it.model,
+                                    label = "${it.model}$suffix · ${it.keyName}",
+                                    keyId = it.keyId,
+                                    status = it.status,
+                                    reasonCode = it.reasonCode,
+                                    reason = it.reason,
+                                )
+                            )
                         }
                     }
                 }
@@ -555,7 +565,7 @@ class V2AppViewModel : FluxViewModel() {
         }
     }
 
-    /** 新建/修改密钥；onResult 的 error 为空串表示成功，notice 是成功后的提示（含连通性校验结果）。 */
+    /** 新建/修改密钥；onResult 的 error 为空串表示成功，probe 是保存后按模型的探测结果。 */
     fun saveKey(
         keyId: String?,
         name: String,
@@ -565,7 +575,7 @@ class V2AppViewModel : FluxViewModel() {
         models: List<String>,
         wireApi: String,
         enabled: Boolean,
-        onResult: (error: String, notice: String) -> Unit,
+        onResult: (error: String, saved: ApiKeyEntry?, probe: KeyProbeResult?) -> Unit,
     ) {
         viewModelScope.launch {
             try {
@@ -579,19 +589,20 @@ class V2AppViewModel : FluxViewModel() {
                 val keys = api.listKeys()
                 _state.value = _state.value.copy(keys = keys, error = null)
                 val probe = runCatching { api.probeKey(saved.id) }.getOrNull()
-                onResult("", probeNotice(probe))
+                // 探测结果已持久化，再读一次列表让密钥库里的状态标记同步更新。
+                runCatching { api.listKeys() }.getOrNull()?.let {
+                    _state.value = _state.value.copy(keys = it)
+                }
+                // 上面的 refresh 发生在探测之前，选择器仍拿旧目录。探测前那次静默
+                // 刷新可能还没结束（refresh 会直接 return），先等它收尾，再刷新一次
+                // Agent/模型目录，让已挂载的模型菜单拿到最新通/不通和原因。
+                refreshJob?.join()
+                refresh(quiet = true)
+                onResult("", saved, probe)
             } catch (e: Exception) {
-                onResult(readable(e), "")
+                onResult(readable(e), null, null)
             }
         }
-    }
-
-    /** 保存后的连通性校验结果 → 一句提示；探测本身失败只降级为"未校验"，不影响保存结果。 */
-    private fun probeNotice(result: KeyProbeResult?): String = when {
-        result == null -> "已保存（未能校验连通性）"
-        result.skipped -> "已保存 · ${result.error}"
-        result.ok -> "已保存 · 连通性正常（${result.latencyMs} ms）"
-        else -> "已保存，但连通性校验失败：${result.error}"
     }
 
     fun deleteKey(keyId: String, onResult: (String) -> Unit) {

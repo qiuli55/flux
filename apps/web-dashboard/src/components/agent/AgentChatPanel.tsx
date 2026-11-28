@@ -13,6 +13,16 @@ import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
 import type { AgentHandle, DshRun, DshStatus } from "../../api/types";
+import {
+  buildModelChoices,
+  subscribeModelCatalog,
+  type ModelChoice,
+} from "../../utils/modelCatalog";
+import {
+  isUnreachable,
+  modelOptionTitle,
+  modelStatusReason,
+} from "../../utils/modelConnectivity";
 
 /** 对话里的一条：用户指令，或 Agent 的回执 */
 export interface AgentTurn {
@@ -32,13 +42,6 @@ function isRunSettled(run: DshRun): boolean {
 /** Run 是否成功结束 */
 function isRunOk(run: DshRun): boolean {
   return String(run.status).toLowerCase() === "completed";
-}
-
-/** 模型下拉的一项：value 编码 keyId::model（原生模型只有 model）。 */
-interface ModelChoice {
-  value: string;
-  label: string;
-  keyId: string | null;
 }
 
 /** 这次 Run 要展示的文本：优先终态总结，其次累积的助手片段，最后才是错误原因 */
@@ -126,6 +129,10 @@ export function AgentChatPanel({
     () => window.localStorage.getItem(`${storageKey}.model`) ?? "",
   );
 
+  /* 设置页保存密钥 / 完成连通性检查后广播，面板仍挂载时也会重新拉目录 */
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  useEffect(() => subscribeModelCatalog(() => setCatalogRevision((value) => value + 1)), []);
+
   /* 可用模型 = dsh 原生模型 + 密钥库中 DeepSeek 协议的模型 */
   useEffect(() => {
     if (!dshReady) {
@@ -137,14 +144,7 @@ export function AgentChatPanel({
       .getDshModels()
       .then((data) => {
         if (!alive) return;
-        setModelChoices([
-          ...data.models.map((model) => ({ value: model, label: model, keyId: null })),
-          ...data.key_models.map((item) => ({
-            value: `${item.key_id}::${item.model}`,
-            label: `${item.model} · ${item.key_name}`,
-            keyId: item.key_id,
-          })),
-        ]);
+        setModelChoices(buildModelChoices(data));
       })
       .catch(() => {
         if (alive) setModelChoices([]);
@@ -152,7 +152,7 @@ export function AgentChatPanel({
     return () => {
       alive = false;
     };
-  }, [dshReady]);
+  }, [dshReady, catalogRevision]);
 
   /* 切换命名空间：模型选择也按会话恢复 */
   useEffect(() => {
@@ -168,10 +168,10 @@ export function AgentChatPanel({
     }
   }, [modelChoices, selectedModel, storageKey]);
 
-  const selectedLabel = modelChoices.find((choice) => choice.value === selectedModel)?.label;
-  const selectedFromVault = Boolean(
-    modelChoices.find((choice) => choice.value === selectedModel)?.keyId,
-  );
+  const selectedChoice = modelChoices.find((choice) => choice.value === selectedModel);
+  const selectedLabel = selectedChoice?.label;
+  const selectedFromVault = Boolean(selectedChoice?.keyId);
+  const selectedUnreachable = isUnreachable(selectedChoice);
 
   /* 切换命名空间：读回该会话的对话与上次会话 id（复用即同一会话） */
   useEffect(() => {
@@ -340,10 +340,21 @@ export function AgentChatPanel({
               默认（{dsh?.enabled ? `${dsh.provider}/${dsh.model}` : "运行时默认"}）
             </option>
             {modelChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>{choice.label}</option>
+              <option
+                key={choice.value}
+                value={choice.value}
+                title={modelOptionTitle(choice) || undefined}
+              >
+                {choice.label}
+              </option>
             ))}
           </select>
           <span className="ap-model">{selectedFromVault ? "来自密钥库" : "原生模型"}</span>
+          {selectedUnreachable ? (
+            <span className="ap-model" style={{ color: "var(--tn-danger)" }}>
+              上次检查不通：{modelStatusReason(selectedChoice)}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

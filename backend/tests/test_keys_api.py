@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 
@@ -10,8 +11,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flux.config import Settings
+from flux.container import Container
 from flux.core.agent_runtime.runtimes.base import ModelChannel
-from flux.core.key_vault.probe import probe_channel
+from flux.core.key_vault.probe import (
+    REASON_INVALID_KEY,
+    REASON_MODEL_UNAVAILABLE,
+    REASON_NETWORK_UNREACHABLE,
+    REASON_OTHER,
+    REASON_QUOTA_EXHAUSTED,
+    classify_probe_failure,
+    probe_channel,
+    probe_vault_key,
+)
 
 PREFIX = "/api/v1"
 
@@ -197,7 +208,23 @@ async def test_probe_channel_maps_auth_failure() -> None:
 
     assert result["ok"] is False
     assert result["error_code"] == "provider_auth_error"
+    assert result["reason_code"] == REASON_INVALID_KEY
+    assert result["reason"] == "密钥无效或权限不足"
     assert "鉴权失败" in str(result["error"])
+
+
+async def test_probe_channel_redacts_secret_from_upstream_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={"error": {"message": "invalid api key sk-test-12345678"}},
+        )
+
+    result = await _run_probe(handler)
+
+    rendered = f"{result['error']} {result['detail']} {result['reason']}"
+    assert "sk-test-12345678" not in rendered
+    assert "••••5678" in rendered
 
 
 async def test_probe_channel_maps_timeout() -> None:
@@ -208,15 +235,31 @@ async def test_probe_channel_maps_timeout() -> None:
 
     assert result["ok"] is False
     assert result["error_code"] == "provider_timeout"
+    assert result["reason_code"] == REASON_NETWORK_UNREACHABLE
 
 
 def test_probe_endpoint_uses_vault_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    created = _create_key(client)
+    created = _create_key(client, models=["model-a", "model-b"])
     calls: dict[str, object] = {}
 
     async def fake_probe(vault: object, key_id: str) -> dict[str, object]:
         calls["key_id"] = key_id
-        return {"ok": True, "skipped": False, "latency_ms": 12, "error": ""}
+        return {
+            "ok": False,
+            "skipped": False,
+            "latency_ms": 12,
+            "error": "模型名不存在或不可用",
+            "models": [
+                {"model": "model-a", "ok": True, "status": "available"},
+                {
+                    "model": "model-b",
+                    "ok": False,
+                    "status": "unreachable",
+                    "reason_code": REASON_MODEL_UNAVAILABLE,
+                    "reason": "模型名不存在或不可用",
+                },
+            ],
+        }
 
     monkeypatch.setattr("flux.api.v1.keys.probe_vault_key", fake_probe)
 
@@ -224,8 +267,9 @@ def test_probe_endpoint_uses_vault_key(client: TestClient, monkeypatch: pytest.M
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["ok"] is True
+    assert data["ok"] is False
     assert data["latency_ms"] == 12
+    assert [item["model"] for item in data["models"]] == ["model-a", "model-b"]
     assert calls["key_id"] == created["id"]
 
 
@@ -239,6 +283,271 @@ def test_probe_disabled_key_is_skipped(client: TestClient) -> None:
     assert data["ok"] is False
     assert data["skipped"] is True
     assert data["error_code"] == "key_disabled"
+    assert data["models"] == []
+
+
+# --- 失败原因分类 ---
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "expected"),
+    [
+        (401, "Invalid API key", REASON_INVALID_KEY),
+        (403, "permission denied", REASON_INVALID_KEY),
+        (402, "payment required", REASON_QUOTA_EXHAUSTED),
+        (429, "insufficient_quota: you exceeded your current quota", REASON_QUOTA_EXHAUSTED),
+        (400, "Model not found: gpt-nope", REASON_MODEL_UNAVAILABLE),
+        (404, "The model `x` does not exist", REASON_MODEL_UNAVAILABLE),
+        (503, "service unavailable", REASON_NETWORK_UNREACHABLE),
+        (None, "connection refused", REASON_NETWORK_UNREACHABLE),
+        (429, "rate limit exceeded", REASON_OTHER),
+        (400, "temperature must be <= 2", REASON_OTHER),
+    ],
+)
+def test_classify_probe_failure(status: int | None, message: str, expected: str) -> None:
+    reason_code, reason = classify_probe_failure(status=status, message=message)
+
+    assert reason_code == expected
+    assert reason
+
+
+def test_classify_probe_failure_other_keeps_short_reason() -> None:
+    reason_code, reason = classify_probe_failure(
+        status=400, message="bad request: invalid parameter"
+    )
+
+    assert reason_code == REASON_OTHER
+    assert reason.startswith("其他失败：")
+    assert "invalid parameter" in reason
+
+
+# --- 按模型探测与持久化 ---
+
+
+def _multi_model_handler(request: httpx.Request) -> httpx.Response:
+    payload = json.loads(request.content)
+    model = payload.get("model")
+    if model == "bad-model":
+        return httpx.Response(400, json={"error": {"message": "Model not found: bad-model"}})
+    return httpx.Response(200, json={"choices": [{"message": {"content": "可用"}}]})
+
+
+async def test_probe_vault_key_checks_every_registered_model(container: Container) -> None:
+    row = await container.key_vault.create(
+        name="多模型 key",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-test-12345678",
+        models=["good-model", "bad-model"],
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_multi_model_handler)) as client:
+        data = await probe_vault_key(container.key_vault, str(row.id), client=client)
+
+    assert data["ok"] is False
+    assert [item["model"] for item in data["models"]] == ["good-model", "bad-model"]
+    by_model = {item["model"]: item for item in data["models"]}
+    assert by_model["good-model"]["ok"] is True
+    assert by_model["good-model"]["status"] == "available"
+    assert by_model["good-model"]["reason_code"] == ""
+    assert by_model["bad-model"]["ok"] is False
+    assert by_model["bad-model"]["status"] == "unreachable"
+    assert by_model["bad-model"]["reason_code"] == REASON_MODEL_UNAVAILABLE
+    assert by_model["bad-model"]["reason"] == "模型名不存在或不可用"
+
+    # 结果落库：失败的配置没有被删除或停用
+    reloaded = await container.key_vault.get(row.id)
+    assert reloaded.enabled is True
+    assert reloaded.models == ["good-model", "bad-model"]
+    assert reloaded.model_connectivity["good-model"]["status"] == "available"
+    assert reloaded.model_connectivity["bad-model"]["reason_code"] == REASON_MODEL_UNAVAILABLE
+
+
+async def test_invalid_key_marks_all_models_and_keeps_config(container: Container) -> None:
+    row = await container.key_vault.create(
+        name="坏 key",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-wrong-12345678",
+        models=["model-a", "model-b"],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "Invalid API key"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        data = await probe_vault_key(container.key_vault, str(row.id), client=client)
+
+    assert all(item["reason_code"] == REASON_INVALID_KEY for item in data["models"])
+    assert all(item["reason"] == "密钥无效或权限不足" for item in data["models"])
+
+    reloaded = await container.key_vault.get(row.id)
+    assert reloaded.enabled is True
+    assert len(reloaded.models) == 2
+    assert reloaded.model_connectivity["model-a"]["reason_code"] == REASON_INVALID_KEY
+
+
+def test_probe_persists_status_and_exposes_it_in_catalog(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = _create_key(client, models=["good-model", "bad-model"])
+    state = {"bad_ok": False}
+
+    async def fake_probe_channel(
+        channel: ModelChannel, model: str, *, timeout: float = 0.0, client: object = None
+    ) -> dict[str, object]:
+        if model == "bad-model" and not state["bad_ok"]:
+            return {
+                "ok": False,
+                "status": "unreachable",
+                "skipped": False,
+                "provider": channel.provider,
+                "model": model,
+                "base_url": channel.base_url,
+                "latency_ms": 8,
+                "reply": "",
+                "error": "模型名不存在或不可用",
+                "error_code": "provider_bad_request",
+                "reason_code": REASON_MODEL_UNAVAILABLE,
+                "reason": "模型名不存在或不可用",
+                "detail": "",
+                "checked_at": "2026-11-28T00:00:00+00:00",
+            }
+        return {
+            "ok": True,
+            "status": "available",
+            "skipped": False,
+            "provider": channel.provider,
+            "model": model,
+            "base_url": channel.base_url,
+            "latency_ms": 5,
+            "reply": "可用",
+            "error": "",
+            "error_code": "",
+            "reason_code": "",
+            "reason": "",
+            "detail": "",
+            "checked_at": "2026-11-28T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr("flux.core.key_vault.probe.probe_channel", fake_probe_channel)
+
+    probe = client.post(f"{PREFIX}/keys/{created['id']}/probe")
+    assert probe.status_code == 200, probe.text
+    assert [item["model"] for item in probe.json()["data"]["models"]] == [
+        "good-model",
+        "bad-model",
+    ]
+
+    listed = {item["id"]: item for item in client.get(f"{PREFIX}/keys").json()["data"]}
+    connectivity = listed[created["id"]]["model_connectivity"]
+    assert connectivity["good-model"]["status"] == "available"
+    assert connectivity["bad-model"]["status"] == "unreachable"
+    assert connectivity["bad-model"]["reason_code"] == REASON_MODEL_UNAVAILABLE
+
+    agent = client.post(
+        f"{PREFIX}/agents",
+        json={"name": "dsh-conn", "role": "developer", "runtime": "dsh"},
+    ).json()["data"]
+    agents = {a["spec"]["name"]: a for a in client.get(f"{PREFIX}/agents").json()["data"]}
+    key_models = {item["model"]: item for item in agents["dsh-conn"]["spec"]["key_models"]}
+    assert agent["id"]
+    assert key_models["good-model"]["status"] == "available"
+    assert key_models["bad-model"]["status"] == "unreachable"
+    assert key_models["bad-model"]["reason"] == "模型名不存在或不可用"
+    assert key_models["bad-model"]["reason_code"] == REASON_MODEL_UNAVAILABLE
+
+    # 修好模型名后再探测：状态更新为可用，不再显示不通
+    state["bad_ok"] = True
+    again = client.post(f"{PREFIX}/keys/{created['id']}/probe")
+    assert again.status_code == 200, again.text
+    listed = {item["id"]: item for item in client.get(f"{PREFIX}/keys").json()["data"]}
+    assert listed[created["id"]]["model_connectivity"]["bad-model"]["status"] == "available"
+
+
+def test_probe_failure_does_not_block_editing_the_saved_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = _create_key(client)
+
+    async def failing_probe(
+        channel: ModelChannel, model: str, *, timeout: float = 0.0, client: object = None
+    ) -> dict[str, object]:
+        return {
+            "ok": False,
+            "status": "unreachable",
+            "skipped": False,
+            "provider": channel.provider,
+            "model": model,
+            "base_url": channel.base_url,
+            "latency_ms": 0,
+            "reply": "",
+            "error": "网络或服务不可达",
+            "error_code": "provider_unavailable",
+            "reason_code": REASON_NETWORK_UNREACHABLE,
+            "reason": "网络或服务不可达",
+            "detail": "",
+            "checked_at": "2026-11-28T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr("flux.core.key_vault.probe.probe_channel", failing_probe)
+
+    probe = client.post(f"{PREFIX}/keys/{created['id']}/probe")
+    assert probe.status_code == 200, probe.text
+
+    listed = client.get(f"{PREFIX}/keys").json()["data"]
+    assert len(listed) == 1
+    assert listed[0]["enabled"] is True
+    assert listed[0]["model_connectivity"]["deepseek-v4-pro"]["status"] == "unreachable"
+
+    # 保存接口本身不因探测失败而失败，条目仍可修改并再次落盘
+    updated = client.patch(
+        f"{PREFIX}/keys/{created['id']}",
+        json={"models": ["deepseek-v4-pro", "deepseek-chat"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["data"]["models"] == ["deepseek-v4-pro", "deepseek-chat"]
+    # 新模型尚未探测：保持 unchecked，不假装可用/不可用
+    assert "deepseek-chat" not in updated.json()["data"]["model_connectivity"]
+    assert (
+        updated.json()["data"]["model_connectivity"]["deepseek-v4-pro"]["status"] == "unreachable"
+    )
+
+
+def test_changing_upstream_config_clears_old_probe_status(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = _create_key(client)
+
+    async def ok_probe(
+        channel: ModelChannel, model: str, *, timeout: float = 0.0, client: object = None
+    ) -> dict[str, object]:
+        return {
+            "ok": True,
+            "status": "available",
+            "skipped": False,
+            "provider": channel.provider,
+            "model": model,
+            "base_url": channel.base_url,
+            "latency_ms": 3,
+            "reply": "可用",
+            "error": "",
+            "error_code": "",
+            "reason_code": "",
+            "reason": "",
+            "detail": "",
+            "checked_at": "2026-11-28T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr("flux.core.key_vault.probe.probe_channel", ok_probe)
+    assert client.post(f"{PREFIX}/keys/{created['id']}/probe").status_code == 200
+
+    updated = client.patch(
+        f"{PREFIX}/keys/{created['id']}",
+        json={"base_url": "https://api.deepseek.com/v2"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["data"]["model_connectivity"] == {}
 
 
 def test_switch_model_with_key_and_agent_switch_clears_it(client: TestClient) -> None:

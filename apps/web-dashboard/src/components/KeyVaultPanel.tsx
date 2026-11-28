@@ -6,10 +6,22 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "../api/client";
-import type { ApiKeyCreateRequest, ApiKeyEntry, ApiKeyUpdateRequest } from "../api/types";
+import type {
+  ApiKeyCreateRequest,
+  ApiKeyEntry,
+  ApiKeyUpdateRequest,
+  KeyProbeResult,
+} from "../api/types";
 import { toast } from "../app/toast";
 import { Modal } from "../shell/Overlay";
 import { Badge, Button, Card, Field, Input, SectionTitle, Switch, Textarea } from "../shell/ui";
+import { notifyModelCatalogChanged } from "../utils/modelCatalog";
+import {
+  focusProbeField,
+  isUnreachable,
+  modelStatusReason,
+  probeSummaryText,
+} from "../utils/modelConnectivity";
 
 type Provider = "deepseek" | "openai" | "openai_compatible" | "anthropic";
 type WireApi = "" | "chat" | "responses";
@@ -49,6 +61,12 @@ function splitModels(text: string): string[] {
   return [...new Set(text.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean))];
 }
 
+type ProbeState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "done"; result: KeyProbeResult }
+  | { kind: "error"; message: string };
+
 export function KeyVaultPanel() {
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,6 +76,8 @@ export function KeyVaultPanel() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApiKeyEntry | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [probe, setProbe] = useState<ProbeState>({ kind: "idle" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,11 +96,15 @@ export function KeyVaultPanel() {
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setSavedId(null);
+    setProbe({ kind: "idle" });
     setFormOpen(true);
   };
 
   const openEdit = (entry: ApiKeyEntry) => {
     setEditing(entry);
+    setSavedId(entry.id);
+    setProbe({ kind: "idle" });
     setForm({
       name: entry.name,
       provider: entry.provider as Provider,
@@ -93,6 +117,25 @@ export function KeyVaultPanel() {
     setFormOpen(true);
   };
 
+  /** 保存成功后按模型做一次轻量连通检查；检查失败不推翻已保存的配置。 */
+  const runProbe = useCallback(async (keyId: string) => {
+    setProbe({ kind: "checking" });
+    try {
+      const result = await api.probeApiKey(keyId);
+      setProbe({ kind: "done", result });
+    } catch (err) {
+      setProbe({
+        kind: "error",
+        message: err instanceof ApiError ? err.message : "后端无响应",
+      });
+    } finally {
+      await load();
+      // 检查成功或请求失败（配置仍在）都刷新选择器：拿到最新通/不通，
+      // 或至少让新保存的模型以「未检查」出现，而不是停留在旧目录。
+      notifyModelCatalogChanged();
+    }
+  }, [load]);
+
   const save = async () => {
     const name = form.name.trim();
     const models = splitModels(form.modelsText);
@@ -101,6 +144,7 @@ export function KeyVaultPanel() {
     if (!editing && !form.api_key.trim()) { toast("请填写 API Key"); return; }
     setSaving(true);
     try {
+      let saved: ApiKeyEntry;
       if (editing) {
         const body: ApiKeyUpdateRequest = {
           name,
@@ -111,8 +155,8 @@ export function KeyVaultPanel() {
           enabled: form.enabled,
         };
         if (form.api_key.trim()) body.api_key = form.api_key.trim();
-        await api.updateApiKey(editing.id, body);
-        toast("已更新密钥");
+        saved = await api.updateApiKey(editing.id, body);
+        toast("已更新密钥，正在检查连通性…");
       } else {
         const body: ApiKeyCreateRequest = {
           name,
@@ -123,11 +167,16 @@ export function KeyVaultPanel() {
           wire_api: form.wire_api,
           enabled: form.enabled,
         };
-        await api.createApiKey(body);
-        toast("已保存密钥");
+        saved = await api.createApiKey(body);
+        toast("已保存密钥，正在检查连通性…");
       }
-      setFormOpen(false);
-      await load();
+      // 保持在现有编辑表单里：下面列出各模型结果，可直接「去修改」再保存。
+      setEditing(saved);
+      setSavedId(saved.id);
+      setForm((prev) => ({ ...prev, api_key: "" }));
+      // 配置已落盘，先广播一次：即使这次探测较慢或失败，选择器也能看到新模型。
+      notifyModelCatalogChanged();
+      await runProbe(saved.id);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : "保存失败");
     } finally {
@@ -195,15 +244,34 @@ export function KeyVaultPanel() {
                           {entry.enabled ? "启用" : "停用"}
                         </Badge>
                       </span>
+                      {entry.models.some((model) =>
+                        isUnreachable(entry.model_connectivity?.[model]),
+                      ) ? (
+                        <span style={{ marginLeft: 6 }}>
+                          <Badge tone="red">有模型不通</Badge>
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                   <div className="fx-key-meta">
                     {entry.base_url || "默认地址"} · {entry.key_hint}
                   </div>
                   <div className="fx-key-models">
-                    {entry.models.map((model) => (
-                      <span key={model} className="fx-key-model">{model}</span>
-                    ))}
+                    {entry.models.map((model) => {
+                      const record = entry.model_connectivity?.[model];
+                      const bad = isUnreachable(record);
+                      const reason = modelStatusReason(record);
+                      return (
+                        <span
+                          key={model}
+                          className={`fx-key-model${bad ? " is-bad" : ""}`}
+                          title={reason || undefined}
+                        >
+                          {model}
+                          {bad ? " · 不通" : ""}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="fx-key-actions">
@@ -228,9 +296,24 @@ export function KeyVaultPanel() {
         large
         footer={
           <>
-            <Button onClick={() => setFormOpen(false)}>取消</Button>
-            <Button variant="primary" busy={saving} onClick={() => void save()}>
-              {editing ? "保存修改" : "创建"}
+            <Button onClick={() => setFormOpen(false)}>{editing ? "关闭" : "取消"}</Button>
+            {savedId ? (
+              <Button
+                variant="ghost"
+                busy={probe.kind === "checking"}
+                disabled={probe.kind === "checking"}
+                onClick={() => void runProbe(savedId)}
+              >
+                重新检查
+              </Button>
+            ) : null}
+            <Button
+              variant="primary"
+              busy={saving}
+              disabled={saving || probe.kind === "checking"}
+              onClick={() => void save()}
+            >
+              {editing ? "保存并检查" : "创建并检查"}
             </Button>
           </>
         }
@@ -238,6 +321,7 @@ export function KeyVaultPanel() {
         <div style={{ display: "grid", gap: 12 }}>
           <Field label="名称" required hint="用于在模型下拉里区分 key，例如「DeepSeek 官方」">
             <Input
+              id="key-name"
               value={form.name}
               maxLength={128}
               placeholder="DeepSeek 官方"
@@ -275,6 +359,7 @@ export function KeyVaultPanel() {
             }
           >
             <Input
+              id="key-base-url"
               value={form.base_url}
               placeholder={PROVIDERS.find((item) => item.value === form.provider)?.defaultUrl}
               onChange={(event) => setForm({ ...form, base_url: event.target.value })}
@@ -287,6 +372,7 @@ export function KeyVaultPanel() {
             hint={editing ? "留空表示不修改；填写则覆盖旧 key" : "只用于模型通道；落库即加密"}
           >
             <Input
+              id="key-api-key"
               type="password"
               autoComplete="new-password"
               value={form.api_key}
@@ -297,6 +383,7 @@ export function KeyVaultPanel() {
 
           <Field label="模型（每行一个）" required hint="模型 id 必须与供应商实际提供的一致">
             <Textarea
+              id="key-models"
               rows={5}
               value={form.modelsText}
               placeholder={"deepseek-v4-pro\ndeepseek-flash"}
@@ -327,6 +414,61 @@ export function KeyVaultPanel() {
               <Switch on={form.enabled} onChange={(value) => setForm({ ...form, enabled: value })} />
             </div>
           </div>
+
+          {probe.kind !== "idle" ? (
+            <div className="fx-probe">
+              <div className="fx-probe-head">
+                <strong>连通性检查</strong>
+                {probe.kind === "done" ? (
+                  <span className="fx-probe-summary">{probeSummaryText(probe.result)}</span>
+                ) : probe.kind === "checking" ? (
+                  <span className="fx-probe-summary">正在检查连通性…</span>
+                ) : null}
+              </div>
+
+              {probe.kind === "checking" ? (
+                <div className="fx-note">已保存，正在逐个模型校验端点、密钥与模型名…</div>
+              ) : null}
+
+              {probe.kind === "error" ? (
+                <div className="ag-error">
+                  已保存，但未能完成连通性检查：{probe.message}。配置已保留，可稍后点「重新检查」。
+                </div>
+              ) : null}
+
+              {probe.kind === "done" ? (
+                probe.result.models.length > 0 ? (
+                  <div className="fx-probe-list">
+                    {probe.result.models.map((item) => (
+                      <div key={`${item.model}-${item.checked_at ?? ""}`} className="fx-probe-row">
+                        <span className="fx-probe-model">{item.model || "（空模型名）"}</span>
+                        <Badge tone={item.ok ? "green" : "red"}>{item.ok ? "可用" : "不通"}</Badge>
+                        <span className="fx-probe-reason">
+                          {item.ok
+                            ? item.latency_ms != null
+                              ? `${item.latency_ms} ms`
+                              : ""
+                            : item.reason || "其他失败"}
+                        </span>
+                        {!item.ok ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon="edit"
+                            onClick={() => focusProbeField(item.reason_code)}
+                          >
+                            去修改
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="fx-note">{probeSummaryText(probe.result)}</div>
+                )
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </Modal>
 

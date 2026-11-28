@@ -85,6 +85,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty]
     private string _keyStatus = "";
 
+    /// <summary>保存后按模型列出的连通性结果；失败行可以「去修改」现有表单。</summary>
+    public ObservableCollection<KeyProbeRow> KeyProbeRows { get; } = new();
+
+    /// <summary>请求视图把焦点放到现有表单的某个输入框（原因码 → 字段）。</summary>
+    public event Action<string>? KeyFieldFocusRequested;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEditingKey))]
     [NotifyPropertyChangedFor(nameof(KeyFormTitle))]
@@ -297,6 +303,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         KeyEnabled = true;
         DeleteKeyId = null;
         KeyStatus = "";
+        KeyProbeRows.Clear();
     }
 
     [RelayCommand]
@@ -304,6 +311,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     {
         if (entry is null) return;
         EditingKeyId = entry.Id;
+        KeyProbeRows.Clear();
         KeyName = entry.Name;
         KeyProvider = entry.Provider;
         KeyBaseUrl = entry.BaseUrl;
@@ -321,6 +329,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
         EditingKeyId = null;
         DeleteKeyId = null;
         KeyStatus = "";
+        KeyProbeRows.Clear();
+    }
+
+    /// <summary>探测结果里的「去修改」：把焦点放到最可能需要改的现有表单字段。</summary>
+    [RelayCommand]
+    private void EditProbeField(KeyProbeRow? row)
+    {
+        if (row is null || row.Ok) return;
+        KeyFieldFocusRequested?.Invoke(row.ReasonCode ?? "");
     }
 
     [RelayCommand]
@@ -391,11 +408,17 @@ public sealed partial class SettingsViewModel : ViewModelBase
             }
             if (res?.Success == true)
             {
-                var keyId = res.Data?.Id;
-                StartCreateKey();
+                var saved = res.Data;
+                // 保存后留在该条目的编辑态：探测失败时「去修改」改的是同一条配置，
+                // 再点保存走 update，而不是又新建一条同名密钥。
+                if (saved is not null) StartEditKey(saved);
+                else StartCreateKey();
                 await LoadKeysAsync().ConfigureAwait(true);
-                KeyStatus = "已保存，正在校验端点…";
-                KeyStatus = await DescribeProbeAsync(api, keyId).ConfigureAwait(true);
+                KeyStatus = "已保存，正在逐个模型校验连通性…";
+                var probeStatus = await DescribeProbeAsync(api, saved?.Id).ConfigureAwait(true);
+                // 探测结果已持久化，重新读列表让状态徽标与原因可见
+                await LoadKeysAsync().ConfigureAwait(true);
+                KeyStatus = probeStatus;
             }
             else
             {
@@ -408,16 +431,34 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
     }
 
-    /// <summary>保存后真实请求一次该 key 的模型端点，把结果折成一句状态文案。</summary>
-    private static async Task<string> DescribeProbeAsync(FluxApiClient api, string? keyId)
+    /// <summary>保存后按模型真实请求一次端点；结果填进 KeyProbeRows，并返回一句汇总。</summary>
+    private async Task<string> DescribeProbeAsync(FluxApiClient api, string? keyId)
     {
+        KeyProbeRows.Clear();
         if (string.IsNullOrEmpty(keyId)) return "已保存（未能校验连通性）";
         var probe = await api.ProbeApiKeyAsync(keyId).ConfigureAwait(true);
         var result = probe?.Data;
-        if (result is null) return $"已保存，但连通性校验失败：{probe?.Message ?? "后端无响应"}";
+        if (result is null)
+        {
+            return $"已保存，但未能完成连通性检查：{probe?.Message ?? "后端无响应"}";
+        }
         if (result.Skipped) return $"已保存 · {result.Error}";
-        if (result.Ok) return $"已保存 · 连通性正常（{result.LatencyMs} ms）";
-        return $"已保存，但连通性校验失败：{result.Error}";
+
+        var models = result.Models ?? Array.Empty<KeyProbeModel>();
+        foreach (var item in models)
+        {
+            KeyProbeRows.Add(new KeyProbeRow(
+                item.Model,
+                item.Ok,
+                item.ReasonCode,
+                item.Reason,
+                item.LatencyMs));
+        }
+        if (models.Length == 0) return "已保存，但未返回模型检查结果";
+        var failed = models.Count(item => !item.Ok);
+        return failed == 0
+            ? $"已保存 · 全部 {models.Length} 个模型连通正常"
+            : $"已保存 · {models.Length} 个模型中 {failed} 个不通";
     }
 
     [RelayCommand]
@@ -488,4 +529,19 @@ public sealed partial class SettingsViewModel : ViewModelBase
         ProxyUrl = _shell.BrowserProxyUrl;
         ProxyStatus = "";
     }
+}
+
+/// <summary>保存后按模型展示的一行连通性结果。</summary>
+public sealed record KeyProbeRow(
+    string Model,
+    bool Ok,
+    string? ReasonCode,
+    string? Reason,
+    int LatencyMs)
+{
+    public string StatusText => Ok ? "可用" : "不通";
+    public string DetailText => Ok
+        ? LatencyMs > 0 ? $"{LatencyMs} ms" : "连通正常"
+        : string.IsNullOrWhiteSpace(Reason) ? "其他失败" : Reason;
+    public bool CanEdit => !Ok;
 }

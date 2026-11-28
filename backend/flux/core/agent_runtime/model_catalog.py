@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +82,8 @@ class KeyEntry:
     models: tuple[str, ...]
     key_hint: str
     enabled: bool
+    #: 每个模型最近一次探测状态（见 api_keys.model_connectivity）
+    model_connectivity: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +96,7 @@ class KeyEntry:
             "models": list(self.models),
             "key_hint": self.key_hint,
             "enabled": self.enabled,
+            "model_connectivity": dict(self.model_connectivity),
         }
 
 
@@ -105,6 +108,12 @@ class KeyModelOption:
     key_name: str
     provider: str
     model: str
+    #: available / unreachable / unchecked；只有确认探测过的才写前两者
+    status: str = "unchecked"
+    reason_code: str = ""
+    reason: str = ""
+    checked_at: str = ""
+    latency_ms: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +122,11 @@ class KeyModelOption:
             "provider": self.provider,
             "provider_title": PROVIDER_TITLES.get(self.provider, self.provider),
             "model": self.model,
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+            "checked_at": self.checked_at,
+            "latency_ms": self.latency_ms,
         }
 
 
@@ -270,12 +284,18 @@ def vault_models_for_runtime(
         if not supports_provider(runtime, entry.provider):
             continue
         for model in entry.models:
+            record = entry.model_connectivity.get(model) or {}
             options.append(
                 KeyModelOption(
                     key_id=entry.id,
                     key_name=entry.name,
                     provider=entry.provider,
                     model=model,
+                    status=str(record.get("status") or "unchecked"),
+                    reason_code=str(record.get("reason_code") or ""),
+                    reason=str(record.get("reason") or ""),
+                    checked_at=str(record.get("checked_at") or ""),
+                    latency_ms=int(record.get("latency_ms") or 0),
                 )
             )
     return options

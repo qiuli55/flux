@@ -245,6 +245,17 @@ export interface AgentSpec {
   key_models?: KeyModelOption[];
 }
 
+/** 单个模型最近一次连通性探测状态（api_keys.model_connectivity）。 */
+export interface ModelConnectivity {
+  /** available / unreachable；尚未检查过的模型不会出现在这里 */
+  status?: string;
+  ok?: boolean;
+  reason_code?: string;
+  reason?: string;
+  latency_ms?: number;
+  checked_at?: string;
+}
+
 /** 密钥库中一个可用模型（GET /agents 的 spec.key_models） */
 export interface KeyModelOption {
   key_id: string;
@@ -252,6 +263,12 @@ export interface KeyModelOption {
   provider: string;
   provider_title: string;
   model: string;
+  /** unchecked = 尚未探测；只有 available / unreachable 才是确认过的结论 */
+  status?: string;
+  reason_code?: string;
+  reason?: string;
+  checked_at?: string;
+  latency_ms?: number;
 }
 
 /** GET /api/v1/agents 返回的 Agent 句柄 */
@@ -397,8 +414,43 @@ export interface ApiKeyEntry {
   models: string[];
   key_hint: string;
   enabled: boolean;
+  /** 每个模型最近一次探测结果；没有条目的模型表示尚未检查 */
+  model_connectivity?: Record<string, ModelConnectivity>;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** POST /keys/{id}/probe 里的单个模型结果。 */
+export interface KeyProbeModel {
+  model: string;
+  ok: boolean;
+  status?: string;
+  reason_code?: string;
+  reason?: string;
+  latency_ms?: number;
+  checked_at?: string;
+  error?: string;
+  error_code?: string;
+  skipped?: boolean;
+  reply?: string;
+}
+
+/** POST /keys/{id}/probe 的 data：按模型列出可用 / 不通与原因。 */
+export interface KeyProbeResult {
+  ok: boolean;
+  skipped: boolean;
+  key_id?: string;
+  provider?: string;
+  base_url?: string;
+  checked_at?: string;
+  models: KeyProbeModel[];
+  /** 兼容旧调用方的汇总字段；界面主展示用 models */
+  model?: string;
+  latency_ms?: number;
+  error?: string;
+  error_code?: string;
+  detail?: string;
+  reply?: string;
 }
 
 export interface ApiKeyCreateRequest {

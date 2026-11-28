@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
 namespace Flux.Desktop.Models;
 
 /// <summary>GET /api/v1/projects 的元素。</summary>
@@ -68,6 +72,19 @@ public sealed record Change(
 /// <summary>Agent 规格（GET /api/v1/agents 内嵌）。</summary>
 public sealed record AgentSpec(string Name, string? Runtime);
 
+/// <summary>单个模型最近一次连通性探测结果（POST /keys/{id}/probe 与 api_keys.model_connectivity）。</summary>
+public sealed record ModelConnectivity(
+    string? Status,
+    bool Ok,
+    string? ReasonCode,
+    string? Reason,
+    int LatencyMs,
+    string? CheckedAt)
+{
+    /// <summary>只有明确写入 unreachable 的才标记「不通」；未检查过的不伪造状态。</summary>
+    public bool Unreachable => string.Equals(Status, "unreachable", StringComparison.Ordinal);
+}
+
 /// <summary>GET /api/v1/keys 的元素（密钥库；只有掩码，没有明文/密文）。</summary>
 public sealed record ApiKeyEntry(
     string Id,
@@ -77,17 +94,41 @@ public sealed record ApiKeyEntry(
     string WireApi,
     string[] Models,
     string KeyHint,
-    bool Enabled)
+    bool Enabled,
+    Dictionary<string, ModelConnectivity>? ModelConnectivity = null)
 {
     public string ToggleText => Enabled ? "停用" : "启用";
     public string BaseUrlText => string.IsNullOrWhiteSpace(BaseUrl) ? "默认地址" : BaseUrl;
-    public string ModelsText => string.Join(" / ", Models);
+    public string ModelsText => string.Join(" / ", Models.Select(ModelText));
+    public string ConnectivityTip => string.Join(
+        "\n",
+        Models.Select(model => ModelConnectivity?.GetValueOrDefault(model))
+            .Where(item => item?.Unreachable == true)
+            .Select(item => item?.Reason ?? "其他失败"));
+
+    private string ModelText(string model)
+    {
+        var item = ModelConnectivity?.GetValueOrDefault(model);
+        return item?.Unreachable == true ? $"{model}（不通）" : model;
+    }
 }
 
 /// <summary>DELETE /api/v1/keys/{id} 的 data。</summary>
 public sealed record ApiKeyDeleteResult(bool Deleted, string KeyId);
 
-/// <summary>POST /api/v1/keys/{id}/probe 的 data：保存后校验端点与模型是否可用。</summary>
+/// <summary>POST /api/v1/keys/{id}/probe 里的单个模型结果。</summary>
+public sealed record KeyProbeModel(
+    string Model,
+    bool Ok,
+    string? Status,
+    string? ReasonCode,
+    string? Reason,
+    int LatencyMs,
+    string? CheckedAt,
+    string? Error,
+    string? ErrorCode);
+
+/// <summary>POST /api/v1/keys/{id}/probe 的 data：保存后按模型校验端点与模型是否可用。</summary>
 public sealed record KeyProbeResult(
     bool Ok,
     bool Skipped,
@@ -98,7 +139,8 @@ public sealed record KeyProbeResult(
     string Reply,
     string Error,
     string ErrorCode,
-    string Detail);
+    string Detail,
+    KeyProbeModel[]? Models = null);
 
 /// <summary>GET /api/v1/agents 的元素。</summary>
 public sealed record AgentHandle(string Id, string State, AgentSpec Spec);

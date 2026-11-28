@@ -154,7 +154,15 @@ public partial class SoloViewModel : ViewModelBase
     private AgentChoice? _selectedAgent;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SelectedModelIssue))]
+    [NotifyPropertyChangedFor(nameof(HasSelectedModelIssue))]
     private ModelChoice? _selectedModel;
+
+    /// <summary>当前选中模型上次检查不通时的原因；未检查 / 可用时为空。</summary>
+    public string SelectedModelIssue =>
+        SelectedModel?.Unreachable == true ? $"上次检查不通：{SelectedModel.IssueText}" : "";
+
+    public bool HasSelectedModelIssue => !string.IsNullOrEmpty(SelectedModelIssue);
 
     /// <summary>当前对话的上下文占用；新建任务草稿为 null。</summary>
     [ObservableProperty]
@@ -1164,6 +1172,7 @@ public partial class SoloViewModel : ViewModelBase
     private async Task LoadAgentOptionsAsync(FluxApiClient api)
     {
         var models = (await api.DshModelsAsync())?.Data;
+        var previousModel = SelectedModel;
         ModelChoices.Clear();
         ModelChoices.Add(new ModelChoice(null, null, "默认模型"));
         foreach (var model in models?.Models ?? [])
@@ -1173,13 +1182,24 @@ public partial class SoloViewModel : ViewModelBase
 
         foreach (var keyModel in models?.KeyModels ?? [])
         {
+            var suffix = keyModel.Unreachable ? " · 不通" : "";
             var label = string.IsNullOrWhiteSpace(keyModel.KeyName)
-                ? keyModel.Model
-                : $"{keyModel.Model} · {keyModel.KeyName}";
-            ModelChoices.Add(new ModelChoice(keyModel.KeyId, keyModel.Model, label));
+                ? $"{keyModel.Model}{suffix}"
+                : $"{keyModel.Model}{suffix} · {keyModel.KeyName}";
+            ModelChoices.Add(new ModelChoice(
+                keyModel.KeyId,
+                keyModel.Model,
+                label,
+                keyModel.Status,
+                keyModel.Reason));
         }
 
-        SelectedModel ??= ModelChoices.FirstOrDefault();
+        // 重新探测后状态会变：按 keyId + model 找回原选择，顺手换上带新状态的对象。
+        SelectedModel = previousModel is null
+            ? ModelChoices.FirstOrDefault()
+            : ModelChoices.FirstOrDefault(item =>
+                item.KeyId == previousModel.KeyId && item.Model == previousModel.Model)
+              ?? ModelChoices.FirstOrDefault();
 
         var agents = (await api.ListAgentDetailsAsync())?.Data ?? [];
         AgentChoices.Clear();
@@ -1715,4 +1735,15 @@ public sealed class DiffLineRow
 public sealed record AgentChoice(string? Id, string Label);
 
 /// <summary>模型下拉项；KeyId 为空表示使用原生模型名。</summary>
-public sealed record ModelChoice(string? KeyId, string? Model, string Label);
+public sealed record ModelChoice(
+    string? KeyId,
+    string? Model,
+    string Label,
+    string? Status = null,
+    string? Reason = null)
+{
+    /// <summary>只有确认过失败的模型才标记「不通」；未检查过的模型不伪造状态。</summary>
+    public bool Unreachable => string.Equals(Status, "unreachable", StringComparison.Ordinal);
+    public string IssueText => string.IsNullOrWhiteSpace(Reason) ? "其他失败" : Reason;
+    public string IssueTooltip => Unreachable ? $"上次检查不通：{IssueText}" : "";
+}

@@ -95,6 +95,11 @@ internal fun modelMenuSubtitle(
     currentModelKeyId: String?,
 ): String? {
     val inUse = option.model == currentModel && option.keyId == currentModelKeyId
+    if (option.unreachable) {
+        // 不通是提前告知，不改变选择；原因与「当前在用」一起展示。
+        val reason = option.reason.ifBlank { "其他失败" }
+        return if (inUse) "不通 · $reason · 当前在用" else "不通 · $reason"
+    }
     return when {
         inUse && option.keyId != null -> "当前在用 · 密钥库"
         inUse -> "当前在用"
@@ -365,7 +370,12 @@ internal fun FluxModelMenu(
                 Label(option.label, 13f, V2Colors.ink(.90f), mono = true, maxLines = 1)
                 if (subtitle != null) {
                     Spacer(Modifier.height(2.dp))
-                    Label(subtitle, 10.5f, V2Colors.ink(.44f), maxLines = 1)
+                    Label(
+                        subtitle,
+                        10.5f,
+                        if (option.unreachable) V2Colors.rose else V2Colors.ink(.44f),
+                        maxLines = 2,
+                    )
                 }
             }
         }
