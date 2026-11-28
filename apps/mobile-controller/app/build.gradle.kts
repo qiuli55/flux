@@ -1,3 +1,8 @@
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.security.MessageDigest
 import java.util.Properties
 
 // app 模块：Flux 手机端（原生 Android，Kotlin + Jetpack Compose）。
@@ -13,6 +18,8 @@ plugins {
 android {
     namespace = "top.qiuli55.flux.mobile"
     compileSdk = 34
+    // 与本机已安装的 NDK 对齐；语音转文字的本机推理库用它编译。
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "top.qiuli55.flux.mobile"
@@ -22,6 +29,28 @@ android {
         // 已发布 0.9.18（vc1003），本次提到 0.9.19 / vc1004，保证同签名可直接覆盖升级。
         versionCode = 1004
         versionName = "0.9.19"
+
+        // 语音转文字 native 库只编真机主用的 arm64-v8a，另加 x86_64 方便模拟器验证。
+        // 模型权重不打进源码仓库，但会在构建时获取并打进 APK 的 assets（见 fetchWhisperModel）。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                )
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildFeatures {
@@ -125,6 +154,116 @@ android {
             isIncludeAndroidResources = true
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 语音转文字模型：构建时获取官方量化 base，校验后打进 APK 的 assets。
+//
+// 选择 ggml-base-q5_1.bin（约 57 MiB）：中文准确率明显好于 tiny，手机 CPU
+// 推理速度可接受；体积变大是已接受的代价，不在运行时按需下载。
+//
+// 权重不入库：
+//   - 校验缓存：apps/mobile-controller/.whisper-models/（gitignore）
+//   - APK 产物：app/src/main/assets/voice-models/*.bin（gitignore）
+// 离线构建：把已校验的 ggml-base-q5_1.bin 放到 .whisper-models/ 即可，
+// 任务会复用缓存而不再联网；缓存缺失时从下面固定的官方 URL 下载。
+//
+// 注意：这里的 URL / 大小 / SHA-256 必须与 VoiceModelSource.kt 中的常量一致
+// （VoiceInputLogicTest 有断言防止漂移）。
+// ---------------------------------------------------------------------------
+val whisperModelFileName = "ggml-base-q5_1.bin"
+val whisperModelUrl =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+val whisperModelSizeBytes = 59_707_625L
+val whisperModelSha256 =
+    "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
+// 缓存放在模块根（apps/mobile-controller/.whisper-models/），与文档 / gitignore 一致。
+val whisperModelCacheFile =
+    rootProject.layout.projectDirectory.file(".whisper-models/$whisperModelFileName").asFile
+val whisperModelAssetFile =
+    layout.projectDirectory.file("src/main/assets/voice-models/$whisperModelFileName").asFile
+
+fun sha256Of(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+val fetchWhisperModel = tasks.register("fetchWhisperModel") {
+    group = "build"
+    description = "获取并校验 Whisper 量化 base 模型，放进 APK assets（权重不入库）"
+    outputs.file(whisperModelAssetFile)
+    doLast {
+        val asset = whisperModelAssetFile
+        fun verified(file: File): Boolean =
+            file.isFile &&
+                file.length() == whisperModelSizeBytes &&
+                sha256Of(file).equals(whisperModelSha256, ignoreCase = true)
+
+        if (verified(asset)) {
+            logger.lifecycle("[voice] 复用已校验的模型产物：${asset.absolutePath}")
+            return@doLast
+        }
+        asset.delete()
+
+        val cache = whisperModelCacheFile
+        if (!verified(cache)) {
+            cache.parentFile.mkdirs()
+            val part = File(cache.parentFile, "$whisperModelFileName.part")
+            part.delete()
+            logger.lifecycle("[voice] 下载语音模型：$whisperModelUrl")
+            val client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build()
+            val request = HttpRequest.newBuilder(URI.create(whisperModelUrl))
+                .header("User-Agent", "FluxMobileBuild")
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofFile(part.toPath()))
+            if (response.statusCode() !in 200..299) {
+                part.delete()
+                throw GradleException("下载语音模型失败：HTTP ${response.statusCode()}")
+            }
+            val actualSize = part.length()
+            if (actualSize != whisperModelSizeBytes) {
+                part.delete()
+                throw GradleException(
+                    "语音模型大小不符：$actualSize 字节（期望 $whisperModelSizeBytes）"
+                )
+            }
+            val actualSha = sha256Of(part)
+            if (!actualSha.equals(whisperModelSha256, ignoreCase = true)) {
+                part.delete()
+                throw GradleException("语音模型 SHA-256 校验失败：$actualSha")
+            }
+            if (!part.renameTo(cache)) {
+                part.copyTo(cache, overwrite = true)
+                part.delete()
+            }
+        } else {
+            logger.lifecycle("[voice] 复用本地模型缓存：${cache.absolutePath}")
+        }
+
+        if (!verified(cache)) {
+            throw GradleException("语音模型缓存校验失败：${cache.absolutePath}")
+        }
+        asset.parentFile.mkdirs()
+        cache.copyTo(asset, overwrite = true)
+        logger.lifecycle("[voice] 已把模型打进 APK assets：${asset.absolutePath}")
+    }
+}
+
+// preBuild 与 assets 合并都必须依赖该任务，避免漏打包。
+tasks.named("preBuild") { dependsOn(fetchWhisperModel) }
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(fetchWhisperModel)
 }
 
 dependencies {

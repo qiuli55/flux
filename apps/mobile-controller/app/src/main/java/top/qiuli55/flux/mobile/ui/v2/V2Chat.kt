@@ -1,5 +1,6 @@
 package top.qiuli55.flux.mobile.ui.v2
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -89,6 +90,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -134,6 +136,15 @@ import top.qiuli55.flux.mobile.data.DesignSummary
 import top.qiuli55.flux.mobile.data.TaskContextUsage
 import top.qiuli55.flux.mobile.data.TaskRunSummary
 import top.qiuli55.flux.mobile.data.UploadedAttachment
+import top.qiuli55.flux.mobile.stt.VoiceFailureNotice
+import top.qiuli55.flux.mobile.stt.VoiceInputController
+import top.qiuli55.flux.mobile.stt.VoiceInputState
+import top.qiuli55.flux.mobile.stt.VoiceMicButton
+import top.qiuli55.flux.mobile.stt.VoiceStatusContent
+import top.qiuli55.flux.mobile.stt.appendTranscript
+import top.qiuli55.flux.mobile.stt.openAppSettings
+import top.qiuli55.flux.mobile.stt.rememberVoiceInputController
+import top.qiuli55.flux.mobile.stt.voiceReplacesInput
 import java.io.File
 import java.util.Locale
 
@@ -267,6 +278,11 @@ fun V2ChatScreen(
     pendingChangeRemoved: Int = 0,
     /** 打开文件改动页（待审核卡片的「去审核」）。 */
     onOpenChanges: (() -> Unit)? = null,
+    /**
+     * 语音转文字控制器：生产环境不用传，由页面按会话创建；
+     * 单测可注入假录音 / 假转写，验证「成功只写输入框、不自动发送」。
+     */
+    voiceController: VoiceInputController? = null,
     /** 消息列表状态：测试可注入；生产环境用内部 remember 的默认值。 */
     listState: LazyListState = rememberLazyListState(),
 ) {
@@ -298,6 +314,19 @@ fun V2ChatScreen(
     val focusManager = LocalFocusManager.current
     val inputFocus = remember { FocusRequester() }
     var inputFocused by remember { mutableStateOf(false) }
+    // 语音转文字：默认按会话创建本机控制器；外部注入时（单测）由调用方负责销毁。
+    val voice = voiceController ?: rememberVoiceInputController(context, chat.conversationId)
+    val voiceState by voice.state.collectAsState()
+    val voicePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> voice.onPermissionResult(granted) }
+    // 转写成功只把文本追加到输入框（光标落到末尾），不自动发送，也不显示成语音气泡。
+    LaunchedEffect(voiceState) {
+        val success = voiceState as? VoiceInputState.Success ?: return@LaunchedEffect
+        input = appendTranscript(input, success.text)
+        voice.consumeSuccess()
+        inputFocus.requestFocus()
+    }
     var bubbleMenu by remember { mutableStateOf<BubbleMenuTarget?>(null) }
     // 返回时草稿未发送 / 运行中点停止：都先确认，避免一次误触丢掉内容或中断长任务。
     var discardConfirmOpen by rememberSaveable { mutableStateOf(false) }
@@ -925,33 +954,68 @@ fun V2ChatScreen(
             // 和 Agent / 权限 / 发送排成一行，输入区不再被右侧图标压缩。
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 Box(Modifier.weight(1f).heightIn(min = 22.dp)) {
-                    if (input.isEmpty()) {
-                        Label(
-                            when {
-                                locked -> "正在加载对话…"
-                                uploading -> "附件上传中…"
-                                sending -> "等待 ${agent.name} 回复…"
-                                chat.permissionMode == "plan" -> "让 Agent 先出计划，不动手…"
-                                else -> "继续说…"
+                    if (voiceReplacesInput(voiceState)) {
+                        VoiceStatusContent(
+                            state = voiceState,
+                            onCancel = {
+                                if (voiceState is VoiceInputState.NeedPermission) {
+                                    voice.dismiss()
+                                } else {
+                                    voice.cancel()
+                                }
                             },
-                            14.5f,
-                            V2Colors.ink(.30f),
+                            onAllow = {
+                                voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            },
+                            onOpenSettings = { openAppSettings(context) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 2.dp, bottom = 2.dp),
+                        )
+                    } else {
+                        if (input.isEmpty()) {
+                            Label(
+                                when {
+                                    locked -> "正在加载对话…"
+                                    uploading -> "附件上传中…"
+                                    sending -> "等待 ${agent.name} 回复…"
+                                    chat.permissionMode == "plan" -> "让 Agent 先出计划，不动手…"
+                                    else -> "继续说…"
+                                },
+                                14.5f,
+                                V2Colors.ink(.30f),
+                            )
+                        }
+                        BasicTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag(V2ComposerTags.INPUT)
+                                .focusRequester(inputFocus)
+                                .onFocusChanged { inputFocused = it.isFocused },
+                            enabled = inputEnabled,
+                            textStyle = TextStyle(fontSize = 14.5.sp, lineHeight = 21.sp, color = V2Colors.ink(.90f)),
+                            cursorBrush = SolidColor(V2Colors.accent),
+                            maxLines = 5,
                         )
                     }
-                    BasicTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag(V2ComposerTags.INPUT)
-                            .focusRequester(inputFocus)
-                            .onFocusChanged { inputFocused = it.isFocused },
-                        enabled = inputEnabled,
-                        textStyle = TextStyle(fontSize = 14.5.sp, lineHeight = 21.sp, color = V2Colors.ink(.90f)),
-                        cursorBrush = SolidColor(V2Colors.accent),
-                        maxLines = 5,
-                    )
                 }
+                // 麦克风放在输入行右端、发送钮正上方：窄屏 + 大字号下也不会挤掉发送钮。
+                VoiceMicButton(
+                    state = voiceState,
+                    enabled = inputEnabled && !uploading,
+                    onClick = { voice.onMicClick() },
+                )
+            }
+            val voiceFailure = voiceState as? VoiceInputState.Failed
+            if (voiceFailure != null) {
+                Spacer(Modifier.height(6.dp))
+                VoiceFailureNotice(
+                    state = voiceFailure,
+                    onRetry = { voice.retry() },
+                    onDismiss = { voice.dismiss() },
+                )
             }
             Spacer(Modifier.height(10.dp))
             // 底部工具条，从左到右：+、权限盾牌、（空档）、Agent 官方图标、
@@ -1073,7 +1137,8 @@ fun V2ChatScreen(
                         }
                     }
                 }
-                val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled && !uploading
+                val enabled = (input.isNotBlank() || attachments.isNotEmpty()) && inputEnabled &&
+                    !uploading && !voiceReplacesInput(voiceState)
                 // 发送 / 停止共用同一个圆钮：执行中就地变成停止
                 ChatSendButton(
                     running = taskRunning,

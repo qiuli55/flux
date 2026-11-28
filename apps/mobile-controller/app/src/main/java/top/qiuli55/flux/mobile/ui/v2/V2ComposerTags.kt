@@ -27,6 +27,10 @@ internal object V2ComposerTags {
     const val CONTEXT_RING = "v2_composer_context_ring"
     const val CONTEXT_INFO = "v2_composer_context_info"
     const val PERMISSION = "v2_composer_permission"
+    /** 语音转文字入口（录音中同一个按钮结束录音）。 */
+    const val MIC = "v2_composer_mic"
+    /** 录音 / 下载 / 转写 / 权限提示所在的输入区状态块。 */
+    const val VOICE_STATUS = "v2_composer_voice_status"
     const val SEND = "v2_composer_send"
     /** Agent 小窗（锚定在 Agent 胶囊上的自定义卡片）。 */
     const val AGENT_MENU = "v2_composer_agent_menu"

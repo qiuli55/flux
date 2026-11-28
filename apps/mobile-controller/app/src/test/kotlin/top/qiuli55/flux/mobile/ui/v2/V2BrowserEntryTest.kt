@@ -52,6 +52,7 @@ class V2BrowserEntryTest {
                 onOpenBrowser = { openBrowserCount += 1 },
                 onOpenSettings = {},
                 onCheckUpdate = {},
+                onOpenLicenses = {},
             )
         }
 

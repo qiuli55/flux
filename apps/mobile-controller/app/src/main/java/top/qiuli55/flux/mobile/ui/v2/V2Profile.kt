@@ -65,6 +65,7 @@ fun V2ProfileScreen(
     onOpenBrowser: () -> Unit,
     onOpenSettings: () -> Unit,
     onCheckUpdate: () -> Unit,
+    onOpenLicenses: () -> Unit,
 ) {
     Column(
         Modifier
@@ -161,6 +162,13 @@ fun V2ProfileScreen(
                 title = "检查更新",
                 onClick = onCheckUpdate,
                 value = version,
+                showDivider = true,
+            )
+            // 开源许可单独成页：引擎 / 模型的版本与 MIT 声明集中放在这里。
+            V2SettingRow(
+                icon = Icons.Outlined.Description,
+                title = OPEN_SOURCE_SCREEN_TITLE,
+                onClick = onOpenLicenses,
             )
         }
     }
@@ -231,4 +239,5 @@ internal val PROFILE_SETTINGS_TITLES = listOf(
     "用户记忆",
     "通知与偏好",
     "检查更新",
+    "关于 / 开源许可",
 )

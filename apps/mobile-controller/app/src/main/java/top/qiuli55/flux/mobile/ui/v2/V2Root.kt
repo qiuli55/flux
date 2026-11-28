@@ -84,6 +84,8 @@ private sealed interface V2Route {
     data object Connectors : V2Route
     /** 「我的」二级页：统一订阅登录入口（ChatGPT / Claude Code）。 */
     data object Subscriptions : V2Route
+    /** 「我的」二级页：关于 / 开源许可（语音引擎与模型声明）。 */
+    data object Licenses : V2Route
     data object DesignCanvas : V2Route
 
     /**
@@ -491,7 +493,7 @@ fun FluxV2Root() {
                   is V2Route.Diff -> V2Route.Changes(current.taskId)
                   is V2Route.Run -> V2Route.TaskDetail(current.taskId)
                   is V2Route.Terminal -> V2Route.Terminals
-                  V2Route.Connectors, V2Route.Subscriptions -> V2Route.Profile
+                  V2Route.Connectors, V2Route.Subscriptions, V2Route.Licenses -> V2Route.Profile
                   is V2Route.Browser -> current.origin
                   is V2Route.ArtifactDetail -> {
                       artifactsVm.closeDetail()
@@ -720,6 +722,7 @@ fun FluxV2Root() {
                             },
                             onOpenSettings = { settingsOpen = true },
                             onCheckUpdate = { UpdateCenter.checkManually() },
+                            onOpenLicenses = { route = V2Route.Licenses },
                         )
 
                         V2Route.Connectors -> ConnectorsScreen(
@@ -771,6 +774,13 @@ fun FluxV2Root() {
                                 vm.submitClaudeLoginCode(loginId, code, onResult)
                             },
                             onOpenClaudeUrl = { openInternalBrowser(it) },
+                        )
+
+                        V2Route.Licenses -> V2LicenseScreen(
+                            version = BuildConfig.VERSION_NAME,
+                            extraTop = extraTop,
+                            showBack = showBack,
+                            onBack = { route = V2Route.Profile },
                         )
 
                         V2Route.DesignCanvas -> DesignCanvasScreen(
@@ -1056,7 +1066,8 @@ fun FluxV2Root() {
                                     is V2Route.ArtifactDetail -> V2RailItem.ARTIFACTS
                                     V2Route.Profile,
                                     V2Route.Connectors,
-                                    V2Route.Subscriptions -> V2RailItem.PROFILE
+                                    V2Route.Subscriptions,
+                                    V2Route.Licenses -> V2RailItem.PROFILE
                                     else -> V2RailItem.CHATS
                                 },
                                 onSelect = { item ->
@@ -1550,7 +1561,7 @@ private fun RailButton(
 private fun v2RouteDepth(route: V2Route): Int = when (route) {
     V2Route.Home, V2Route.Artifacts, V2Route.Profile -> 0
     V2Route.Assistant, V2Route.Terminals, V2Route.Chat -> 1
-    V2Route.Connectors, V2Route.Subscriptions -> 1
+    V2Route.Connectors, V2Route.Subscriptions, V2Route.Licenses -> 1
     V2Route.Designs, is V2Route.ArtifactDetail -> 1
     is V2Route.Browser -> v2RouteDepth(route.origin) + 1
     is V2Route.TaskDetail -> 2
