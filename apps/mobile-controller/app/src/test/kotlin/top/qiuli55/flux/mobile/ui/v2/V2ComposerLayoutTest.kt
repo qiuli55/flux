@@ -236,6 +236,15 @@ class V2ComposerLayoutTest {
     }
 
     @Test
+    fun `voice mic stays visible and tappable at 320dp font scale 1_5`() {
+        render(widthDp = 320, fontScale = 1.5f, modelLabel = longModel)
+        // 麦克风放在输入行右端，不占工具条宽度：发送与麦克风都完整可见、可点。
+        assertActionFits(V2ComposerTags.MIC)
+        rule.onNodeWithTag(V2ComposerTags.MIC).assertHasClickAction()
+        assertActionFits(V2ComposerTags.SEND)
+    }
+
+    @Test
     fun `empty input disables send and produces no message`() {
         render(widthDp = 360, fontScale = 1f, modelLabel = shortModel, input = null)
         rule.onNodeWithTag(V2ComposerTags.SEND).assertIsNotEnabled()

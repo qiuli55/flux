@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 交互触感：轻点 / 成功 / 驳回 / 失败四级反馈，受设置开关控制 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 语音转文字：只在本机录音并用离线模型转写，不上传音频 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:name=".FluxApp"

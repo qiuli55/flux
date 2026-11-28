@@ -16,3 +16,6 @@ remote-artifacts/
 *.keystore
 # 本地签名参数（keystore 路径/口令），机器相关，禁止入库
 signing.properties
+# 语音转文字模型权重：构建时从官方源获取并打进 APK，57 MiB 权重不入库
+.whisper-models/
+app/src/main/assets/voice-models/*.bin
