@@ -182,6 +182,23 @@ snapshot_id     本次投喂采用的上下文快照
 - **前缀注入降为兜底**：仅当 agent 完全没有取上下文能力时，才把打包结果作为 prompt 前缀（如 `codex exec`）或注入 session 首条消息（DSH，或走 `agent-instructions` 64KB 上限）；skill 正文仍走 `tool-skill`；DSH 原生 compaction 插件待对齐（§5.4）。
 - **能力面（skill / connector）**：统一由 Flux MCP 提供，agent 不自带。
 
+## 13.1 摄入入口（issue #3 收口）
+
+所有写入 `context_steps` / `context_blobs` 的路径都走 `flux.core.context.ingest.ContextIngestor`：
+`redact` → `content_store.put` → `context_steps.append` → `context_redactions.record`，best-effort。
+
+- **MCP 工具结果**：带 `X-Flux-Run-Id` 的 `tools/call`，失败也摄入（`status=fail`）。
+- **用户消息 / 助手最终答复**：`TaskRepository.add_messages` 落库后由注入的钩子摄入；
+  `role=user` 的正文、助手可见正文与 `run_finished(completed)` 的最终答复都写入，
+  失败/取消的状态摘要与重试提示跳过。Run 尚未创建时用稳定任务级键 `task:<task_uuid>`。
+- **runtime 原生工具/命令**：`TaskStreamRelay` 在工具/命令**收尾**时摄入（同一 `call_id`
+  只写一条），不依赖 Flux MCP。
+- **终端命令**：`TerminalService` 在命令结束时把「命令 + 退出码 + 输出」写成一条
+  `COMMAND` step；会话没有绑定 Run 时沿用会话 id 作为归属键。
+
+**验证账本（`VerificationLedger` / 信任分级）为预留能力，尚未在生产路径启用。** 目前没有
+可靠的验证/断言结论点，故仅装配与单测覆盖，不伪造 `record` 调用。
+
 ## 14. 演进阶段
 
 | 阶段 | 内容 |

@@ -22,11 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from flux.core.agent_runtime import platforms
+from flux.core.context.ingest import ContextIngestor
 from flux.core.context.redact import RedactionMatch, RedactionStore, redact
 from flux.core.event.bus import EventBus, Events
 from flux.core.terminal.repository import TerminalRepository
 from flux.core.virtual_workspace.apply_engine import resolve_workspace_root
 from flux.enums import (
+    StepKind,
+    StepStatus,
     TerminalEventKind,
     TerminalSessionKind,
     TerminalSessionStatus,
@@ -90,6 +93,8 @@ class TerminalService:
         self._configured_root = Path(workspace_root).expanduser() if workspace_root else None
         #: 入站脱敏映射表（§10.1）：command/chunk 落库前先打码，换下来的原文进此表；无密钥时不落库
         self._redactions = redactions
+        #: 上下文摄入（issue #3）：终端命令与输出也要进 context_steps（Container 后置装配）
+        self._context_ingestor: ContextIngestor | None = None
         #: 正在跑的进程（会话 ID → Popen），Stop 与 shutdown 都从这里找
         self._processes: dict[str, subprocess.Popen[str]] = {}
         #: 正在执行的命令 task；Stop 必须等它写完 command.finished/failed 再关闭会话。
@@ -120,6 +125,15 @@ class TerminalService:
     @redactions.setter
     def redactions(self, value: RedactionStore | None) -> None:
         self._redactions = value
+
+    @property
+    def context_ingestor(self) -> ContextIngestor | None:
+        """上下文摄入器；由 Container 在 context 组件就绪后注入（可缺省）。"""
+        return self._context_ingestor
+
+    @context_ingestor.setter
+    def context_ingestor(self, value: ContextIngestor | None) -> None:
+        self._context_ingestor = value
 
     # --- 会话 ---
 
@@ -330,9 +344,19 @@ class TerminalService:
                 await self._repo.set_cmd_pgid(session.id, platforms.process_group_of(process)[1])
             except Exception:  # noqa: BLE001 - 记账失败不能拖垮命令执行
                 logger.warning("记录命令进程组 id 失败 session=%s", session.id, exc_info=True)
+            #: 完整输出留一份给上下文摄入：terminal_events 是逐行事件，按行写 step 会太碎，
+            #: 命令收尾时把「命令 + 退出码 + 全部输出」作为一条 COMMAND step 落库。
+            collected_output: list[str] = []
             try:
                 await asyncio.to_thread(
-                    self._pump_output, loop, session.id, process, source, run_id, turn_id
+                    self._pump_output,
+                    loop,
+                    session.id,
+                    process,
+                    source,
+                    run_id,
+                    turn_id,
+                    collected_output,
                 )
                 exit_code = await asyncio.to_thread(process.wait)
             finally:
@@ -347,7 +371,7 @@ class TerminalService:
                 if exit_code == 0
                 else TerminalEventKind.COMMAND_FAILED
             )
-            return await self._emit(
+            event = await self._emit(
                 session.id,
                 finished,
                 source,
@@ -356,8 +380,45 @@ class TerminalService:
                 run_id=run_id,
                 turn_id=turn_id,
             )
+            await self._ingest_command(
+                run_id=run_id,
+                turn_id=turn_id,
+                command=command,
+                output="".join(collected_output),
+                exit_code=exit_code,
+            )
+            return event
         finally:
             self._command_tasks.pop(key, None)
+
+    async def _ingest_command(
+        self,
+        *,
+        run_id: str,
+        turn_id: str,
+        command: str,
+        output: str,
+        exit_code: int,
+    ) -> None:
+        """把命令收尾写进 context_steps（§3.3）。
+
+        归属：优先会话绑定的 Run id；会话没有 Run 时沿用本模块既有的会话 id 兜底
+        （见 `_run_locked` 的 `run_id` 取值），不另造一套键。命令与输出在这里才合并成
+        一条 step，避免逐行输出把日志撑成成百上千条。摄入是 best-effort：失败只留 warning。
+        """
+        ingestor = self._context_ingestor
+        if ingestor is None:
+            return
+        body = f"$ {command}\nexit={exit_code}\n{output}"
+        await ingestor.ingest(
+            run_id=run_id,
+            turn_id=turn_id,
+            kind=StepKind.COMMAND,
+            status=StepStatus.OK if exit_code == 0 else StepStatus.FAIL,
+            target_ref=command[:1024] or None,
+            exit_code=exit_code,
+            text=body,
+        )
 
     def _pump_output(
         self,
@@ -367,13 +428,20 @@ class TerminalService:
         source: TerminalSource,
         run_id: str,
         turn_id: str,
+        collected_output: list[str] | None = None,
     ) -> None:
-        """工作线程按行读输出 → 回事件循环落库（保证输出顺序与 seq 一致）。"""
+        """工作线程按行读输出 → 回事件循环落库（保证输出顺序与 seq 一致）。
+
+        `collected_output` 供命令收尾时把整段输出摄入 context_steps；写入发生在本线程，
+        读取发生在 `to_thread` 返回之后，不存在并发读写。
+        """
         stream = process.stdout
         if stream is None:
             return
         try:
             for line in iter(stream.readline, ""):
+                if collected_output is not None:
+                    collected_output.append(line)
                 future = asyncio.run_coroutine_threadsafe(
                     self._emit(
                         session_id,

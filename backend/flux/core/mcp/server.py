@@ -27,7 +27,6 @@ from flux.core.agent_runtime.model_catalog import (
     default_model_for_runtime,
     models_for_runtime,
 )
-from flux.core.context.redact import redact
 from flux.core.event.bus import Events
 from flux.core.mcp.auth import AgentIdentity
 from flux.core.mcp.tools import ALL_TOOLS, TOOLS, ToolContext, ToolSpec
@@ -258,7 +257,7 @@ class McpServer:
         *,
         status: StepStatus = StepStatus.OK,
     ) -> None:
-        """把一次工具结果摄入上下文：redact → CAS 原文 → step 落库 → 脱敏映射（§10.1 契约）。
+        """把一次工具结果摄入上下文（§10.1 契约，走 `container.context_ingestor`）。
 
         成功与失败共用同一条路径：失败只是 `status=FAIL`、正文换成错误对象——step 日志
         因此能回答"这轮做砸了什么"，而不是只留下成功的部分历史。
@@ -272,24 +271,19 @@ class McpServer:
             return
         try:
             text = json.dumps(data, ensure_ascii=False, indent=2)
-            result = redact(text)
-            body = result.text.encode("utf-8")
-            blob = await self._container.content_store.put(body)
-            await self._container.context_steps.append(
-                run_id=run_id,
-                turn_id=run_id,
-                kind=StepKind.TOOL_CALL,
-                status=status,
-                tool=spec.name,
-                result_sha256=blob.sha256,
-                result_bytes=len(body),
-                result_head=result.text[:512],
-            )
-            await self._container.context_redactions.record(
-                run_id=run_id, turn_id=run_id, matches=result.matches
-            )
-        except Exception:  # noqa: BLE001 - 工具边界不允许因摄入失败而失败
-            logger.warning("MCP 上下文摄入失败 tool=%s run=%s", spec.name, run_id, exc_info=True)
+        except (TypeError, ValueError):
+            # 不可序列化的工具结果不摄入；工具对外结果不受影响（best-effort）
+            logger.warning("MCP 工具结果不可序列化，跳过上下文摄入 tool=%s", spec.name)
+            return
+        # 与产品主循环（用户消息 / 助手答复 / 原生工具 / 终端命令）共用同一条摄入契约：
+        # redact → CAS 原文 → step 落库 → 脱敏映射，失败只记 warning。
+        await self._container.context_ingestor.ingest(
+            run_id=run_id,
+            kind=StepKind.TOOL_CALL,
+            status=status,
+            tool=spec.name,
+            text=text,
+        )
 
     async def _publish(
         self,

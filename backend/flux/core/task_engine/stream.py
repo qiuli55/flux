@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from flux.core.agent_runtime.trace import RunTraceRecorder, classify_tool, extract_paths
+from flux.core.context.ingest import ContextIngestor
 from flux.core.context.redact import redact
 from flux.core.event.bus import EventBus, Events
+from flux.enums import StepKind, StepStatus
 from flux.logging import get_logger
 
 logger = get_logger(__name__)
@@ -179,10 +181,19 @@ class TaskStreamHub:
 class TaskStreamRelay:
     """把运行事件总线上的 Agent 事件转成任务流事件。"""
 
-    def __init__(self, hub: TaskStreamHub, recorder: RunTraceRecorder | None = None) -> None:
+    def __init__(
+        self,
+        hub: TaskStreamHub,
+        recorder: RunTraceRecorder | None = None,
+        ingestor: ContextIngestor | None = None,
+    ) -> None:
         self._hub = hub
         #: 执行轨迹记录器：把思考/命令增量合并后落库，供任务详情回看（可选装配，单测可省）
         self._recorder = recorder
+        #: 上下文摄入：runtime 原生工具/命令不经过 Flux MCP，只能从这里补进 step 日志
+        self._ingestor = ingestor
+        #: 已摄入的 tool 收尾事件：同一 call_id 只写一条 step（流式/重复上报很常见）
+        self._ingested_tools: dict[str, set[str]] = {}
 
     def attach(self, bus: EventBus) -> None:
         bus.subscribe(Events.DSH_EVENT, self._on_runtime_event)
@@ -205,6 +216,8 @@ class TaskStreamRelay:
         if self._recorder is not None:
             # 轨迹先记账再推流：SSE 阻塞或客户端不在线都不影响历史可回看
             self._recorder.record(run_id, task_id, payload)
+        if self._ingestor is not None and payload.get("kind") == "tool":
+            await self._ingest_tool(run_id, event_type, payload)
         text = payload.get("text") or ""
         if payload.get("kind") == "text" and len(text) >= TEXT_CHUNK_MIN_CHARS:
             # 兜底：整段正文按节奏摊开（所有 runtime 都该走原生增量，走到这里说明退化了）
@@ -224,6 +237,45 @@ class TaskStreamRelay:
             return
         await self._hub.publish(task_id, "run_event", data)
 
+    async def _ingest_tool(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        """把 runtime 原生工具/命令的**收尾**快照写进上下文（issue #3）。
+
+        只认收尾：状态已终态，或 result/output 类事件真的带了输出。运行中的增量
+        （status=running）不写，避免一条命令在存档里长出十几行。同一 `call_id` 只写一次；
+        没有 `call_id` 的 runtime 用「名称 + 参数 + 输出 + 状态」做兜底去重键。
+
+        传入的是 `_tool_payload` 归一化后的展示字段（已经过 `_redacted`），摄入侧会再跑
+        一遍 `redact` 作为防御性二次打码——占位符不会被再次改写，明文密钥也不会因此漏出。
+        """
+        ingestor = self._ingestor
+        if ingestor is None or not _is_tool_completion(event_type, payload):
+            return
+        call_id = str(payload.get("call_id") or "")
+        dedupe = call_id or "|".join(
+            str(payload.get(key) or "") for key in ("name", "detail", "output", "status")
+        )
+        seen = self._ingested_tools.setdefault(run_id, set())
+        if dedupe in seen:
+            return
+        seen.add(dedupe)
+        text = _tool_ingest_text(payload)
+        if not text.strip():
+            return
+        status = (
+            StepStatus.FAIL
+            if str(payload.get("status") or "").lower() in _FAILED_TOOL_STATUSES
+            else StepStatus.OK
+        )
+        detail = str(payload.get("detail") or "")
+        await ingestor.ingest(
+            run_id=run_id,
+            kind=_tool_step_kind(str(payload.get("category") or "")),
+            status=status,
+            tool=str(payload.get("name") or "") or None,
+            target_ref=detail[:1024] or None,
+            text=text,
+        )
+
     async def _on_run_terminal(self, event: str, body: dict[str, Any]) -> None:
         run_id = body.get("run_id")
         if not isinstance(run_id, str) or not run_id:
@@ -231,6 +283,8 @@ class TaskStreamRelay:
         task_id = self._hub.task_for_run(run_id)
         if task_id is None:
             return
+        # Run 结束：释放去重集合，避免映射随进程寿命无限增长
+        self._ingested_tools.pop(run_id, None)
         await self._hub.publish(
             task_id,
             "run_status",
@@ -279,6 +333,62 @@ def _is_result_event(event_type: str) -> bool:
     """工具事件是不是「收尾」（完成/输出）而不是「开始」。"""
     lowered = event_type.strip().lower()
     return "result" in lowered or "output" in lowered or lowered.endswith(("_end", "/end"))
+
+
+#: 工具状态里代表"已经结束"的取值（跨 runtime 的归一化结果）
+_TERMINAL_TOOL_STATUSES = frozenset(
+    {
+        "completed",
+        "complete",
+        "done",
+        "success",
+        "succeeded",
+        "failed",
+        "failure",
+        "error",
+        "errored",
+        "cancelled",
+        "canceled",
+        "timeout",
+        "timed_out",
+    }
+)
+#: 工具状态里代表"失败"的取值
+_FAILED_TOOL_STATUSES = frozenset(
+    {"failed", "failure", "error", "errored", "timeout", "timed_out", "cancelled", "canceled"}
+)
+
+
+def _is_tool_completion(event_type: str, payload: dict[str, Any]) -> bool:
+    """是否工具收尾：状态已终态，或 result/output 类事件确实带了输出。"""
+    status = str(payload.get("status") or "").strip().lower()
+    if status in _TERMINAL_TOOL_STATUSES:
+        return True
+    return bool(payload.get("output")) and _is_result_event(event_type)
+
+
+def _tool_step_kind(category: str) -> StepKind:
+    """按工具语义选 step 类别：命令 / 文件操作 / 其它工具调用。"""
+    if category == "command":
+        return StepKind.COMMAND
+    if category in ("read", "write"):
+        return StepKind.FILE_OP
+    return StepKind.TOOL_CALL
+
+
+def _tool_ingest_text(payload: dict[str, Any]) -> str:
+    """工具收尾的正文：入参 + 输出；两者都空时至少留工具名，别写空 step。"""
+    name = str(payload.get("name") or "")
+    detail = str(payload.get("detail") or "")
+    output = str(payload.get("output") or "")
+    lines: list[str] = []
+    if name:
+        lines.append(f"tool: {name}")
+    if detail:
+        lines.append(f"input: {detail}")
+    if output:
+        lines.append(f"output: {output}")
+    return "\n".join(lines)
 
 
 def _event_kind(event_type: str) -> str:

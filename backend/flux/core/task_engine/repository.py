@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -66,6 +66,18 @@ class TaskRepository:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        #: 消息落库后的上下文摄入钩子（Container 装配 `ContextIngestor`；单测可不装）。
+        #: 入参：task_id、当前 run_id（可能为 None）、刚写入的消息列表。
+        self._message_ingestor: (
+            Callable[[Any, str | None, Sequence[TaskMessage]], Awaitable[None]] | None
+        ) = None
+
+    def set_message_ingestor(
+        self,
+        ingestor: Callable[[Any, str | None, Sequence[TaskMessage]], Awaitable[None]] | None,
+    ) -> None:
+        """装配用户/助手消息的上下文摄入钩子（issue #3：产品主循环也要进 step 日志）。"""
+        self._message_ingestor = ingestor
 
     async def create(
         self,
@@ -390,8 +402,10 @@ class TaskRepository:
         不会出现"只存了用户那句、回复丢了"的半个回合。任务不存在时抛 NotFoundError。
         """
         async with self._session_factory() as session:
-            if await session.get(Task, task_id) is None:
+            task = await session.get(Task, task_id)
+            if task is None:
                 raise NotFoundError(f"任务 {task_id} 不存在", details={"task_id": str(task_id)})
+            run_id = task.run_id
             last_seq = await session.scalar(
                 select(func.max(TaskMessage.seq)).where(TaskMessage.task_id == task_id)
             )
@@ -414,7 +428,20 @@ class TaskRepository:
             for message in created:
                 # 同 create()：created_at 来自 server_default，离开会话前取回
                 await session.refresh(message)
-            return created
+        await self._ingest_messages(task_id, run_id, created)
+        return created
+
+    async def _ingest_messages(
+        self, task_id: uuid.UUID, run_id: str | None, messages: Sequence[TaskMessage]
+    ) -> None:
+        """消息已提交后触发摄入；钩子失败只记 warning，绝不影响消息落库结果。"""
+        ingestor = self._message_ingestor
+        if ingestor is None:
+            return
+        try:
+            await ingestor(task_id, run_id, messages)
+        except Exception:  # noqa: BLE001 - 上下文摄入是旁路，不能连坐对话写入
+            logger.warning("消息上下文摄入失败 task=%s", task_id, exc_info=True)
 
     async def list_messages(
         self, task_id: uuid.UUID, *, limit: int = 30, before: int | None = None

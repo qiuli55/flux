@@ -510,9 +510,7 @@ class ClaudeAccountService:
             with contextlib.suppress(ProcessLookupError, OSError):
                 session.process.terminate()
             with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError, OSError):
-                await asyncio.wait_for(
-                    asyncio.to_thread(session.process.wait), timeout=5
-                )
+                await asyncio.wait_for(asyncio.to_thread(session.process.wait), timeout=5)
             with contextlib.suppress(ProcessLookupError, OSError):
                 session.process.kill()
             self._settle(session, -1)

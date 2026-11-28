@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from flux.config import Settings
 from flux.core.context import RedactionStore, SecretBox, redact
+from flux.core.context.redact import redact_for_settings
 from flux.db.session import create_engine, create_session_factory
 from flux.enums import RedactionKind
 from flux.models.context import ContextRedaction
@@ -50,6 +51,83 @@ def test_redacts_credential_keeps_host() -> None:
     assert result.matches[0].kind == RedactionKind.CRED
     # 只换认证段，`@host` 保留（主机名不是秘密，留着才好排障）
     assert result.matches[0].original == "user:s3cr3t"
+
+
+# --- 无 Bearer 前缀的 JWT（issue #4）---
+
+#: 虚构 JWT：header 是 `{"alg":"HS256","typ":"JWT"}` 的 base64url，payload/signature 均为假值
+_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0"
+    ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+)
+
+
+def test_redacts_jwt_without_bearer_prefix() -> None:
+    result = redact(f"cookie={_JWT}")
+    assert result.text == "cookie=[REDACTED:token]"
+    assert result.matches[0].kind == RedactionKind.TOKEN
+    assert result.matches[0].original == _JWT
+
+
+def test_bearer_jwt_still_redacts_with_prefix_convention() -> None:
+    """既有约定不破：带 `Bearer ` 时前缀与令牌一起换掉。"""
+    result = redact(f"Authorization: Bearer {_JWT}")
+    assert result.text == "Authorization: [REDACTED:token]"
+    assert result.matches[0].original == f"Bearer {_JWT}"
+
+
+def test_jwt_rule_does_not_touch_dotted_filenames_or_versions() -> None:
+    """三段点分隔的长串不一定都是 JWT：header 解不出 JSON 就不换。"""
+    text = "read every_module_name.another_module_name.third_module_name and v1.2.3"
+    result = redact(text)
+    assert result.text == text
+    assert result.matches == ()
+
+
+# --- 可控字面量清单（issue #4）---
+
+
+def test_short_literal_is_not_redacted_by_default() -> None:
+    """没有前缀、熵也不够高的短密钥，未配置清单时保持不误伤。"""
+    text = "secret=TEST_SECRET_12345"
+    result = redact(text)
+    assert result.text == text
+    assert result.matches == ()
+
+
+def test_configured_literal_is_redacted_exactly() -> None:
+    result = redact("secret=TEST_SECRET_12345", literals=["TEST_SECRET_12345"])
+    assert result.text == "secret=[REDACTED:key]"
+    assert result.matches[0].kind == RedactionKind.KEY
+    assert result.matches[0].original == "TEST_SECRET_12345"
+
+
+def test_literal_list_ignores_empty_and_prefers_longest() -> None:
+    """空字面量不参与；长字面量先替换，短字面量不会把长串拆坏。"""
+    result = redact(
+        "values TEST_SECRET_12345 and TEST_SECRET_12345_LONG",
+        literals=["", "TEST_SECRET_12345", "TEST_SECRET_12345_LONG", "TEST_SECRET_12345"],
+    )
+    assert result.text == "values [REDACTED:key:2] and [REDACTED:key]"
+
+
+def test_settings_literal_list_parsing() -> None:
+    settings = Settings(
+        redaction_literals="TEST_SECRET_12345, another.secret\nthird-secret;ignored"
+    )
+    # 只按逗号 / 空白切分；分号不是分隔符，保留在字面量里
+    assert settings.redaction_literal_list == (
+        "TEST_SECRET_12345",
+        "another.secret",
+        "third-secret;ignored",
+    )
+
+
+def test_redact_for_settings_uses_configured_literals() -> None:
+    settings = Settings(redaction_literals="TEST_SECRET_12345")
+    result = redact_for_settings("secret=TEST_SECRET_12345", settings)
+    assert result.text == "secret=[REDACTED:key]"
 
 
 # --- 熵检测兜底（无前缀的密钥）---

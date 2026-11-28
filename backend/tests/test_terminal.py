@@ -76,6 +76,31 @@ async def test_run_command_records_output_and_exit_code(apply_container: Contain
     assert any("flux-terminal" in (item.chunk or "") for item in events)
 
 
+async def test_terminal_events_are_redacted_before_storage(
+    apply_container: Container,
+) -> None:
+    """命令与输出落库前必须打码（§10.1）：密钥 / 连接串密码都不能以明文进 terminal_events。
+
+    用带前缀的 key 与 `user:pass@host` 两种现有规则覆盖（P2-2 回归）。值全部虚构。
+    """
+    session = await apply_container.terminal.create_session()
+    key = "sk-TEST_SECRET_12345abcdefghijklmnop"
+    dsn = "postgres://user:TEST_SECRET_12345@db.internal:5432/app"
+
+    await apply_container.terminal.run_command(session.id, _py(f"print({key!r})"))
+    await apply_container.terminal.run_command(session.id, _py(f"print({dsn!r})"))
+
+    events = await apply_container.terminal.list_events(session.id)
+    stored = "\n".join(f"{event.command or ''}\n{event.chunk or ''}" for event in events)
+
+    assert "[REDACTED:key]" in stored
+    assert "[REDACTED:cred]" in stored
+    # 原文既不在 command 列，也不在 chunk 列（终端历史整行搜不到）
+    assert key not in stored
+    assert "TEST_SECRET_12345" not in stored
+    assert "user:TEST_SECRET_12345" not in stored
+
+
 async def test_run_command_reports_failure_exit_code(apply_container: Container) -> None:
     session = await apply_container.terminal.create_session()
 

@@ -33,6 +33,7 @@ from flux.core.capability_import.repository import ImportedCapabilityRepository
 from flux.core.capability_import.scanners import AgentScanner
 from flux.core.capability_import.service import CapabilityImportService
 from flux.core.code_intelligence.service import CodeIntelligenceService
+from flux.core.context.ingest import ContextIngestor
 from flux.core.context.lifecycle import ContextLifecycle
 from flux.core.context.metrics import BackfillObserver
 from flux.core.context.redact import RedactionStore
@@ -180,6 +181,8 @@ class Container:
     # 上下文机制（设计文档 §8）：只追加的 step 事件日志 + 内容寻址原文库
     context_steps: ContextStepRepository = field(init=False)
     content_store: ContentStore = field(init=False)
+    #: 上下文摄入的唯一入口：MCP / 用户消息 / 助手答复 / 原生工具 / 终端命令共用
+    context_ingestor: ContextIngestor = field(init=False)
     context_lifecycle: ContextLifecycle = field(init=False)
     context_ledger: VerificationLedger = field(init=False)
     context_redactions: RedactionStore = field(init=False)
@@ -398,9 +401,6 @@ class Container:
             memory=self.task_memory,
         )
         self.task_runs.attach(self.bus)
-        # DSH / CLI 的运行事件 → 任务流：前端订阅 SSE 就能看到 Agent 正在干什么
-        # 同时把增量合并成执行轨迹，Run 终态落库（任务详情的思考过程与命令输出靠它回看）
-        TaskStreamRelay(self.task_stream, self.run_trace).attach(self.bus)
         # 上下文闭环：提案 applied 后刷新项目 Brain 快照（同项目节流，失败不阻塞 Apply）
         self.brain_refresher = BrainRefresher(
             brain=self.brain,
@@ -451,16 +451,33 @@ class Container:
         self.content_store = ContentStore(self.session_factory)  # type: ignore[attr-defined]
         # 删会话即级联删该 run / turn 的 step、索引与孤儿原文（§8.2，唯一允许丢原文的例外）
         self.context_lifecycle = ContextLifecycle(self.session_factory)  # type: ignore[attr-defined]
-        # 验证账本：按「指纹 × 断言类」记验证结论，信任分级据此判定（§4.4）
+        # 验证账本：按「指纹 × 断言类」记验证结论，信任分级据此判定（§4.4）。
+        # **预留、未接线**：当前生产主循环还没有可靠的验证/断言结论点，故只装配不调用；
+        # 见 flux.core.context.trust 模块说明。
         self.context_ledger = VerificationLedger(self.session_factory)  # type: ignore[attr-defined]
         # 入站脱敏的映射表：占位符 → 原文，单独加密；无 FLUX_REDACTION_KEY 时不落库（§10.1）
         self.context_redactions = RedactionStore(
             self.session_factory,
             key=self.settings.redaction_key,  # type: ignore[attr-defined]
         )
+        # 上下文摄入的唯一入口（issue #3）：用户消息 / 助手最终答复 / runtime 原生工具与
+        # 命令 / 终端命令 / MCP 工具结果都走同一条 redact → CAS → step → 映射契约。
+        self.context_ingestor = ContextIngestor(
+            content_store=self.content_store,
+            steps=self.context_steps,
+            redactions=self.context_redactions,
+            literals=self.settings.redaction_literal_list,
+        )
+        # 消息落库后自动摄入（用户消息与助手最终答复不经过 MCP，只能从仓储侧接）
+        self.task_repo.set_message_ingestor(self.context_ingestor.ingest_task_messages)
         # 终端事件的 command/chunk 落库前过同一套入站脱敏（§10.1）；此处补装配，
-        # 因 TerminalService 先于 RedactionStore 构造。
+        # 因 TerminalService 先于 RedactionStore 构造。命令收尾还要进 context_steps。
         self.terminal.redactions = self.context_redactions
+        self.terminal.context_ingestor = self.context_ingestor
+        # DSH / CLI 的运行事件 → 任务流：前端订阅 SSE 就能看到 Agent 正在干什么
+        # 同时把增量合并成执行轨迹，Run 终态落库（任务详情的思考过程与命令输出靠它回看）。
+        # 原生工具/命令不经过 Flux MCP，故 relay 同时承担这部分上下文摄入。
+        TaskStreamRelay(self.task_stream, self.run_trace, self.context_ingestor).attach(self.bus)
         # 回补率观测（§6.7）：纯内存计数，不落库；打包记 offer、取回记 fetch
         self.context_backfill = BackfillObserver()
         # 助理（Supervisor）：P0 只有事件幂等入库 + outbox 排队；判断层（P1）与派发

@@ -25,6 +25,9 @@ token / key / 连接串 / 内网地址是常态（`env`、`curl -v`、日志、`
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import math
 import re
 from collections import Counter
@@ -55,6 +58,10 @@ _KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----", re.DOTALL)
 #: `Bearer …` 一类令牌（含前缀整体替换）
 _TOKEN_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._\-+/=]{8,}")
+#: 无 `Bearer ` 前缀的 JWT：`header.payload.signature`（base64url 三段，点分隔）。
+#: 三段都要求 ≥ 8 字符，先挡掉 `a.b.c` / 语义版本号 / 普通带点文件名；命中后再校验
+#: header 是否真是 JSON（见 `_looks_like_jwt`），不做"看起来像就换"的猜测。
+_JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 #: `user:pass@host`：只打码认证段，保留 `@host`
 _CRED_RE = re.compile(r"(?P<cred>[A-Za-z0-9._%+\-]+:[^\s:@/]+)(?P<host>@[A-Za-z0-9.\-]+(?::\d+)?)")
 #: 熵检测候选：无前缀的长 token（hex / base64 / urlsafe）
@@ -82,11 +89,16 @@ class RedactionResult:
         return bool(self.matches)
 
 
-def redact(text: str) -> RedactionResult:
+def redact(text: str, *, literals: Sequence[str] | None = None) -> RedactionResult:
     """把文本里的密钥 / 令牌 / 凭证打码成占位符，返回结果与替换清单（§10.1）。
 
-    替换顺序即优先级：KEY → PEM → TOKEN → CRED → 熵检测兜底。同一类别里的**同一原文**
-    复用同一占位符（映射因此始终 1:1）；不同原文按类递增编号。
+    替换顺序即优先级：KEY → PEM → TOKEN →（无 Bearer 的）JWT → CRED → 熵检测兜底 →
+    配置字面量。同一类别里的**同一原文**复用同一占位符（映射因此始终 1:1）；不同原文
+    按类递增编号。
+
+    `literals` 是**可控字面量清单**（如 `FLUX_REDACTION_LITERALS`）：没有任何前缀、
+    熵又不够高的短密钥只能靠它精确命中（issue #4 的 `TEST_SECRET_12345`）。为空时不启用
+    ——纯函数不隐式读全局配置，调用方要么显式传，要么走 `redact_for_settings`。
     """
     matches: list[RedactionMatch] = []
     seen: dict[RedactionKind, dict[str, str]] = {}
@@ -123,12 +135,60 @@ def redact(text: str) -> RedactionResult:
         # 无前缀的密钥归到 KEY（"key"是兜底的密钥标记）
         return placeholder_for(RedactionKind.KEY, token)
 
+    def _jwt_sub(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if not _looks_like_jwt(token):
+            return token
+        return placeholder_for(RedactionKind.TOKEN, token)
+
     text = _KEY_RE.sub(whole(RedactionKind.KEY), text)
     text = _PEM_RE.sub(whole(RedactionKind.PEM), text)
+    # Bearer 先于裸 JWT：既保持"连 `Bearer ` 一起换掉"的既有占位符约定，
+    # 也避免先换 JWT 后留下一个没有前缀归属的 `Bearer [REDACTED:token]`。
     text = _TOKEN_RE.sub(whole(RedactionKind.TOKEN), text)
+    text = _JWT_RE.sub(_jwt_sub, text)
     text = _CRED_RE.sub(_cred_sub, text)
     text = _CANDIDATE_RE.sub(_entropy_sub, text)
+    # 可控字面量最后应用：前缀密钥 / 连接串已先按更精确的规则处理；
+    # 剩下的无前缀短密钥才由清单兜底。长字面量优先，避免 "abc" 先把 "abcd" 拆坏。
+    for literal in _ordered_literals(literals):
+        if literal in text:
+            text = text.replace(literal, placeholder_for(RedactionKind.KEY, literal))
     return RedactionResult(text=text, matches=tuple(matches))
+
+
+def redact_for_settings(text: str, settings: object) -> RedactionResult:
+    """按进程配置打码（`Settings.redaction_literal_list`）；便于调用方不重复传参。
+
+    纯函数 `redact` 本身不读取全局配置；这一层薄封装把"配置 → 字面量清单"的绑定
+    留在装配边界，单测既可显式注入 `literals`，也可构造 `Settings` 验证配置入口。
+    """
+    literals = getattr(settings, "redaction_literal_list", ())
+    return redact(text, literals=literals)
+
+
+def _ordered_literals(literals: Sequence[str] | None) -> list[str]:
+    """去空、去重、按长度倒序——长字面量先替换，短字面量不会把它拆成碎片。"""
+    unique = {literal for literal in literals or () if literal}
+    return sorted(unique, key=len, reverse=True)
+
+
+def _looks_like_jwt(token: str) -> bool:
+    """三段 base64url，且 header 能解出带 `alg` 的 JSON 才算 JWT。
+
+    只靠正则会把"恰好三个长段、点分隔"的字符串（某些文件名 / 构建号）误伤；
+    解一次 header 是最小代价的语义确认，仍然零模型依赖。
+    """
+    segments = token.split(".")
+    if len(segments) != 3:
+        return False
+    header = segments[0]
+    try:
+        raw = base64.urlsafe_b64decode(header + "=" * (-len(header) % 4))
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return False
+    return isinstance(parsed, dict) and "alg" in parsed
 
 
 def _looks_like_secret(token: str) -> bool:

@@ -121,6 +121,11 @@ Flux 只开**一个** MCP Server（Streamable HTTP，单入口 `POST /mcp`），
 
 相关数据表：`context_blobs` / `context_steps` / `context_step_tokens` / `context_redactions` / `context_verifications`。设计文档见 [CONTEXT_DESIGN.md](CONTEXT_DESIGN.md)。
 
+摄入范围（issue #3 收口）：`ContextIngestor` 是唯一共享入口，覆盖 MCP 工具结果、用户消息、
+助手最终答复、runtime 原生工具/命令与终端命令；Run 尚未创建时的用户消息归到稳定的
+`task:<task_uuid>` 键。**验证账本（信任分级）目前是预留能力，尚未在生产路径启用**——
+没有可靠的验证/断言结论点时不伪造接线。
+
 ## 7. 客户端与发行
 
 | 应用 | 技术栈 | 状态 |

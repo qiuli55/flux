@@ -8,7 +8,10 @@
 - `extract_tokens` / `normalize_token`：反向索引词条抽取与归一化（§7.2）。
 - `fact_spine`：事实脊柱——自带证据的 step 收敛成逐代原样透传的行（§4.3）。
 - `VerificationLedger` / `grade`：验证账本与信任分级——让信任能长回来（§4.4）。
+  当前**预留**：生产主循环尚未接入 `record`，只在 container 装配与单测中使用。
 - `redact` / `RedactionStore`：入站脱敏与加密映射表——原文的"全"不等于"裸"（§10.1）。
+- `ContextIngestor`：上下文摄入的唯一共享入口（MCP / 用户消息 / 助手答复 / 原生工具 /
+  终端命令），issue #3 的残留缺口由它补齐。
 - `Tier` / `tier_of` / `tier_rank`：热 / 温 / 冷分层与装配优先级——渐进替换（§6.5）。
 - `FeedMetrics`：投喂度量（压缩率 / 必留项命中率 / 重建一致率，§5.6）。
 - `BackfillObserver`：回补率观测——压过头时应回退装配等级的信号（§6.7）。
@@ -17,6 +20,7 @@
 from flux.core.context.catalog import catalog_line, render_catalog
 from flux.core.context.handoff import HandoffBrief, build_handoff
 from flux.core.context.index import extract_tokens, normalize_token
+from flux.core.context.ingest import ContextIngestor
 from flux.core.context.lifecycle import ContextLifecycle
 from flux.core.context.metrics import (
     BackfillObserver,
@@ -24,7 +28,13 @@ from flux.core.context.metrics import (
     BackfillStats,
     FeedMetrics,
 )
-from flux.core.context.redact import RedactionMatch, RedactionResult, RedactionStore, redact
+from flux.core.context.redact import (
+    RedactionMatch,
+    RedactionResult,
+    RedactionStore,
+    redact,
+    redact_for_settings,
+)
 from flux.core.context.repository import ContextStepRepository
 from flux.core.context.secretbox import SecretBox
 from flux.core.context.spine import fact_spine
@@ -37,6 +47,7 @@ __all__ = [
     "BackfillPolicy",
     "BackfillStats",
     "ContentStore",
+    "ContextIngestor",
     "ContextLifecycle",
     "ContextStepRepository",
     "FeedMetrics",
@@ -57,6 +68,7 @@ __all__ = [
     "grade",
     "normalize_token",
     "redact",
+    "redact_for_settings",
     "render_catalog",
     "tier_of",
     "tier_rank",
