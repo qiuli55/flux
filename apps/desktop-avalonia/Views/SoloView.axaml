@@ -201,6 +201,123 @@
                 <ScrollViewer Grid.Row="0">
                     <StackPanel Margin="20,0,20,12" Spacing="12">
 
+                        <!-- 项目助理进度：只读汇总相关对话，读历史 / 接着干 / 开副本 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasProjectProgress}">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="项目进度" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ProjectProgressHint}" />
+                                <StackPanel Orientation="Horizontal" Spacing="14">
+                                    <TextBlock FontSize="12" Text="{Binding ProjectRunningText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectStalledText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectFailedText}" />
+                                    <TextBlock FontSize="12" Text="{Binding ProjectCompletedText}" />
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding ProjectConversations}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="models:AssistantProgressItem">
+                                            <Border Background="{DynamicResource TnBg2}" CornerRadius="6"
+                                                    Padding="10" Margin="0,0,0,6">
+                                                <StackPanel Spacing="5">
+                                                    <Grid ColumnDefinitions="*,Auto">
+                                                        <TextBlock Text="{Binding Title}" FontSize="12"
+                                                                   FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding BucketLabel}"
+                                                                   FontSize="10" Foreground="{DynamicResource TnInfo}" />
+                                                    </Grid>
+                                                    <TextBlock Text="{Binding SummaryText}" FontSize="10"
+                                                               Foreground="{DynamicResource TnText4}"
+                                                               TextWrapping="Wrap" />
+                                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                                        <Button Classes="mini" Content="读历史"
+                                                                Command="{Binding DataContext.ReadAssistantHistoryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding TaskId}" />
+                                                        <Button Classes="mini" Content="接着干"
+                                                                IsEnabled="{Binding CanContinue}"
+                                                                Command="{Binding DataContext.BeginContinueCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                        <Button Classes="mini" Content="开副本"
+                                                                Command="{Binding DataContext.BeginForkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock FontSize="10" Foreground="{DynamicResource TnText4}"
+                                           IsVisible="{Binding HasNoProjectConversations}"
+                                           Text="这个项目助理还没有关联已有对话。" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 接着干：写内容 → 再点确认；取消不发送 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasContinueDraft}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="接着干" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ContinueTargetTitle, StringFormat='要向「{0}」发送什么？确认后才会发送并继续执行。'}" />
+                                <TextBox Classes="input" Height="64" AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         Text="{Binding ContinueDraft, Mode=TwoWay}"
+                                         Watermark="写一句要接着做的事" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="btn primary" Content="确认发送"
+                                            Command="{Binding ConfirmContinueCommand}" />
+                                    <Button Classes="btn quiet" Content="取消"
+                                            Command="{Binding CancelContinueCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 开副本：起名 → 再点确认；取消不创建 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasForkDraft}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="开副本" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Classes="page-desc"
+                                           Text="{Binding ForkTargetTitle, StringFormat='会新建一条独立常驻对话，带上「{0}」的思路和上下文；原文一条消息都不改。'}" />
+                                <TextBox Classes="input" Height="30"
+                                         Text="{Binding ForkDraftName, Mode=TwoWay}"
+                                         Watermark="副本名称" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="btn primary" Content="确认开副本"
+                                            Command="{Binding ConfirmForkCommand}" />
+                                    <Button Classes="btn quiet" Content="取消"
+                                            Command="{Binding CancelForkCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 读历史：只读消息列表，没有输入框，不能发送 -->
+                        <Border Classes="solo-card" IsVisible="{Binding HasReadOnlyHistory}">
+                            <StackPanel Spacing="6">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="读历史" FontSize="13" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding ReadOnlyHistoryTitle}" FontSize="10"
+                                                   Foreground="{DynamicResource TnText4}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Classes="mini" Content="关闭"
+                                            Command="{Binding CloseReadOnlyHistoryCommand}" />
+                                </Grid>
+                                <TextBlock Classes="page-desc" Text="只读：不会向这段对话发送消息。" />
+                                <ScrollViewer MaxHeight="360">
+                                    <ItemsControl ItemsSource="{Binding ReadOnlyHistoryMessages}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:MessageRow">
+                                                <StackPanel Spacing="2" Margin="0,0,0,8">
+                                                    <TextBlock Text="{Binding Meta}" FontSize="10"
+                                                               Foreground="{DynamicResource TnText4}" />
+                                                    <TextBlock Text="{Binding Content}" FontSize="12"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
+
                         <Border Classes="solo-card" IsVisible="{Binding IsNewTask}">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="从一条需求开始" FontSize="13" FontWeight="SemiBold" />

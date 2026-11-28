@@ -358,6 +358,55 @@ public sealed class FluxApiClient : IDisposable
             confirmed,
         }, ct);
 
+    /// <summary>GET /assistants/{id}/progress：只读汇总相关对话进度。</summary>
+    public Task<ApiEnvelope<AssistantProgress>?> AssistantProgressAsync(
+        string assistantId,
+        CancellationToken ct = default)
+        => GetAsync<AssistantProgress>(
+            $"/api/v1/assistants/{Uri.EscapeDataString(assistantId)}/progress",
+            ct);
+
+    /// <summary>GET /assistants/{id}/history：列出可只读查看的相关对话。</summary>
+    public Task<ApiEnvelope<AssistantHistory>?> AssistantHistoryAsync(
+        string assistantId,
+        CancellationToken ct = default)
+        => GetAsync<AssistantHistory>(
+            $"/api/v1/assistants/{Uri.EscapeDataString(assistantId)}/history",
+            ct);
+
+    /// <summary>GET /assistants/{id}/history/{taskId}：只读打开一条相关对话。</summary>
+    public Task<ApiEnvelope<AssistantHistoryDetail>?> ReadAssistantHistoryAsync(
+        string assistantId,
+        string taskId,
+        CancellationToken ct = default)
+        => GetAsync<AssistantHistoryDetail>(
+            $"/api/v1/assistants/{Uri.EscapeDataString(assistantId)}/history/{Uri.EscapeDataString(taskId)}",
+            ct);
+
+    /// <summary>POST /assistants/{id}/continue：必须 confirmed=true 才向原对话发送。</summary>
+    public Task<ApiEnvelope<AssistantContinueResult>?> ContinueAssistantAsync(
+        string assistantId,
+        string sourceTaskId,
+        string content,
+        bool confirmed,
+        CancellationToken ct = default)
+        => PostAsync<AssistantContinueResult>(
+            $"/api/v1/assistants/{Uri.EscapeDataString(assistantId)}/continue",
+            new { source_task_id = sourceTaskId, content, confirmed },
+            ct);
+
+    /// <summary>POST /assistants/{id}/fork：必须 confirmed=true 才新建独立常驻对话。</summary>
+    public Task<ApiEnvelope<AssistantForkResult>?> ForkAssistantAsync(
+        string assistantId,
+        string sourceTaskId,
+        string? name,
+        bool confirmed,
+        CancellationToken ct = default)
+        => PostAsync<AssistantForkResult>(
+            $"/api/v1/assistants/{Uri.EscapeDataString(assistantId)}/fork",
+            new { source_task_id = sourceTaskId, name, confirmed },
+            ct);
+
     public Task<ApiEnvelope<TaskMessageResult>?> CreateTaskMessageAsync(
         string taskId,
         string content,

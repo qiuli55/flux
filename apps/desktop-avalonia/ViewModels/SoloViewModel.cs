@@ -102,6 +102,65 @@ public partial class SoloViewModel : ViewModelBase
     private string[] _assistantSuggestionSources = [];
     private bool _suppressAssistantChange;
 
+    /// <summary>项目助理进度面板：只读汇总 + 读历史 / 接着干 / 开副本。</summary>
+    [ObservableProperty]
+    private AssistantProgress? _projectProgress;
+
+    [ObservableProperty]
+    private bool _hasProjectProgress;
+
+    [ObservableProperty]
+    private string _projectProgressHint = "";
+
+    [ObservableProperty]
+    private string _projectRunningText = "进行中 0";
+
+    [ObservableProperty]
+    private string _projectStalledText = "可能已停住 0";
+
+    [ObservableProperty]
+    private string _projectFailedText = "失败 0";
+
+    [ObservableProperty]
+    private string _projectCompletedText = "已完成 0";
+
+    public ObservableCollection<AssistantProgressItem> ProjectConversations { get; } = new();
+
+    public bool HasNoProjectConversations => ProjectConversations.Count == 0;
+
+    /// <summary>读历史：只读打开的对话（没有输入框，不能发送）。</summary>
+    [ObservableProperty]
+    private bool _hasReadOnlyHistory;
+
+    [ObservableProperty]
+    private string _readOnlyHistoryTitle = "";
+
+    public ObservableCollection<MessageRow> ReadOnlyHistoryMessages { get; } = new();
+
+    /// <summary>接着干：先在这里写内容，再点确认；取消不发送。</summary>
+    [ObservableProperty]
+    private bool _hasContinueDraft;
+
+    [ObservableProperty]
+    private string _continueDraft = "";
+
+    [ObservableProperty]
+    private string _continueTargetTitle = "";
+
+    private AssistantProgressItem? _continueTarget;
+
+    /// <summary>开副本：先在这里起名，再点确认；取消不创建。</summary>
+    [ObservableProperty]
+    private bool _hasForkDraft;
+
+    [ObservableProperty]
+    private string _forkDraftName = "";
+
+    [ObservableProperty]
+    private string _forkTargetTitle = "";
+
+    private AssistantProgressItem? _forkTarget;
+
     [ObservableProperty]
     private bool _hasPendingDecision;
 
@@ -443,6 +502,237 @@ public partial class SoloViewModel : ViewModelBase
     {
         HasAssistantSuggestion = false;
         _assistantSuggestionSources = [];
+    }
+
+    /// <summary>当前对话若是项目助理的常驻对话，返回它的助理 id；否则 null。</summary>
+    private string? ActiveProjectAssistantId()
+    {
+        var conversationId = SelectedTask?.Id;
+        if (string.IsNullOrWhiteSpace(conversationId))
+        {
+            return null;
+        }
+
+        return AssistantChoices
+            .FirstOrDefault(x => x.Kind == "project" && x.ConversationTaskId == conversationId)
+            ?.Id;
+    }
+
+    /// <summary>只读加载进度汇总与相关对话列表。失败不影响项目助理自己的对话。</summary>
+    private async Task RefreshAssistantProgressAsync(FluxApiClient api, string assistantId)
+    {
+        try
+        {
+            var progress = (await api.AssistantProgressAsync(assistantId))?.Data;
+            var history = (await api.AssistantHistoryAsync(assistantId))?.Data;
+            ProjectProgress = progress;
+            HasProjectProgress = progress is not null || history is not null;
+            ProjectProgressHint = progress?.HintText ?? "";
+            ProjectRunningText = $"进行中 {progress?.Running ?? 0}";
+            ProjectStalledText = $"可能已停住 {progress?.PossiblyStalled ?? 0}";
+            ProjectFailedText = $"失败 {progress?.Failed ?? 0}";
+            ProjectCompletedText = $"已完成 {progress?.Completed ?? 0}";
+            ProjectConversations.Clear();
+            foreach (var item in history?.Conversations ?? progress?.Conversations ?? [])
+            {
+                ProjectConversations.Add(item);
+            }
+
+            OnPropertyChanged(nameof(HasNoProjectConversations));
+        }
+        catch (Exception ex)
+        {
+            ProjectProgress = null;
+            HasProjectProgress = false;
+            ProjectProgressHint = "";
+            ProjectRunningText = "进行中 0";
+            ProjectStalledText = "可能已停住 0";
+            ProjectFailedText = "失败 0";
+            ProjectCompletedText = "已完成 0";
+            ProjectConversations.Clear();
+            OnPropertyChanged(nameof(HasNoProjectConversations));
+            AppLog.Error("加载项目助理进度失败", ex);
+        }
+    }
+
+    private void ClearAssistantProgress()
+    {
+        ProjectProgress = null;
+        HasProjectProgress = false;
+        ProjectProgressHint = "";
+        ProjectRunningText = "进行中 0";
+        ProjectStalledText = "可能已停住 0";
+        ProjectFailedText = "失败 0";
+        ProjectCompletedText = "已完成 0";
+        ProjectConversations.Clear();
+        OnPropertyChanged(nameof(HasNoProjectConversations));
+        HasReadOnlyHistory = false;
+        ReadOnlyHistoryMessages.Clear();
+        HasContinueDraft = false;
+        HasForkDraft = false;
+    }
+
+    /// <summary>读历史：只读打开一条相关对话，不发送、不改动。</summary>
+    [RelayCommand]
+    private async Task ReadAssistantHistoryAsync(string? taskId)
+    {
+        var api = Api();
+        var assistantId = ActiveProjectAssistantId();
+        if (api is null || assistantId is null || string.IsNullOrWhiteSpace(taskId))
+        {
+            return;
+        }
+
+        try
+        {
+            var detail = (await api.ReadAssistantHistoryAsync(assistantId, taskId))?.Data;
+            if (detail is null)
+            {
+                return;
+            }
+
+            ReadOnlyHistoryTitle = SoloRules.Title(detail.Task.Description);
+            ReadOnlyHistoryMessages.Clear();
+            foreach (var message in detail.Messages)
+            {
+                ReadOnlyHistoryMessages.Add(new MessageRow(message));
+            }
+
+            HasReadOnlyHistory = true;
+            AppLog.Info($"读历史 · {taskId} · {detail.Messages.Length} 条（只读）");
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"读历史失败：{ex.Message}";
+            AppLog.Error($"读历史失败 · {taskId}", ex);
+        }
+    }
+
+    [RelayCommand]
+    private void CloseReadOnlyHistory()
+    {
+        HasReadOnlyHistory = false;
+        ReadOnlyHistoryMessages.Clear();
+    }
+
+    /// <summary>接着干：先展开确认草稿；真正发送必须再点一次「确认发送」。</summary>
+    [RelayCommand]
+    private void BeginContinue(AssistantProgressItem? item)
+    {
+        if (item is null || !item.CanContinue)
+        {
+            return;
+        }
+
+        _continueTarget = item;
+        ContinueTargetTitle = item.Title;
+        ContinueDraft = "";
+        HasContinueDraft = true;
+        HasForkDraft = false;
+    }
+
+    [RelayCommand]
+    private void CancelContinue()
+    {
+        HasContinueDraft = false;
+        ContinueDraft = "";
+        _continueTarget = null;
+    }
+
+    [RelayCommand]
+    private async Task ConfirmContinueAsync()
+    {
+        var api = Api();
+        var assistantId = ActiveProjectAssistantId();
+        var item = _continueTarget;
+        var content = ContinueDraft.Trim();
+        if (api is null || assistantId is null || item is null || content.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = (await api.ContinueAssistantAsync(assistantId, item.TaskId, content, true))?.Data;
+            if (result is null)
+            {
+                throw new InvalidOperationException("接着干没有返回任务");
+            }
+
+            HasContinueDraft = false;
+            ContinueDraft = "";
+            _continueTarget = null;
+            ConfirmationHint = "已接着干：原对话收到新任务并开始续跑";
+            await LoadTaskAsync(item.TaskId);
+            await RefreshAssistantProgressAsync(api, assistantId);
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"接着干失败：{ex.Message}";
+            AppLog.Error($"接着干失败 · {item.TaskId}", ex);
+        }
+    }
+
+    /// <summary>开副本：先展开命名草稿；真正创建必须再点一次「确认开副本」。</summary>
+    [RelayCommand]
+    private void BeginFork(AssistantProgressItem? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        _forkTarget = item;
+        ForkTargetTitle = item.Title;
+        ForkDraftName = $"{item.Title}（副本）";
+        HasForkDraft = true;
+        HasContinueDraft = false;
+    }
+
+    [RelayCommand]
+    private void CancelFork()
+    {
+        HasForkDraft = false;
+        ForkDraftName = "";
+        _forkTarget = null;
+    }
+
+    [RelayCommand]
+    private async Task ConfirmForkAsync()
+    {
+        var api = Api();
+        var assistantId = ActiveProjectAssistantId();
+        var item = _forkTarget;
+        if (api is null || assistantId is null || item is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var name = ForkDraftName.Trim();
+            var result = (await api.ForkAssistantAsync(
+                assistantId,
+                item.TaskId,
+                name.Length > 0 ? name : null,
+                true))?.Data;
+            if (result is null)
+            {
+                throw new InvalidOperationException("开副本没有返回任务");
+            }
+
+            HasForkDraft = false;
+            ForkDraftName = "";
+            _forkTarget = null;
+            ConfirmationHint = "已开副本：新对话已带上原对话的上下文";
+            await RefreshAssistantsAsync(api);
+            await LoadTaskAsync(result.Task.Id);
+        }
+        catch (Exception ex)
+        {
+            ConfirmationHint = $"开副本失败：{ex.Message}";
+            AppLog.Error($"开副本失败 · {item.TaskId}", ex);
+        }
     }
 
     private async Task SelectTaskAsync(TaskRow? row)
@@ -939,6 +1229,17 @@ public partial class SoloViewModel : ViewModelBase
             }
 
             ApplyTask(task);
+            // 项目助理自己的常驻对话：右上角面板展示只读进度 + 读历史 / 接着干 / 开副本
+            var assistantId = ActiveProjectAssistantId();
+            if (assistantId is not null)
+            {
+                await RefreshAssistantProgressAsync(api, assistantId);
+            }
+            else
+            {
+                ClearAssistantProgress();
+            }
+
             await ReloadMessagesAsync(taskId);
             await RefreshChangesAsync(taskId);
             await RefreshContextUsageAsync(api, taskId);
