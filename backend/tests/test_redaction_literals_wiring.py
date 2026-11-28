@@ -1335,3 +1335,191 @@ def test_task_stream_normal_flush_drops_incomplete_literal_prefix(
         assert LITERAL[8:] not in frame
     # 前半段之前的安全正文仍完整流出。
     assert joined.strip() == "好的，口令是"
+
+
+# --- 第八批：Bearer 全小写长片段 / 落库与消息投影的未完成前缀 ---
+
+#: 全小写、无数字/大写/符号的长令牌片段（虚构，不是任何真实凭据）。
+BEARER_TOKEN_SAMPLE = "abcdefghijklmnopqrstuvwxyzabcdef"
+
+
+def _drive_streamed_round(
+    literal_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[str],
+    *,
+    user_content: str = "hi",
+) -> tuple[list[str], list[dict[str, object]], dict[str, object], list[object], list[dict]]:
+    """经真实 POST 路径驱动一轮回复，并带回落库原文、GET 投影与推流事件。"""
+    from flux.core.task_engine.assistant import AssistantTurn, TaskAssistant
+
+    reply = "".join(chunks)
+
+    async def fake_respond(self: TaskAssistant, *, on_delta: object = None, **_kwargs: object):
+        assert callable(on_delta)
+        for chunk in chunks:
+            await on_delta(chunk)  # type: ignore[misc]
+        return AssistantTurn(reply=reply, provider="fake", model="fake-model")
+
+    monkeypatch.setattr(TaskAssistant, "respond", fake_respond)
+    app = create_app(literal_settings)
+    with TestClient(app) as client:
+        container: Container = client.app.state.container  # type: ignore[attr-defined]
+        task = client.post("/api/v1/tasks", json={"description": "打码边界"}).json()["data"]
+        response = client.post(
+            f"/api/v1/tasks/{task['id']}/messages", json={"content": user_content}
+        )
+        assert response.status_code == 200, response.text
+        events = [event.to_dict() for event in container.task_stream.poll(task["id"])]
+        listed = client.get(f"/api/v1/tasks/{task['id']}/messages")
+        assert listed.status_code == 200
+        rows, _ = asyncio.run(container.task_repo.list_messages(uuid.UUID(task["id"])))
+    deltas = [
+        str(event["data"].get("text") or "")
+        for event in events
+        if event["type"] == "assistant_delta"
+    ]
+    return deltas, events, response.json(), list(rows), listed.json()["data"]
+
+
+def test_streaming_delta_flush_drops_lowercase_and_punctuated_bearer_tokens(
+    literal_settings: Settings,
+) -> None:
+    """Bearer 大小写与尾随标点都不能绕过 flush；普通业务短词仍照常放出。"""
+    from flux.api.v1.tasks import _StreamingDeltaRedactor
+
+    token = BEARER_TOKEN_SAMPLE
+    container = Container(literal_settings)
+    try:
+        for sneak in (
+            f"Bearer {token}",
+            f"bearer {token}",
+            f"Bearer {token}。",
+            f"bearer {token}。",
+        ):
+            normal = _StreamingDeltaRedactor(container)
+            normal.feed(sneak)
+            assert normal.flush() == "", sneak
+
+            aborted = _StreamingDeltaRedactor(container)
+            aborted.feed(sneak)
+            leaked = aborted.flush(abort=True)
+            assert token not in leaked, sneak
+
+        # 对照：普通短词（含复数）不得被误杀。
+        for prose in ("Bearer token", "Bearer tokens"):
+            redactor = _StreamingDeltaRedactor(container)
+            redactor.feed(prose)
+            assert redactor.flush() == prose, prose
+    finally:
+        asyncio.run(container.dispose())
+
+
+def test_task_stream_normal_flush_drops_lowercase_bearer_token_everywhere(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正常结束停在 `bearer <全小写长片段>`：增量、落库、GET 与推流都不得出现该片段。"""
+    token = BEARER_TOKEN_SAMPLE
+    deltas, events, body, rows, listed = _drive_streamed_round(
+        literal_settings, monkeypatch, [f"凭证是 bearer {token}"]
+    )
+
+    joined = "".join(deltas)
+    assert token not in joined
+    assert "凭证是" in joined  # 安全前缀仍正常流出
+    for frame in deltas:
+        assert token not in frame
+
+    stored = json.dumps([row.to_dict() for row in rows], ensure_ascii=False)  # type: ignore[attr-defined]
+    for payload in (
+        stored,
+        json.dumps(events, ensure_ascii=False),
+        json.dumps(body, ensure_ascii=False),
+        json.dumps(listed, ensure_ascii=False),
+    ):
+        assert token not in payload
+
+
+def test_assistant_storage_and_projection_drop_incomplete_literal_prefix(
+    literal_settings: Settings, db_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正常结束停在字面量前半段：落库 assistant、GET messages 与最终推流都无残片。"""
+    from flux.enums import TaskMessageRole
+
+    prefix = LITERAL[:11]
+    fragment = LITERAL[8:]
+    user_text = f"用户自己的口令 {LITERAL}"
+    deltas, events, body, rows, listed = _drive_streamed_round(
+        literal_settings, monkeypatch, [f"好的，口令是 {prefix}"], user_content=user_text
+    )
+
+    joined = "".join(deltas)
+    assert LITERAL not in joined
+    assert prefix not in joined
+    assert fragment not in joined
+    assert "好的，口令是" in joined
+    for frame in deltas:
+        assert prefix not in frame
+        assert fragment not in frame
+
+    # 落库原文（不经 HTTP 投影）：assistant 无完整字面量、无前缀残片；user 原文不动。
+    assistant_rows = [m for m in rows if m.role == TaskMessageRole.ASSISTANT.value]  # type: ignore[attr-defined]
+    assert assistant_rows, "assistant 回复应已落库"
+    stored = assistant_rows[-1]
+    stored_dump = json.dumps(stored.to_dict(), ensure_ascii=False)  # type: ignore[attr-defined]
+    assert LITERAL not in stored_dump
+    assert prefix not in stored_dump
+    assert fragment not in stored_dump
+    assert "好的，口令是" in stored.content  # type: ignore[attr-defined]
+
+    user_rows = [m for m in rows if m.role == TaskMessageRole.USER.value]  # type: ignore[attr-defined]
+    assert user_rows[-1].content == user_text  # type: ignore[attr-defined]
+
+    # HTTP GET messages：assistant 干净；user 的完整字面量仍按投影打码。
+    for row in listed:
+        dumped = json.dumps(row, ensure_ascii=False)
+        if row["role"] == "assistant":
+            assert LITERAL not in dumped
+            assert prefix not in dumped
+            assert fragment not in dumped
+            assert "好的，口令是" in row["content"]
+        else:
+            assert LITERAL not in dumped
+            assert PLACEHOLDER in dumped
+
+    # 推流最终 assistant_message 与 POST 响应同样干净。
+    for payload in (
+        json.dumps(events, ensure_ascii=False),
+        json.dumps(body, ensure_ascii=False),
+    ):
+        assert LITERAL not in payload
+        assert prefix not in payload
+        assert fragment not in payload
+
+
+def test_redacted_message_only_sanitizes_assistant_incomplete_prefix(
+    literal_settings: Settings,
+) -> None:
+    """投影层：assistant 的未完成前缀被去掉（含同正文 payload），user 手打前缀不吞。"""
+    from flux.core.context.projection import redacted_message
+
+    prefix = LITERAL[:11]
+    user_message = SimpleNamespace(
+        to_dict=lambda: {"role": "user", "kind": "text", "content": f"用户输入 {prefix}"}
+    )
+    user_data = redacted_message(literal_settings, user_message)
+    assert user_data["content"] == f"用户输入 {prefix}"
+
+    assistant_message = SimpleNamespace(
+        to_dict=lambda: {
+            "role": "assistant",
+            "kind": "text",
+            "content": f"好的，口令是 {prefix}",
+            "payload": {"echo": f"好的，口令是 {prefix}", "other": "保留"},
+        }
+    )
+    assistant_data = redacted_message(literal_settings, assistant_message)
+    assert prefix not in assistant_data["content"]
+    assert "好的，口令是" in assistant_data["content"]
+    assert prefix not in json.dumps(assistant_data["payload"], ensure_ascii=False)
+    assert assistant_data["payload"]["other"] == "保留"
